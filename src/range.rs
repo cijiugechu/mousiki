@@ -67,12 +67,12 @@ use crate::silk::icdf::ICDFContext;
 // values.
 #[derive(Debug, Clone)]
 pub struct RangeDecoder<'a> {
-    buf: &'a [u8],
-    bits_read: usize,
+    pub(crate) buf: &'a [u8],
+    pub(crate) bits_read: usize,
     /// `rng`
-    range_size: u32,
+    pub(crate) range_size: u32,
     /// `val`
-    high_and_coded_difference: u32,
+    pub(crate) high_and_coded_difference: u32,
 }
 
 /// `MIN_RANGE_SIZE` is the minimum allowed size for rng.
