@@ -123,7 +123,7 @@ impl<'a> Decoder<'a> {
         let mut gain_index: i32 = 0;
         let mut gain_q_16 = [0f32; SUBFRAME_COUNT];
 
-        for subframe_index in 0..SUBFRAME_COUNT {
+        for (subframe_index, gain_value) in gain_q_16.iter_mut().enumerate() {
             // The subframe gains are either coded independently, or relative to the
             // gain from the most recent coded subframe in the same channel.
             //
@@ -205,7 +205,7 @@ impl<'a> Decoder<'a> {
             // between 81920 and 1686110208, inclusive (representing scale factors
             // of 1.25 to 25728, respectively).
 
-            gain_q_16[subframe_index] = ((1 << i)
+            *gain_value = ((1 << i)
                 + (((-174 * f * (128 - f)) >> 16) + f) * ((1 << i) >> 7))
                 as f32;
         }
