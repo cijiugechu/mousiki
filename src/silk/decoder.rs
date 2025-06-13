@@ -110,6 +110,9 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// A separate quantization gain is coded for each 5 ms subframe
+    ///
+    /// See [section-4.2.7.4](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.4)
     #[allow(unused_assignments)]
     pub fn decode_subframe_quantizations(
         &mut self,
