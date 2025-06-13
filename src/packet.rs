@@ -59,6 +59,20 @@ impl Bandwidth {
             Bandwidth::Full => 48000,
         }
     }
+
+    /// let n be the number of samples in a subframe (40 for NB, 60 for
+    /// MB, and 80 for WB)
+    ///
+    /// See [section-4.2.7.9](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.9)
+    #[inline]
+    pub fn samples_in_subframe(&self) -> u8 {
+        match self {
+            Bandwidth::Narrow => 40,
+            Bandwidth::Medium => 60,
+            Bandwidth::Wide => 80,
+            _ => 0,
+        }
+    }
 }
 
 /// See [section-2.1.4](https://datatracker.ietf.org/doc/html/rfc6716#section-2.1.4)
