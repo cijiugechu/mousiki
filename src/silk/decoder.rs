@@ -170,7 +170,7 @@ impl<'a> Decoder<'a> {
             //
             //       gain_Q16[k] = silk_log2lin((0x1D1C71*log_gain>>16) + 2090)
             //
-            let in_log_q7 = (0x1D1C71 * log_gain >> 16) + 2090;
+            let in_log_q7 = ((0x1D1C71 * log_gain) >> 16) + 2090;
             let i = in_log_q7 >> 7; //nolint:varnamelen // integer exponent
             let f = in_log_q7 & 127; //nolint:varnamelen // fractional exponent
 
@@ -186,7 +186,7 @@ impl<'a> Decoder<'a> {
             // of 1.25 to 25728, respectively).
 
             gain_q_16[subframe_index] =
-                ((1 << i) + ((-174 * f * (128 - f) >> 16) + f) * ((1 << i) >> 7)) as f32;
+                ((1 << i) + (((-174 * f * (128 - f)) >> 16) + f) * ((1 << i) >> 7)) as f32;
         }
 
         gain_q_16
