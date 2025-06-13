@@ -16,7 +16,7 @@ pub struct DecoderBuilder {
 const INIT_OUT_VALUES: [f32; 306] = [0.; 306];
 
 impl DecoderBuilder {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             final_out_values: INIT_OUT_VALUES,
         }

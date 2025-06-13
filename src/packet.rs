@@ -39,7 +39,7 @@ pub enum Bandwidth {
 
 impl Bandwidth {
     #[inline]
-    pub fn audio_band_width(&self) -> u16 {
+    pub const fn audio_band_width(&self) -> u16 {
         match self {
             Bandwidth::Narrow => 4000,
             Bandwidth::Medium => 6000,
@@ -50,7 +50,7 @@ impl Bandwidth {
     }
 
     #[inline]
-    pub fn sample_rate(&self) -> u16 {
+    pub const fn sample_rate(&self) -> u16 {
         match self {
             Bandwidth::Narrow => 8000,
             Bandwidth::Medium => 12000,
@@ -65,7 +65,7 @@ impl Bandwidth {
     ///
     /// See [section-4.2.7.9](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.9)
     #[inline]
-    pub fn samples_in_subframe(&self) -> u8 {
+    pub const fn samples_in_subframe(&self) -> u8 {
         match self {
             Bandwidth::Narrow => 40,
             Bandwidth::Medium => 60,
