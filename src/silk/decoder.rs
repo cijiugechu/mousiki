@@ -3,7 +3,8 @@ use super::{FrameQuantizationOffsetType, FrameSignalType};
 use crate::range::RangeDecoder;
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
-    INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
+    INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE,
+    INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED,
 };
 
@@ -85,12 +86,24 @@ impl<'a> Decoder<'a> {
         // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.3
 
         match (voice_activity_detected, frame_type_symbol) {
-            (false, 0) => (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low),
-            (false, _) => (FrameSignalType::Inactive, FrameQuantizationOffsetType::High),
-            (true, 0) => (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low),
-            (true, 1) => (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High),
-            (true, 2) => (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low),
-            (true, 3) => (FrameSignalType::Voiced, FrameQuantizationOffsetType::High),
+            (false, 0) => {
+                (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low)
+            }
+            (false, _) => {
+                (FrameSignalType::Inactive, FrameQuantizationOffsetType::High)
+            }
+            (true, 0) => {
+                (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low)
+            }
+            (true, 1) => {
+                (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High)
+            }
+            (true, 2) => {
+                (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low)
+            }
+            (true, 3) => {
+                (FrameSignalType::Voiced, FrameQuantizationOffsetType::High)
+            }
             _ => unreachable!(),
         }
     }
@@ -115,27 +128,29 @@ impl<'a> Decoder<'a> {
                 // of the quantization gain are decoded using a PDF selected from
                 // Table 11 based on the decoded signal type
                 gain_index = match signal_type {
-                    FrameSignalType::Inactive => self
-                        .range_decoder
-                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE)
-                        as i32,
-                    FrameSignalType::Voiced => self
-                        .range_decoder
-                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED)
-                        as i32,
-                    FrameSignalType::Unvoiced => self
-                        .range_decoder
-                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED)
-                        as i32,
+                    FrameSignalType::Inactive => {
+                        self.range_decoder.decode_symbol_with_icdf(
+                            INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE,
+                        ) as i32
+                    }
+                    FrameSignalType::Voiced => {
+                        self.range_decoder.decode_symbol_with_icdf(
+                            INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED,
+                        ) as i32
+                    }
+                    FrameSignalType::Unvoiced => {
+                        self.range_decoder.decode_symbol_with_icdf(
+                            INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
+                        ) as i32
+                    }
                 };
 
                 // The 3 least significant bits are decoded using a uniform PDF:
                 // These 6 bits are combined to form a value, gain_index, between 0 and 63.
                 gain_index = (gain_index << 3)
-                    | ((self
-                        .range_decoder
-                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_LSB))
-                        as i32);
+                    | ((self.range_decoder.decode_symbol_with_icdf(
+                        INDEPENDENT_QUANTIZATION_GAIN_LSB,
+                    )) as i32);
 
                 // When the gain for the previous subframe is available, then the
                 // current gain is limited as follows:
@@ -185,8 +200,9 @@ impl<'a> Decoder<'a> {
             // between 81920 and 1686110208, inclusive (representing scale factors
             // of 1.25 to 25728, respectively).
 
-            gain_q_16[subframe_index] =
-                ((1 << i) + (((-174 * f * (128 - f)) >> 16) + f) * ((1 << i) >> 7)) as f32;
+            gain_q_16[subframe_index] = ((1 << i)
+                + (((-174 * f * (128 - f)) >> 16) + f) * ((1 << i) >> 7))
+                as f32;
         }
 
         gain_q_16
@@ -213,7 +229,8 @@ mod tests {
             final_out_values: [0.; 306],
         };
 
-        let (signal_type, quantization_offset_type) = decoder.determine_frame_type(false);
+        let (signal_type, quantization_offset_type) =
+            decoder.determine_frame_type(false);
         assert_eq!(signal_type, FrameSignalType::Inactive);
         assert_eq!(quantization_offset_type, FrameQuantizationOffsetType::High);
     }
@@ -232,7 +249,8 @@ mod tests {
             final_out_values: [0.; 306],
         };
 
-        let quantizations = decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
+        let quantizations =
+            decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
         assert_eq!(quantizations, [210944., 112640., 96256., 96256.]);
     }
 }
