@@ -1,11 +1,16 @@
 use super::icdf::{FRAME_TYPE_VAD_ACTIVE, FRAME_TYPE_VAD_INACTIVE};
 use super::{FrameQuantizationOffsetType, FrameSignalType};
+use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED,
+    NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
+    NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
+    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED,
+    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
 };
 
 #[derive(Debug)]
@@ -212,6 +217,50 @@ impl<'a> Decoder<'a> {
 
         gain_q_16
     }
+
+    /// A set of normalized Line Spectral Frequency (LSF) coefficients follow
+    /// the quantization gains in the bitstream and represent the Linear
+    /// Predictive Coding (LPC) coefficients for the current SILK frame.
+    ///
+    /// See [Section-4.2.7.5.1](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.1).
+    pub fn normalize_line_spectral_frequency_stage_one(
+        &mut self,
+        voice_activity_detected: bool,
+        bandwidth: Bandwidth,
+    ) -> u32 {
+        // The first VQ stage uses a 32-element codebook, coded with one of the
+        // PDFs in Table 14, depending on the audio bandwidth and the signal
+        // type of the current SILK frame.  This yields a single index, I1, for
+        // the entire frame, which
+        //
+        // 1.  Indexes an element in a coarse codebook,
+        // 2.  Selects the PDFs for the second stage of the VQ, and
+        // 3.  Selects the prediction weights used to remove intra-frame
+        //     redundancy from the second stage.
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.1
+        use Bandwidth::*;
+
+        match (voice_activity_detected, bandwidth) {
+            (false, Narrow | Medium) => self
+                .range_decoder
+                .decode_symbol_with_icdf(
+                NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
+            ),
+            (true, Narrow | Medium) => self
+                .range_decoder
+                .decode_symbol_with_icdf(
+                NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
+            ),
+            (false, Wide) => self.range_decoder.decode_symbol_with_icdf(
+                NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED,
+            ),
+            (true, Wide) => self.range_decoder.decode_symbol_with_icdf(
+                NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
+            ),
+            (_, _) => unimplemented!(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +306,28 @@ mod tests {
         let quantizations =
             decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
         assert_eq!(quantizations, [210944., 112640., 96256., 96256.]);
+    }
+
+    #[test]
+    fn normalize_line_spectral_frequency_stage_one() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_SILK_FRAME,
+                bits_read: 47,
+                range_size: 722810880,
+                high_and_coded_difference: 387065757,
+            },
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+        };
+
+        assert_eq!(
+            9,
+            decoder.normalize_line_spectral_frequency_stage_one(
+                false,
+                Bandwidth::Wide
+            )
+        );
     }
 }
