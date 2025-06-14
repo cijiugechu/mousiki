@@ -2,6 +2,10 @@ use super::icdf::{FRAME_TYPE_VAD_ACTIVE, FRAME_TYPE_VAD_INACTIVE};
 use super::{FrameQuantizationOffsetType, FrameSignalType};
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
+use crate::silk::codebook::{
+    MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_NARROWBAND_AND_MEDIUMBAND,
+    MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_WIDEBAND,
+};
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE,
@@ -263,6 +267,171 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// The normalized LSF stabilization procedure ensures that
+/// consecutive values of the normalized LSF coefficients, NLSF_Q15[],
+/// are spaced some minimum distance apart (predetermined to be the 0.01
+/// percentile of a large training set).
+///
+/// see [section-4.2.7.5](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4)
+fn normalize_lsf_stabilization(
+    nlsf_q15: &mut [i16],
+    d_lpc: isize,
+    bandwidth: Bandwidth,
+) {
+    // Let NDeltaMin_Q15[k] be the minimum required spacing for the current
+    // audio bandwidth from Table 25.
+    //
+    // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+    let ndelta_min_q15 = if bandwidth == Bandwidth::Wide {
+        // codebookMinimumSpacingForNormalizedLSCoefficientsWideband
+        MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_WIDEBAND
+    } else {
+        MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_NARROWBAND_AND_MEDIUMBAND
+    };
+
+    // The procedure starts off by trying to make small adjustments that
+    // attempt to minimize the amount of distortion introduced.  After 20
+    // such adjustments, it falls back to a more direct method that
+    // guarantees the constraints are enforced but may require large
+    // adjustments.
+    //
+    // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+    for _adjustment in 0..=19 {
+        // First, the procedure finds the index
+        // i where NLSF_Q15[i] - NLSF_Q15[i-1] - NDeltaMin_Q15[i] is the
+        // smallest, breaking ties by using the lower value of i.
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+        let mut i: isize = 0;
+        let mut i_value = isize::MAX;
+
+        for nlsf_index in 0..=(nlsf_q15.len()) {
+            // For the purposes of computing this spacing for the first and last coefficient,
+            // NLSF_Q15[-1] is taken to be 0 and NLSF_Q15[d_LPC] is taken to be 32768
+            //
+            // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+            let previous_nlsf = if nlsf_index != 0 {
+                nlsf_q15[nlsf_index - 1] as isize
+            } else {
+                0
+            };
+            let current_nlsf = if nlsf_index != nlsf_q15.len() {
+                nlsf_q15[nlsf_index] as isize
+            } else {
+                32768
+            };
+
+            let spacing_value: isize = current_nlsf
+                - previous_nlsf
+                - (ndelta_min_q15[nlsf_index] as isize);
+            if spacing_value < i_value {
+                i = nlsf_index as isize;
+                i_value = spacing_value;
+            }
+        }
+
+        // If this value is non-negative, then the stabilization stops; the coefficients
+        // satisfy all the constraints.
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+        if i_value >= 0 {
+            return;
+        }
+        // if i == 0, it sets NLSF_Q15[0] to NDeltaMin_Q15[0]
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+        if i == 0 {
+            nlsf_q15[0] = (ndelta_min_q15[0]) as i16;
+
+            continue;
+        }
+        // if i == d_LPC, it sets
+        //  NLSF_Q15[d_LPC-1] to (32768 - NDeltaMin_Q15[d_LPC])
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
+        if i == d_lpc {
+            nlsf_q15[d_lpc as usize - 1] =
+                (32768 - ndelta_min_q15[d_lpc as usize]) as i16;
+
+            continue;
+        }
+
+        // 	For all other values of i, both NLSF_Q15[i-1] and NLSF_Q15[i] are updated as
+        // follows:
+        //                                              i-1
+        //                                              __
+        //     min_center_Q15 = (NDeltaMin_Q15[i]>>1) + \  NDeltaMin_Q15[k]
+        //                                              /_
+        //                                              k=0
+        //
+        let mut min_center_q15 = ndelta_min_q15[i as usize] >> 1;
+        for k in 0..=(i - 1) {
+            min_center_q15 += ndelta_min_q15[k as usize];
+        }
+
+        // 		                                                d_LPC
+        //                                                      __
+        //     max_center_Q15 = 32768 - (NDeltaMin_Q15[i]>>1) - \  NDeltaMin_Q15[k]
+        //                                                      /_
+        //                                                     k=i+1
+        let mut max_center_q15 = 32768 - (ndelta_min_q15[i as usize] >> 1);
+        for k in (i + 1)..=d_lpc {
+            max_center_q15 -= ndelta_min_q15[k as usize];
+        }
+
+        //     center_freq_Q15 = clamp(min_center_Q15[i],
+        //                     (NLSF_Q15[i-1] + NLSF_Q15[i] + 1)>>1
+        //                     max_center_Q15[i])
+        let center_freq_q15 = ((((nlsf_q15[i as usize - 1] as isize)
+            + (nlsf_q15[i as usize] as isize)
+            + 1)
+            >> 1) as i32)
+            .clamp(min_center_q15 as i32, max_center_q15 as i32)
+            as isize;
+
+        //    NLSF_Q15[i-1] = center_freq_Q15 - (NDeltaMin_Q15[i]>>1)
+        //    NLSF_Q15[i] = NLSF_Q15[i-1] + NDeltaMin_Q15[i]
+        nlsf_q15[i as usize - 1] = (center_freq_q15
+            - (ndelta_min_q15[i as usize] >> 1) as isize)
+            as i16;
+        nlsf_q15[i as usize] =
+            nlsf_q15[i as usize - 1] + (ndelta_min_q15[i as usize] as i16);
+    }
+
+    // After the 20th repetition of the above procedure, the following
+    // fallback procedure executes once.  First, the values of NLSF_Q15[k]
+    // for 0 <= k < d_LPC are sorted in ascending order.  Then, for each
+    // value of k from 0 to d_LPC-1, NLSF_Q15[k] is set to
+    // sort.Slice(nlsfQ15, func(i, j int) bool {
+    // 	return nlsfQ15[i] < nlsfQ15[j]
+    // })
+    nlsf_q15.sort();
+
+    // Then, for each value of k from 0 to d_LPC-1, NLSF_Q15[k] is set to
+    //
+    //   max(NLSF_Q15[k], NLSF_Q15[k-1] + NDeltaMin_Q15[k])
+    for k in 0..=(d_lpc as usize - 1) {
+        let prev_nlsf = if k != 0 { nlsf_q15[k - 1] } else { 0 };
+
+        nlsf_q15[k] = nlsf_q15[k].max(prev_nlsf + (ndelta_min_q15[k] as i16));
+    }
+
+    // Next, for each value of k from d_LPC-1 down to 0, NLSF_Q15[k] is set
+    // to
+    //
+    //   min(NLSF_Q15[k], NLSF_Q15[k+1] - NDeltaMin_Q15[k+1])
+    for k in (0..=(d_lpc as usize - 1)).rev() {
+        let next_nlsf = if k != (d_lpc as usize) - 1 {
+            nlsf_q15[k + 1] as isize
+        } else {
+            32768
+        };
+
+        nlsf_q15[k] = nlsf_q15[k]
+            .min((next_nlsf - (ndelta_min_q15[k + 1] as isize)) as i16);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +498,34 @@ mod tests {
                 Bandwidth::Wide
             )
         );
+    }
+
+    #[test]
+    fn test_normalize_lsf_stabilization() {
+        let mut input = [
+            856, 2310, 3452, 4865, 4852, 7547, 9662, 11512, 13884, 15919,
+            18467, 20487, 23559, 25900, 28222, 30700,
+        ];
+
+        let expected_out = [
+            856, 2310, 3452, 4858, 4861, 7547, 9662, 11512, 13884, 15919,
+            18467, 20487, 23559, 25900, 28222, 30700,
+        ];
+
+        normalize_lsf_stabilization(&mut input, 16, Bandwidth::Wide);
+        assert_eq!(&input, &expected_out);
+
+        let mut input2 = [
+            1533, 1674, 2506, 4374, 6630, 9867, 10260, 10691, 14397, 16969,
+            19355, 21645, 25228, 26972, 30514, 30208,
+        ];
+
+        let expected_out2 = [
+            1533, 1674, 2506, 4374, 6630, 9867, 10260, 10691, 14397, 16969,
+            19355, 21645, 25228, 26972, 30360, 30363,
+        ];
+
+        normalize_lsf_stabilization(&mut input2, 16, Bandwidth::Wide);
+        assert_eq!(&input2, &expected_out2);
     }
 }
