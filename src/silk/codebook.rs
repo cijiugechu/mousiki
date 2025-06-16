@@ -72,7 +72,8 @@
 //             Decoding
 //
 /// See [section-4.2.7.5.2](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2)
-pub const NORMALIZED_LSFSTAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND: &[&[u8]] = &[
+pub const NORMALIZED_LSF_STAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND:
+    &[&[u8]] = &[
     &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     &[1, 3, 1, 2, 2, 1, 2, 1, 1, 1],
     &[2, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -180,7 +181,7 @@ pub const NORMALIZED_LSFSTAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND: &[&[u8]] = &[
 //            Decoding
 //
 /// See [section-4.2.7.5.2](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2)
-pub const NORMALIZED_LSFSTAGE_TWO_INDEX_WIDEBAND: &[&[u8]] = &[
+pub const NORMALIZED_LSF_STAGE_TWO_INDEX_WIDEBAND: &[&[u8]] = &[
     &[8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8],
     &[10, 11, 11, 11, 11, 11, 10, 10, 10, 10, 10, 9, 9, 9, 8, 11],
     &[
