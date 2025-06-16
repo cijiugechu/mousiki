@@ -5,6 +5,12 @@ use crate::range::RangeDecoder;
 use crate::silk::codebook::{
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_NARROWBAND_AND_MEDIUMBAND,
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_WIDEBAND,
+    NORMALIZED_LSF_STAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND,
+    NORMALIZED_LSF_STAGE_TWO_INDEX_WIDEBAND,
+    PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
+    PREDICTION_WEIGHT_FOR_WIDEBAND_NORMALIZED_LSF,
+    PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
+    PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF,
 };
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
@@ -14,7 +20,8 @@ use crate::silk::icdf::{
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED,
-    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
+    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED, NORMALIZED_LSF_STAGE_2_INDEX,
+    NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
 };
 
 #[derive(Debug)]
@@ -59,6 +66,21 @@ pub struct Decoder<'a> {
 }
 
 const SUBFRAME_COUNT: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResQ10 {
+    Wide([i16; 16]),
+    NarrowOrMedium([i16; 10]),
+}
+
+impl ResQ10 {
+    pub const fn d_lpc(&self) -> usize {
+        match self {
+            Self::Wide(_) => 16,
+            Self::NarrowOrMedium(_) => 10,
+        }
+    }
+}
 
 impl<'a> Decoder<'a> {
     /// Each SILK frame contains a single "frame type" symbol that jointly
@@ -265,6 +287,128 @@ impl<'a> Decoder<'a> {
             (_, _) => unimplemented!(),
         }
     }
+
+    /// A set of normalized Line Spectral Frequency (LSF) coefficients follow
+    /// the quantization gains in the bitstream and represent the Linear
+    /// Predictive Coding (LPC) coefficients for the current SILK frame.
+    ///
+    /// see [section-4.2.7.5.2](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2).
+    pub fn normalize_line_spectral_frequency_stage_two(
+        &mut self,
+        bandwidth: Bandwidth,
+        i1: u32,
+    ) -> ResQ10 {
+        // Decoding the second stage residual proceeds as follows.  For each
+        // coefficient, the decoder reads a symbol using the PDF corresponding
+        // to I1 from either Table 17 or Table 18,
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
+        let codebook = if bandwidth == Bandwidth::Wide {
+            // codebookNormalizedLSFStageTwoIndexWideband
+            NORMALIZED_LSF_STAGE_TWO_INDEX_WIDEBAND
+        } else {
+            // codebookNormalizedLSFStageTwoIndexNarrowbandOrMediumband
+            NORMALIZED_LSF_STAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND
+        };
+
+        let mut i2 = [0i8; 16];
+        let actual_i2_len = codebook[0].len();
+        for i in 0..actual_i2_len {
+            // the decoder reads a symbol using the PDF corresponding
+            // to I1 from either Table 17 or Table 18 and subtracts 4 from the
+            // result to give an index in the range -4 to 4, inclusive.
+            //
+            // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
+            i2[i] = (self.range_decoder.decode_symbol_with_icdf(
+                NORMALIZED_LSF_STAGE_2_INDEX[codebook[i1 as usize][i] as usize],
+            )) as i8
+                - 4;
+
+            // If the index is either -4 or 4, it reads a second symbol using the PDF in
+            // Table 19, and adds the value of this second symbol to the index,
+            // using the same sign.  This gives the index, I2[k], a total range of
+            // -10 to 10, inclusive.
+            //
+            // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
+            if i2[i] == -4 {
+                i2[i] -= (self.range_decoder.decode_symbol_with_icdf(
+                    NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
+                )) as i8;
+            } else if i2[i] == 4 {
+                i2[i] += (self.range_decoder.decode_symbol_with_icdf(
+                    NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
+                )) as i8;
+            }
+        }
+
+        // The decoded indices from both stages are translated back into
+        // normalized LSF coefficients. The stage-2 indices represent residuals
+        // after both the first stage of the VQ and a separate backwards-prediction
+        // step. The backwards prediction process in the encoder subtracts a prediction
+        // from each residual formed by a multiple of the coefficient that follows it.
+        // The decoder must undo this process.
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
+
+        // qstep is the Q16 quantization step size, which is 11796 for NB and MB and 9830
+        // for WB (representing step sizes of approximately 0.18 and 0.15, respectively).
+        let qstep = if bandwidth == Bandwidth::Wide {
+            9830
+        } else {
+            11796
+        };
+
+        // stage-2 residual
+        let mut res_q10 = [0i16; 16];
+
+        // Let d_LPC be the order of the codebook, i.e., 10 for NB and MB, and 16 for WB
+        let d_lpc = actual_i2_len;
+
+        // for 0 <= k < d_LPC-1
+        for k in (0..=(d_lpc - 1)).rev() {
+            // The stage-2 residual for each coefficient is computed via
+            //
+            //     res_Q10[k] = (k+1 < d_LPC ? (res_Q10[k+1]*pred_Q8[k])>>8 : 0) + ((((I2[k]<<10) - sign(I2[k])*102)*qstep)>>16) ,
+            //
+
+            // The following computes
+            //
+            // (k+1 < d_LPC ? (res_Q10[k+1]*pred_Q8[k])>>8 : 0)
+            //
+            let mut first_operand = 0;
+            if k + 1 < d_lpc {
+                // Each coefficient selects its prediction weight from one of the two lists based on the stage-1 index, I1.
+                // let pred_Q8[k] be the weight for the k'th coefficient selected by this process for 0 <= k < d_LPC-1
+                let pred_q8 = if bandwidth == Bandwidth::Wide {
+                    PREDICTION_WEIGHT_FOR_WIDEBAND_NORMALIZED_LSF
+                        [PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF
+                            [i1 as usize][k] as usize][k]
+                        as isize
+                } else {
+                    PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF[PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF[i1 as usize][k] as usize][k] as isize
+                };
+
+                first_operand =
+                    dbg!(((res_q10[k + 1] as isize) * pred_q8) >> 8);
+            }
+
+            // The following computes
+            //
+            // (((I2[k]<<10) - sign(I2[k])*102)*qstep)>>16
+            //.
+            let second_operand =
+                ((((i2[k] as isize) << 10) - (i2[k] as isize) * 102).signum()
+                    * qstep)
+                    >> 16;
+
+            res_q10[k] = dbg!((first_operand + second_operand) as i16);
+        }
+
+        if actual_i2_len == 10 {
+            ResQ10::NarrowOrMedium(res_q10[0..10].try_into().unwrap())
+        } else {
+            ResQ10::Wide(res_q10)
+        }
+    }
 }
 
 /// The normalized LSF stabilization procedure ensures that
@@ -437,6 +581,8 @@ mod tests {
     use super::*;
 
     const TEST_SILK_FRAME: &[u8] = &[0x0B, 0xE4, 0xC1, 0x36, 0xEC, 0xC5, 0x80];
+    const TEST_Q_10: [i16; 16] =
+        [138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
     #[test]
     fn determine_frame_type() {
@@ -527,5 +673,25 @@ mod tests {
 
         normalize_lsf_stabilization(&mut input2, 16, Bandwidth::Wide);
         assert_eq!(&input2, &expected_out2);
+    }
+
+    #[test]
+    fn normalize_line_spectral_frequency_stage_two() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_SILK_FRAME,
+                bits_read: 47,
+                range_size: 50822640,
+                high_and_coded_difference: 5895957,
+            },
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+        };
+
+        let res_q10 = decoder
+            .normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
+
+        assert_eq!(res_q10, ResQ10::Wide(TEST_Q_10));
     }
 }
