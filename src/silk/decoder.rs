@@ -387,20 +387,18 @@ impl<'a> Decoder<'a> {
                     PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF[PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF[i1 as usize][k] as usize][k] as isize
                 };
 
-                first_operand =
-                    dbg!(((res_q10[k + 1] as isize) * pred_q8) >> 8);
+                first_operand = ((res_q10[k + 1] as isize) * pred_q8) >> 8;
             }
 
             // The following computes
             //
             // (((I2[k]<<10) - sign(I2[k])*102)*qstep)>>16
             //.
+            let i2k = i2[k] as isize;
             let second_operand =
-                ((((i2[k] as isize) << 10) - (i2[k] as isize) * 102).signum()
-                    * qstep)
-                    >> 16;
+                (((i2k << 10) - (i2k.signum() * 102)) * (qstep as isize)) >> 16;
 
-            res_q10[k] = dbg!((first_operand + second_operand) as i16);
+            res_q10[k] = (first_operand + second_operand) as i16;
         }
 
         if actual_i2_len == 10 {
