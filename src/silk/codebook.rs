@@ -584,7 +584,7 @@ pub const PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF: &[&[u8]] = &[
 // +----+----------------------------------------+
 //
 // Table 23: NB/MB Normalized LSF Stage-1 Codebook Vectors
-pub const NORMALIZED_LSFSTAGE_ONE_NARROWBAND_OR_MEDIUMBAND: &[&[u8]] = &[
+pub const NORMALIZED_LSF_STAGE_ONE_NARROWBAND_OR_MEDIUMBAND: &[&[u8]] = &[
     &[12, 35, 60, 83, 108, 132, 157, 180, 206, 228],
     &[15, 32, 55, 77, 101, 125, 151, 175, 201, 225],
     &[19, 42, 66, 89, 114, 137, 162, 184, 209, 230],
@@ -689,7 +689,7 @@ pub const NORMALIZED_LSFSTAGE_ONE_NARROWBAND_OR_MEDIUMBAND: &[&[u8]] = &[
 // | 31 | 15 21 35 50 61  73  86  97 110 119 129 141 175 198 218 237 |
 // +----+------------------------------------------------------------+
 // Table 24: WB Normalized LSF Stage-1 Codebook Vectors
-pub const NORMALIZED_LSFSTAGE_ONE_WIDEBAND: &[&[u8]] = &[
+pub const NORMALIZED_LSF_STAGE_ONE_WIDEBAND: &[&[u8]] = &[
     &[
         7, 23, 38, 54, 69, 85, 100, 116, 131, 147, 162, 178, 193, 208, 223, 239,
     ],
