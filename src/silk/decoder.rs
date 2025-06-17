@@ -14,14 +14,12 @@ use crate::silk::codebook::{
 };
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
-    INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE,
-    INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
+    INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
-    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED,
-    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED, NORMALIZED_LSF_STAGE_2_INDEX,
-    NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
+    NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
+    NORMALIZED_LSF_STAGE_2_INDEX, NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
 };
 
 #[derive(Debug)]
@@ -119,24 +117,12 @@ impl<'a> Decoder<'a> {
         // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.3
 
         match (voice_activity_detected, frame_type_symbol) {
-            (false, 0) => {
-                (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low)
-            }
-            (false, _) => {
-                (FrameSignalType::Inactive, FrameQuantizationOffsetType::High)
-            }
-            (true, 0) => {
-                (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low)
-            }
-            (true, 1) => {
-                (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High)
-            }
-            (true, 2) => {
-                (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low)
-            }
-            (true, 3) => {
-                (FrameSignalType::Voiced, FrameQuantizationOffsetType::High)
-            }
+            (false, 0) => (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low),
+            (false, _) => (FrameSignalType::Inactive, FrameQuantizationOffsetType::High),
+            (true, 0) => (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low),
+            (true, 1) => (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High),
+            (true, 2) => (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low),
+            (true, 3) => (FrameSignalType::Voiced, FrameQuantizationOffsetType::High),
             _ => unreachable!(),
         }
     }
@@ -164,29 +150,27 @@ impl<'a> Decoder<'a> {
                 // of the quantization gain are decoded using a PDF selected from
                 // Table 11 based on the decoded signal type
                 gain_index = match signal_type {
-                    FrameSignalType::Inactive => {
-                        self.range_decoder.decode_symbol_with_icdf(
-                            INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE,
-                        ) as i32
-                    }
-                    FrameSignalType::Voiced => {
-                        self.range_decoder.decode_symbol_with_icdf(
-                            INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED,
-                        ) as i32
-                    }
-                    FrameSignalType::Unvoiced => {
-                        self.range_decoder.decode_symbol_with_icdf(
-                            INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
-                        ) as i32
-                    }
+                    FrameSignalType::Inactive => self
+                        .range_decoder
+                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE)
+                        as i32,
+                    FrameSignalType::Voiced => self
+                        .range_decoder
+                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED)
+                        as i32,
+                    FrameSignalType::Unvoiced => self
+                        .range_decoder
+                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED)
+                        as i32,
                 };
 
                 // The 3 least significant bits are decoded using a uniform PDF:
                 // These 6 bits are combined to form a value, gain_index, between 0 and 63.
                 gain_index = (gain_index << 3)
-                    | ((self.range_decoder.decode_symbol_with_icdf(
-                        INDEPENDENT_QUANTIZATION_GAIN_LSB,
-                    )) as i32);
+                    | ((self
+                        .range_decoder
+                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_LSB))
+                        as i32);
 
                 // When the gain for the previous subframe is available, then the
                 // current gain is limited as follows:
@@ -236,9 +220,8 @@ impl<'a> Decoder<'a> {
             // between 81920 and 1686110208, inclusive (representing scale factors
             // of 1.25 to 25728, respectively).
 
-            *gain_value = ((1 << i)
-                + (((-174 * f * (128 - f)) >> 16) + f) * ((1 << i) >> 7))
-                as f32;
+            *gain_value =
+                ((1 << i) + (((-174 * f * (128 - f)) >> 16) + f) * ((1 << i) >> 7)) as f32;
         }
 
         gain_q_16
@@ -268,22 +251,18 @@ impl<'a> Decoder<'a> {
         use Bandwidth::*;
 
         match (voice_activity_detected, bandwidth) {
-            (false, Narrow | Medium) => self
-                .range_decoder
-                .decode_symbol_with_icdf(
+            (false, Narrow | Medium) => self.range_decoder.decode_symbol_with_icdf(
                 NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
             ),
-            (true, Narrow | Medium) => self
-                .range_decoder
-                .decode_symbol_with_icdf(
+            (true, Narrow | Medium) => self.range_decoder.decode_symbol_with_icdf(
                 NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
             ),
-            (false, Wide) => self.range_decoder.decode_symbol_with_icdf(
-                NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED,
-            ),
-            (true, Wide) => self.range_decoder.decode_symbol_with_icdf(
-                NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
-            ),
+            (false, Wide) => self
+                .range_decoder
+                .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED),
+            (true, Wide) => self
+                .range_decoder
+                .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED),
             (_, _) => unimplemented!(),
         }
     }
@@ -330,13 +309,15 @@ impl<'a> Decoder<'a> {
             //
             // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
             if i2[i] == -4 {
-                i2[i] -= (self.range_decoder.decode_symbol_with_icdf(
-                    NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
-                )) as i8;
+                i2[i] -= (self
+                    .range_decoder
+                    .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION))
+                    as i8;
             } else if i2[i] == 4 {
-                i2[i] += (self.range_decoder.decode_symbol_with_icdf(
-                    NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
-                )) as i8;
+                i2[i] += (self
+                    .range_decoder
+                    .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION))
+                    as i8;
             }
         }
 
@@ -380,11 +361,12 @@ impl<'a> Decoder<'a> {
                 // let pred_Q8[k] be the weight for the k'th coefficient selected by this process for 0 <= k < d_LPC-1
                 let pred_q8 = if bandwidth == Bandwidth::Wide {
                     PREDICTION_WEIGHT_FOR_WIDEBAND_NORMALIZED_LSF
-                        [PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF
-                            [i1 as usize][k] as usize][k]
-                        as isize
+                        [PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF[i1 as usize][k]
+                            as usize][k] as isize
                 } else {
-                    PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF[PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF[i1 as usize][k] as usize][k] as isize
+                    PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF
+                        [PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF
+                            [i1 as usize][k] as usize][k] as isize
                 };
 
                 first_operand = ((res_q10[k + 1] as isize) * pred_q8) >> 8;
@@ -395,8 +377,7 @@ impl<'a> Decoder<'a> {
             // (((I2[k]<<10) - sign(I2[k])*102)*qstep)>>16
             //.
             let i2k = i2[k] as isize;
-            let second_operand =
-                (((i2k << 10) - (i2k.signum() * 102)) * (qstep as isize)) >> 16;
+            let second_operand = (((i2k << 10) - (i2k.signum() * 102)) * (qstep as isize)) >> 16;
 
             res_q10[k] = (first_operand + second_operand) as i16;
         }
@@ -415,11 +396,7 @@ impl<'a> Decoder<'a> {
 /// percentile of a large training set).
 ///
 /// see [section-4.2.7.5](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4)
-fn normalize_lsf_stabilization(
-    nlsf_q15: &mut [i16],
-    d_lpc: isize,
-    bandwidth: Bandwidth,
-) {
+fn normalize_lsf_stabilization(nlsf_q15: &mut [i16], d_lpc: isize, bandwidth: Bandwidth) {
     // Let NDeltaMin_Q15[k] be the minimum required spacing for the current
     // audio bandwidth from Table 25.
     //
@@ -463,9 +440,8 @@ fn normalize_lsf_stabilization(
                 32768
             };
 
-            let spacing_value: isize = current_nlsf
-                - previous_nlsf
-                - (ndelta_min_q15[nlsf_index] as isize);
+            let spacing_value: isize =
+                current_nlsf - previous_nlsf - (ndelta_min_q15[nlsf_index] as isize);
             if spacing_value < i_value {
                 i = nlsf_index as isize;
                 i_value = spacing_value;
@@ -492,8 +468,7 @@ fn normalize_lsf_stabilization(
         //
         // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.4
         if i == d_lpc {
-            nlsf_q15[d_lpc as usize - 1] =
-                (32768 - ndelta_min_q15[d_lpc as usize]) as i16;
+            nlsf_q15[d_lpc as usize - 1] = (32768 - ndelta_min_q15[d_lpc as usize]) as i16;
 
             continue;
         }
@@ -524,20 +499,16 @@ fn normalize_lsf_stabilization(
         //     center_freq_Q15 = clamp(min_center_Q15[i],
         //                     (NLSF_Q15[i-1] + NLSF_Q15[i] + 1)>>1
         //                     max_center_Q15[i])
-        let center_freq_q15 = ((((nlsf_q15[i as usize - 1] as isize)
-            + (nlsf_q15[i as usize] as isize)
-            + 1)
-            >> 1) as i32)
-            .clamp(min_center_q15 as i32, max_center_q15 as i32)
-            as isize;
+        let center_freq_q15 =
+            ((((nlsf_q15[i as usize - 1] as isize) + (nlsf_q15[i as usize] as isize) + 1) >> 1)
+                as i32)
+                .clamp(min_center_q15 as i32, max_center_q15 as i32) as isize;
 
         //    NLSF_Q15[i-1] = center_freq_Q15 - (NDeltaMin_Q15[i]>>1)
         //    NLSF_Q15[i] = NLSF_Q15[i-1] + NDeltaMin_Q15[i]
-        nlsf_q15[i as usize - 1] = (center_freq_q15
-            - (ndelta_min_q15[i as usize] >> 1) as isize)
-            as i16;
-        nlsf_q15[i as usize] =
-            nlsf_q15[i as usize - 1] + (ndelta_min_q15[i as usize] as i16);
+        nlsf_q15[i as usize - 1] =
+            (center_freq_q15 - (ndelta_min_q15[i as usize] >> 1) as isize) as i16;
+        nlsf_q15[i as usize] = nlsf_q15[i as usize - 1] + (ndelta_min_q15[i as usize] as i16);
     }
 
     // After the 20th repetition of the above procedure, the following
@@ -569,8 +540,7 @@ fn normalize_lsf_stabilization(
             32768
         };
 
-        nlsf_q15[k] = nlsf_q15[k]
-            .min((next_nlsf - (ndelta_min_q15[k + 1] as isize)) as i16);
+        nlsf_q15[k] = nlsf_q15[k].min((next_nlsf - (ndelta_min_q15[k + 1] as isize)) as i16);
     }
 }
 
@@ -579,8 +549,7 @@ mod tests {
     use super::*;
 
     const TEST_SILK_FRAME: &[u8] = &[0x0B, 0xE4, 0xC1, 0x36, 0xEC, 0xC5, 0x80];
-    const TEST_Q_10: [i16; 16] =
-        [138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const TEST_Q_10: [i16; 16] = [138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
     #[test]
     fn determine_frame_type() {
@@ -596,8 +565,7 @@ mod tests {
             final_out_values: [0.; 306],
         };
 
-        let (signal_type, quantization_offset_type) =
-            decoder.determine_frame_type(false);
+        let (signal_type, quantization_offset_type) = decoder.determine_frame_type(false);
         assert_eq!(signal_type, FrameSignalType::Inactive);
         assert_eq!(quantization_offset_type, FrameQuantizationOffsetType::High);
     }
@@ -616,8 +584,7 @@ mod tests {
             final_out_values: [0.; 306],
         };
 
-        let quantizations =
-            decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
+        let quantizations = decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
         assert_eq!(quantizations, [210944., 112640., 96256., 96256.]);
     }
 
@@ -637,36 +604,33 @@ mod tests {
 
         assert_eq!(
             9,
-            decoder.normalize_line_spectral_frequency_stage_one(
-                false,
-                Bandwidth::Wide
-            )
+            decoder.normalize_line_spectral_frequency_stage_one(false, Bandwidth::Wide)
         );
     }
 
     #[test]
     fn test_normalize_lsf_stabilization() {
         let mut input = [
-            856, 2310, 3452, 4865, 4852, 7547, 9662, 11512, 13884, 15919,
-            18467, 20487, 23559, 25900, 28222, 30700,
+            856, 2310, 3452, 4865, 4852, 7547, 9662, 11512, 13884, 15919, 18467, 20487, 23559,
+            25900, 28222, 30700,
         ];
 
         let expected_out = [
-            856, 2310, 3452, 4858, 4861, 7547, 9662, 11512, 13884, 15919,
-            18467, 20487, 23559, 25900, 28222, 30700,
+            856, 2310, 3452, 4858, 4861, 7547, 9662, 11512, 13884, 15919, 18467, 20487, 23559,
+            25900, 28222, 30700,
         ];
 
         normalize_lsf_stabilization(&mut input, 16, Bandwidth::Wide);
         assert_eq!(&input, &expected_out);
 
         let mut input2 = [
-            1533, 1674, 2506, 4374, 6630, 9867, 10260, 10691, 14397, 16969,
-            19355, 21645, 25228, 26972, 30514, 30208,
+            1533, 1674, 2506, 4374, 6630, 9867, 10260, 10691, 14397, 16969, 19355, 21645, 25228,
+            26972, 30514, 30208,
         ];
 
         let expected_out2 = [
-            1533, 1674, 2506, 4374, 6630, 9867, 10260, 10691, 14397, 16969,
-            19355, 21645, 25228, 26972, 30360, 30363,
+            1533, 1674, 2506, 4374, 6630, 9867, 10260, 10691, 14397, 16969, 19355, 21645, 25228,
+            26972, 30360, 30363,
         ];
 
         normalize_lsf_stabilization(&mut input2, 16, Bandwidth::Wide);
@@ -687,8 +651,7 @@ mod tests {
             final_out_values: [0.; 306],
         };
 
-        let res_q10 = decoder
-            .normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
+        let res_q10 = decoder.normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
 
         assert_eq!(res_q10, ResQ10::Wide(TEST_Q_10));
     }

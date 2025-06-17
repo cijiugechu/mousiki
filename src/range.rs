@@ -98,10 +98,8 @@ impl<'a> RangeDecoder<'a> {
     fn normalize(&mut self) {
         while self.range_size <= MIN_RANGE_SIZE {
             self.range_size <<= 8;
-            self.high_and_coded_difference = ((self.high_and_coded_difference
-                << 8)
-                + (255 - self.get_bits(8)))
-                & 0x7FFFFFFF;
+            self.high_and_coded_difference =
+                ((self.high_and_coded_difference << 8) + (255 - self.get_bits(8))) & 0x7FFFFFFF;
         }
     }
 
@@ -169,8 +167,7 @@ impl<'a> RangeDecoder<'a> {
         let ICDFContext { total, dist_table } = icdf_ctx;
 
         let scale = self.range_size / total;
-        let symbol =
-            total - (self.high_and_coded_difference / scale + 1).min(total);
+        let symbol = total - (self.high_and_coded_difference / scale + 1).min(total);
         let k = dist_table
             .iter()
             .position(|v| (*v) as u32 > symbol)
@@ -224,8 +221,7 @@ mod tests {
         icdf!(256; 1, 4, 30, 101, 195, 245, 254, 256),
     ];
 
-    const SILK_GAIN_LOW_BITS: ICDFContext =
-        icdf!(256; 32, 64, 96, 128, 160, 192, 224, 256);
+    const SILK_GAIN_LOW_BITS: ICDFContext = icdf!(256; 32, 64, 96, 128, 160, 192, 224, 256);
 
     const SILK_GAIN_DELTA: ICDFContext = icdf!(
         256; 6, 11, 22, 53, 185, 206, 214, 218, 221, 223, 225, 227, 228, 229, 230, 231, 232, 233,
@@ -275,8 +271,7 @@ mod tests {
         icdf!(256; 1, 8, 29, 79, 156, 237, 254, 255, 256),
     ];
 
-    const SILK_LSF_INTERPOLATION_OFFSET: ICDFContext =
-        icdf!(256; 13, 35, 64, 75, 256);
+    const SILK_LSF_INTERPOLATION_OFFSET: ICDFContext = icdf!(256; 13, 35, 64, 75, 256);
 
     const SILK_LCG_SEED: ICDFContext = icdf!(256; 64, 128, 192, 256);
 
@@ -323,16 +318,12 @@ mod tests {
 
     #[test]
     fn decoder() {
-        let mut decoder =
-            RangeDecoder::init(&[0x0b, 0xe4, 0xc1, 0x36, 0xec, 0xc5, 0x80]);
+        let mut decoder = RangeDecoder::init(&[0x0b, 0xe4, 0xc1, 0x36, 0xec, 0xc5, 0x80]);
 
         assert_eq!(decoder.decode_symbol_logp(0x1), 0);
         assert_eq!(decoder.decode_symbol_logp(0x1), 0);
 
-        assert_eq!(
-            decoder.decode_symbol_with_icdf(SILK_FRAME_TYPE_INACTIVE),
-            1
-        );
+        assert_eq!(decoder.decode_symbol_with_icdf(SILK_FRAME_TYPE_INACTIVE), 1);
 
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_HIGH_BITS[0]), 0);
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_LOW_BITS), 6);
