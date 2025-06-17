@@ -1,10 +1,12 @@
 use super::icdf::{FRAME_TYPE_VAD_ACTIVE, FRAME_TYPE_VAD_INACTIVE};
 use super::{FrameQuantizationOffsetType, FrameSignalType};
+use crate::math::ilog;
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::codebook::{
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_NARROWBAND_AND_MEDIUMBAND,
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_WIDEBAND,
+    NORMALIZED_LSF_STAGE_ONE_NARROWBAND_OR_MEDIUMBAND, NORMALIZED_LSF_STAGE_ONE_WIDEBAND,
     NORMALIZED_LSF_STAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND,
     NORMALIZED_LSF_STAGE_TWO_INDEX_WIDEBAND,
     PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
@@ -21,6 +23,14 @@ use crate::silk::icdf::{
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
     NORMALIZED_LSF_STAGE_2_INDEX, NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
 };
+use core::ops::{Deref, DerefMut};
+
+const fn get_max_d_lpc() -> usize {
+    const WIDE_LEN: usize = NORMALIZED_LSF_STAGE_TWO_INDEX_WIDEBAND[0].len();
+    WIDE_LEN
+}
+
+const MAX_D_LPC: usize = get_max_d_lpc();
 
 #[derive(Debug)]
 pub struct DecoderBuilder {
@@ -69,6 +79,26 @@ const SUBFRAME_COUNT: usize = 4;
 pub enum ResQ10 {
     Wide([i16; 16]),
     NarrowOrMedium([i16; 10]),
+}
+
+impl Deref for ResQ10 {
+    type Target = [i16];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Wide(arr) => arr,
+            Self::NarrowOrMedium(arr) => arr,
+        }
+    }
+}
+
+impl DerefMut for ResQ10 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Wide(arr) => arr,
+            Self::NarrowOrMedium(arr) => arr,
+        }
+    }
 }
 
 impl ResQ10 {
@@ -289,7 +319,7 @@ impl<'a> Decoder<'a> {
             NORMALIZED_LSF_STAGE_TWO_INDEX_NARROWBAND_OR_MEDIUMBAND
         };
 
-        let mut i2 = [0i8; 16];
+        let mut i2 = [0i8; MAX_D_LPC];
         let actual_i2_len = codebook[0].len();
         for i in 0..actual_i2_len {
             // the decoder reads a symbol using the PDF corresponding
@@ -544,12 +574,101 @@ fn normalize_lsf_stabilization(nlsf_q15: &mut [i16], d_lpc: isize, bandwidth: Ba
     }
 }
 
+/// Once the stage-1 index I1 and the stage-2 residual res_Q10[] have
+/// been decoded, the final normalized LSF coefficients can be
+/// reconstructed.
+///
+/// see [section-4.2.7.5.3](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.3)
+fn normalize_line_spectral_frequency_coefficients(
+    d_lpc: usize,
+    nlsf_q15: &mut [i16],
+    bandwidth: Bandwidth,
+    res_q10: &[i16],
+    i1: u32,
+) {
+    let mut w2_q18 = [0usize; MAX_D_LPC];
+    let mut w_q9 = [0i16; MAX_D_LPC];
+
+    let cb1_q8 = if bandwidth == Bandwidth::Wide {
+        NORMALIZED_LSF_STAGE_ONE_WIDEBAND
+    } else {
+        NORMALIZED_LSF_STAGE_ONE_NARROWBAND_OR_MEDIUMBAND
+    };
+
+    // Let cb1_Q8[k] be the k'th entry of the stage-1 codebook vector from Table 23 or Table 24.
+    // Then, for 0 <= k < d_LPC, the following expression computes the
+    // square of the weight as a Q18 value:
+    //
+    //          w2_Q18[k] = (1024/(cb1_Q8[k] - cb1_Q8[k-1])
+    //                       + 1024/(cb1_Q8[k+1] - cb1_Q8[k])) << 16
+    //
+    // where cb1_Q8[-1] = 0 and cb1_Q8[d_LPC] = 256, and the division is
+    // integer division.  This is reduced to an unsquared, Q9 value using
+    // the following square-root approximation:
+    //
+    // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.3
+    for k in 0..d_lpc {
+        let mut k_minus_one = 0usize;
+        let mut k_plus_one = 256usize;
+        if k != 0 {
+            k_minus_one = cb1_q8[i1 as usize][k - 1] as usize;
+        }
+
+        if k + 1 != d_lpc {
+            k_plus_one = cb1_q8[i1 as usize][k + 1] as usize;
+        }
+
+        w2_q18[k] = (1024 / (cb1_q8[i1 as usize][k] as usize - k_minus_one)
+            + 1024 / (k_plus_one - cb1_q8[i1 as usize][k] as usize))
+            << 16;
+
+        // This is reduced to an unsquared, Q9 value using
+        // the following square-root approximation:
+        //
+        //     i = ilog(w2_Q18[k])
+        //     f = (w2_Q18[k]>>(i-8)) & 127
+        //     y = ((i&1) ? 32768 : 46214) >> ((32-i)>>1)
+        //     w_Q9[k] = y + ((213*f*y)>>16)
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.3
+        let i = ilog((w2_q18[k]) as isize);
+        let f = ((w2_q18[k] >> (i - 8)) & 127) as isize;
+
+        let mut y = 46214;
+        if (i & 1) != 0 {
+            y = 32768;
+        }
+
+        y >>= (32 - i) >> 1;
+        w_q9[k] = (y + ((213 * f * y) >> 16)) as i16;
+
+        // Given the stage-1 codebook entry cb1_Q8[], the stage-2 residual
+        // res_Q10[], and their corresponding weights, w_Q9[], the reconstructed
+        // normalized LSF coefficients are
+        //
+        //    NLSF_Q15[k] = clamp(0,
+        //               (cb1_Q8[k]<<7) + (res_Q10[k]<<14)/w_Q9[k], 32767)
+        //
+        // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.3
+        let cb1_val = (cb1_q8[i1 as usize][k] as i32) << 7;
+        let res_val = (res_q10[k] as i32) << 14;
+        let w_val = w_q9[k] as i32;
+        let result = cb1_val + res_val / w_val;
+
+        nlsf_q15[k] = result.clamp(0, 32767) as i16;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const TEST_SILK_FRAME: &[u8] = &[0x0B, 0xE4, 0xC1, 0x36, 0xEC, 0xC5, 0x80];
-    const TEST_Q_10: [i16; 16] = [138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const TEST_RES_Q_10: [i16; 16] = [138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const TEST_NLSF_Q_15: [i16; 16] = [
+        2132, 3584, 5504, 7424, 9472, 11392, 13440, 15360, 17280, 19200, 21120, 23040, 25088,
+        27008, 28928, 30848,
+    ];
 
     #[test]
     fn determine_frame_type() {
@@ -653,6 +772,19 @@ mod tests {
 
         let res_q10 = decoder.normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
 
-        assert_eq!(res_q10, ResQ10::Wide(TEST_Q_10));
+        assert_eq!(res_q10, ResQ10::Wide(TEST_RES_Q_10));
+    }
+
+    #[test]
+    fn test_normalize_line_spectral_frequency_coefficients() {
+        let mut input_nlsf_q15 = [0i16; 16];
+        normalize_line_spectral_frequency_coefficients(
+            16,
+            &mut input_nlsf_q15,
+            Bandwidth::Wide,
+            &TEST_RES_Q_10,
+            9,
+        );
+        assert_eq!(&input_nlsf_q15, &TEST_NLSF_Q_15);
     }
 }
