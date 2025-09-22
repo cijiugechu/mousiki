@@ -19,13 +19,13 @@ use crate::silk::codebook::{
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
-    INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED,
+    INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, NORMALIZED_LSF_INTERPOLATION_INDEX,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
     NORMALIZED_LSF_STAGE_2_INDEX, NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
 };
-use nomarlize::{MAX_D_LPC, ResQ10};
+use nomarlize::{MAX_D_LPC, NlsfQ15, ResQ10};
 
 #[derive(Debug)]
 pub struct DecoderBuilder {
@@ -47,6 +47,8 @@ impl DecoderBuilder {
             have_decoded: false,
             previous_log_gain: 0,
             final_out_values: self.final_out_values,
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
         }
     }
 }
@@ -66,6 +68,8 @@ pub struct Decoder<'a> {
     have_decoded: bool,
     previous_log_gain: i32,
     final_out_values: [f32; 306],
+    n0_q15: [i16; MAX_D_LPC],
+    n0_q15_len: usize,
 }
 
 const SUBFRAME_COUNT: usize = 4;
@@ -378,6 +382,31 @@ impl<'a> Decoder<'a> {
             ResQ10::Wide(res_q10)
         }
     }
+    /// https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.5
+    pub fn normalize_lsf_interpolation(&mut self, n2_q15: &[i16]) -> (Option<NlsfQ15>, i16) {
+        let w_q2 = self
+            .range_decoder
+            .decode_symbol_with_icdf(NORMALIZED_LSF_INTERPOLATION_INDEX) as i16;
+
+        if w_q2 == 4 || !self.have_decoded {
+            return (None, w_q2);
+        }
+
+        debug_assert!(n2_q15.len() <= MAX_D_LPC);
+        debug_assert!(self.n0_q15_len >= n2_q15.len());
+
+        let mut n1_q15 = NlsfQ15::new(n2_q15.len());
+        let w_q2_i32 = i32::from(w_q2);
+
+        for (idx, n1_value) in n1_q15.as_mut_slice().iter_mut().enumerate() {
+            let prev = self.n0_q15[idx];
+            let diff = i32::from(n2_q15[idx]) - i32::from(prev);
+            let interpolated = i32::from(prev) + ((w_q2_i32 * diff) >> 2);
+            *n1_value = interpolated as i16;
+        }
+
+        (Some(n1_q15), w_q2)
+    }
 }
 
 /// The normalized LSF stabilization procedure ensures that
@@ -642,6 +671,8 @@ mod tests {
             have_decoded: false,
             previous_log_gain: 0,
             final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
         };
 
         let (signal_type, quantization_offset_type) = decoder.determine_frame_type(false);
@@ -661,6 +692,8 @@ mod tests {
             have_decoded: false,
             previous_log_gain: 0,
             final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
         };
 
         let quantizations = decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
@@ -679,6 +712,8 @@ mod tests {
             have_decoded: false,
             previous_log_gain: 0,
             final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
         };
 
         assert_eq!(
@@ -728,11 +763,72 @@ mod tests {
             have_decoded: false,
             previous_log_gain: 0,
             final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
         };
 
         let res_q10 = decoder.normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
 
         assert_eq!(res_q10, ResQ10::Wide(TEST_RES_Q_10));
+    }
+
+    #[test]
+    fn normalize_lsf_interpolation_wq2_equals_four() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_SILK_FRAME,
+                bits_read: 55,
+                range_size: 493_249_168,
+                high_and_coded_difference: 174_371_199,
+            },
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let (n1_q15, w_q2) = decoder.normalize_lsf_interpolation(&[]);
+        assert!(n1_q15.is_none());
+        assert_eq!(w_q2, 4);
+    }
+
+    #[test]
+    fn normalize_lsf_interpolation_wq2_equals_one() {
+        let frame: &[u8] = &[
+            0xac, 0xbd, 0xa9, 0xf7, 0x26, 0x24, 0x5a, 0xa4, 0x00, 0x37, 0xbf, 0x9c, 0xde, 0x0e,
+            0xcf, 0x94, 0x64, 0xaa, 0xf9, 0x87, 0xd0, 0x79, 0x19, 0xa8, 0x21, 0xc0,
+        ];
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: frame,
+                bits_read: 65,
+                range_size: 1_231_761_776,
+                high_and_coded_difference: 1_068_195_183,
+            },
+            have_decoded: true,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 16,
+        };
+        decoder.n0_q15[..16].copy_from_slice(&[
+            518, 380, 4444, 6982, 8752, 10510, 12381, 14102, 15892, 17651, 19340, 21888, 23936,
+            25984, 28160, 30208,
+        ]);
+
+        let n2_q15 = [
+            215, 1447, 3712, 5120, 7168, 9088, 11264, 13184, 15232, 17536, 19712, 21888, 24192,
+            26240, 28416, 30336,
+        ];
+        let expected = NlsfQ15::from_slice(&[
+            442, 646, 4261, 6516, 8356, 10154, 12101, 13872, 15727, 17622, 19433, 21888, 24000,
+            26048, 28224, 30240,
+        ]);
+
+        let (actual, w_q2) = decoder.normalize_lsf_interpolation(&n2_q15);
+        assert_eq!(w_q2, 1);
+        assert_eq!(actual, Some(expected));
     }
 
     #[test]
