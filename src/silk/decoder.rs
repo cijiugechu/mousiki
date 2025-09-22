@@ -6,6 +6,8 @@ use crate::math::ilog;
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::codebook::{
+    CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_0, CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_1,
+    CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_2,
     LSF_ORDERING_FOR_POLYNOMIAL_EVALUATION_NARROWBAND_AND_MEDIUMBAND,
     LSF_ORDERING_FOR_POLYNOMIAL_EVALUATION_WIDEBAND,
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_NARROWBAND_AND_MEDIUMBAND,
@@ -22,11 +24,12 @@ use crate::silk::codebook::{
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
-    INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, NORMALIZED_LSF_INTERPOLATION_INDEX,
+    INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, LTP_FILTER_INDEX0, LTP_FILTER_INDEX1,
+    LTP_FILTER_INDEX2, NORMALIZED_LSF_INTERPOLATION_INDEX,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
-    NORMALIZED_LSF_STAGE_2_INDEX, NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
+    NORMALIZED_LSF_STAGE_2_INDEX, NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION, PERIODICITY_INDEX,
     PRIMARY_PITCH_LAG_HIGH_PART, PRIMARY_PITCH_LAG_LOW_PART_MEDIUMBAND,
     PRIMARY_PITCH_LAG_LOW_PART_NARROWBAND, PRIMARY_PITCH_LAG_LOW_PART_WIDEBAND,
     SUBFRAME_PITCH_CONTOUR_MEDIUMBAND_OR_WIDEBAND20_MS, SUBFRAME_PITCH_CONTOUR_NARROWBAND20_MS,
@@ -514,6 +517,44 @@ impl<'a> Decoder<'a> {
             lag_max,
             pitch_lags,
         }))
+    }
+
+    /// See [section-4.2.7.6.2](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.2)
+    pub fn decode_ltp_filter_coefficients(
+        &mut self,
+        signal_type: FrameSignalType,
+    ) -> Option<[[i8; 5]; SUBFRAME_COUNT]> {
+        if signal_type != FrameSignalType::Voiced {
+            return None;
+        }
+
+        let periodicity_index = self
+            .range_decoder
+            .decode_symbol_with_icdf(PERIODICITY_INDEX) as usize;
+        debug_assert!(periodicity_index < 3);
+        if periodicity_index > 2 {
+            return None;
+        }
+
+        let filter_icdf = match periodicity_index {
+            0 => LTP_FILTER_INDEX0,
+            1 => LTP_FILTER_INDEX1,
+            _ => LTP_FILTER_INDEX2,
+        };
+
+        let codebook: &'static [[i8; 5]] = match periodicity_index {
+            0 => &CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_0,
+            1 => &CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_1,
+            _ => &CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_2,
+        };
+
+        let mut coefficients = [[0i8; 5]; SUBFRAME_COUNT];
+        for coeff in coefficients.iter_mut() {
+            let filter_index = self.range_decoder.decode_symbol_with_icdf(filter_icdf) as usize;
+            *coeff = codebook[filter_index];
+        }
+
+        Some(coefficients)
     }
 
     #[allow(dead_code)]
@@ -1060,6 +1101,38 @@ mod tests {
         let info = result.expect("expected voiced frame pitch lags");
         assert_eq!(info.lag_max, 288);
         assert_eq!(info.pitch_lags, [206, 206, 206, 206]);
+    }
+
+    #[test]
+    fn decode_ltp_filter_coefficients_returns_expected_taps() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_PITCH_LAG_FRAME,
+                bits_read: 89,
+                range_size: 253_853_952,
+                high_and_coded_difference: 138_203_876,
+            },
+            have_decoded: false,
+            is_previous_frame_voiced: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let coeffs = decoder
+            .decode_ltp_filter_coefficients(FrameSignalType::Voiced)
+            .expect("voiced frame should decode LTP filter coefficients");
+
+        assert_eq!(
+            coeffs,
+            [
+                [1, 1, 8, 1, 1],
+                [2, 0, 77, 11, 9],
+                [1, 1, 8, 1, 1],
+                [-1, 36, 64, 27, -6],
+            ]
+        );
     }
 
     #[test]
