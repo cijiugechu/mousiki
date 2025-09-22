@@ -22,7 +22,7 @@ use crate::silk::codebook::{
     SUBFRAME_PITCH_COUNTER_MEDIUMBAND_OR_WIDEBAND20_MS, SUBFRAME_PITCH_COUNTER_NARROWBAND20_MS,
 };
 use crate::silk::icdf::{
-    DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
+    self, DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, LINEAR_CONGRUENTIAL_GENERATOR_SEED,
     LTP_FILTER_INDEX0, LTP_FILTER_INDEX1, LTP_FILTER_INDEX2, LTP_SCALING_PARAMETER,
@@ -88,11 +88,49 @@ pub struct Decoder<'a> {
 }
 
 const SUBFRAME_COUNT: usize = 4;
+const MAX_SHELL_BLOCKS: usize = 20;
+const PULSECOUNT_LARGEST_PARTITION_SIZE: usize = 16;
+const MAX_EXCITATION_SAMPLES: usize = MAX_SHELL_BLOCKS * PULSECOUNT_LARGEST_PARTITION_SIZE;
+const MAX_LSB_COUNT: u8 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PitchLagInfo {
     pub lag_max: u32,
     pub pitch_lags: [i16; SUBFRAME_COUNT],
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellBlockCounts {
+    pub block_count: usize,
+    pub pulse_counts: [u8; MAX_SHELL_BLOCKS],
+    pub lsb_counts: [u8; MAX_SHELL_BLOCKS],
+}
+
+impl ShellBlockCounts {
+    pub fn new(block_count: usize) -> Self {
+        debug_assert!(block_count <= MAX_SHELL_BLOCKS);
+        Self {
+            block_count,
+            pulse_counts: [0; MAX_SHELL_BLOCKS],
+            lsb_counts: [0; MAX_SHELL_BLOCKS],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExcitationQ23 {
+    pub len: usize,
+    pub values: [i32; MAX_EXCITATION_SAMPLES],
+}
+
+impl ExcitationQ23 {
+    pub fn new(len: usize) -> Self {
+        debug_assert!(len <= MAX_EXCITATION_SAMPLES);
+        Self {
+            len,
+            values: [0; MAX_EXCITATION_SAMPLES],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -577,6 +615,389 @@ impl<'a> Decoder<'a> {
     pub fn decode_linear_congruential_generator_seed(&mut self) -> u32 {
         self.range_decoder
             .decode_symbol_with_icdf(LINEAR_CONGRUENTIAL_GENERATOR_SEED)
+    }
+
+    /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8
+    pub fn decode_shell_blocks(&self, nanoseconds: u32, bandwidth: Bandwidth) -> usize {
+        match (bandwidth, nanoseconds) {
+            (Bandwidth::Narrow, 10_000_000) => 5,
+            (Bandwidth::Medium, 10_000_000) => 8,
+            (Bandwidth::Wide, 10_000_000) | (Bandwidth::Narrow, 20_000_000) => 10,
+            (Bandwidth::Medium, 20_000_000) => 15,
+            (Bandwidth::Wide, 20_000_000) => 20,
+            _ => 0,
+        }
+    }
+
+    /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8.1
+    pub fn decode_rate_level(&mut self, voice_activity_detected: bool) -> u32 {
+        if voice_activity_detected {
+            self.range_decoder
+                .decode_symbol_with_icdf(icdf::RATE_LEVEL_VOICED)
+        } else {
+            self.range_decoder
+                .decode_symbol_with_icdf(icdf::RATE_LEVEL_UNVOICED)
+        }
+    }
+
+    /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8.2
+    pub fn decode_pulse_and_lsb_counts(
+        &mut self,
+        shell_blocks: usize,
+        rate_level: u32,
+    ) -> ShellBlockCounts {
+        debug_assert!(shell_blocks <= MAX_SHELL_BLOCKS);
+        let mut counts = ShellBlockCounts::new(shell_blocks);
+
+        let rate_index = rate_level as usize;
+        debug_assert!(rate_index < icdf::PULSE_COUNT.len());
+        let rate_index = rate_index.min(icdf::PULSE_COUNT.len() - 1);
+
+        for block_idx in 0..shell_blocks {
+            let mut pulse_count =
+                self.range_decoder
+                    .decode_symbol_with_icdf(icdf::PULSE_COUNT[rate_index]) as u8;
+
+            if pulse_count == 17 {
+                let mut lsb_count = 0u8;
+                while pulse_count == 17 && lsb_count < MAX_LSB_COUNT {
+                    pulse_count = self
+                        .range_decoder
+                        .decode_symbol_with_icdf(icdf::PULSE_COUNT[9])
+                        as u8;
+                    lsb_count += 1;
+                }
+                counts.lsb_counts[block_idx] = lsb_count;
+
+                if lsb_count == MAX_LSB_COUNT {
+                    pulse_count = self
+                        .range_decoder
+                        .decode_symbol_with_icdf(icdf::PULSE_COUNT[10])
+                        as u8;
+                }
+            }
+
+            counts.pulse_counts[block_idx] = pulse_count;
+        }
+
+        counts
+    }
+
+    /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8
+    pub fn decode_excitation(
+        &mut self,
+        signal_type: FrameSignalType,
+        quantization_offset_type: FrameQuantizationOffsetType,
+        mut seed: u32,
+        counts: &ShellBlockCounts,
+    ) -> ExcitationQ23 {
+        let len = counts.block_count * PULSECOUNT_LARGEST_PARTITION_SIZE;
+
+        let offset_q23 = match (signal_type, quantization_offset_type) {
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low)
+            | (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low) => 25,
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High)
+            | (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High) => 60,
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low) => 8,
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High) => 25,
+        };
+
+        let mut e_raw = [0i32; MAX_EXCITATION_SAMPLES];
+        self.decode_pulse_location_into(counts, &mut e_raw, len);
+        self.decode_excitation_lsb_into(&mut e_raw, counts, len);
+        self.decode_excitation_sign_into(
+            &mut e_raw,
+            signal_type,
+            quantization_offset_type,
+            counts,
+            len,
+        );
+
+        let mut excitation = ExcitationQ23::new(len);
+        for idx in 0..len {
+            let raw = e_raw[idx];
+            let mut value = (raw << 8) - Self::sign(raw) * 20 + offset_q23;
+            seed = seed.wrapping_mul(196_314_165).wrapping_add(907_633_515);
+            if seed & 0x8000_0000 != 0 {
+                value = -value;
+            }
+            seed = seed.wrapping_add(raw as u32);
+            excitation.values[idx] = value;
+        }
+
+        excitation
+    }
+
+    fn decode_pulse_location_into(
+        &mut self,
+        counts: &ShellBlockCounts,
+        e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
+        len: usize,
+    ) {
+        for sample in e_raw.iter_mut().take(len) {
+            *sample = 0;
+        }
+
+        for block_idx in 0..counts.block_count {
+            let pulses = counts.pulse_counts[block_idx];
+            if pulses == 0 {
+                continue;
+            }
+
+            let base_index = block_idx * PULSECOUNT_LARGEST_PARTITION_SIZE;
+            let mut e_index = base_index;
+
+            let mut partition16 = [0u8; 2];
+            self.partition_pulse_count(
+                &icdf::PULSE_COUNT_SPLIT16_SAMPLE_PARTITIONS,
+                pulses,
+                &mut partition16,
+            );
+
+            for &count8 in &partition16 {
+                let mut partition8 = [0u8; 2];
+                self.partition_pulse_count(
+                    &icdf::PULSE_COUNT_SPLIT8_SAMPLE_PARTITIONS,
+                    count8,
+                    &mut partition8,
+                );
+
+                for &count4 in &partition8 {
+                    let mut partition4 = [0u8; 2];
+                    self.partition_pulse_count(
+                        &icdf::PULSE_COUNT_SPLIT4_SAMPLE_PARTITIONS,
+                        count4,
+                        &mut partition4,
+                    );
+
+                    for &count2 in &partition4 {
+                        let mut partition2 = [0u8; 2];
+                        self.partition_pulse_count(
+                            &icdf::PULSE_COUNT_SPLIT2_SAMPLE_PARTITIONS,
+                            count2,
+                            &mut partition2,
+                        );
+
+                        e_raw[e_index] = i32::from(partition2[0]);
+                        e_index += 1;
+                        e_raw[e_index] = i32::from(partition2[1]);
+                        e_index += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    fn decode_excitation_lsb_into(
+        &mut self,
+        e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
+        counts: &ShellBlockCounts,
+        len: usize,
+    ) {
+        for sample_idx in 0..len {
+            let block_idx = sample_idx / PULSECOUNT_LARGEST_PARTITION_SIZE;
+            let lsb_count = counts.lsb_counts[block_idx];
+            for _ in 0..lsb_count {
+                let bit = self
+                    .range_decoder
+                    .decode_symbol_with_icdf(icdf::EXCITATION_LSB);
+                e_raw[sample_idx] = (e_raw[sample_idx] << 1) | bit as i32;
+            }
+        }
+    }
+
+    fn decode_excitation_sign_into(
+        &mut self,
+        e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
+        signal_type: FrameSignalType,
+        quantization_offset_type: FrameQuantizationOffsetType,
+        counts: &ShellBlockCounts,
+        len: usize,
+    ) {
+        for sample_idx in 0..len {
+            if e_raw[sample_idx] == 0 {
+                continue;
+            }
+
+            let block_idx = sample_idx / PULSECOUNT_LARGEST_PARTITION_SIZE;
+            let pulse_count = counts.pulse_counts[block_idx];
+            let icdf_ctx = Self::select_excitation_sign_icdf(
+                signal_type,
+                quantization_offset_type,
+                pulse_count,
+            );
+
+            if self.range_decoder.decode_symbol_with_icdf(icdf_ctx) == 0 {
+                e_raw[sample_idx] = -e_raw[sample_idx];
+            }
+        }
+    }
+
+    fn partition_pulse_count(
+        &mut self,
+        contexts: &[icdf::ICDFContext; 16],
+        block: u8,
+        halves: &mut [u8; 2],
+    ) {
+        if block == 0 {
+            halves[0] = 0;
+            halves[1] = 0;
+            return;
+        }
+
+        let index = (block as usize).saturating_sub(1).min(contexts.len() - 1);
+        let left = self.range_decoder.decode_symbol_with_icdf(contexts[index]) as u8;
+        halves[0] = left;
+        halves[1] = block.saturating_sub(left);
+    }
+
+    fn select_excitation_sign_icdf(
+        signal_type: FrameSignalType,
+        quantization_offset_type: FrameQuantizationOffsetType,
+        pulse_count: u8,
+    ) -> icdf::ICDFContext {
+        let bucket = if pulse_count > 6 {
+            6
+        } else {
+            pulse_count as usize
+        };
+
+        match (signal_type, quantization_offset_type, bucket) {
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 0) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION0_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 1) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION1_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 2) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION2_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 3) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION3_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 4) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION4_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 5) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION5_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, _) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION6_PLUS_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 0) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION0_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 1) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION1_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 2) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION2_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 3) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION3_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 4) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION4_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 5) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION5_PULSE
+            }
+            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, _) => {
+                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 0) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION0_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 1) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION1_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 2) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION2_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 3) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION3_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 4) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION4_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 5) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION5_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, _) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION6_PLUS_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 0) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION0_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 1) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION1_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 2) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION2_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 3) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION3_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 4) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION4_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 5) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION5_PULSE
+            }
+            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, _) => {
+                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 0) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION0_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 1) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION1_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 2) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION2_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 3) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION3_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 4) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION4_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 5) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION5_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, _) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION6_PLUS_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 0) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION0_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 1) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION1_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 2) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION2_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 3) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION3_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 4) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION4_PULSE
+            }
+            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 5) => {
+                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION5_PULSE
+            }
+            _ => icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE,
+        }
+    }
+
+    fn sign(value: i32) -> i32 {
+        if value < 0 {
+            -1
+        } else if value == 0 {
+            0
+        } else {
+            1
+        }
     }
 
     #[allow(dead_code)]
@@ -1217,6 +1638,95 @@ mod tests {
 
         let seed = decoder.decode_linear_congruential_generator_seed();
         assert_eq!(seed, 0);
+    }
+
+    #[test]
+    fn decode_shell_blocks_matches_reference() {
+        let decoder = Decoder {
+            range_decoder: RangeDecoder::init(&[]),
+            have_decoded: false,
+            is_previous_frame_voiced: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        assert_eq!(
+            decoder.decode_shell_blocks(10_000_000, Bandwidth::Narrow),
+            5
+        );
+        assert_eq!(
+            decoder.decode_shell_blocks(10_000_000, Bandwidth::Medium),
+            8
+        );
+        assert_eq!(decoder.decode_shell_blocks(10_000_000, Bandwidth::Wide), 10);
+        assert_eq!(
+            decoder.decode_shell_blocks(20_000_000, Bandwidth::Narrow),
+            10
+        );
+        assert_eq!(
+            decoder.decode_shell_blocks(20_000_000, Bandwidth::Medium),
+            15
+        );
+        assert_eq!(decoder.decode_shell_blocks(20_000_000, Bandwidth::Wide), 20);
+    }
+
+    #[test]
+    fn decode_excitation_matches_go_fixture() {
+        const EXPECTED: &[i32] = &[
+            25, -25, -25, -25, 25, 25, -25, 25, 25, -25, 25, -25, -25, -25, 25, 25, -25, 25, 25,
+            25, 25, -211, -25, -25, 25, -25, 25, -25, 25, -25, -25, -25, 25, 25, -25, -25, 261,
+            517, -25, 25, -25, -25, -25, -25, -25, -25, 25, -25, -25, 25, -25, 25, -25, 25, 25, 25,
+            25, -25, 25, -25, 25, 25, 25, 25, -25, 25, 25, 25, 25, -25, -25, -25, -25, -25, -25,
+            -25, 25, 25, -25, 25, 211, 25, -25, -25, 25, 211, 25, 25, 25, -25, 25, 25, -25, -25,
+            -25, 25, 25, 25, 25, -25, 25, 25, -25, 25, 25, 25, 25, 25, -25, -25, 25, -25, -25, 25,
+            25, -25, 25, 25, 25, -25, -25, -25, -25, -25, -25, 25, 25, 25, 25, 25, -25, 25, -25,
+            -25, 25, 25, 25, 25, 25, 25, 25, -25, 25, -211, 25, -25, -25, 25, 25, -25, -25, -25,
+            -25, -25, -25, -25, 25, 25, -25, -25, 25, 25, -25, 25, -25, -25, -25, 25, 25, -25, 25,
+            -25, -211, -25, 25, 25, 25, -25, -25, -25, -25, 25, 25, -25, -25, 25, -25, -25, 25, 25,
+            25, -25, -25, -25, -25, -25, 25, 25, -25, -211, 25, -25, 25, 25, -25, -25, 25, -25, 25,
+            -25, 25, 25, -25, -211, -25, 25, 25, -25, 25, 25, -25, -211, -25, 25, 25, 25, -25, -25,
+            -25, -25, 25, -211, 25, 25, 25, 25, 25, 25, -25, -25, 25, -25, 517, 517, -467, -25, 25,
+            25, -25, -25, 25, -25, 25, 25, 25, -25, -25, -25, 25, 25, -25, -25, 25, -25, 25, -25,
+            25, -25, 25, -25, -25, -25, 25, 25, -25, -25, 211, 25, 25, 25, 25, -25, -25, 25, -25,
+            -25, -25, -25, 211, -25, 25, -25, -25, 25, -25, -25, 25, -25, 25, -25, 25, 25, -25, 25,
+            -25, 25, 25, 25, 25, -25, -25, -25, 25, -25, 25, 25, -25, -25, -25, 25,
+        ];
+
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_LCG_FRAME,
+                bits_read: 71,
+                range_size: 851_775_140,
+                high_and_coded_difference: 846_837_397,
+            },
+            have_decoded: false,
+            is_previous_frame_voiced: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let seed = decoder.decode_linear_congruential_generator_seed();
+        let shell_blocks = decoder.decode_shell_blocks(20_000_000, Bandwidth::Wide);
+        assert_eq!(shell_blocks, 20);
+
+        let rate_level = decoder.decode_rate_level(false);
+        let counts = decoder.decode_pulse_and_lsb_counts(shell_blocks, rate_level);
+        assert_eq!(counts.block_count, shell_blocks);
+
+        let excitation = decoder.decode_excitation(
+            FrameSignalType::Unvoiced,
+            FrameQuantizationOffsetType::Low,
+            seed,
+            &counts,
+        );
+
+        assert_eq!(EXPECTED.len(), 320);
+        assert_eq!(excitation.len, EXPECTED.len());
+        assert_eq!(&excitation.values[..excitation.len], EXPECTED);
     }
 
     #[test]
