@@ -25,7 +25,7 @@ use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, LTP_FILTER_INDEX0, LTP_FILTER_INDEX1,
-    LTP_FILTER_INDEX2, NORMALIZED_LSF_INTERPOLATION_INDEX,
+    LTP_FILTER_INDEX2, LTP_SCALING_PARAMETER, NORMALIZED_LSF_INTERPOLATION_INDEX,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
@@ -555,6 +555,21 @@ impl<'a> Decoder<'a> {
         }
 
         Some(coefficients)
+    }
+
+    /// See [section-4.2.7.6.3](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.3)
+    pub fn decode_ltp_scaling_parameter(&mut self, signal_type: FrameSignalType) -> f32 {
+        const SCALE_FACTORS_Q14: [f32; 3] = [15_565.0, 12_288.0, 8_192.0];
+
+        if signal_type != FrameSignalType::Voiced {
+            return SCALE_FACTORS_Q14[0];
+        }
+
+        let index = self
+            .range_decoder
+            .decode_symbol_with_icdf(LTP_SCALING_PARAMETER) as usize;
+
+        SCALE_FACTORS_Q14.get(index).copied().unwrap_or(0.0)
     }
 
     #[allow(dead_code)]
@@ -1133,6 +1148,43 @@ mod tests {
                 [-1, 36, 64, 27, -6],
             ]
         );
+    }
+
+    #[test]
+    fn decode_ltp_scaling_parameter_returns_default_for_unvoiced_frames() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder::init(&[]),
+            have_decoded: false,
+            is_previous_frame_voiced: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Unvoiced);
+        assert_eq!(scale, 15_565.0);
+    }
+
+    #[test]
+    fn decode_ltp_scaling_parameter_decodes_voiced_frames() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_PITCH_LAG_FRAME,
+                bits_read: 105,
+                range_size: 160_412_192,
+                high_and_coded_difference: 164_623_240,
+            },
+            have_decoded: false,
+            is_previous_frame_voiced: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Voiced);
+        assert_eq!(scale, 15_565.0);
     }
 
     #[test]
