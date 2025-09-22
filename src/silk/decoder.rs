@@ -24,8 +24,9 @@ use crate::silk::codebook::{
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
-    INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, LTP_FILTER_INDEX0, LTP_FILTER_INDEX1,
-    LTP_FILTER_INDEX2, LTP_SCALING_PARAMETER, NORMALIZED_LSF_INTERPOLATION_INDEX,
+    INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED, LINEAR_CONGRUENTIAL_GENERATOR_SEED,
+    LTP_FILTER_INDEX0, LTP_FILTER_INDEX1, LTP_FILTER_INDEX2, LTP_SCALING_PARAMETER,
+    NORMALIZED_LSF_INTERPOLATION_INDEX,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
@@ -572,6 +573,12 @@ impl<'a> Decoder<'a> {
         SCALE_FACTORS_Q14.get(index).copied().unwrap_or(0.0)
     }
 
+    /// See [section-4.2.7.7](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.7)
+    pub fn decode_linear_congruential_generator_seed(&mut self) -> u32 {
+        self.range_decoder
+            .decode_symbol_with_icdf(LINEAR_CONGRUENTIAL_GENERATOR_SEED)
+    }
+
     #[allow(dead_code)]
     fn convert_normalized_lsfs_to_lpc_coefficients(
         &self,
@@ -974,6 +981,10 @@ mod tests {
         0xb4, 0xe2, 0x2c, 0x0e, 0x10, 0x65, 0x1d, 0xa9, 0x07, 0x5c, 0x36, 0x8f, 0x96, 0x7b, 0xf4,
         0x89, 0x41, 0x55, 0x98, 0x7a, 0x39, 0x2e, 0x6b, 0x71, 0xa4, 0x03, 0x70, 0xbf,
     ];
+    const TEST_LCG_FRAME: &[u8] = &[
+        0x84, 0x2e, 0x67, 0xd3, 0x85, 0x65, 0x54, 0xe3, 0x9d, 0x90, 0x0a, 0xfa, 0x98, 0xea, 0xfd,
+        0x98, 0x94, 0x41, 0xf9, 0x6d, 0x1d, 0xa0,
+    ];
 
     #[test]
     fn determine_frame_type() {
@@ -1185,6 +1196,27 @@ mod tests {
 
         let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Voiced);
         assert_eq!(scale, 15_565.0);
+    }
+
+    #[test]
+    fn decode_linear_congruential_generator_seed_reads_expected_value() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder {
+                buf: TEST_LCG_FRAME,
+                bits_read: 71,
+                range_size: 851_775_140,
+                high_and_coded_difference: 846_837_397,
+            },
+            have_decoded: false,
+            is_previous_frame_voiced: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let seed = decoder.decode_linear_congruential_generator_seed();
+        assert_eq!(seed, 0);
     }
 
     #[test]
