@@ -6,6 +6,8 @@ use crate::math::ilog;
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::codebook::{
+    LSF_ORDERING_FOR_POLYNOMIAL_EVALUATION_NARROWBAND_AND_MEDIUMBAND,
+    LSF_ORDERING_FOR_POLYNOMIAL_EVALUATION_WIDEBAND,
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_NARROWBAND_AND_MEDIUMBAND,
     MINIMUM_SPACING_FOR_NORMALIZED_LSCOEFFICIENTS_WIDEBAND,
     NORMALIZED_LSF_STAGE_ONE_NARROWBAND_OR_MEDIUMBAND, NORMALIZED_LSF_STAGE_ONE_WIDEBAND,
@@ -14,7 +16,7 @@ use crate::silk::codebook::{
     PREDICTION_WEIGHT_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
     PREDICTION_WEIGHT_FOR_WIDEBAND_NORMALIZED_LSF,
     PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
-    PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF,
+    PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF, Q12_COSINE_TABLE_FOR_LSFCONVERION,
 };
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
@@ -25,7 +27,7 @@ use crate::silk::icdf::{
     NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED, NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED,
     NORMALIZED_LSF_STAGE_2_INDEX, NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION,
 };
-use nomarlize::{MAX_D_LPC, NlsfQ15, ResQ10};
+use nomarlize::{A32Q17, Aq12Coefficients, Aq12List, MAX_D_LPC, MAX_D2_LPC, NlsfQ15, ResQ10};
 
 #[derive(Debug)]
 pub struct DecoderBuilder {
@@ -407,6 +409,149 @@ impl<'a> Decoder<'a> {
 
         (Some(n1_q15), w_q2)
     }
+
+    #[allow(dead_code)]
+    fn generate_a_q12(
+        &mut self,
+        q15: Option<&NlsfQ15>,
+        bandwidth: Bandwidth,
+        a_q12: &mut Aq12List,
+    ) {
+        if let Some(q15_values) = q15 {
+            let mut a32_q17 =
+                self.convert_normalized_lsfs_to_lpc_coefficients(q15_values, bandwidth);
+            self.limit_lpc_coefficients_range(&mut a32_q17);
+            let aq12_coeffs = self.limit_lpc_filter_prediction_gain(&a32_q17);
+            a_q12.push(&aq12_coeffs);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn convert_normalized_lsfs_to_lpc_coefficients(
+        &self,
+        n1_q15: &NlsfQ15,
+        bandwidth: Bandwidth,
+    ) -> A32Q17 {
+        let mut c_q17 = [0i32; MAX_D_LPC];
+        let ordering = if bandwidth == Bandwidth::Wide {
+            LSF_ORDERING_FOR_POLYNOMIAL_EVALUATION_WIDEBAND
+        } else {
+            LSF_ORDERING_FOR_POLYNOMIAL_EVALUATION_NARROWBAND_AND_MEDIUMBAND
+        };
+
+        for (k, &value) in n1_q15.as_slice().iter().enumerate() {
+            let i = (value >> 8) as usize;
+            let f = (value & 255) as i32;
+            let cos_val = Q12_COSINE_TABLE_FOR_LSFCONVERION[i as usize];
+            let cos_next = Q12_COSINE_TABLE_FOR_LSFCONVERION[i as usize + 1];
+
+            c_q17[ordering[k] as usize] = (cos_val * 256 + (cos_next - cos_val) * f + 4) >> 3;
+        }
+
+        let d_lpc = n1_q15.len();
+        let d2 = d_lpc / 2;
+        let mut p_q16 = [0i32; MAX_D2_LPC];
+        let mut q_q16 = [0i32; MAX_D2_LPC];
+
+        p_q16[0] = 1 << 16;
+        q_q16[0] = 1 << 16;
+        p_q16[1] = -c_q17[0];
+        q_q16[1] = -c_q17[1];
+
+        for k in 1..d2 {
+            let coeff_even = c_q17[2 * k] as i64;
+            let coeff_odd = c_q17[2 * k + 1] as i64;
+
+            p_q16[k + 1] =
+                p_q16[k - 1] * 2 - ((coeff_even * i64::from(p_q16[k]) + 32_768) >> 16) as i32;
+            q_q16[k + 1] =
+                q_q16[k - 1] * 2 - ((coeff_odd * i64::from(q_q16[k]) + 32_768) >> 16) as i32;
+
+            for j in (2..=k).rev() {
+                p_q16[j] +=
+                    p_q16[j - 2] - ((coeff_even * i64::from(p_q16[j - 1]) + 32_768) >> 16) as i32;
+                q_q16[j] +=
+                    q_q16[j - 2] - ((coeff_odd * i64::from(q_q16[j - 1]) + 32_768) >> 16) as i32;
+            }
+
+            p_q16[1] -= c_q17[2 * k];
+            q_q16[1] -= c_q17[2 * k + 1];
+        }
+
+        let mut result = A32Q17::new(d_lpc);
+        let result_slice = result.as_mut_slice();
+        for k in 0..d2 {
+            let diff_q = q_q16[k + 1] - q_q16[k];
+            let sum_p = p_q16[k + 1] + p_q16[k];
+            result_slice[k] = -diff_q - sum_p;
+            result_slice[d_lpc - k - 1] = diff_q - sum_p;
+        }
+
+        result
+    }
+
+    #[allow(dead_code)]
+    fn limit_lpc_coefficients_range(&self, a32_q17: &mut A32Q17) {
+        let len = a32_q17.len();
+        let mut bandwidth_expansion_round = 0;
+
+        while bandwidth_expansion_round < 10 {
+            let mut maxabs_q17 = 0u32;
+            let mut maxabs_index = 0usize;
+
+            for (idx, &value) in a32_q17.as_slice().iter().enumerate() {
+                let abs_value = value.abs() as u32;
+                if abs_value > maxabs_q17 {
+                    maxabs_q17 = abs_value;
+                    maxabs_index = idx;
+                }
+            }
+
+            let maxabs_q12 = ((maxabs_q17 + 16) >> 5).min(163_838);
+
+            if maxabs_q12 > 32_767 {
+                let mut sc_q16 = [0u32; MAX_D_LPC];
+                let numerator = (maxabs_q12 - 32_767) << 14;
+                let denom = ((maxabs_q12 * ((maxabs_index + 1) as u32)) >> 2).max(1);
+
+                sc_q16[0] = 65_470 - numerator / denom;
+
+                for k in 0..len {
+                    let scaled = (i64::from(a32_q17.as_slice()[k]) * i64::from(sc_q16[k])) >> 16;
+                    a32_q17.as_mut_slice()[k] = scaled as i32;
+
+                    if k + 1 < len {
+                        sc_q16[k + 1] = (sc_q16[0] * sc_q16[k] + 32_768) >> 16;
+                    }
+                }
+            } else {
+                break;
+            }
+
+            bandwidth_expansion_round += 1;
+        }
+
+        if bandwidth_expansion_round == 9 {
+            for value in a32_q17.as_mut_slice().iter_mut() {
+                let q12 = ((*value + 16) >> 5).clamp(-32_768, 32_767);
+                *value = q12 << 5;
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn limit_lpc_filter_prediction_gain(&self, a32_q17: &A32Q17) -> Aq12Coefficients {
+        let mut coeffs = Aq12Coefficients::new(a32_q17.len());
+        for (dst, &src) in coeffs
+            .as_mut_slice()
+            .iter_mut()
+            .zip(a32_q17.as_slice().iter())
+        {
+            *dst = ((src + 16) >> 5) as f32;
+        }
+
+        coeffs
+    }
 }
 
 /// The normalized LSF stabilization procedure ensures that
@@ -667,6 +812,18 @@ mod tests {
         2132, 3584, 5504, 7424, 9472, 11392, 13440, 15360, 17280, 19200, 21120, 23040, 25088,
         27008, 28928, 30848,
     ];
+    const TEST_CONVERT_NLSF_Q15: [i16; 16] = [
+        0x0854, 0x0E00, 0x1580, 0x1D00, 0x2500, 0x2C80, 0x3480, 0x3C00, 0x4380, 0x4B00, 0x5280,
+        0x5A00, 0x6200, 0x6980, 0x7100, 0x7880,
+    ];
+    const EXPECTED_A32_Q17: [i32; 16] = [
+        12_974, 9_765, 4_176, 3_646, -3_766, -4_429, -2_292, -4_663, -3_441, -3_848, -4_493,
+        -1_614, -1_960, -3_112, -2_153, -2_898,
+    ];
+    const EXPECTED_AQ12: [f32; 16] = [
+        405.0, 305.0, 131.0, 114.0, -118.0, -138.0, -72.0, -146.0, -108.0, -120.0, -140.0, -50.0,
+        -61.0, -97.0, -67.0, -91.0,
+    ];
 
     #[test]
     fn determine_frame_type() {
@@ -851,5 +1008,82 @@ mod tests {
             9,
         );
         assert_eq!(&input_nlsf_q15, &TEST_NLSF_Q_15);
+    }
+
+    #[test]
+    fn convert_normalized_lsfs_to_lpc_coefficients_matches_reference() {
+        let decoder = Decoder {
+            range_decoder: RangeDecoder::init(&[]),
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let nlsf = NlsfQ15::from_slice(&TEST_CONVERT_NLSF_Q15);
+        let actual = decoder.convert_normalized_lsfs_to_lpc_coefficients(&nlsf, Bandwidth::Wide);
+
+        assert_eq!(actual.as_slice(), &EXPECTED_A32_Q17);
+    }
+
+    #[test]
+    fn limit_lpc_coefficients_range_preserves_reference_values() {
+        let decoder = Decoder {
+            range_decoder: RangeDecoder::init(&[]),
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let mut a32 = A32Q17::new(EXPECTED_A32_Q17.len());
+        a32.as_mut_slice().copy_from_slice(&EXPECTED_A32_Q17);
+
+        decoder.limit_lpc_coefficients_range(&mut a32);
+
+        assert_eq!(a32.as_slice(), &EXPECTED_A32_Q17);
+    }
+
+    #[test]
+    fn limit_lpc_filter_prediction_gain_matches_reference() {
+        let decoder = Decoder {
+            range_decoder: RangeDecoder::init(&[]),
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let mut a32 = A32Q17::new(EXPECTED_A32_Q17.len());
+        a32.as_mut_slice().copy_from_slice(&EXPECTED_A32_Q17);
+
+        let a_q12 = decoder.limit_lpc_filter_prediction_gain(&a32);
+
+        assert_eq!(a_q12.as_slice(), &EXPECTED_AQ12);
+    }
+
+    #[test]
+    fn generate_a_q12_appends_coefficients_when_available() {
+        let mut decoder = Decoder {
+            range_decoder: RangeDecoder::init(&[]),
+            have_decoded: false,
+            previous_log_gain: 0,
+            final_out_values: [0.; 306],
+            n0_q15: [0; MAX_D_LPC],
+            n0_q15_len: 0,
+        };
+
+        let nlsf = NlsfQ15::from_slice(&TEST_CONVERT_NLSF_Q15);
+        let mut a_q12 = Aq12List::new();
+
+        decoder.generate_a_q12(None, Bandwidth::Wide, &mut a_q12);
+        assert!(a_q12.is_empty());
+
+        decoder.generate_a_q12(Some(&nlsf), Bandwidth::Wide, &mut a_q12);
+        assert_eq!(a_q12.len(), 1);
+        assert_eq!(a_q12.get(0), &EXPECTED_AQ12);
     }
 }

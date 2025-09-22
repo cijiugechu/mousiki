@@ -7,6 +7,10 @@ const fn get_max_d_lpc() -> usize {
 }
 
 pub(crate) const MAX_D_LPC: usize = get_max_d_lpc();
+#[allow(dead_code)]
+pub(crate) const MAX_A_Q12_SETS: usize = 4;
+#[allow(dead_code)]
+pub(crate) const MAX_D2_LPC: usize = (MAX_D_LPC / 2) + 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NlsfQ15 {
@@ -89,5 +93,140 @@ impl ResQ10 {
             Self::Wide(_) => 16,
             Self::NarrowOrMedium(_) => 10,
         }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct A32Q17 {
+    data: [i32; MAX_D_LPC],
+    len: usize,
+}
+
+#[allow(dead_code)]
+impl A32Q17 {
+    pub const fn new(len: usize) -> Self {
+        debug_assert!(len <= MAX_D_LPC);
+
+        Self {
+            data: [0; MAX_D_LPC],
+            len,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn as_slice(&self) -> &[i32] {
+        &self.data[..self.len]
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [i32] {
+        &mut self.data[..self.len]
+    }
+}
+
+#[allow(dead_code)]
+impl Deref for A32Q17 {
+    type Target = [i32];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+#[allow(dead_code)]
+impl DerefMut for A32Q17 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aq12Coefficients {
+    data: [f32; MAX_D_LPC],
+    len: usize,
+}
+
+#[allow(dead_code)]
+impl Aq12Coefficients {
+    pub const fn new(len: usize) -> Self {
+        debug_assert!(len <= MAX_D_LPC);
+
+        Self {
+            data: [0.0; MAX_D_LPC],
+            len,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn as_slice(&self) -> &[f32] {
+        &self.data[..self.len]
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [f32] {
+        &mut self.data[..self.len]
+    }
+}
+
+#[allow(dead_code)]
+impl Deref for Aq12Coefficients {
+    type Target = [f32];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+#[allow(dead_code)]
+impl DerefMut for Aq12Coefficients {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Aq12List {
+    data: [[f32; MAX_D_LPC]; MAX_A_Q12_SETS],
+    lens: [usize; MAX_A_Q12_SETS],
+    len: usize,
+}
+
+#[allow(dead_code)]
+impl Aq12List {
+    pub const fn new() -> Self {
+        Self {
+            data: [[0.0; MAX_D_LPC]; MAX_A_Q12_SETS],
+            lens: [0; MAX_A_Q12_SETS],
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn push(&mut self, coeffs: &Aq12Coefficients) {
+        debug_assert!(self.len < MAX_A_Q12_SETS);
+
+        let idx = self.len;
+        self.data[idx][..coeffs.len()].copy_from_slice(coeffs.as_slice());
+        self.lens[idx] = coeffs.len();
+        self.len += 1;
+    }
+
+    pub fn get(&self, idx: usize) -> &[f32] {
+        debug_assert!(idx < self.len);
+        &self.data[idx][..self.lens[idx]]
     }
 }
