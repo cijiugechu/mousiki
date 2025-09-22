@@ -61,6 +61,8 @@ impl DecoderBuilder {
             final_out_values: self.final_out_values,
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         }
     }
 }
@@ -85,6 +87,8 @@ pub struct Decoder<'a> {
     final_out_values: [f32; 306],
     n0_q15: [i16; MAX_D_LPC],
     n0_q15_len: usize,
+    previous_frame_lpc_values: [f32; MAX_D_LPC],
+    previous_frame_lpc_values_len: usize,
 }
 
 const SUBFRAME_COUNT: usize = 4;
@@ -92,6 +96,12 @@ const MAX_SHELL_BLOCKS: usize = 20;
 const PULSECOUNT_LARGEST_PARTITION_SIZE: usize = 16;
 const MAX_EXCITATION_SAMPLES: usize = MAX_SHELL_BLOCKS * PULSECOUNT_LARGEST_PARTITION_SIZE;
 const MAX_LSB_COUNT: u8 = 10;
+const MAX_SUBFRAME_SAMPLES: usize = SUBFRAME_COUNT * 80;
+const MAX_PITCH_LAG: usize = 288;
+const LTP_FILTER_TAP_COUNT: usize = 5;
+const MAX_RES_LAG: usize = MAX_PITCH_LAG + 2;
+const INV_Q23: f32 = 1.0 / 8_388_608.0;
+const NANOSECONDS_20_MS: u32 = 20_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PitchLagInfo {
@@ -152,7 +162,47 @@ impl fmt::Display for DecodePitchLagsError {
     }
 }
 
+impl core::error::Error for DecodePitchLagsError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    UnsupportedFrameDuration,
+    StereoUnsupported,
+    OutBufferTooSmall,
+    UnsupportedLowBitrateRedundancy,
+    PitchLags(DecodePitchLagsError),
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedFrameDuration => f.write_str("only 20 ms SILK frames are supported"),
+            Self::StereoUnsupported => f.write_str("stereo SILK decoding is unsupported"),
+            Self::OutBufferTooSmall => f.write_str("output buffer is too small for decoded frame"),
+            Self::UnsupportedLowBitrateRedundancy => {
+                f.write_str("low bit-rate redundancy is unsupported")
+            }
+            Self::PitchLags(err) => write!(f, "pitch lag decoding failed: {err}"),
+        }
+    }
+}
+
+impl core::error::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::PitchLags(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 impl<'a> Decoder<'a> {
+    fn decode_header_bits(&mut self) -> (bool, bool) {
+        let voice_activity_detected = self.range_decoder.decode_symbol_logp(1) == 1;
+        let low_bit_rate_redundancy = self.range_decoder.decode_symbol_logp(1) == 1;
+        (voice_activity_detected, low_bit_rate_redundancy)
+    }
+
     /// Each SILK frame contains a single "frame type" symbol that jointly
     /// codes the signal type and quantization offset type of the
     /// corresponding frame.
@@ -615,6 +665,401 @@ impl<'a> Decoder<'a> {
     pub fn decode_linear_congruential_generator_seed(&mut self) -> u32 {
         self.range_decoder
             .decode_symbol_with_icdf(LINEAR_CONGRUENTIAL_GENERATOR_SEED)
+    }
+
+    fn samples_in_subframe(&self, bandwidth: Bandwidth) -> usize {
+        bandwidth.samples_in_subframe() as usize
+    }
+
+    fn ltp_synthesis(
+        &mut self,
+        out: &mut [f32],
+        b_q7: &[[i8; LTP_FILTER_TAP_COUNT]; SUBFRAME_COUNT],
+        pitch_lags: &[i16; SUBFRAME_COUNT],
+        n: usize,
+        j: usize,
+        subframe_index: usize,
+        d_lpc: usize,
+        mut ltp_scale_q14: f32,
+        w_q2: i16,
+        a_q12: &[f32],
+        gain_q16: &[f32; SUBFRAME_COUNT],
+        res: &mut [f32],
+        res_lag: &mut [f32],
+    ) {
+        let n_isize = n as isize;
+        let out_end = if subframe_index < 2 || w_q2 == 4 {
+            -(subframe_index as isize) * n_isize
+        } else {
+            ltp_scale_q14 = 16_384.0;
+            -((subframe_index as isize) - 2) * n_isize
+        };
+
+        let pitch = pitch_lags[subframe_index] as isize;
+        let res_len = res.len() as isize;
+        let res_lag_len = res_lag.len() as isize;
+
+        let mut i = -pitch - 2;
+        while i < out_end {
+            let index = i + j as isize;
+
+            if index >= res_len {
+                i += 1;
+                continue;
+            }
+
+            let mut write_to_lag = false;
+            let (mut res_val, res_index) = if index >= 0 {
+                let index_usize = index as usize;
+                if index_usize >= out.len() {
+                    i += 1;
+                    continue;
+                }
+                (out[index_usize], index_usize)
+            } else {
+                let lag_index = res_lag_len + index;
+                if lag_index < 0 || lag_index >= res_lag_len {
+                    i += 1;
+                    continue;
+                }
+                let final_len = self.final_out_values.len() as isize;
+                let final_index = final_len + index;
+                let value = if final_index < 0 || final_index >= final_len {
+                    0.0
+                } else {
+                    self.final_out_values[final_index as usize]
+                };
+                write_to_lag = true;
+                (value, lag_index as usize)
+            };
+
+            for (k, &coeff) in a_q12.iter().take(d_lpc).enumerate() {
+                let out_index = index - (k as isize) - 1;
+                let out_value = if out_index >= 0 {
+                    out[out_index as usize]
+                } else {
+                    let final_index = self.final_out_values.len() as isize + out_index;
+                    if final_index < 0 || final_index >= self.final_out_values.len() as isize {
+                        0.0
+                    } else {
+                        self.final_out_values[final_index as usize]
+                    }
+                };
+
+                res_val -= out_value * (coeff / 4096.0);
+            }
+
+            res_val = clamp_negative_one_to_one(res_val);
+            let gain = gain_q16[subframe_index];
+            if gain != 0.0 {
+                res_val *= (4.0 * ltp_scale_q14) / gain;
+
+                if !write_to_lag {
+                    res[res_index] = res_val;
+                } else if res_index < res_lag.len() {
+                    res_lag[res_index] = res_val;
+                }
+            }
+
+            i += 1;
+        }
+
+        if subframe_index > 0 {
+            let current_gain = gain_q16[subframe_index];
+            if current_gain != 0.0 {
+                let scaled_gain = gain_q16[subframe_index - 1] / current_gain;
+                let mut idx = out_end;
+                while idx < 0 {
+                    let res_index = j as isize + idx;
+                    if res_index < 0 {
+                        let lag_index = res_lag_len + res_index;
+                        if lag_index >= 0 && lag_index < res_lag_len {
+                            res_lag[lag_index as usize] *= scaled_gain;
+                        }
+                    } else if res_index < res_len {
+                        res[res_index as usize] *= scaled_gain;
+                    }
+
+                    idx += 1;
+                }
+            }
+        }
+
+        for sample_index in j..(j + n) {
+            let mut res_sum = res[sample_index];
+
+            for tap in 0..LTP_FILTER_TAP_COUNT {
+                let res_index = sample_index as isize - pitch + 2 - tap as isize;
+                let value = if res_index < 0 {
+                    let lag_index = res_lag_len + res_index;
+                    if lag_index >= 0 && lag_index < res_lag_len {
+                        res_lag[lag_index as usize]
+                    } else {
+                        0.0
+                    }
+                } else if res_index < res_len {
+                    res[res_index as usize]
+                } else {
+                    0.0
+                };
+
+                res_sum += value * (f32::from(b_q7[subframe_index][tap]) / 128.0);
+            }
+
+            res[sample_index] = res_sum;
+        }
+    }
+
+    fn lpc_synthesis(
+        &mut self,
+        out: &mut [f32],
+        n: usize,
+        subframe_index: usize,
+        d_lpc: usize,
+        a_q12: &[f32],
+        res: &[f32],
+        gain_q16: &[f32; SUBFRAME_COUNT],
+        lpc: &mut [f32],
+        frame_samples: usize,
+    ) {
+        let j = n * subframe_index;
+        let gain_factor = gain_q16[subframe_index] / 65_536.0;
+
+        for i in 0..n {
+            let sample_index = j + i;
+            if sample_index >= res.len() || sample_index >= frame_samples {
+                break;
+            }
+
+            let mut lpc_val = gain_factor * res[sample_index];
+
+            for (k, &coeff) in a_q12.iter().take(d_lpc).enumerate() {
+                let lpc_index = sample_index as isize - k as isize - 1;
+                let current = if lpc_index >= 0 {
+                    lpc[lpc_index as usize]
+                } else if subframe_index == 0 && i < self.previous_frame_lpc_values_len {
+                    let prev_len = self.previous_frame_lpc_values_len as isize;
+                    let idx = prev_len - 1 + i as isize - k as isize;
+                    if idx >= 0 && idx < prev_len {
+                        self.previous_frame_lpc_values[idx as usize]
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                lpc_val += current * (coeff / 4096.0);
+            }
+
+            lpc[sample_index] = lpc_val;
+            if sample_index < out.len() {
+                out[sample_index] = clamp_negative_one_to_one(lpc_val);
+            }
+
+            if subframe_index == SUBFRAME_COUNT - 1
+                && self.have_decoded
+                && sample_index == out.len().saturating_sub(1)
+            {
+                if d_lpc <= frame_samples {
+                    let start = frame_samples - d_lpc;
+                    self.previous_frame_lpc_values[..d_lpc]
+                        .copy_from_slice(&lpc[start..frame_samples]);
+                    self.previous_frame_lpc_values_len = d_lpc;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn silk_frame_reconstruction(
+        &mut self,
+        signal_type: FrameSignalType,
+        bandwidth: Bandwidth,
+        d_lpc: usize,
+        lag_max: u32,
+        b_q7: Option<&[[i8; LTP_FILTER_TAP_COUNT]; SUBFRAME_COUNT]>,
+        pitch_lags: Option<&[i16; SUBFRAME_COUNT]>,
+        excitation: &ExcitationQ23,
+        ltp_scale_q14: f32,
+        w_q2: i16,
+        a_q12: &Aq12List,
+        gain_q16: &[f32; SUBFRAME_COUNT],
+        out: &mut [f32],
+    ) {
+        let n = self.samples_in_subframe(bandwidth);
+        let frame_samples = n * SUBFRAME_COUNT;
+
+        let mut lpc = [0.0f32; MAX_SUBFRAME_SAMPLES];
+        let mut res = [0.0f32; MAX_EXCITATION_SAMPLES];
+        let mut res_lag = [0.0f32; MAX_RES_LAG];
+
+        let res_len = excitation.len.min(res.len());
+        for idx in 0..res_len {
+            res[idx] = (excitation.values[idx] as f32) * INV_Q23;
+        }
+
+        let mut res_lag_len = lag_max as usize + 2;
+        if res_lag_len > res_lag.len() {
+            res_lag_len = res_lag.len();
+        }
+
+        for subframe_index in 0..SUBFRAME_COUNT {
+            let aq_index = if subframe_index > 1 && a_q12.len() > 1 {
+                1
+            } else {
+                0
+            };
+
+            let aq_slice: &[f32] = if a_q12.is_empty() {
+                &[]
+            } else {
+                a_q12.get(aq_index.min(a_q12.len() - 1))
+            };
+
+            let j = n * subframe_index;
+
+            if signal_type == FrameSignalType::Voiced {
+                if let (Some(b_q7_values), Some(pitch_values)) = (b_q7, pitch_lags) {
+                    self.ltp_synthesis(
+                        out,
+                        b_q7_values,
+                        pitch_values,
+                        n,
+                        j,
+                        subframe_index,
+                        d_lpc,
+                        ltp_scale_q14,
+                        w_q2,
+                        aq_slice,
+                        gain_q16,
+                        &mut res[..res_len],
+                        &mut res_lag[..res_lag_len],
+                    );
+                }
+            }
+
+            self.lpc_synthesis(
+                out,
+                n,
+                subframe_index,
+                d_lpc,
+                aq_slice,
+                &res[..res_len],
+                gain_q16,
+                &mut lpc[..frame_samples],
+                frame_samples,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode(
+        &mut self,
+        input: &'a [u8],
+        out: &mut [f32],
+        is_stereo: bool,
+        nanoseconds: u32,
+        bandwidth: Bandwidth,
+    ) -> Result<(), DecodeError> {
+        let subframe_size = self.samples_in_subframe(bandwidth);
+        if nanoseconds != NANOSECONDS_20_MS {
+            return Err(DecodeError::UnsupportedFrameDuration);
+        }
+        if is_stereo {
+            return Err(DecodeError::StereoUnsupported);
+        }
+
+        let total_samples = subframe_size * SUBFRAME_COUNT;
+        if total_samples > out.len() {
+            return Err(DecodeError::OutBufferTooSmall);
+        }
+
+        self.range_decoder = RangeDecoder::init(input);
+
+        let (voice_activity_detected, low_bit_rate_redundancy) = self.decode_header_bits();
+        if low_bit_rate_redundancy {
+            return Err(DecodeError::UnsupportedLowBitrateRedundancy);
+        }
+
+        let (signal_type, quantization_offset_type) =
+            self.determine_frame_type(voice_activity_detected);
+
+        let gain_q16 = self.decode_subframe_quantizations(signal_type);
+
+        let i1 = self.normalize_line_spectral_frequency_stage_one(
+            signal_type == FrameSignalType::Voiced,
+            bandwidth,
+        );
+
+        let res_q10 = self.normalize_line_spectral_frequency_stage_two(bandwidth, i1);
+        let d_lpc = res_q10.d_lpc();
+        let mut nlsf_q15 = [0i16; MAX_D_LPC];
+        normalize_line_spectral_frequency_coefficients(
+            d_lpc,
+            &mut nlsf_q15[..d_lpc],
+            bandwidth,
+            &res_q10,
+            i1,
+        );
+        normalize_lsf_stabilization(&mut nlsf_q15[..d_lpc], d_lpc as isize, bandwidth);
+
+        let (n1_q15, w_q2) = self.normalize_lsf_interpolation(&nlsf_q15[..d_lpc]);
+
+        let mut a_q12 = Aq12List::new();
+        if let Some(ref n1_values) = n1_q15 {
+            self.generate_a_q12(Some(n1_values), bandwidth, &mut a_q12);
+        }
+        let nlsf_current = NlsfQ15::from_slice(&nlsf_q15[..d_lpc]);
+        self.generate_a_q12(Some(&nlsf_current), bandwidth, &mut a_q12);
+
+        let pitch_info = self
+            .decode_pitch_lags(signal_type, bandwidth)
+            .map_err(DecodeError::PitchLags)?;
+        let lag_max = pitch_info.as_ref().map(|info| info.lag_max).unwrap_or(0);
+        let pitch_lags_ref: Option<&[i16; SUBFRAME_COUNT]> =
+            pitch_info.as_ref().map(|info| &info.pitch_lags);
+
+        let ltp_coefficients = self.decode_ltp_filter_coefficients(signal_type);
+        let ltp_scale_q14 = self.decode_ltp_scaling_parameter(signal_type);
+        let lcg_seed = self.decode_linear_congruential_generator_seed();
+        let shell_blocks = self.decode_shell_blocks(nanoseconds, bandwidth);
+        let rate_level = self.decode_rate_level(signal_type == FrameSignalType::Voiced);
+        let counts = self.decode_pulse_and_lsb_counts(shell_blocks, rate_level);
+        let excitation =
+            self.decode_excitation(signal_type, quantization_offset_type, lcg_seed, &counts);
+
+        self.silk_frame_reconstruction(
+            signal_type,
+            bandwidth,
+            d_lpc,
+            lag_max,
+            ltp_coefficients.as_ref(),
+            pitch_lags_ref,
+            &excitation,
+            ltp_scale_q14,
+            w_q2,
+            &a_q12,
+            &gain_q16,
+            out,
+        );
+
+        self.is_previous_frame_voiced = signal_type == FrameSignalType::Voiced;
+
+        self.n0_q15[..d_lpc].copy_from_slice(&nlsf_q15[..d_lpc]);
+        self.n0_q15_len = d_lpc;
+
+        if out.len() >= self.final_out_values.len() {
+            let start = out.len() - self.final_out_values.len();
+            self.final_out_values
+                .copy_from_slice(&out[start..out.len()]);
+        } else {
+            self.final_out_values[..out.len()].copy_from_slice(out);
+        }
+
+        self.have_decoded = true;
+
+        Ok(())
     }
 
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8
@@ -1376,11 +1821,16 @@ fn normalize_line_spectral_frequency_coefficients(
     }
 }
 
+fn clamp_negative_one_to_one(value: f32) -> f32 {
+    value.clamp(-1.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const TEST_SILK_FRAME: &[u8] = &[0x0B, 0xE4, 0xC1, 0x36, 0xEC, 0xC5, 0x80];
+    const TEST_SILK_FRAME_SECOND: &[u8] = &[0x07, 0xC9, 0x72, 0x27, 0xE1, 0x44, 0xEA, 0x50];
     const TEST_RES_Q_10: [i16; 16] = [138, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     const TEST_NLSF_Q_15: [i16; 16] = [
         2132, 3584, 5504, 7424, 9472, 11392, 13440, 15360, 17280, 19200, 21120, 23040, 25088,
@@ -1406,6 +1856,651 @@ mod tests {
         0x84, 0x2e, 0x67, 0xd3, 0x85, 0x65, 0x54, 0xe3, 0x9d, 0x90, 0x0a, 0xfa, 0x98, 0xea, 0xfd,
         0x98, 0x94, 0x41, 0xf9, 0x6d, 0x1d, 0xa0,
     ];
+    const EXPECTED_DECODE_OUT_0: [f32; 320] = [
+        0.000023f32,
+        0.000025f32,
+        0.000027f32,
+        -0.000018f32,
+        0.000025f32,
+        -0.000021f32,
+        0.000021f32,
+        -0.000024f32,
+        0.000021f32,
+        0.000021f32,
+        -0.000022f32,
+        -0.000026f32,
+        0.000018f32,
+        0.000022f32,
+        -0.000023f32,
+        -0.000025f32,
+        -0.000027f32,
+        0.000017f32,
+        0.000020f32,
+        -0.000021f32,
+        0.000023f32,
+        0.000027f32,
+        -0.000018f32,
+        -0.000023f32,
+        -0.000024f32,
+        0.000020f32,
+        -0.000024f32,
+        0.000021f32,
+        0.000023f32,
+        0.000027f32,
+        0.000029f32,
+        -0.000016f32,
+        -0.000020f32,
+        -0.000025f32,
+        0.000018f32,
+        -0.000026f32,
+        -0.000028f32,
+        -0.000028f32,
+        -0.000028f32,
+        0.000016f32,
+        -0.000025f32,
+        -0.000025f32,
+        0.000021f32,
+        0.000025f32,
+        0.000027f32,
+        -0.000016f32,
+        0.000030f32,
+        -0.000016f32,
+        -0.000020f32,
+        -0.000024f32,
+        -0.000026f32,
+        0.000019f32,
+        0.000022f32,
+        0.000025f32,
+        -0.000019f32,
+        -0.000021f32,
+        -0.000024f32,
+        -0.000027f32,
+        -0.000029f32,
+        -0.000030f32,
+        0.000017f32,
+        0.000022f32,
+        0.000026f32,
+        0.000030f32,
+        0.000033f32,
+        -0.000012f32,
+        -0.000018f32,
+        -0.000023f32,
+        -0.000026f32,
+        -0.000029f32,
+        -0.000029f32,
+        0.000016f32,
+        -0.000025f32,
+        0.000021f32,
+        0.000024f32,
+        0.000028f32,
+        -0.000017f32,
+        0.000027f32,
+        0.000028f32,
+        0.000029f32,
+        -0.000006f32,
+        0.000017f32,
+        0.000015f32,
+        0.000015f32,
+        -0.000011f32,
+        0.000011f32,
+        0.000011f32,
+        -0.000014f32,
+        0.000008f32,
+        -0.000016f32,
+        0.000008f32,
+        -0.000016f32,
+        -0.000016f32,
+        -0.000018f32,
+        -0.000017f32,
+        -0.000017f32,
+        0.000008f32,
+        -0.000014f32,
+        -0.000013f32,
+        -0.000013f32,
+        -0.000012f32,
+        0.000011f32,
+        -0.000010f32,
+        0.000015f32,
+        0.000016f32,
+        -0.000006f32,
+        0.000015f32,
+        -0.000008f32,
+        -0.000009f32,
+        -0.000012f32,
+        0.000012f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000009f32,
+        -0.000011f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000012f32,
+        0.000012f32,
+        0.000013f32,
+        0.000014f32,
+        -0.000011f32,
+        0.000013f32,
+        -0.000011f32,
+        -0.000013f32,
+        -0.000016f32,
+        0.000008f32,
+        -0.000015f32,
+        0.000010f32,
+        -0.000013f32,
+        -0.000013f32,
+        -0.000015f32,
+        0.000010f32,
+        -0.000013f32,
+        0.000011f32,
+        -0.000011f32,
+        -0.000011f32,
+        -0.000013f32,
+        0.000012f32,
+        -0.000011f32,
+        0.000013f32,
+        0.000015f32,
+        0.000016f32,
+        0.000016f32,
+        0.000017f32,
+        -0.000007f32,
+        -0.000010f32,
+        -0.000013f32,
+        -0.000015f32,
+        -0.000017f32,
+        0.000007f32,
+        -0.000015f32,
+        -0.000015f32,
+        0.000009f32,
+        0.000012f32,
+        -0.000011f32,
+        0.000012f32,
+        -0.000010f32,
+        0.000013f32,
+        -0.000011f32,
+        0.000012f32,
+        0.000012f32,
+        0.000014f32,
+        0.000014f32,
+        -0.000007f32,
+        0.000012f32,
+        -0.000010f32,
+        0.000010f32,
+        0.000010f32,
+        0.000011f32,
+        -0.000010f32,
+        0.000009f32,
+        -0.000011f32,
+        0.000008f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000013f32,
+        -0.000013f32,
+        -0.000014f32,
+        0.000006f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        -0.000011f32,
+        -0.000012f32,
+        0.000008f32,
+        0.000011f32,
+        0.000013f32,
+        -0.000007f32,
+        -0.000008f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000010f32,
+        0.000012f32,
+        -0.000009f32,
+        -0.000010f32,
+        -0.000010f32,
+        -0.000012f32,
+        0.000009f32,
+        0.000011f32,
+        0.000012f32,
+        0.000014f32,
+        -0.000007f32,
+        0.000012f32,
+        -0.000009f32,
+        0.000011f32,
+        -0.000010f32,
+        0.000010f32,
+        -0.000011f32,
+        -0.000012f32,
+        -0.000013f32,
+        -0.000013f32,
+        -0.000014f32,
+        0.000007f32,
+        -0.000012f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000010f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000006f32,
+        0.000013f32,
+        -0.000007f32,
+        -0.000009f32,
+        0.000010f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000008f32,
+        -0.000010f32,
+        -0.000012f32,
+        -0.000012f32,
+        0.000009f32,
+        0.000009f32,
+        0.000011f32,
+        0.000013f32,
+        0.000014f32,
+        0.000015f32,
+        0.000014f32,
+        -0.000007f32,
+        0.000012f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000010f32,
+        -0.000012f32,
+        0.000008f32,
+        0.000008f32,
+        0.000009f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000012f32,
+        -0.000014f32,
+        -0.000014f32,
+        0.000006f32,
+        0.000008f32,
+        -0.000010f32,
+        -0.000012f32,
+        0.000010f32,
+        -0.000010f32,
+        0.000010f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000008f32,
+        -0.000009f32,
+        -0.000010f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000008f32,
+        -0.000011f32,
+        -0.000012f32,
+        -0.000012f32,
+        -0.000012f32,
+        -0.000013f32,
+        0.000008f32,
+        -0.000011f32,
+        -0.000011f32,
+        0.000010f32,
+        0.000013f32,
+        -0.000007f32,
+        -0.000008f32,
+        -0.000009f32,
+        -0.000010f32,
+        0.000009f32,
+        0.000011f32,
+        0.000013f32,
+        -0.000007f32,
+        0.000013f32,
+        -0.000008f32,
+        0.000011f32,
+        -0.000010f32,
+        0.000011f32,
+        0.000011f32,
+        0.000012f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000008f32,
+        0.000010f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000012f32,
+        -0.000013f32,
+        -0.000014f32,
+        0.000006f32,
+        -0.000013f32,
+        -0.000013f32,
+        0.000008f32,
+        -0.000011f32,
+        -0.000012f32,
+        -0.000012f32,
+        0.000010f32,
+        0.000011f32,
+        0.000013f32,
+    ];
+    const EXPECTED_DECODE_OUT_1: [f32; 320] = [
+        0.000011f32,
+        -0.000009f32,
+        -0.000011f32,
+        -0.000012f32,
+        0.000009f32,
+        0.000010f32,
+        -0.000010f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000008f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000010f32,
+        -0.000012f32,
+        0.000008f32,
+        0.000009f32,
+        -0.000010f32,
+        0.000011f32,
+        0.000012f32,
+        0.000013f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000007f32,
+        0.000011f32,
+        0.000011f32,
+        0.000011f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000009f32,
+        0.000009f32,
+        -0.000012f32,
+        -0.000013f32,
+        0.000006f32,
+        0.000008f32,
+        0.000009f32,
+        0.000010f32,
+        0.000012f32,
+        0.000012f32,
+        0.000012f32,
+        -0.000009f32,
+        -0.000011f32,
+        -0.000013f32,
+        0.000007f32,
+        -0.000013f32,
+        0.000008f32,
+        0.000009f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000011f32,
+        -0.000012f32,
+        -0.000013f32,
+        0.000008f32,
+        0.000010f32,
+        -0.000009f32,
+        0.000011f32,
+        -0.000008f32,
+        -0.000010f32,
+        0.000009f32,
+        -0.000010f32,
+        0.000010f32,
+        0.000011f32,
+        -0.000008f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000010f32,
+        0.000029f32,
+        -0.000008f32,
+        -0.000010f32,
+        0.000009f32,
+        0.000012f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000010f32,
+        0.000010f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000009f32,
+        0.000011f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000008f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000011f32,
+        0.000008f32,
+        -0.000011f32,
+        -0.000012f32,
+        0.000007f32,
+        -0.000011f32,
+        -0.000012f32,
+        -0.000013f32,
+        0.000009f32,
+        0.000009f32,
+        0.000012f32,
+        -0.000008f32,
+        -0.000009f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        -0.000012f32,
+        -0.000013f32,
+        0.000008f32,
+        -0.000011f32,
+        0.000010f32,
+        -0.000009f32,
+        -0.000009f32,
+        -0.000012f32,
+        0.000010f32,
+        -0.000010f32,
+        -0.000010f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000008f32,
+        0.000012f32,
+        -0.000007f32,
+        0.000012f32,
+        -0.000009f32,
+        0.000011f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000008f32,
+        0.000011f32,
+        0.000012f32,
+        0.000012f32,
+        0.000012f32,
+        0.000012f32,
+        0.000012f32,
+        0.000012f32,
+        -0.000009f32,
+        -0.000012f32,
+        -0.000014f32,
+        -0.000015f32,
+        0.000005f32,
+        0.000007f32,
+        0.000009f32,
+        -0.000011f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000010f32,
+        -0.000012f32,
+        -0.000012f32,
+        0.000009f32,
+        0.000011f32,
+        -0.000008f32,
+        0.000012f32,
+        -0.000008f32,
+        0.000012f32,
+        -0.000009f32,
+        -0.000009f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000010f32,
+        0.000009f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000008f32,
+        -0.000009f32,
+        -0.000011f32,
+        0.000009f32,
+        0.000010f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000010f32,
+        0.000010f32,
+        0.000010f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000010f32,
+        0.000029f32,
+        -0.000009f32,
+        0.000010f32,
+        -0.000010f32,
+        -0.000010f32,
+        0.000008f32,
+        -0.000012f32,
+        0.000009f32,
+        0.000009f32,
+        -0.000009f32,
+        0.000010f32,
+        -0.000010f32,
+        0.000010f32,
+        -0.000011f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000011f32,
+        0.000010f32,
+        -0.000011f32,
+        0.000011f32,
+        0.000011f32,
+        0.000012f32,
+        -0.000008f32,
+        0.000011f32,
+        -0.000009f32,
+        0.000010f32,
+        0.000010f32,
+        -0.000009f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000011f32,
+        0.000008f32,
+        0.000010f32,
+        -0.000009f32,
+        -0.000012f32,
+        0.000009f32,
+        0.000010f32,
+        0.000011f32,
+        0.000013f32,
+        0.000013f32,
+        -0.000008f32,
+        -0.000010f32,
+        -0.000012f32,
+        -0.000013f32,
+        -0.000014f32,
+        0.000006f32,
+        0.000008f32,
+        -0.000011f32,
+        0.000010f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000008f32,
+        0.000012f32,
+        -0.000009f32,
+        0.000010f32,
+        0.000011f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000008f32,
+        -0.000010f32,
+        -0.000013f32,
+        0.000007f32,
+        0.000008f32,
+        0.000010f32,
+        -0.000010f32,
+        0.000010f32,
+        0.000010f32,
+        0.000012f32,
+        -0.000009f32,
+        0.000011f32,
+        -0.000010f32,
+        -0.000012f32,
+        0.000007f32,
+        0.000010f32,
+        0.000011f32,
+        -0.000009f32,
+        -0.000010f32,
+        -0.000013f32,
+        -0.000013f32,
+        0.000007f32,
+        0.000009f32,
+        0.000011f32,
+        -0.000009f32,
+        0.000011f32,
+        -0.000009f32,
+        0.000011f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000008f32,
+        -0.000010f32,
+        0.000009f32,
+        -0.000011f32,
+        0.000029f32,
+        -0.000009f32,
+        -0.000010f32,
+        -0.000013f32,
+        0.000008f32,
+        -0.000012f32,
+        0.000008f32,
+        -0.000011f32,
+        0.000010f32,
+        0.000010f32,
+        0.000012f32,
+        0.000013f32,
+        -0.000007f32,
+        -0.000009f32,
+        -0.000012f32,
+        -0.000013f32,
+        0.000007f32,
+        0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000009f32,
+        0.000011f32,
+        -0.000010f32,
+        -0.000010f32,
+        -0.000011f32,
+        -0.000012f32,
+        0.000008f32,
+        -0.000011f32,
+        -0.000011f32,
+        -0.000011f32,
+        -0.000011f32,
+        0.000009f32,
+        -0.000010f32,
+        0.000011f32,
+        0.000013f32,
+        -0.000007f32,
+        -0.000009f32,
+        0.000011f32,
+        -0.000008f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000010f32,
+        -0.000011f32,
+        -0.000011f32,
+        -0.000012f32,
+        0.000009f32,
+        -0.000010f32,
+        0.000010f32,
+        -0.000009f32,
+        -0.000010f32,
+        -0.000011f32,
+        0.000010f32,
+        -0.000010f32,
+        0.000011f32,
+    ];
+    const FLOAT_EQUALITY_THRESHOLD: f32 = 0.000001f32;
 
     #[test]
     fn determine_frame_type() {
@@ -1422,6 +2517,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let (signal_type, quantization_offset_type) = decoder.determine_frame_type(false);
@@ -1444,6 +2541,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let quantizations = decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
@@ -1465,6 +2564,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         assert_eq!(
@@ -1517,6 +2618,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let res_q10 = decoder.normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
@@ -1539,6 +2642,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let result = decoder
@@ -1565,6 +2670,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let coeffs = decoder
@@ -1592,6 +2699,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Unvoiced);
@@ -1613,6 +2722,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Voiced);
@@ -1634,10 +2745,98 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let seed = decoder.decode_linear_congruential_generator_seed();
         assert_eq!(seed, 0);
+    }
+
+    #[test]
+    fn decode_returns_error_for_non_20_ms_frames() {
+        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut out = [0.0f32; 320];
+        let result = decoder.decode(TEST_SILK_FRAME, &mut out, false, 1, Bandwidth::Wide);
+        assert!(matches!(result, Err(DecodeError::UnsupportedFrameDuration)));
+    }
+
+    #[test]
+    fn decode_returns_error_for_stereo_frames() {
+        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut out = [0.0f32; 320];
+        let result = decoder.decode(
+            TEST_SILK_FRAME,
+            &mut out,
+            true,
+            NANOSECONDS_20_MS,
+            Bandwidth::Wide,
+        );
+        assert!(matches!(result, Err(DecodeError::StereoUnsupported)));
+    }
+
+    #[test]
+    fn decode_returns_error_when_output_buffer_too_small() {
+        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut out = [0.0f32; 50];
+        let result = decoder.decode(
+            TEST_SILK_FRAME,
+            &mut out,
+            false,
+            NANOSECONDS_20_MS,
+            Bandwidth::Wide,
+        );
+        assert!(matches!(result, Err(DecodeError::OutBufferTooSmall)));
+    }
+
+    #[test]
+    fn decode_matches_go_fixture_for_unvoiced_frame() {
+        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut out = [0.0f32; 320];
+
+        decoder
+            .decode(
+                TEST_SILK_FRAME,
+                &mut out,
+                false,
+                NANOSECONDS_20_MS,
+                Bandwidth::Wide,
+            )
+            .expect("decode should succeed");
+
+        for (actual, expected) in out.iter().zip(EXPECTED_DECODE_OUT_0.iter()) {
+            assert!((actual - expected).abs() < FLOAT_EQUALITY_THRESHOLD);
+        }
+    }
+
+    #[test]
+    fn decode_matches_go_fixture_for_subsequent_unvoiced_frame() {
+        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut out = [0.0f32; 320];
+
+        decoder
+            .decode(
+                TEST_SILK_FRAME,
+                &mut out,
+                false,
+                NANOSECONDS_20_MS,
+                Bandwidth::Wide,
+            )
+            .expect("initial decode should succeed");
+
+        decoder
+            .decode(
+                TEST_SILK_FRAME_SECOND,
+                &mut out,
+                false,
+                NANOSECONDS_20_MS,
+                Bandwidth::Wide,
+            )
+            .expect("subsequent decode should succeed");
+
+        for (actual, expected) in out.iter().zip(EXPECTED_DECODE_OUT_1.iter()) {
+            assert!((actual - expected).abs() < FLOAT_EQUALITY_THRESHOLD);
+        }
     }
 
     #[test]
@@ -1650,6 +2849,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         assert_eq!(
@@ -1707,6 +2908,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let seed = decoder.decode_linear_congruential_generator_seed();
@@ -1739,6 +2942,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let result = decoder
@@ -1762,6 +2967,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let (n1_q15, w_q2) = decoder.normalize_lsf_interpolation(&[]);
@@ -1788,6 +2995,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 16,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
         decoder.n0_q15[..16].copy_from_slice(&[
             518, 380, 4444, 6982, 8752, 10510, 12381, 14102, 15892, 17651, 19340, 21888, 23936,
@@ -1831,6 +3040,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let nlsf = NlsfQ15::from_slice(&TEST_CONVERT_NLSF_Q15);
@@ -1849,6 +3060,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let mut a32 = A32Q17::new(EXPECTED_A32_Q17.len());
@@ -1869,6 +3082,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let mut a32 = A32Q17::new(EXPECTED_A32_Q17.len());
@@ -1889,6 +3104,8 @@ mod tests {
             final_out_values: [0.; 306],
             n0_q15: [0; MAX_D_LPC],
             n0_q15_len: 0,
+            previous_frame_lpc_values: [0.0; MAX_D_LPC],
+            previous_frame_lpc_values_len: 0,
         };
 
         let nlsf = NlsfQ15::from_slice(&TEST_CONVERT_NLSF_Q15);
