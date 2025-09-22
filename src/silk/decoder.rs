@@ -537,7 +537,16 @@ fn normalize_lsf_stabilization(nlsf_q15: &mut [i16], d_lpc: isize, bandwidth: Ba
     // sort.Slice(nlsfQ15, func(i, j int) bool {
     // 	return nlsfQ15[i] < nlsfQ15[j]
     // })
-    nlsf_q15.sort();
+    // The slice length is bounded by the LPC order, so insertion sort is fine here.
+    for i in 1..nlsf_q15.len() {
+        let mut j = i;
+        let current = nlsf_q15[i];
+        while j > 0 && nlsf_q15[j - 1] > current {
+            nlsf_q15[j] = nlsf_q15[j - 1];
+            j -= 1;
+        }
+        nlsf_q15[j] = current;
+    }
 
     // Then, for each value of k from 0 to d_LPC-1, NLSF_Q15[k] is set to
     //
