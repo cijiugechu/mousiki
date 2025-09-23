@@ -80,10 +80,8 @@ pub struct Decoder<'a> {
     range_decoder: RangeDecoder<'a>,
     // Have we decoded a frame yet?
     have_decoded: bool,
-    #[allow(dead_code)]
     is_previous_frame_voiced: bool,
     previous_log_gain: i32,
-    #[allow(dead_code)]
     final_out_values: [f32; 306],
     n0_q15: [i16; MAX_D_LPC],
     n0_q15_len: usize,
@@ -536,7 +534,6 @@ impl<'a> Decoder<'a> {
         (Some(n1_q15), w_q2)
     }
 
-    #[allow(dead_code)]
     fn generate_a_q12(
         &mut self,
         q15: Option<&NlsfQ15>,
@@ -1445,7 +1442,6 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    #[allow(dead_code)]
     fn convert_normalized_lsfs_to_lpc_coefficients(
         &self,
         n1_q15: &NlsfQ15,
@@ -1509,7 +1505,6 @@ impl<'a> Decoder<'a> {
         result
     }
 
-    #[allow(dead_code)]
     fn limit_lpc_coefficients_range(&self, a32_q17: &mut A32Q17) {
         let len = a32_q17.len();
         let mut bandwidth_expansion_round = 0;
@@ -1558,7 +1553,6 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    #[allow(dead_code)]
     fn limit_lpc_filter_prediction_gain(&self, a32_q17: &A32Q17) -> Aq12Coefficients {
         let mut coeffs = Aq12Coefficients::new(a32_q17.len());
         for (dst, &src) in coeffs
