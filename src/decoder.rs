@@ -132,19 +132,19 @@ impl Configuration {
 }
 
 pub struct Decoder {
-    silk_decoder: silk_decoder::Decoder<'static>,
+    silk_decoder: silk_decoder::Decoder,
     silk_buffer: [f32; SILK_FRAME_SAMPLES],
 }
 
 impl Decoder {
     pub fn new() -> Self {
         Self {
-            silk_decoder: silk_decoder::DecoderBuilder::new().build(&[]),
+            silk_decoder: silk_decoder::DecoderBuilder::new().build(),
             silk_buffer: [0.0; SILK_FRAME_SAMPLES],
         }
     }
 
-    fn decode_internal(&mut self, input: &'static [u8]) -> Result<(Bandwidth, bool), DecoderError> {
+    fn decode_internal(&mut self, input: &[u8]) -> Result<(Bandwidth, bool), DecoderError> {
         if input.is_empty() {
             return Err(DecoderError::TooShortForTableOfContents);
         }
@@ -185,7 +185,7 @@ impl Decoder {
 
     pub fn decode(
         &mut self,
-        input: &'static [u8],
+        input: &[u8],
         out: &mut [u8],
     ) -> Result<(Bandwidth, bool), DecoderError> {
         let (bandwidth, stereo) = self.decode_internal(input)?;
@@ -195,7 +195,7 @@ impl Decoder {
 
     pub fn decode_float32(
         &mut self,
-        input: &'static [u8],
+        input: &[u8],
         out: &mut [f32],
     ) -> Result<(Bandwidth, bool), DecoderError> {
         let (bandwidth, stereo) = self.decode_internal(input)?;

@@ -52,9 +52,8 @@ impl DecoderBuilder {
         }
     }
 
-    pub fn build<'a>(self, buf: &'a [u8]) -> Decoder<'a> {
+    pub fn build(self) -> Decoder {
         Decoder {
-            range_decoder: RangeDecoder::init(buf),
             have_decoded: false,
             is_previous_frame_voiced: false,
             previous_log_gain: 0,
@@ -76,8 +75,7 @@ impl core::default::Default for DecoderBuilder {
 /// Decoder maintains the state needed to decode a stream
 /// of Silk frames.
 #[derive(Debug)]
-pub struct Decoder<'a> {
-    range_decoder: RangeDecoder<'a>,
+pub struct Decoder {
     // Have we decoded a frame yet?
     have_decoded: bool,
     is_previous_frame_voiced: bool,
@@ -194,10 +192,10 @@ impl core::error::Error for DecodeError {
     }
 }
 
-impl<'a> Decoder<'a> {
-    fn decode_header_bits(&mut self) -> (bool, bool) {
-        let voice_activity_detected = self.range_decoder.decode_symbol_logp(1) == 1;
-        let low_bit_rate_redundancy = self.range_decoder.decode_symbol_logp(1) == 1;
+impl Decoder {
+    fn decode_header_bits(&mut self, range_decoder: &mut RangeDecoder<'_>) -> (bool, bool) {
+        let voice_activity_detected = range_decoder.decode_symbol_logp(1) == 1;
+        let low_bit_rate_redundancy = range_decoder.decode_symbol_logp(1) == 1;
         (voice_activity_detected, low_bit_rate_redundancy)
     }
 
@@ -208,14 +206,13 @@ impl<'a> Decoder<'a> {
     /// See [section-4.2.7.3](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.3)
     pub fn determine_frame_type(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         voice_activity_detected: bool,
     ) -> (FrameSignalType, FrameQuantizationOffsetType) {
         let frame_type_symbol = if voice_activity_detected {
-            self.range_decoder
-                .decode_symbol_with_icdf(FRAME_TYPE_VAD_ACTIVE)
+            range_decoder.decode_symbol_with_icdf(FRAME_TYPE_VAD_ACTIVE)
         } else {
-            self.range_decoder
-                .decode_symbol_with_icdf(FRAME_TYPE_VAD_INACTIVE)
+            range_decoder.decode_symbol_with_icdf(FRAME_TYPE_VAD_INACTIVE)
         };
 
         // +------------+-------------+--------------------------+
@@ -253,6 +250,7 @@ impl<'a> Decoder<'a> {
     #[allow(unused_assignments)]
     pub fn decode_subframe_quantizations(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         signal_type: FrameSignalType,
     ) -> [f32; SUBFRAME_COUNT] {
         let mut log_gain = 0;
@@ -270,16 +268,13 @@ impl<'a> Decoder<'a> {
                 // of the quantization gain are decoded using a PDF selected from
                 // Table 11 based on the decoded signal type
                 gain_index = match signal_type {
-                    FrameSignalType::Inactive => self
-                        .range_decoder
+                    FrameSignalType::Inactive => range_decoder
                         .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE)
                         as i32,
-                    FrameSignalType::Voiced => self
-                        .range_decoder
+                    FrameSignalType::Voiced => range_decoder
                         .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_VOICED)
                         as i32,
-                    FrameSignalType::Unvoiced => self
-                        .range_decoder
+                    FrameSignalType::Unvoiced => range_decoder
                         .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED)
                         as i32,
                 };
@@ -287,9 +282,7 @@ impl<'a> Decoder<'a> {
                 // The 3 least significant bits are decoded using a uniform PDF:
                 // These 6 bits are combined to form a value, gain_index, between 0 and 63.
                 gain_index = (gain_index << 3)
-                    | ((self
-                        .range_decoder
-                        .decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_LSB))
+                    | (range_decoder.decode_symbol_with_icdf(INDEPENDENT_QUANTIZATION_GAIN_LSB)
                         as i32);
 
                 // When the gain for the previous subframe is available, then the
@@ -305,10 +298,8 @@ impl<'a> Decoder<'a> {
                 // first subframe of frames not listed as using independent coding
                 // above), the quantization gain is coded relative to the gain from the
                 // previous subframe
-                delta_gain_index = self
-                    .range_decoder
-                    .decode_symbol_with_icdf(DELTA_QUANTIZATION_GAIN)
-                    as i32;
+                delta_gain_index =
+                    range_decoder.decode_symbol_with_icdf(DELTA_QUANTIZATION_GAIN) as i32;
 
                 // The following formula translates this index into a quantization gain
                 // for the current subframe using the gain from the previous subframe:
@@ -354,6 +345,7 @@ impl<'a> Decoder<'a> {
     /// See [Section-4.2.7.5.1](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.1).
     pub fn normalize_line_spectral_frequency_stage_one(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         voice_activity_detected: bool,
         bandwidth: Bandwidth,
     ) -> u32 {
@@ -371,18 +363,17 @@ impl<'a> Decoder<'a> {
         use Bandwidth::*;
 
         match (voice_activity_detected, bandwidth) {
-            (false, Narrow | Medium) => self.range_decoder.decode_symbol_with_icdf(
+            (false, Narrow | Medium) => range_decoder.decode_symbol_with_icdf(
                 NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_UNVOICED,
             ),
-            (true, Narrow | Medium) => self.range_decoder.decode_symbol_with_icdf(
+            (true, Narrow | Medium) => range_decoder.decode_symbol_with_icdf(
                 NORMALIZED_LSF_STAGE_1_INDEX_NARROWBAND_OR_MEDIUMBAND_VOICED,
             ),
-            (false, Wide) => self
-                .range_decoder
+            (false, Wide) => range_decoder
                 .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_UNVOICED),
-            (true, Wide) => self
-                .range_decoder
-                .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED),
+            (true, Wide) => {
+                range_decoder.decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_1_INDEX_WIDEBAND_VOICED)
+            }
             (_, _) => unimplemented!(),
         }
     }
@@ -394,6 +385,7 @@ impl<'a> Decoder<'a> {
     /// see [section-4.2.7.5.2](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2).
     pub fn normalize_line_spectral_frequency_stage_two(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         bandwidth: Bandwidth,
         i1: u32,
     ) -> ResQ10 {
@@ -417,7 +409,7 @@ impl<'a> Decoder<'a> {
             // result to give an index in the range -4 to 4, inclusive.
             //
             // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
-            i2[i] = (self.range_decoder.decode_symbol_with_icdf(
+            i2[i] = (range_decoder.decode_symbol_with_icdf(
                 NORMALIZED_LSF_STAGE_2_INDEX[codebook[i1 as usize][i] as usize],
             )) as i8
                 - 4;
@@ -429,13 +421,11 @@ impl<'a> Decoder<'a> {
             //
             // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2
             if i2[i] == -4 {
-                i2[i] -= (self
-                    .range_decoder
+                i2[i] -= (range_decoder
                     .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION))
                     as i8;
             } else if i2[i] == 4 {
-                i2[i] += (self
-                    .range_decoder
+                i2[i] += (range_decoder
                     .decode_symbol_with_icdf(NORMALIZED_LSF_STAGE_2_INDEX_EXTENSION))
                     as i8;
             }
@@ -509,10 +499,12 @@ impl<'a> Decoder<'a> {
         }
     }
     /// https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.5
-    pub fn normalize_lsf_interpolation(&mut self, n2_q15: &[i16]) -> (Option<NlsfQ15>, i16) {
-        let w_q2 = self
-            .range_decoder
-            .decode_symbol_with_icdf(NORMALIZED_LSF_INTERPOLATION_INDEX) as i16;
+    pub fn normalize_lsf_interpolation(
+        &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
+        n2_q15: &[i16],
+    ) -> (Option<NlsfQ15>, i16) {
+        let w_q2 = range_decoder.decode_symbol_with_icdf(NORMALIZED_LSF_INTERPOLATION_INDEX) as i16;
 
         if w_q2 == 4 || !self.have_decoded {
             return (None, w_q2);
@@ -552,6 +544,7 @@ impl<'a> Decoder<'a> {
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.1
     pub fn decode_pitch_lags(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         signal_type: FrameSignalType,
         bandwidth: Bandwidth,
     ) -> Result<Option<PitchLagInfo>, DecodePitchLagsError> {
@@ -568,10 +561,8 @@ impl<'a> Decoder<'a> {
                 _ => return Err(DecodePitchLagsError::UnsupportedBandwidth),
             };
 
-            let lag_high = self
-                .range_decoder
-                .decode_symbol_with_icdf(PRIMARY_PITCH_LAG_HIGH_PART);
-            let lag_low = self.range_decoder.decode_symbol_with_icdf(low_part_icdf);
+            let lag_high = range_decoder.decode_symbol_with_icdf(PRIMARY_PITCH_LAG_HIGH_PART);
+            let lag_low = range_decoder.decode_symbol_with_icdf(low_part_icdf);
 
             (lag_high * lag_scale + lag_low + lag_min, lag_min, lag_max)
         } else {
@@ -590,7 +581,7 @@ impl<'a> Decoder<'a> {
             _ => return Err(DecodePitchLagsError::UnsupportedBandwidth),
         };
 
-        let contour_index = self.range_decoder.decode_symbol_with_icdf(lag_icdf) as usize;
+        let contour_index = range_decoder.decode_symbol_with_icdf(lag_icdf) as usize;
 
         let mut pitch_lags = [0i16; SUBFRAME_COUNT];
         for (idx, value) in pitch_lags.iter_mut().enumerate() {
@@ -608,15 +599,14 @@ impl<'a> Decoder<'a> {
     /// See [section-4.2.7.6.2](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.2)
     pub fn decode_ltp_filter_coefficients(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         signal_type: FrameSignalType,
     ) -> Option<[[i8; 5]; SUBFRAME_COUNT]> {
         if signal_type != FrameSignalType::Voiced {
             return None;
         }
 
-        let periodicity_index = self
-            .range_decoder
-            .decode_symbol_with_icdf(PERIODICITY_INDEX) as usize;
+        let periodicity_index = range_decoder.decode_symbol_with_icdf(PERIODICITY_INDEX) as usize;
         debug_assert!(periodicity_index < 3);
         if periodicity_index > 2 {
             return None;
@@ -636,7 +626,7 @@ impl<'a> Decoder<'a> {
 
         let mut coefficients = [[0i8; 5]; SUBFRAME_COUNT];
         for coeff in coefficients.iter_mut() {
-            let filter_index = self.range_decoder.decode_symbol_with_icdf(filter_icdf) as usize;
+            let filter_index = range_decoder.decode_symbol_with_icdf(filter_icdf) as usize;
             *coeff = codebook[filter_index];
         }
 
@@ -644,24 +634,28 @@ impl<'a> Decoder<'a> {
     }
 
     /// See [section-4.2.7.6.3](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.3)
-    pub fn decode_ltp_scaling_parameter(&mut self, signal_type: FrameSignalType) -> f32 {
+    pub fn decode_ltp_scaling_parameter(
+        &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
+        signal_type: FrameSignalType,
+    ) -> f32 {
         const SCALE_FACTORS_Q14: [f32; 3] = [15_565.0, 12_288.0, 8_192.0];
 
         if signal_type != FrameSignalType::Voiced {
             return SCALE_FACTORS_Q14[0];
         }
 
-        let index = self
-            .range_decoder
-            .decode_symbol_with_icdf(LTP_SCALING_PARAMETER) as usize;
+        let index = range_decoder.decode_symbol_with_icdf(LTP_SCALING_PARAMETER) as usize;
 
         SCALE_FACTORS_Q14.get(index).copied().unwrap_or(0.0)
     }
 
     /// See [section-4.2.7.7](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.7)
-    pub fn decode_linear_congruential_generator_seed(&mut self) -> u32 {
-        self.range_decoder
-            .decode_symbol_with_icdf(LINEAR_CONGRUENTIAL_GENERATOR_SEED)
+    pub fn decode_linear_congruential_generator_seed(
+        &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
+    ) -> u32 {
+        range_decoder.decode_symbol_with_icdf(LINEAR_CONGRUENTIAL_GENERATOR_SEED)
     }
 
     fn samples_in_subframe(&self, bandwidth: Bandwidth) -> usize {
@@ -953,7 +947,7 @@ impl<'a> Decoder<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn decode(
         &mut self,
-        input: &'a [u8],
+        input: &[u8],
         out: &mut [f32],
         is_stereo: bool,
         nanoseconds: u32,
@@ -972,24 +966,27 @@ impl<'a> Decoder<'a> {
             return Err(DecodeError::OutBufferTooSmall);
         }
 
-        self.range_decoder = RangeDecoder::init(input);
+        let mut range_decoder = RangeDecoder::init(input);
 
-        let (voice_activity_detected, low_bit_rate_redundancy) = self.decode_header_bits();
+        let (voice_activity_detected, low_bit_rate_redundancy) =
+            self.decode_header_bits(&mut range_decoder);
         if low_bit_rate_redundancy {
             return Err(DecodeError::UnsupportedLowBitrateRedundancy);
         }
 
         let (signal_type, quantization_offset_type) =
-            self.determine_frame_type(voice_activity_detected);
+            self.determine_frame_type(&mut range_decoder, voice_activity_detected);
 
-        let gain_q16 = self.decode_subframe_quantizations(signal_type);
+        let gain_q16 = self.decode_subframe_quantizations(&mut range_decoder, signal_type);
 
         let i1 = self.normalize_line_spectral_frequency_stage_one(
+            &mut range_decoder,
             signal_type == FrameSignalType::Voiced,
             bandwidth,
         );
 
-        let res_q10 = self.normalize_line_spectral_frequency_stage_two(bandwidth, i1);
+        let res_q10 =
+            self.normalize_line_spectral_frequency_stage_two(&mut range_decoder, bandwidth, i1);
         let d_lpc = res_q10.d_lpc();
         let mut nlsf_q15 = [0i16; MAX_D_LPC];
         normalize_line_spectral_frequency_coefficients(
@@ -1001,7 +998,8 @@ impl<'a> Decoder<'a> {
         );
         normalize_lsf_stabilization(&mut nlsf_q15[..d_lpc], d_lpc as isize, bandwidth);
 
-        let (n1_q15, w_q2) = self.normalize_lsf_interpolation(&nlsf_q15[..d_lpc]);
+        let (n1_q15, w_q2) =
+            self.normalize_lsf_interpolation(&mut range_decoder, &nlsf_q15[..d_lpc]);
 
         let mut a_q12 = Aq12List::new();
         if let Some(ref n1_values) = n1_q15 {
@@ -1011,20 +1009,26 @@ impl<'a> Decoder<'a> {
         self.generate_a_q12(Some(&nlsf_current), bandwidth, &mut a_q12);
 
         let pitch_info = self
-            .decode_pitch_lags(signal_type, bandwidth)
+            .decode_pitch_lags(&mut range_decoder, signal_type, bandwidth)
             .map_err(DecodeError::PitchLags)?;
         let lag_max = pitch_info.as_ref().map(|info| info.lag_max).unwrap_or(0);
         let pitch_lags_ref: Option<&[i16; SUBFRAME_COUNT]> =
             pitch_info.as_ref().map(|info| &info.pitch_lags);
 
-        let ltp_coefficients = self.decode_ltp_filter_coefficients(signal_type);
-        let ltp_scale_q14 = self.decode_ltp_scaling_parameter(signal_type);
-        let lcg_seed = self.decode_linear_congruential_generator_seed();
+        let ltp_coefficients = self.decode_ltp_filter_coefficients(&mut range_decoder, signal_type);
+        let ltp_scale_q14 = self.decode_ltp_scaling_parameter(&mut range_decoder, signal_type);
+        let lcg_seed = self.decode_linear_congruential_generator_seed(&mut range_decoder);
         let shell_blocks = self.decode_shell_blocks(nanoseconds, bandwidth);
-        let rate_level = self.decode_rate_level(signal_type == FrameSignalType::Voiced);
-        let counts = self.decode_pulse_and_lsb_counts(shell_blocks, rate_level);
-        let excitation =
-            self.decode_excitation(signal_type, quantization_offset_type, lcg_seed, &counts);
+        let rate_level =
+            self.decode_rate_level(&mut range_decoder, signal_type == FrameSignalType::Voiced);
+        let counts = self.decode_pulse_and_lsb_counts(&mut range_decoder, shell_blocks, rate_level);
+        let excitation = self.decode_excitation(
+            &mut range_decoder,
+            signal_type,
+            quantization_offset_type,
+            lcg_seed,
+            &counts,
+        );
 
         self.silk_frame_reconstruction(
             signal_type,
@@ -1072,19 +1076,22 @@ impl<'a> Decoder<'a> {
     }
 
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8.1
-    pub fn decode_rate_level(&mut self, voice_activity_detected: bool) -> u32 {
+    pub fn decode_rate_level(
+        &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
+        voice_activity_detected: bool,
+    ) -> u32 {
         if voice_activity_detected {
-            self.range_decoder
-                .decode_symbol_with_icdf(icdf::RATE_LEVEL_VOICED)
+            range_decoder.decode_symbol_with_icdf(icdf::RATE_LEVEL_VOICED)
         } else {
-            self.range_decoder
-                .decode_symbol_with_icdf(icdf::RATE_LEVEL_UNVOICED)
+            range_decoder.decode_symbol_with_icdf(icdf::RATE_LEVEL_UNVOICED)
         }
     }
 
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8.2
     pub fn decode_pulse_and_lsb_counts(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         shell_blocks: usize,
         rate_level: u32,
     ) -> ShellBlockCounts {
@@ -1097,25 +1104,19 @@ impl<'a> Decoder<'a> {
 
         for block_idx in 0..shell_blocks {
             let mut pulse_count =
-                self.range_decoder
-                    .decode_symbol_with_icdf(icdf::PULSE_COUNT[rate_index]) as u8;
+                range_decoder.decode_symbol_with_icdf(icdf::PULSE_COUNT[rate_index]) as u8;
 
             if pulse_count == 17 {
                 let mut lsb_count = 0u8;
                 while pulse_count == 17 && lsb_count < MAX_LSB_COUNT {
-                    pulse_count = self
-                        .range_decoder
-                        .decode_symbol_with_icdf(icdf::PULSE_COUNT[9])
-                        as u8;
+                    pulse_count = range_decoder.decode_symbol_with_icdf(icdf::PULSE_COUNT[9]) as u8;
                     lsb_count += 1;
                 }
                 counts.lsb_counts[block_idx] = lsb_count;
 
                 if lsb_count == MAX_LSB_COUNT {
-                    pulse_count = self
-                        .range_decoder
-                        .decode_symbol_with_icdf(icdf::PULSE_COUNT[10])
-                        as u8;
+                    pulse_count =
+                        range_decoder.decode_symbol_with_icdf(icdf::PULSE_COUNT[10]) as u8;
                 }
             }
 
@@ -1128,6 +1129,7 @@ impl<'a> Decoder<'a> {
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8
     pub fn decode_excitation(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         signal_type: FrameSignalType,
         quantization_offset_type: FrameQuantizationOffsetType,
         mut seed: u32,
@@ -1145,9 +1147,10 @@ impl<'a> Decoder<'a> {
         };
 
         let mut e_raw = [0i32; MAX_EXCITATION_SAMPLES];
-        self.decode_pulse_location_into(counts, &mut e_raw, len);
-        self.decode_excitation_lsb_into(&mut e_raw, counts, len);
+        self.decode_pulse_location_into(range_decoder, counts, &mut e_raw, len);
+        self.decode_excitation_lsb_into(range_decoder, &mut e_raw, counts, len);
         self.decode_excitation_sign_into(
+            range_decoder,
             &mut e_raw,
             signal_type,
             quantization_offset_type,
@@ -1172,6 +1175,7 @@ impl<'a> Decoder<'a> {
 
     fn decode_pulse_location_into(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         counts: &ShellBlockCounts,
         e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
         len: usize,
@@ -1191,6 +1195,7 @@ impl<'a> Decoder<'a> {
 
             let mut partition16 = [0u8; 2];
             self.partition_pulse_count(
+                range_decoder,
                 &icdf::PULSE_COUNT_SPLIT16_SAMPLE_PARTITIONS,
                 pulses,
                 &mut partition16,
@@ -1199,6 +1204,7 @@ impl<'a> Decoder<'a> {
             for &count8 in &partition16 {
                 let mut partition8 = [0u8; 2];
                 self.partition_pulse_count(
+                    range_decoder,
                     &icdf::PULSE_COUNT_SPLIT8_SAMPLE_PARTITIONS,
                     count8,
                     &mut partition8,
@@ -1207,6 +1213,7 @@ impl<'a> Decoder<'a> {
                 for &count4 in &partition8 {
                     let mut partition4 = [0u8; 2];
                     self.partition_pulse_count(
+                        range_decoder,
                         &icdf::PULSE_COUNT_SPLIT4_SAMPLE_PARTITIONS,
                         count4,
                         &mut partition4,
@@ -1215,6 +1222,7 @@ impl<'a> Decoder<'a> {
                     for &count2 in &partition4 {
                         let mut partition2 = [0u8; 2];
                         self.partition_pulse_count(
+                            range_decoder,
                             &icdf::PULSE_COUNT_SPLIT2_SAMPLE_PARTITIONS,
                             count2,
                             &mut partition2,
@@ -1232,6 +1240,7 @@ impl<'a> Decoder<'a> {
 
     fn decode_excitation_lsb_into(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
         counts: &ShellBlockCounts,
         len: usize,
@@ -1240,9 +1249,7 @@ impl<'a> Decoder<'a> {
             let block_idx = sample_idx / PULSECOUNT_LARGEST_PARTITION_SIZE;
             let lsb_count = counts.lsb_counts[block_idx];
             for _ in 0..lsb_count {
-                let bit = self
-                    .range_decoder
-                    .decode_symbol_with_icdf(icdf::EXCITATION_LSB);
+                let bit = range_decoder.decode_symbol_with_icdf(icdf::EXCITATION_LSB);
                 e_raw[sample_idx] = (e_raw[sample_idx] << 1) | bit as i32;
             }
         }
@@ -1250,6 +1257,7 @@ impl<'a> Decoder<'a> {
 
     fn decode_excitation_sign_into(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
         signal_type: FrameSignalType,
         quantization_offset_type: FrameQuantizationOffsetType,
@@ -1269,7 +1277,7 @@ impl<'a> Decoder<'a> {
                 pulse_count,
             );
 
-            if self.range_decoder.decode_symbol_with_icdf(icdf_ctx) == 0 {
+            if range_decoder.decode_symbol_with_icdf(icdf_ctx) == 0 {
                 e_raw[sample_idx] = -e_raw[sample_idx];
             }
         }
@@ -1277,6 +1285,7 @@ impl<'a> Decoder<'a> {
 
     fn partition_pulse_count(
         &mut self,
+        range_decoder: &mut RangeDecoder<'_>,
         contexts: &[icdf::ICDFContext; 16],
         block: u8,
         halves: &mut [u8; 2],
@@ -1288,7 +1297,7 @@ impl<'a> Decoder<'a> {
         }
 
         let index = (block as usize).saturating_sub(1).min(contexts.len() - 1);
-        let left = self.range_decoder.decode_symbol_with_icdf(contexts[index]) as u8;
+        let left = range_decoder.decode_symbol_with_icdf(contexts[index]) as u8;
         halves[0] = left;
         halves[1] = block.saturating_sub(left);
     }
@@ -2489,12 +2498,6 @@ mod tests {
     #[test]
     fn determine_frame_type() {
         let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_SILK_FRAME,
-                bits_read: 31,
-                range_size: 536870912,
-                high_and_coded_difference: 437100388,
-            },
             have_decoded: false,
             is_previous_frame_voiced: false,
             previous_log_gain: 0,
@@ -2504,8 +2507,15 @@ mod tests {
             previous_frame_lpc_values: [0.0; MAX_D_LPC],
             previous_frame_lpc_values_len: 0,
         };
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_SILK_FRAME,
+            bits_read: 31,
+            range_size: 536_870_912,
+            high_and_coded_difference: 437_100_388,
+        };
 
-        let (signal_type, quantization_offset_type) = decoder.determine_frame_type(false);
+        let (signal_type, quantization_offset_type) =
+            decoder.determine_frame_type(&mut range_decoder, false);
         assert_eq!(signal_type, FrameSignalType::Inactive);
         assert_eq!(quantization_offset_type, FrameQuantizationOffsetType::High);
     }
@@ -2513,12 +2523,6 @@ mod tests {
     #[test]
     fn decode_subframe_quantizations() {
         let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_SILK_FRAME,
-                bits_read: 31,
-                range_size: 482344960,
-                high_and_coded_difference: 437100388,
-            },
             have_decoded: false,
             is_previous_frame_voiced: false,
             previous_log_gain: 0,
@@ -2528,20 +2532,21 @@ mod tests {
             previous_frame_lpc_values: [0.0; MAX_D_LPC],
             previous_frame_lpc_values_len: 0,
         };
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_SILK_FRAME,
+            bits_read: 31,
+            range_size: 482_344_960,
+            high_and_coded_difference: 437_100_388,
+        };
 
-        let quantizations = decoder.decode_subframe_quantizations(FrameSignalType::Inactive);
+        let quantizations =
+            decoder.decode_subframe_quantizations(&mut range_decoder, FrameSignalType::Inactive);
         assert_eq!(quantizations, [210944., 112640., 96256., 96256.]);
     }
 
     #[test]
     fn normalize_line_spectral_frequency_stage_one() {
         let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_SILK_FRAME,
-                bits_read: 47,
-                range_size: 722810880,
-                high_and_coded_difference: 387065757,
-            },
             have_decoded: false,
             is_previous_frame_voiced: false,
             previous_log_gain: 0,
@@ -2551,10 +2556,20 @@ mod tests {
             previous_frame_lpc_values: [0.0; MAX_D_LPC],
             previous_frame_lpc_values_len: 0,
         };
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_SILK_FRAME,
+            bits_read: 47,
+            range_size: 722_810_880,
+            high_and_coded_difference: 387_065_757,
+        };
 
         assert_eq!(
             9,
-            decoder.normalize_line_spectral_frequency_stage_one(false, Bandwidth::Wide)
+            decoder.normalize_line_spectral_frequency_stage_one(
+                &mut range_decoder,
+                false,
+                Bandwidth::Wide,
+            )
         );
     }
 
@@ -2589,49 +2604,35 @@ mod tests {
 
     #[test]
     fn normalize_line_spectral_frequency_stage_two() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_SILK_FRAME,
-                bits_read: 47,
-                range_size: 50822640,
-                high_and_coded_difference: 5895957,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_SILK_FRAME,
+            bits_read: 47,
+            range_size: 50_822_640,
+            high_and_coded_difference: 5_895_957,
         };
 
-        let res_q10 = decoder.normalize_line_spectral_frequency_stage_two(Bandwidth::Wide, 9);
+        let res_q10 = decoder.normalize_line_spectral_frequency_stage_two(
+            &mut range_decoder,
+            Bandwidth::Wide,
+            9,
+        );
 
         assert_eq!(res_q10, ResQ10::Wide(TEST_RES_Q_10));
     }
 
     #[test]
     fn decode_pitch_lags() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_PITCH_LAG_FRAME,
-                bits_read: 73,
-                range_size: 30_770_362,
-                high_and_coded_difference: 1_380_489,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_PITCH_LAG_FRAME,
+            bits_read: 73,
+            range_size: 30_770_362,
+            high_and_coded_difference: 1_380_489,
         };
 
         let result = decoder
-            .decode_pitch_lags(FrameSignalType::Voiced, Bandwidth::Wide)
+            .decode_pitch_lags(&mut range_decoder, FrameSignalType::Voiced, Bandwidth::Wide)
             .expect("pitch lag decoding should succeed");
 
         let info = result.expect("expected voiced frame pitch lags");
@@ -2641,25 +2642,16 @@ mod tests {
 
     #[test]
     fn decode_ltp_filter_coefficients_returns_expected_taps() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_PITCH_LAG_FRAME,
-                bits_read: 89,
-                range_size: 253_853_952,
-                high_and_coded_difference: 138_203_876,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_PITCH_LAG_FRAME,
+            bits_read: 89,
+            range_size: 253_853_952,
+            high_and_coded_difference: 138_203_876,
         };
 
         let coeffs = decoder
-            .decode_ltp_filter_coefficients(FrameSignalType::Voiced)
+            .decode_ltp_filter_coefficients(&mut range_decoder, FrameSignalType::Voiced)
             .expect("voiced frame should decode LTP filter coefficients");
 
         assert_eq!(
@@ -2675,71 +2667,46 @@ mod tests {
 
     #[test]
     fn decode_ltp_scaling_parameter_returns_default_for_unvoiced_frames() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder::init(&[]);
 
-        let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Unvoiced);
+        let scale =
+            decoder.decode_ltp_scaling_parameter(&mut range_decoder, FrameSignalType::Unvoiced);
         assert_eq!(scale, 15_565.0);
     }
 
     #[test]
     fn decode_ltp_scaling_parameter_decodes_voiced_frames() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_PITCH_LAG_FRAME,
-                bits_read: 105,
-                range_size: 160_412_192,
-                high_and_coded_difference: 164_623_240,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_PITCH_LAG_FRAME,
+            bits_read: 105,
+            range_size: 160_412_192,
+            high_and_coded_difference: 164_623_240,
         };
 
-        let scale = decoder.decode_ltp_scaling_parameter(FrameSignalType::Voiced);
+        let scale =
+            decoder.decode_ltp_scaling_parameter(&mut range_decoder, FrameSignalType::Voiced);
         assert_eq!(scale, 15_565.0);
     }
 
     #[test]
     fn decode_linear_congruential_generator_seed_reads_expected_value() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_LCG_FRAME,
-                bits_read: 71,
-                range_size: 851_775_140,
-                high_and_coded_difference: 846_837_397,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_LCG_FRAME,
+            bits_read: 71,
+            range_size: 851_775_140,
+            high_and_coded_difference: 846_837_397,
         };
 
-        let seed = decoder.decode_linear_congruential_generator_seed();
+        let seed = decoder.decode_linear_congruential_generator_seed(&mut range_decoder);
         assert_eq!(seed, 0);
     }
 
     #[test]
     fn decode_returns_error_for_non_20_ms_frames() {
-        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut decoder = DecoderBuilder::new().build();
         let mut out = [0.0f32; 320];
         let result = decoder.decode(TEST_SILK_FRAME, &mut out, false, 1, Bandwidth::Wide);
         assert!(matches!(result, Err(DecodeError::UnsupportedFrameDuration)));
@@ -2747,7 +2714,7 @@ mod tests {
 
     #[test]
     fn decode_returns_error_for_stereo_frames() {
-        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut decoder = DecoderBuilder::new().build();
         let mut out = [0.0f32; 320];
         let result = decoder.decode(
             TEST_SILK_FRAME,
@@ -2761,7 +2728,7 @@ mod tests {
 
     #[test]
     fn decode_returns_error_when_output_buffer_too_small() {
-        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut decoder = DecoderBuilder::new().build();
         let mut out = [0.0f32; 50];
         let result = decoder.decode(
             TEST_SILK_FRAME,
@@ -2775,7 +2742,7 @@ mod tests {
 
     #[test]
     fn decode_matches_go_fixture_for_unvoiced_frame() {
-        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut decoder = DecoderBuilder::new().build();
         let mut out = [0.0f32; 320];
 
         decoder
@@ -2795,7 +2762,7 @@ mod tests {
 
     #[test]
     fn decode_matches_go_fixture_for_subsequent_unvoiced_frame() {
-        let mut decoder = DecoderBuilder::new().build(&[]);
+        let mut decoder = DecoderBuilder::new().build();
         let mut out = [0.0f32; 320];
 
         decoder
@@ -2825,17 +2792,7 @@ mod tests {
 
     #[test]
     fn decode_shell_blocks_matches_reference() {
-        let decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let decoder = DecoderBuilder::new().build();
 
         assert_eq!(
             decoder.decode_shell_blocks(10_000_000, Bandwidth::Narrow),
@@ -2879,32 +2836,25 @@ mod tests {
             -25, 25, 25, 25, 25, -25, -25, -25, 25, -25, 25, 25, -25, -25, -25, 25,
         ];
 
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_LCG_FRAME,
-                bits_read: 71,
-                range_size: 851_775_140,
-                high_and_coded_difference: 846_837_397,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_LCG_FRAME,
+            bits_read: 71,
+            range_size: 851_775_140,
+            high_and_coded_difference: 846_837_397,
         };
 
-        let seed = decoder.decode_linear_congruential_generator_seed();
+        let seed = decoder.decode_linear_congruential_generator_seed(&mut range_decoder);
         let shell_blocks = decoder.decode_shell_blocks(20_000_000, Bandwidth::Wide);
         assert_eq!(shell_blocks, 20);
 
-        let rate_level = decoder.decode_rate_level(false);
-        let counts = decoder.decode_pulse_and_lsb_counts(shell_blocks, rate_level);
+        let rate_level = decoder.decode_rate_level(&mut range_decoder, false);
+        let counts =
+            decoder.decode_pulse_and_lsb_counts(&mut range_decoder, shell_blocks, rate_level);
         assert_eq!(counts.block_count, shell_blocks);
 
         let excitation = decoder.decode_excitation(
+            &mut range_decoder,
             FrameSignalType::Unvoiced,
             FrameQuantizationOffsetType::Low,
             seed,
@@ -2918,44 +2868,30 @@ mod tests {
 
     #[test]
     fn decode_pitch_lags_returns_none_for_unvoiced_frames() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder::init(&[]);
 
         let result = decoder
-            .decode_pitch_lags(FrameSignalType::Unvoiced, Bandwidth::Wide)
+            .decode_pitch_lags(
+                &mut range_decoder,
+                FrameSignalType::Unvoiced,
+                Bandwidth::Wide,
+            )
             .expect("pitch lag decoding should not fail for unvoiced frames");
         assert!(result.is_none());
     }
 
     #[test]
     fn normalize_lsf_interpolation_wq2_equals_four() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: TEST_SILK_FRAME,
-                bits_read: 55,
-                range_size: 493_249_168,
-                high_and_coded_difference: 174_371_199,
-            },
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        let mut range_decoder = RangeDecoder {
+            buf: TEST_SILK_FRAME,
+            bits_read: 55,
+            range_size: 493_249_168,
+            high_and_coded_difference: 174_371_199,
         };
 
-        let (n1_q15, w_q2) = decoder.normalize_lsf_interpolation(&[]);
+        let (n1_q15, w_q2) = decoder.normalize_lsf_interpolation(&mut range_decoder, &[]);
         assert!(n1_q15.is_none());
         assert_eq!(w_q2, 4);
     }
@@ -2966,21 +2902,14 @@ mod tests {
             0xac, 0xbd, 0xa9, 0xf7, 0x26, 0x24, 0x5a, 0xa4, 0x00, 0x37, 0xbf, 0x9c, 0xde, 0x0e,
             0xcf, 0x94, 0x64, 0xaa, 0xf9, 0x87, 0xd0, 0x79, 0x19, 0xa8, 0x21, 0xc0,
         ];
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder {
-                buf: frame,
-                bits_read: 65,
-                range_size: 1_231_761_776,
-                high_and_coded_difference: 1_068_195_183,
-            },
-            have_decoded: true,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 16,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
+        let mut decoder = DecoderBuilder::new().build();
+        decoder.have_decoded = true;
+        decoder.n0_q15_len = 16;
+        let mut range_decoder = RangeDecoder {
+            buf: frame,
+            bits_read: 65,
+            range_size: 1_231_761_776,
+            high_and_coded_difference: 1_068_195_183,
         };
         decoder.n0_q15[..16].copy_from_slice(&[
             518, 380, 4444, 6982, 8752, 10510, 12381, 14102, 15892, 17651, 19340, 21888, 23936,
@@ -2996,7 +2925,7 @@ mod tests {
             26048, 28224, 30240,
         ]);
 
-        let (actual, w_q2) = decoder.normalize_lsf_interpolation(&n2_q15);
+        let (actual, w_q2) = decoder.normalize_lsf_interpolation(&mut range_decoder, &n2_q15);
         assert_eq!(w_q2, 1);
         assert_eq!(actual, Some(expected));
     }
@@ -3016,17 +2945,7 @@ mod tests {
 
     #[test]
     fn convert_normalized_lsfs_to_lpc_coefficients_matches_reference() {
-        let decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let decoder = DecoderBuilder::new().build();
 
         let nlsf = NlsfQ15::from_slice(&TEST_CONVERT_NLSF_Q15);
         let actual = decoder.convert_normalized_lsfs_to_lpc_coefficients(&nlsf, Bandwidth::Wide);
@@ -3036,17 +2955,7 @@ mod tests {
 
     #[test]
     fn limit_lpc_coefficients_range_preserves_reference_values() {
-        let decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let decoder = DecoderBuilder::new().build();
 
         let mut a32 = A32Q17::new(EXPECTED_A32_Q17.len());
         a32.as_mut_slice().copy_from_slice(&EXPECTED_A32_Q17);
@@ -3058,17 +2967,7 @@ mod tests {
 
     #[test]
     fn limit_lpc_filter_prediction_gain_matches_reference() {
-        let decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let decoder = DecoderBuilder::new().build();
 
         let mut a32 = A32Q17::new(EXPECTED_A32_Q17.len());
         a32.as_mut_slice().copy_from_slice(&EXPECTED_A32_Q17);
@@ -3080,17 +2979,7 @@ mod tests {
 
     #[test]
     fn generate_a_q12_appends_coefficients_when_available() {
-        let mut decoder = Decoder {
-            range_decoder: RangeDecoder::init(&[]),
-            have_decoded: false,
-            is_previous_frame_voiced: false,
-            previous_log_gain: 0,
-            final_out_values: [0.; 306],
-            n0_q15: [0; MAX_D_LPC],
-            n0_q15_len: 0,
-            previous_frame_lpc_values: [0.0; MAX_D_LPC],
-            previous_frame_lpc_values_len: 0,
-        };
+        let mut decoder = DecoderBuilder::new().build();
 
         let nlsf = NlsfQ15::from_slice(&TEST_CONVERT_NLSF_Q15);
         let mut a_q12 = Aq12List::new();
