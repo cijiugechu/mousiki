@@ -1,4 +1,5 @@
 use core::fmt;
+use log::{debug, trace};
 
 const PAGE_HEADER_TYPE_BEGINNING_OF_STREAM: u8 = 0x02;
 const PAGE_HEADER_SIGNATURE: [u8; 4] = *b"OggS";
@@ -194,6 +195,16 @@ impl<R: OggRead> OggReader<R> {
 
         let header = reader.read_headers()?;
 
+        debug!(
+            "oggreader: initialized with version={}, channels={}, sample_rate={}, pre_skip={}, gain={}, channel_map={}",
+            header.version,
+            header.channels,
+            header.sample_rate,
+            header.pre_skip,
+            header.output_gain,
+            header.channel_map
+        );
+
         Ok((reader, header))
     }
 
@@ -217,19 +228,32 @@ impl<R: OggRead> OggReader<R> {
         let (segments, page_header) = self.parse_next_page_inner()?;
 
         if page_header.signature != PAGE_HEADER_SIGNATURE {
+            debug!(
+                "oggreader: bad id page signature {:?} (expected {:?})",
+                page_header.signature, PAGE_HEADER_SIGNATURE
+            );
             return Err(OggReaderError::BadIdPageSignature);
         }
 
         if page_header.header_type != PAGE_HEADER_TYPE_BEGINNING_OF_STREAM {
+            debug!(
+                "oggreader: wrong id page type {:02x}",
+                page_header.header_type
+            );
             return Err(OggReaderError::BadIdPageType);
         }
 
         let id_segment = segments.get(0).ok_or(OggReaderError::BadIdPageLength)?;
         if id_segment.len() != ID_PAGE_PAYLOAD_LENGTH {
+            debug!(
+                "oggreader: unexpected id page payload length {}",
+                id_segment.len()
+            );
             return Err(OggReaderError::BadIdPageLength);
         }
 
         if &id_segment[..8] != ID_PAGE_SIGNATURE {
+            debug!("oggreader: bad payload signature {:?}", &id_segment[..8]);
             return Err(OggReaderError::BadIdPagePayloadSignature);
         }
 
@@ -246,6 +270,13 @@ impl<R: OggRead> OggReader<R> {
             output_gain: u16::from_le_bytes([id_segment[16], id_segment[17]]),
             channel_map: id_segment[18],
         };
+
+        trace!(
+            "oggreader: id header parsed serial={}, index={}, segments={}",
+            page_header.serial,
+            page_header.index,
+            segments.len()
+        );
 
         Ok(header)
     }
@@ -267,6 +298,10 @@ impl<R: OggRead> OggReader<R> {
                 .checked_add(size as usize)
                 .ok_or(OggReaderError::PayloadTooLarge)?;
             if total_payload_len > MAX_PAGE_PAYLOAD_LENGTH {
+                debug!(
+                    "oggreader: payload {} exceeds max {}",
+                    total_payload_len, MAX_PAGE_PAYLOAD_LENGTH
+                );
                 return Err(OggReaderError::PayloadTooLarge);
             }
         }
@@ -314,6 +349,10 @@ impl<R: OggRead> OggReader<R> {
             }
             let expected = u32::from_le_bytes([header[22], header[23], header[24], header[25]]);
             if checksum != expected {
+                debug!(
+                    "oggreader: checksum mismatch (expected {:#010x}, got {:#010x})",
+                    expected, checksum
+                );
                 return Err(OggReaderError::ChecksumMismatch);
             }
         }
@@ -335,6 +374,15 @@ impl<R: OggRead> OggReader<R> {
             payload: &self.payload_buffer[..self.payload_len],
             infos: &self.segment_infos[..segments_count],
         };
+
+        trace!(
+            "oggreader: page serial={} index={} granule={} segments={} payload_len={}",
+            page_header.serial,
+            page_header.index,
+            page_header.granule_position,
+            segments_count,
+            self.payload_len
+        );
 
         Ok((segments, page_header))
     }

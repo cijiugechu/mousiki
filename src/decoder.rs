@@ -2,6 +2,7 @@ use crate::bitdepth::{BitDepthError, convert_float32_le_to_signed16_le};
 use crate::packet::{Bandwidth, Mode};
 use crate::resample;
 use crate::silk::decoder as silk_decoder;
+use log::{debug, trace};
 
 /// Number of float samples produced by the SILK decoder for a single 20 ms frame.
 const SILK_FRAME_SAMPLES: usize = 320;
@@ -151,8 +152,21 @@ impl Decoder {
 
         let toc_header = TableOfContentsHeader::new(input[0]);
         let configuration = toc_header.configuration();
+        let frame_code = toc_header.frame_code();
 
-        if toc_header.frame_code() != FrameCountCodeDiscriminant::Single {
+        trace!(
+            "decode_internal: toc=0x{:02x}, frame_code={:?}, stereo={} configuration={:?}",
+            input[0],
+            frame_code,
+            toc_header.is_stereo(),
+            configuration
+        );
+
+        if frame_code != FrameCountCodeDiscriminant::Single {
+            debug!(
+                "decode_internal: unsupported frame code {:?} in header byte 0x{:02x}",
+                frame_code, input[0]
+            );
             return Err(DecoderError::UnsupportedFrameCode(input[0] & 0b11));
         }
 
@@ -160,6 +174,10 @@ impl Decoder {
             .mode()
             .ok_or(DecoderError::UnsupportedConfigurationMode)?;
         if mode != Mode::SILK {
+            debug!(
+                "decode_internal: rejecting non-SILK mode {:?} from configuration {:?}",
+                mode, configuration
+            );
             return Err(DecoderError::UnsupportedConfigurationMode);
         }
 
@@ -172,6 +190,14 @@ impl Decoder {
 
         let encoded_frame = &input[1..];
 
+        trace!(
+            "decode_internal: dispatching SILK frame with bandwidth {:?}, frame_ns={}, stereo={} (payload {} bytes)",
+            bandwidth,
+            nanoseconds,
+            toc_header.is_stereo(),
+            encoded_frame.len()
+        );
+
         self.silk_decoder.decode(
             encoded_frame,
             &mut self.silk_buffer,
@@ -179,6 +205,12 @@ impl Decoder {
             nanoseconds,
             bandwidth,
         )?;
+
+        trace!(
+            "decode_internal: SILK decode complete (bandwidth {:?}, stereo={})",
+            bandwidth,
+            toc_header.is_stereo()
+        );
 
         Ok((bandwidth, toc_header.is_stereo()))
     }
@@ -189,6 +221,12 @@ impl Decoder {
         out: &mut [u8],
     ) -> Result<(Bandwidth, bool), DecoderError> {
         let (bandwidth, stereo) = self.decode_internal(input)?;
+        trace!(
+            "decode: converting frame to i16 PCM (bandwidth {:?}, stereo={}, out_len={})",
+            bandwidth,
+            stereo,
+            out.len()
+        );
         convert_float32_le_to_signed16_le(&self.silk_buffer, out, UPSAMPLE_FACTOR)?;
         Ok((bandwidth, stereo))
     }
@@ -200,6 +238,12 @@ impl Decoder {
     ) -> Result<(Bandwidth, bool), DecoderError> {
         let (bandwidth, stereo) = self.decode_internal(input)?;
         resample::up(&self.silk_buffer, out, UPSAMPLE_FACTOR);
+        trace!(
+            "decode_float32: upsampled frame (bandwidth {:?}, stereo={}, out_len={})",
+            bandwidth,
+            stereo,
+            out.len()
+        );
         Ok((bandwidth, stereo))
     }
 }

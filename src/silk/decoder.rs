@@ -36,6 +36,7 @@ use crate::silk::icdf::{
     SUBFRAME_PITCH_CONTOUR_MEDIUMBAND_OR_WIDEBAND20_MS, SUBFRAME_PITCH_CONTOUR_NARROWBAND20_MS,
 };
 use core::fmt;
+use log::{debug, trace};
 use nomarlize::{A32Q17, Aq12Coefficients, Aq12List, MAX_D_LPC, MAX_D2_LPC, NlsfQ15, ResQ10};
 
 #[derive(Debug)]
@@ -953,41 +954,77 @@ impl Decoder {
         nanoseconds: u32,
         bandwidth: Bandwidth,
     ) -> Result<(), DecodeError> {
+        debug!(
+            "silk::Decoder::decode: payload={} stereo={} ns={} bandwidth={:?}",
+            input.len(),
+            is_stereo,
+            nanoseconds,
+            bandwidth
+        );
         let subframe_size = self.samples_in_subframe(bandwidth);
         if nanoseconds != NANOSECONDS_20_MS {
+            debug!(
+                "silk::Decoder::decode: unsupported frame duration {}ns",
+                nanoseconds
+            );
             return Err(DecodeError::UnsupportedFrameDuration);
         }
         if is_stereo {
+            debug!("silk::Decoder::decode: stereo frames are not supported");
             return Err(DecodeError::StereoUnsupported);
         }
 
         let total_samples = subframe_size * SUBFRAME_COUNT;
         if total_samples > out.len() {
+            debug!(
+                "silk::Decoder::decode: output buffer too small (needed {}, available {})",
+                total_samples,
+                out.len()
+            );
             return Err(DecodeError::OutBufferTooSmall);
         }
 
         let mut range_decoder = RangeDecoder::init(input);
+        trace!(
+            "silk::Decoder::decode: range decoder initialized (subframe_size={})",
+            subframe_size
+        );
 
         let (voice_activity_detected, low_bit_rate_redundancy) =
             self.decode_header_bits(&mut range_decoder);
+        trace!(
+            "silk::Decoder::decode: header bits vad={} lbr={}",
+            voice_activity_detected, low_bit_rate_redundancy
+        );
         if low_bit_rate_redundancy {
+            debug!("silk::Decoder::decode: low bitrate redundancy not supported");
             return Err(DecodeError::UnsupportedLowBitrateRedundancy);
         }
 
         let (signal_type, quantization_offset_type) =
             self.determine_frame_type(&mut range_decoder, voice_activity_detected);
+        trace!(
+            "silk::Decoder::decode: frame type signal={:?} q_offset={:?}",
+            signal_type, quantization_offset_type
+        );
 
         let gain_q16 = self.decode_subframe_quantizations(&mut range_decoder, signal_type);
+        trace!("silk::Decoder::decode: subframe gains {:?}", &gain_q16);
 
         let i1 = self.normalize_line_spectral_frequency_stage_one(
             &mut range_decoder,
             signal_type == FrameSignalType::Voiced,
             bandwidth,
         );
+        trace!(
+            "silk::Decoder::decode: normalized lsf stage one index {}",
+            i1
+        );
 
         let res_q10 =
             self.normalize_line_spectral_frequency_stage_two(&mut range_decoder, bandwidth, i1);
         let d_lpc = res_q10.d_lpc();
+        trace!("silk::Decoder::decode: stage two residual length {}", d_lpc);
         let mut nlsf_q15 = [0i16; MAX_D_LPC];
         normalize_line_spectral_frequency_coefficients(
             d_lpc,
@@ -1000,6 +1037,11 @@ impl Decoder {
 
         let (n1_q15, w_q2) =
             self.normalize_lsf_interpolation(&mut range_decoder, &nlsf_q15[..d_lpc]);
+        let reuse_previous = n1_q15.is_some();
+        trace!(
+            "silk::Decoder::decode: interpolation weight {} reuse_previous={}",
+            w_q2, reuse_previous
+        );
 
         let mut a_q12 = Aq12List::new();
         if let Some(ref n1_values) = n1_q15 {
@@ -1011,23 +1053,53 @@ impl Decoder {
         let pitch_info = self
             .decode_pitch_lags(&mut range_decoder, signal_type, bandwidth)
             .map_err(DecodeError::PitchLags)?;
+        let has_pitch_info = pitch_info.is_some();
         let lag_max = pitch_info.as_ref().map(|info| info.lag_max).unwrap_or(0);
         let pitch_lags_ref: Option<&[i16; SUBFRAME_COUNT]> =
             pitch_info.as_ref().map(|info| &info.pitch_lags);
+        trace!(
+            "silk::Decoder::decode: pitch info present={} lag_max={}",
+            has_pitch_info, lag_max
+        );
 
         let ltp_coefficients = self.decode_ltp_filter_coefficients(&mut range_decoder, signal_type);
         let ltp_scale_q14 = self.decode_ltp_scaling_parameter(&mut range_decoder, signal_type);
         let lcg_seed = self.decode_linear_congruential_generator_seed(&mut range_decoder);
+        trace!(
+            "silk::Decoder::decode: ltp present={} scale_q14={} seed={}",
+            ltp_coefficients.is_some(),
+            ltp_scale_q14,
+            lcg_seed
+        );
         let shell_blocks = self.decode_shell_blocks(nanoseconds, bandwidth);
+        trace!(
+            "silk::Decoder::decode: shell blocks {} (bandwidth {:?})",
+            shell_blocks, bandwidth
+        );
         let rate_level =
             self.decode_rate_level(&mut range_decoder, signal_type == FrameSignalType::Voiced);
+        trace!(
+            "silk::Decoder::decode: rate level {} (voiced={})",
+            rate_level,
+            signal_type == FrameSignalType::Voiced
+        );
         let counts = self.decode_pulse_and_lsb_counts(&mut range_decoder, shell_blocks, rate_level);
+        trace!(
+            "silk::Decoder::decode: pulse counts blocks={} first_block={} first_lsb={}",
+            counts.block_count,
+            counts.pulse_counts.get(0).copied().unwrap_or(0),
+            counts.lsb_counts.get(0).copied().unwrap_or(0)
+        );
         let excitation = self.decode_excitation(
             &mut range_decoder,
             signal_type,
             quantization_offset_type,
             lcg_seed,
             &counts,
+        );
+        trace!(
+            "silk::Decoder::decode: excitation length {}",
+            excitation.len
         );
 
         self.silk_frame_reconstruction(
@@ -1059,6 +1131,10 @@ impl Decoder {
         }
 
         self.have_decoded = true;
+        trace!(
+            "silk::Decoder::decode: frame complete (out_len={} samples)",
+            out.len()
+        );
 
         Ok(())
     }

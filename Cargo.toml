@@ -12,6 +12,7 @@ categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 keywords = ["audio", "codec", "decoder", "opus"]
 
 [dependencies]
+log = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 cpal = { version = "0.15", default-features = true }
