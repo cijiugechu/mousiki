@@ -6,3 +6,13 @@ pub(crate) fn ilog(x: isize) -> isize {
     }
     64 - x.leading_zeros() as isize
 }
+
+pub(crate) fn sign(value: i32) -> i32 {
+    if value < 0 {
+        -1
+    } else if value == 0 {
+        0
+    } else {
+        1
+    }
+}

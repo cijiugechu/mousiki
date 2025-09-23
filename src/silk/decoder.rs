@@ -2,7 +2,7 @@ mod nomarlize;
 
 use super::icdf::{FRAME_TYPE_VAD_ACTIVE, FRAME_TYPE_VAD_INACTIVE};
 use super::{FrameQuantizationOffsetType, FrameSignalType};
-use crate::math::ilog;
+use crate::math::{ilog, sign};
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::codebook::{
@@ -1158,7 +1158,7 @@ impl<'a> Decoder<'a> {
         let mut excitation = ExcitationQ23::new(len);
         for idx in 0..len {
             let raw = e_raw[idx];
-            let mut value = (raw << 8) - Self::sign(raw) * 20 + offset_q23;
+            let mut value = (raw << 8) - sign(raw) * 20 + offset_q23;
             seed = seed.wrapping_mul(196_314_165).wrapping_add(907_633_515);
             if seed & 0x8000_0000 != 0 {
                 value = -value;
@@ -1429,16 +1429,6 @@ impl<'a> Decoder<'a> {
                 icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION5_PULSE
             }
             _ => icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE,
-        }
-    }
-
-    fn sign(value: i32) -> i32 {
-        if value < 0 {
-            -1
-        } else if value == 0 {
-            0
-        } else {
-            1
         }
     }
 
