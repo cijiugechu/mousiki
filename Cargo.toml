@@ -3,6 +3,7 @@ name = "mousiki"
 description = "Pure Rust Opus decoder."
 homepage = "https://github.com/cijiugechu/mousiki"
 repository = "https://github.com/cijiugechu/mousiki"
+authors = ["nemurubaka <cijiugechu@gmail.com>"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
