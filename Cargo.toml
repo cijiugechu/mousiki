@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-symphonia-core = { version = "0.5" }
 
 [dev-dependencies]
 cpal = { version = "0.15", default-features = true }
