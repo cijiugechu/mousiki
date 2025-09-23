@@ -1,7 +1,14 @@
 [package]
 name = "mousiki"
+description = "Pure Rust Opus decoder."
+homepage = "https://github.com/cijiugechu/mousiki"
+repository = "https://github.com/cijiugechu/mousiki"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+readme = "README.md"
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
+keywords = ["audio", "codec", "decoder", "opus"]
 
 [dependencies]
 
