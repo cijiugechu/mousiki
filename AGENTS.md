@@ -11,3 +11,5 @@ The directory where the C version is located is `/opus-c`.
 - Always port the implementation and tests together.
  
 - Variable, type, and function naming in Rust needs to follow Rust conventions.
+
+- Run `cargo check` automatically after making code changes.
