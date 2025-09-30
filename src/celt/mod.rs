@@ -5,7 +5,10 @@
 //! structures so that subsequent ports can translate field-by-field logic while
 //! relying on Rust's ownership and lifetime tracking for safety.
 
+mod math;
 mod types;
 
+#[allow(unused_imports)]
+pub(crate) use math::*;
 #[allow(unused_imports)]
 pub(crate) use types::*;
