@@ -1,6 +1,9 @@
 #![no_std]
 
+extern crate alloc;
+
 pub mod bitdepth;
+mod celt;
 pub mod decoder;
 mod math;
 pub mod oggreader;
