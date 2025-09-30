@@ -1,6 +1,6 @@
 # Rust port of the C opus library
 
-The directory where the Go version is located is `/opus_c`.
+The directory where the C version is located is `/opus-c`.
 
 # Porting strategy
 
