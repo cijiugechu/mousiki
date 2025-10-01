@@ -12,11 +12,15 @@ safely.
   `celt/mathops.h`.
 - `celt_log2`, `celt_exp2`, `celt_div`, and `celt_cos_norm` &rarr; float build
   math helpers implemented in `celt/mathops.h`/`mathops.c`.
+- `celt_sqrt`, `celt_rsqrt`, `celt_rsqrt_norm`, `celt_rcp`, `frac_div32`, and
+  `frac_div32_q29` &rarr; remaining scalar helpers from `celt/mathops.c`.
 - `isqrt32` &rarr; integer square root routine from `celt/mathops.c`.
 - `opus_limit2_checkwithin1` &rarr; scalar sample clamp helper from
   `celt/mathops.c`.
 - `celt_float2int16` &rarr; float-to-int16 conversion helper from
   `celt/mathops.c`.
+- `celt_maxabs16` and `celt_maxabs32` &rarr; helpers returning the largest
+  absolute sample magnitude from `celt/mathops.c`.
 
 ### `types.rs`
 - Scalar aliases `OpusInt32`, `OpusUint32`, `OpusVal16`, `OpusVal32`,
