@@ -11,6 +11,35 @@ use core::f32::consts::PI;
 
 use libm::{cosf, expf, logf};
 
+/// Integer square root mirroring `isqrt32()` from `celt/mathops.c`.
+///
+/// The function computes `floor(sqrt(x))` for positive 32-bit integers using a
+/// bit-by-bit refinement strategy that matches the behaviour of the reference
+/// implementation.  The original routine relies on the `EC_ILOG` macro to
+/// determine the starting bit; the Rust port uses the intrinsic
+/// `leading_zeros()` to achieve the same effect.
+pub(crate) fn isqrt32(mut value: u32) -> u32 {
+    if value == 0 {
+        return 0;
+    }
+
+    let mut root = 0u32;
+    let mut bit_shift = ((32 - value.leading_zeros()) as i32 - 1) >> 1;
+    let mut bit = 1u32 << (bit_shift as u32);
+
+    while bit_shift >= 0 {
+        let trial = ((root << 1) + bit) << (bit_shift as u32);
+        if trial <= value {
+            root += bit;
+            value -= trial;
+        }
+        bit >>= 1;
+        bit_shift -= 1;
+    }
+
+    root
+}
+
 /// Fast arctangent approximation used by the psychoacoustic analysis code.
 ///
 /// Mirrors the `fast_atan2f()` helper from `celt/mathops.h` when building the
@@ -77,6 +106,8 @@ mod tests {
 
     use libm::cosf;
 
+    use super::isqrt32;
+
     use super::{celt_cos_norm, celt_div, celt_exp2, celt_log2, fast_atan2f};
 
     #[test]
@@ -133,5 +164,48 @@ mod tests {
             let expected = cosf(0.5 * PI * input);
             assert!((celt_cos_norm(input) - expected).abs() <= 1e-6);
         }
+    }
+
+    #[test]
+    fn isqrt32_matches_f64_reference() {
+        let mut values = vec![
+            1u32,
+            2,
+            3,
+            4,
+            7,
+            9,
+            15,
+            16,
+            24,
+            36,
+            64,
+            65,
+            255,
+            256,
+            257,
+            1_000,
+            65_535,
+            65_536,
+            1_048_575,
+            u32::MAX,
+        ];
+        // Include additional edge cases near powers of two.
+        for shift in 0..31 {
+            let base = 1u32 << shift;
+            values.push(base.saturating_sub(1));
+            values.push(base);
+            values.push(base.saturating_add(1));
+        }
+
+        values.sort_unstable();
+        values.dedup();
+
+        for value in values {
+            let expected = (f64::from(value).sqrt().floor()) as u32;
+            assert_eq!(isqrt32(value), expected, "value {}", value);
+        }
+
+        assert_eq!(isqrt32(0), 0);
     }
 }
