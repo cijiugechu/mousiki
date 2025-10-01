@@ -85,6 +85,9 @@ safely.
 - `celt_lpc` &rarr; ports the float Levinson-Durbin recursion `_celt_lpc()` from
   `celt/celt_lpc.c`, producing predictor coefficients from an autocorrelation
   sequence.
+- `celt_fir` and `celt_iir` &rarr; translate the FIR/IIR helpers in
+  `celt/celt_lpc.c` for the float build, supplying the filter primitives used by
+  the pitch analysis and postfilter paths.
 
 ## Remaining C modules and their dependencies
 
