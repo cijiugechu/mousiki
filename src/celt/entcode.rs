@@ -23,6 +23,9 @@ pub const EC_CODE_TOP: OpusUint32 = 1u32 << (EC_CODE_BITS - 1);
 /// Low-order bit of the high-order range symbol.
 pub const EC_CODE_BOT: OpusUint32 = EC_CODE_TOP >> EC_SYM_BITS;
 
+/// Number of bits shifted out of `val` when emitting a carry.
+pub const EC_CODE_SHIFT: u32 = EC_CODE_BITS - EC_SYM_BITS - 1;
+
 /// Number of extra bits stored in the range coder state.
 pub const EC_CODE_EXTRA: u32 = ((EC_CODE_BITS - 2) % EC_SYM_BITS) + 1;
 
