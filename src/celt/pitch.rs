@@ -11,6 +11,75 @@ use crate::celt::math::celt_sqrt;
 use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
 use crate::celt::{celt_autocorr, celt_lpc};
 
+/// Selects the two most promising pitch lags based on normalised correlation.
+///
+/// Ports the float variant of `find_best_pitch()` from `celt/pitch.c`.  The
+/// routine scans the coarse cross-correlation vector produced by
+/// [`celt_pitch_xcorr`] and maintains the two candidates with the largest
+/// energy-normalised scores.  The function mirrors the C implementation by
+/// comparing cross-multiplied numerators and denominators instead of dividing
+/// the correlation energy directly, which preserves the ordering even when the
+/// intermediate values grow large.
+pub(crate) fn find_best_pitch(
+    xcorr: &[OpusVal32],
+    y: &[OpusVal16],
+    len: usize,
+    max_pitch: usize,
+    best_pitch: &mut [i32; 2],
+) {
+    assert!(
+        xcorr.len() >= max_pitch,
+        "xcorr must contain max_pitch elements"
+    );
+    assert!(
+        y.len() >= len + max_pitch,
+        "y must contain len + max_pitch samples to slide the energy window",
+    );
+
+    let mut syy: OpusVal32 = 1.0;
+    for &sample in &y[..len] {
+        syy += sample * sample;
+    }
+
+    let mut best_num = [-1.0, -1.0];
+    let mut best_den = [0.0, 0.0];
+    best_pitch[0] = 0;
+    best_pitch[1] = if max_pitch > 1 { 1 } else { 0 };
+
+    for (i, &corr) in xcorr.iter().enumerate().take(max_pitch) {
+        if corr > 0.0 {
+            let mut corr16 = corr;
+            // Matches the float implementation, which rescales the correlation
+            // before squaring to avoid intermediate infinities.  The constant
+            // factor cancels out when comparing the normalised scores.
+            corr16 *= 1e-12;
+            let num = corr16 * corr16;
+
+            if num * best_den[1] > best_num[1] * syy {
+                if num * best_den[0] > best_num[0] * syy {
+                    best_num[1] = best_num[0];
+                    best_den[1] = best_den[0];
+                    best_pitch[1] = best_pitch[0];
+                    best_num[0] = num;
+                    best_den[0] = syy;
+                    best_pitch[0] = i as i32;
+                } else {
+                    best_num[1] = num;
+                    best_den[1] = syy;
+                    best_pitch[1] = i as i32;
+                }
+            }
+        }
+
+        let entering = y[i + len];
+        let leaving = y[i];
+        syy += entering * entering - leaving * leaving;
+        if syy < 1.0 {
+            syy = 1.0;
+        }
+    }
+}
+
 /// Computes the inner product between two input vectors.
 ///
 /// Mirrors the behaviour of `celt_inner_prod_c()` from `celt/pitch.c` when the
@@ -204,10 +273,10 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
 mod tests {
     use super::{
         celt_fir5, celt_inner_prod, celt_pitch_xcorr, compute_pitch_gain, dual_inner_prod,
-        pitch_downsample,
+        find_best_pitch, pitch_downsample,
     };
     use crate::celt::math::celt_sqrt;
-    use crate::celt::types::{CeltSig, OpusVal16};
+    use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
     use crate::celt::{celt_autocorr, celt_lpc};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -283,6 +352,77 @@ mod tests {
                 xcorr[delay]
             );
         }
+    }
+
+    fn reference_find_best_pitch(
+        xcorr: &[OpusVal32],
+        y: &[OpusVal16],
+        len: usize,
+        max_pitch: usize,
+    ) -> [i32; 2] {
+        let mut syy = 1.0;
+        for &sample in &y[..len] {
+            syy += sample * sample;
+        }
+
+        let mut best_num = [-1.0, -1.0];
+        let mut best_den = [0.0, 0.0];
+        let mut best_pitch = [0, if max_pitch > 1 { 1 } else { 0 }];
+
+        for i in 0..max_pitch {
+            let corr = xcorr[i];
+            if corr > 0.0 {
+                let num = corr * corr;
+                if num * best_den[1] > best_num[1] * syy {
+                    if num * best_den[0] > best_num[0] * syy {
+                        best_num[1] = best_num[0];
+                        best_den[1] = best_den[0];
+                        best_pitch[1] = best_pitch[0];
+                        best_num[0] = num;
+                        best_den[0] = syy;
+                        best_pitch[0] = i as i32;
+                    } else {
+                        best_num[1] = num;
+                        best_den[1] = syy;
+                        best_pitch[1] = i as i32;
+                    }
+                }
+            }
+
+            let entering = y[i + len];
+            let leaving = y[i];
+            syy += entering * entering - leaving * leaving;
+            if syy < 1.0 {
+                syy = 1.0;
+            }
+        }
+
+        best_pitch
+    }
+
+    #[test]
+    fn find_best_pitch_matches_reference() {
+        let len = 48usize;
+        let max_pitch = 24usize;
+
+        let x = generate_sequence(len, 0x1111_2222);
+        let mut y = vec![0.0; len + max_pitch];
+        let primary_lag = 7usize;
+        let secondary_lag = 15usize;
+
+        for i in 0..len {
+            y[i + primary_lag] += x[i];
+            y[i + secondary_lag] += 0.6 * x[i];
+        }
+
+        let mut xcorr = vec![0.0; max_pitch];
+        celt_pitch_xcorr(&x, &y, len, max_pitch, &mut xcorr);
+
+        let mut best = [0i32; 2];
+        find_best_pitch(&xcorr, &y, len, max_pitch, &mut best);
+
+        let expected = reference_find_best_pitch(&xcorr, &y, len, max_pitch);
+        assert_eq!(best, expected);
     }
 
     fn reference_pitch_downsample(x: &[&[CeltSig]], len: usize, arch: i32) -> Vec<OpusVal16> {

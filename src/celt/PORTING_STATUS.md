@@ -116,6 +116,8 @@ safely.
   pitch correlation routines.
 - `dual_inner_prod` &rarr; simultaneous dot-product helper mirroring
   `dual_inner_prod_c()` in `celt/pitch.c`.
+- `find_best_pitch` &rarr; selects the two strongest normalised pitch candidates
+  from `celt/pitch.c`'s coarse correlation sweep.
 - `compute_pitch_gain` &rarr; float pitch gain normalisation matching the
   `compute_pitch_gain()` utility in `celt/pitch.c`.
 - `celt_pitch_xcorr` &rarr; scalar pitch cross-correlation routine from
