@@ -6,6 +6,7 @@
 //! relying on Rust's ownership and lifetime tracking for safety.
 
 mod entcode;
+mod entdec;
 mod laplace;
 mod math;
 mod types;
@@ -13,6 +14,8 @@ mod vq;
 
 #[allow(unused_imports)]
 pub(crate) use entcode::*;
+#[allow(unused_imports)]
+pub(crate) use entdec::*;
 #[allow(unused_imports)]
 pub(crate) use laplace::*;
 #[allow(unused_imports)]
