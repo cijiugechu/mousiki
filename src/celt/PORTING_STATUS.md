@@ -7,6 +7,13 @@ safely.
 
 ## Rust code that already mirrors the C sources
 
+### `bands.rs`
+- `hysteresis_decision` &rarr; ports the decision helper from `celt/bands.c`
+  that keeps the spread classification stable when values hover near
+  thresholds.
+- `celt_lcg_rand` &rarr; mirrors the linear congruential pseudo-random number
+  generator used by the band analysis heuristics in `celt/bands.c`.
+
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
   `celt/mathops.h`.
