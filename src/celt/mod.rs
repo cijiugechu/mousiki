@@ -5,6 +5,7 @@
 //! structures so that subsequent ports can translate field-by-field logic while
 //! relying on Rust's ownership and lifetime tracking for safety.
 
+mod bands;
 mod cwrs;
 mod entcode;
 mod entdec;
@@ -17,6 +18,8 @@ mod pitch;
 mod types;
 mod vq;
 
+#[allow(unused_imports)]
+pub(crate) use bands::*;
 #[allow(unused_imports)]
 pub(crate) use cwrs::*;
 #[allow(unused_imports)]
