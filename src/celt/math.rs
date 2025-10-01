@@ -7,7 +7,8 @@
 //! portions of the codec and map closely to the routines defined in
 //! `celt/mathops.h` in the reference implementation.
 
-use core::f32::consts::PI;
+use core::f32::consts::{LOG2_E, PI};
+use core::f32::consts::LN_2;
 
 use libm::{cosf, expf, logf};
 
@@ -77,14 +78,12 @@ pub(crate) fn fast_atan2f(y: f32, x: f32) -> f32 {
 #[inline]
 pub(crate) fn celt_log2(x: f32) -> f32 {
     // 1 / ln(2)
-    const INV_LN_2: f32 = 1.442_695_040_888_963_4;
-    INV_LN_2 * logf(x)
+    LOG2_E * logf(x)
 }
 
 /// Base-2 exponential used by CELT's float build.
 #[inline]
 pub(crate) fn celt_exp2(x: f32) -> f32 {
-    const LN_2: f32 = 0.693_147_180_559_945_3;
     expf(LN_2 * x)
 }
 
