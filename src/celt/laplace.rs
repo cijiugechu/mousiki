@@ -128,7 +128,7 @@ pub(crate) fn ec_laplace_encode_p0(enc: &mut RangeEncoder, value: i32, p0: u16, 
         icdf[0] = max(7u32, decay as u32) as u16;
         for i in 1..7 {
             let baseline = max(0, 7 - i as i32) as u32;
-            let decayed = ((icdf[i - 1] as u32 * decay as u32) >> 15);
+            let decayed = (icdf[i - 1] as u32 * decay as u32) >> 15;
             icdf[i] = max(baseline, decayed) as u16;
         }
         icdf[7] = 0;
@@ -161,7 +161,7 @@ pub(crate) fn ec_laplace_decode_p0(dec: &mut RangeDecoder, p0: u16, decay: u16) 
         icdf[0] = max(7u32, decay as u32) as u16;
         for i in 1..7 {
             let baseline = max(0, 7 - i as i32) as u32;
-            let decayed = ((icdf[i - 1] as u32 * decay as u32) >> 15);
+            let decayed = (icdf[i - 1] as u32 * decay as u32) >> 15;
             icdf[i] = max(baseline, decayed) as u16;
         }
         icdf[7] = 0;
