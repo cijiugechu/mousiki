@@ -105,6 +105,7 @@ mod tests {
     use core::f32::consts::PI;
 
     use libm::cosf;
+    use alloc::vec;
 
     use super::isqrt32;
 
