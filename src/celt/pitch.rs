@@ -69,11 +69,46 @@ pub(crate) fn compute_pitch_gain(xy: OpusVal32, xx: OpusVal32, yy: OpusVal32) ->
     (xy / celt_sqrt(1.0 + xx * yy)) as OpusVal16
 }
 
+/// Computes the cross-correlation between the target vector and delayed copies.
+///
+/// Mirrors the scalar `celt_pitch_xcorr_c()` helper from `celt/pitch.c` when the
+/// codec is built for floating-point targets. The routine fills `xcorr` with the
+/// inner products between `x` and each `len`-sample window of `y`, starting at
+/// delays `0..max_pitch-1`.
+pub(crate) fn celt_pitch_xcorr(
+    x: &[OpusVal16],
+    y: &[OpusVal16],
+    len: usize,
+    max_pitch: usize,
+    xcorr: &mut [OpusVal32],
+) {
+    assert!(x.len() >= len, "input x must provide at least len samples");
+    assert!(
+        y.len() >= len + max_pitch.saturating_sub(1),
+        "input y must provide len + max_pitch - 1 samples"
+    );
+    assert!(
+        xcorr.len() >= max_pitch,
+        "output buffer must store max_pitch correlation values"
+    );
+
+    let x_head = &x[..len];
+    for (delay, slot) in xcorr.iter_mut().enumerate().take(max_pitch) {
+        let y_window = &y[delay..delay + len];
+        *slot = x_head
+            .iter()
+            .zip(y_window.iter())
+            .map(|(&a, &b)| a * b)
+            .sum();
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{celt_inner_prod, compute_pitch_gain, dual_inner_prod};
+    use super::{celt_inner_prod, celt_pitch_xcorr, compute_pitch_gain, dual_inner_prod};
     use crate::celt::math::celt_sqrt;
     use crate::celt::types::OpusVal16;
+    use alloc::vec;
     use alloc::vec::Vec;
 
     fn generate_sequence(len: usize, seed: u32) -> Vec<OpusVal16> {
@@ -122,5 +157,30 @@ mod tests {
         let gain = compute_pitch_gain(xy, xx, yy);
 
         assert!((expected - gain).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pitch_xcorr_matches_naive_cross_correlation() {
+        let len = 16usize;
+        let max_pitch = 8usize;
+
+        let x = generate_sequence(len, 0x0f0f_0f0f);
+        let y = generate_sequence(len + max_pitch, 0x1337_4242);
+
+        let mut xcorr = vec![0.0f32; max_pitch];
+        celt_pitch_xcorr(&x, &y, len, max_pitch, &mut xcorr);
+
+        for delay in 0..max_pitch {
+            let expected: f32 = x
+                .iter()
+                .zip(y[delay..delay + len].iter())
+                .map(|(&a, &b)| a * b)
+                .sum();
+            assert!(
+                (expected - xcorr[delay]).abs() < 1e-6,
+                "mismatch at delay {delay}: expected {expected}, got {}",
+                xcorr[delay]
+            );
+        }
     }
 }

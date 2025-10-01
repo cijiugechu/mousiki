@@ -96,6 +96,9 @@ safely.
   `dual_inner_prod_c()` in `celt/pitch.c`.
 - `compute_pitch_gain` &rarr; float pitch gain normalisation matching the
   `compute_pitch_gain()` utility in `celt/pitch.c`.
+- `celt_pitch_xcorr` &rarr; scalar pitch cross-correlation routine from
+  `celt/pitch.c` that evaluates delayed inner products between the excitation and
+  target windows.
 
 ## Remaining C modules and their dependencies
 
