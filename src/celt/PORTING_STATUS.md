@@ -60,6 +60,11 @@ safely.
   covering normalisation, Laplace/ICDF decoding, unsigned integer decoding, and
   raw bit extraction from the tail of the stream.
 
+### `entenc.rs`
+- `EcEnc` and helper routines &rarr; port the scalar range encoder in
+  `celt/entenc.c`, including carry propagation, binary/ICDF symbol coding,
+  unsigned integer support, raw bit packing, and buffer finalisation.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
@@ -76,7 +81,6 @@ support headers.
 | `celt_lpc.c` | LPC analysis helpers (short-term prediction). | `celt_lpc`, `mathops`, `pitch` |
 | `cwrs.c` | Combinatorial pulse encoding/decoding. | `cwrs`, `mathops` |
 | `entcode.c` | Range encoder utilities shared by `entenc`/`entdec`. | `entcode` |
-| `entenc.c` | Entropy encoder implementation. | `entenc`, `mfrngcod` |
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
 | `mathops.c` | Fixed- and float-point math helpers beyond the ones already ported. | `mathops`, `float_cast` |
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |

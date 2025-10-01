@@ -852,12 +852,12 @@ impl Decoder {
             if subframe_index == SUBFRAME_COUNT - 1
                 && self.have_decoded
                 && sample_index == out.len().saturating_sub(1)
-                && d_lpc <= frame_samples {
-                    let start = frame_samples - d_lpc;
-                    self.previous_frame_lpc_values[..d_lpc]
-                        .copy_from_slice(&lpc[start..frame_samples]);
-                    self.previous_frame_lpc_values_len = d_lpc;
-                }
+                && d_lpc <= frame_samples
+            {
+                let start = frame_samples - d_lpc;
+                self.previous_frame_lpc_values[..d_lpc].copy_from_slice(&lpc[start..frame_samples]);
+                self.previous_frame_lpc_values_len = d_lpc;
+            }
         }
     }
 
@@ -910,23 +910,24 @@ impl Decoder {
             let j = n * subframe_index;
 
             if signal_type == FrameSignalType::Voiced
-                && let (Some(b_q7_values), Some(pitch_values)) = (b_q7, pitch_lags) {
-                    self.ltp_synthesis(
-                        out,
-                        b_q7_values,
-                        pitch_values,
-                        n,
-                        j,
-                        subframe_index,
-                        d_lpc,
-                        ltp_scale_q14,
-                        w_q2,
-                        aq_slice,
-                        gain_q16,
-                        &mut res[..res_len],
-                        &mut res_lag[..res_lag_len],
-                    );
-                }
+                && let (Some(b_q7_values), Some(pitch_values)) = (b_q7, pitch_lags)
+            {
+                self.ltp_synthesis(
+                    out,
+                    b_q7_values,
+                    pitch_values,
+                    n,
+                    j,
+                    subframe_index,
+                    d_lpc,
+                    ltp_scale_q14,
+                    w_q2,
+                    aq_slice,
+                    gain_q16,
+                    &mut res[..res_len],
+                    &mut res_lag[..res_lag_len],
+                );
+            }
 
             self.lpc_synthesis(
                 out,
