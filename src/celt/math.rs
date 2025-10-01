@@ -10,7 +10,7 @@
 use core::f32::consts::LN_2;
 use core::f32::consts::{LOG2_E, PI};
 
-use libm::{cosf, expf, logf, rintf};
+use libm::{cosf, expf, logf, rintf, sqrtf};
 
 const CELT_SIG_SCALE: f32 = 32_768.0;
 
@@ -102,6 +102,68 @@ pub(crate) fn celt_cos_norm(x: f32) -> f32 {
     cosf(0.5 * PI * x)
 }
 
+/// Square-root helper mirroring the `celt_sqrt()` macro from `mathops.h`.
+#[inline]
+pub(crate) fn celt_sqrt(x: f32) -> f32 {
+    sqrtf(x)
+}
+
+/// Reciprocal square-root helper that matches `celt_rsqrt()`.
+#[inline]
+pub(crate) fn celt_rsqrt(x: f32) -> f32 {
+    1.0 / celt_sqrt(x)
+}
+
+/// Normalised reciprocal square-root helper matching `celt_rsqrt_norm()`.
+#[inline]
+pub(crate) fn celt_rsqrt_norm(x: f32) -> f32 {
+    celt_rsqrt(x)
+}
+
+/// Reciprocal helper mirroring `celt_rcp()` from the float build.
+#[inline]
+pub(crate) fn celt_rcp(x: f32) -> f32 {
+    1.0 / x
+}
+
+/// Fractional division helper `frac_div32()` from the float build.
+#[inline]
+pub(crate) fn frac_div32(a: f32, b: f32) -> f32 {
+    a / b
+}
+
+/// Float alias of `frac_div32()` that mirrors `frac_div32_q29()`.
+#[inline]
+pub(crate) fn frac_div32_q29(a: f32, b: f32) -> f32 {
+    frac_div32(a, b)
+}
+
+/// Returns the largest absolute sample value in `samples`.
+///
+/// Mirrors `celt_maxabs16()` from the reference implementation when building
+/// the float variant of CELT. The original helper scans the slice once while
+/// tracking the extrema of the positive and negative ranges separately; the
+/// Rust port collapses this to a single absolute-value comparison while
+/// preserving the behaviour for empty inputs (returning `0.0`).
+pub(crate) fn celt_maxabs16(samples: &[f32]) -> f32 {
+    let mut max_abs = 0.0f32;
+
+    for &value in samples {
+        let abs = value.abs();
+        if abs > max_abs {
+            max_abs = abs;
+        }
+    }
+
+    max_abs
+}
+
+/// Float build alias of `celt_maxabs16()` that mirrors `celt_maxabs32()`.
+#[inline]
+pub(crate) fn celt_maxabs32(samples: &[f32]) -> f32 {
+    celt_maxabs16(samples)
+}
+
 /// Clamps samples to the `[-2, 2]` range as in `opus_limit2_checkwithin1_c()`.
 ///
 /// The C helper returns a hint indicating whether all samples were guaranteed to
@@ -150,11 +212,12 @@ mod tests {
     use alloc::vec;
     use libm::cosf;
 
-    use super::{isqrt32, CELT_SIG_SCALE};
+    use super::{CELT_SIG_SCALE, isqrt32};
 
     use super::{
-        celt_cos_norm, celt_div, celt_exp2, celt_float2int16, celt_log2, fast_atan2f,
-        opus_limit2_checkwithin1,
+        celt_cos_norm, celt_div, celt_exp2, celt_float2int16, celt_log2, celt_maxabs16,
+        celt_maxabs32, celt_rcp, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, fast_atan2f, frac_div32,
+        frac_div32_q29, opus_limit2_checkwithin1,
     };
 
     #[test]
@@ -205,6 +268,56 @@ mod tests {
     }
 
     #[test]
+    fn sqrt_matches_libm() {
+        let values = [0.0_f32, 0.25, 1.0, 2.5, 16.0];
+        for &value in &values {
+            let diff = (celt_sqrt(value) - value.sqrt()).abs();
+            assert!(diff <= 1e-6, "diff {} for value {}", diff, value);
+        }
+    }
+
+    #[test]
+    fn rsqrt_matches_inverse_sqrt() {
+        let values = [0.25_f32, 1.0, 4.0, 16.0];
+        for &value in &values {
+            let expected = 1.0 / value.sqrt();
+            assert!((celt_rsqrt(value) - expected).abs() <= 1e-6);
+            assert!((celt_rsqrt_norm(value) - expected).abs() <= 1e-6);
+        }
+    }
+
+    #[test]
+    fn rcp_matches_inverse() {
+        let values = [1.0_f32, -0.5, 2.0, -4.0];
+        for &value in &values {
+            let diff = (celt_rcp(value) - 1.0 / value).abs();
+            assert!(diff <= 1e-6, "diff {} for value {}", diff, value);
+        }
+    }
+
+    #[test]
+    fn frac_div_helpers_match_division() {
+        let samples = [(1.0_f32, 4.0_f32), (5.0, -2.0), (-6.0, 3.0)];
+        for &(a, b) in &samples {
+            assert!((frac_div32(a, b) - a / b).abs() <= f32::EPSILON * 2.0);
+            assert!((frac_div32_q29(a, b) - a / b).abs() <= f32::EPSILON * 2.0);
+        }
+    }
+
+    #[test]
+    fn maxabs16_matches_manual_scan() {
+        let samples = [0.0f32, -1.5, 3.25, -0.875, 2.0];
+        assert!((celt_maxabs16(&samples) - 3.25).abs() <= f32::EPSILON);
+        assert_eq!(celt_maxabs16(&[]), 0.0);
+    }
+
+    #[test]
+    fn maxabs32_aliases_16() {
+        let samples = [-4.0f32, 1.0, 2.5];
+        assert_eq!(celt_maxabs32(&samples), celt_maxabs16(&samples));
+    }
+
+    #[test]
     fn cos_norm_matches_reference() {
         let inputs = [0.0_f32, 0.25, 0.5, 0.75, 1.0];
         for &input in &inputs {
@@ -232,7 +345,9 @@ mod tests {
 
         assert_eq!(
             output,
-            [-32_768, -32_768, -16_384, -8_192, 0, 8_192, 16_384, 32_767, 32_767]
+            [
+                -32_768, -32_768, -16_384, -8_192, 0, 8_192, 16_384, 32_767, 32_767
+            ]
         );
     }
 
