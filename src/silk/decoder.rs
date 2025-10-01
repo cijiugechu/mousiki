@@ -852,14 +852,12 @@ impl Decoder {
             if subframe_index == SUBFRAME_COUNT - 1
                 && self.have_decoded
                 && sample_index == out.len().saturating_sub(1)
-            {
-                if d_lpc <= frame_samples {
+                && d_lpc <= frame_samples {
                     let start = frame_samples - d_lpc;
                     self.previous_frame_lpc_values[..d_lpc]
                         .copy_from_slice(&lpc[start..frame_samples]);
                     self.previous_frame_lpc_values_len = d_lpc;
                 }
-            }
         }
     }
 
@@ -911,8 +909,8 @@ impl Decoder {
 
             let j = n * subframe_index;
 
-            if signal_type == FrameSignalType::Voiced {
-                if let (Some(b_q7_values), Some(pitch_values)) = (b_q7, pitch_lags) {
+            if signal_type == FrameSignalType::Voiced
+                && let (Some(b_q7_values), Some(pitch_values)) = (b_q7, pitch_lags) {
                     self.ltp_synthesis(
                         out,
                         b_q7_values,
@@ -929,7 +927,6 @@ impl Decoder {
                         &mut res_lag[..res_lag_len],
                     );
                 }
-            }
 
             self.lpc_synthesis(
                 out,
@@ -1087,8 +1084,8 @@ impl Decoder {
         trace!(
             "silk::Decoder::decode: pulse counts blocks={} first_block={} first_lsb={}",
             counts.block_count,
-            counts.pulse_counts.get(0).copied().unwrap_or(0),
-            counts.lsb_counts.get(0).copied().unwrap_or(0)
+            counts.pulse_counts.first().copied().unwrap_or(0),
+            counts.lsb_counts.first().copied().unwrap_or(0)
         );
         let excitation = self.decode_excitation(
             &mut range_decoder,

@@ -269,6 +269,12 @@ pub struct RangeEncoder {
     tail: Vec<u8>,
 }
 
+impl Default for RangeEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RangeEncoder {
     pub fn new() -> Self {
         RangeEncoder {

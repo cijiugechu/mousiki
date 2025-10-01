@@ -252,7 +252,7 @@ impl<R: OggRead> OggReader<R> {
             return Err(OggReaderError::BadIdPageLength);
         }
 
-        if &id_segment[..8] != ID_PAGE_SIGNATURE {
+        if id_segment[..8] != ID_PAGE_SIGNATURE {
             debug!("oggreader: bad payload signature {:?}", &id_segment[..8]);
             return Err(OggReaderError::BadIdPagePayloadSignature);
         }
@@ -331,7 +331,7 @@ impl<R: OggRead> OggReader<R> {
         if self.do_checksum {
             let mut checksum = 0u32;
             for (idx, &byte) in header.iter().enumerate() {
-                if idx >= 22 && idx < 26 {
+                if (22..26).contains(&idx) {
                     update_checksum(&mut checksum, 0, &self.checksum_table);
                     continue;
                 }
@@ -427,7 +427,7 @@ fn generate_checksum_table() -> [u32; 256] {
             } else {
                 r <<= 1;
             }
-            table[i] = r & 0xffff_ffff;
+            table[i] = r;
             j += 1;
         }
         i += 1;
