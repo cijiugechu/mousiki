@@ -9,7 +9,7 @@
 
 use core::f32::consts::PI;
 
-use libm::{expf, logf};
+use libm::{cosf, expf, logf};
 
 /// Fast arctangent approximation used by the psychoacoustic analysis code.
 ///
@@ -59,9 +59,21 @@ pub(crate) fn celt_exp2(x: f32) -> f32 {
     expf(LN_2 * x)
 }
 
+/// Division helper matching the semantics of `celt_div()` in the C codebase.
+#[inline]
+pub(crate) fn celt_div(a: f32, b: f32) -> f32 {
+    a / b
+}
+
+/// Cosine helper implementing `celt_cos_norm()` for the float build.
+#[inline]
+pub(crate) fn celt_cos_norm(x: f32) -> f32 {
+    cosf(0.5 * PI * x)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{celt_exp2, celt_log2, fast_atan2f};
+    use super::{celt_cos_norm, celt_div, celt_exp2, celt_log2, fast_atan2f};
 
     #[test]
     fn fast_atan2f_matches_std() {
@@ -98,6 +110,24 @@ mod tests {
         for &value in &values {
             let diff = (celt_exp2(value) - value.exp2()).abs();
             assert!(diff <= 1e-6, "diff {} for value {}", diff, value);
+        }
+    }
+
+    #[test]
+    fn div_matches_std() {
+        let samples = [(1.0_f32, 2.0_f32), (5.5, 1.1), (100.0, -25.0), (-3.75, 0.5)];
+
+        for &(a, b) in &samples {
+            assert!((celt_div(a, b) - a / b).abs() <= f32::EPSILON * 2.0);
+        }
+    }
+
+    #[test]
+    fn cos_norm_matches_reference() {
+        let inputs = [0.0_f32, 0.25, 0.5, 0.75, 1.0];
+        for &input in &inputs {
+            let expected = cosf(0.5 * PI * input);
+            assert!((celt_cos_norm(input) - expected).abs() <= 1e-6);
         }
     }
 }
