@@ -19,6 +19,9 @@ safely.
 - `compute_channel_weights` &rarr; ports the stereo weighting helper from
   `celt/bands.c` that balances distortion across channels using adjusted
   energy estimates.
+- `stereo_split` &rarr; ports the mid/side-to-left/right transform from
+  `celt/bands.c`, applying the orthonormal scaling used when decoding stereo
+  bands.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
