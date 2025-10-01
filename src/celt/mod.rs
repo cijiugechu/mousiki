@@ -13,6 +13,7 @@ mod entenc;
 mod laplace;
 mod lpc;
 mod math;
+pub(crate) mod math_fixed;
 mod mini_kfft;
 mod pitch;
 mod quant_bands;

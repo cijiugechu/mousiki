@@ -49,6 +49,17 @@ safely.
 - `celt_maxabs16` and `celt_maxabs32` &rarr; helpers returning the largest
   absolute sample magnitude from `celt/mathops.c`.
 
+### `math_fixed.rs`
+- `celt_rsqrt_norm`, `celt_sqrt`, and `celt_rcp` &rarr; port the fixed-point
+  reciprocal square root, square root, and reciprocal helpers from
+  `celt/mathops.c`, maintaining the Q-format arithmetic used by the scalar
+  build.
+- `_celt_cos_pi_2` and `celt_cos_norm` &rarr; translate the Q15 cosine
+  approximation employed by the MDCT window generation routines when CELT is
+  built without floating-point support.
+- `frac_div32_q29` and `frac_div32` &rarr; port the fractional division helpers
+  that keep intermediate values within range while producing Q29/Q31 quotients.
+
 ### `types.rs`
 - Scalar aliases `OpusInt32`, `OpusUint32`, `OpusVal16`, `OpusVal32`,
   `CeltSig`, `CeltGlog`, and `CeltCoef` &rarr; match the primitive type
@@ -183,7 +194,6 @@ support headers.
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
-| `mathops.c` | Fixed- and float-point math helpers beyond the ones already ported. | `mathops`, `float_cast` |
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `pitch.c` | Pitch correlation/search and postfilter helpers. | `modes`, `mathops`, `celt_lpc` |
