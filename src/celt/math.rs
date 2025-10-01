@@ -7,8 +7,8 @@
 //! portions of the codec and map closely to the routines defined in
 //! `celt/mathops.h` in the reference implementation.
 
-use core::f32::consts::{LOG2_E, PI};
 use core::f32::consts::LN_2;
+use core::f32::consts::{LOG2_E, PI};
 
 use libm::{cosf, expf, logf};
 
