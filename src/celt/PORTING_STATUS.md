@@ -12,6 +12,7 @@ safely.
   `celt/mathops.h`.
 - `celt_log2`, `celt_exp2`, `celt_div`, and `celt_cos_norm` &rarr; float build
   math helpers implemented in `celt/mathops.h`/`mathops.c`.
+- `isqrt32` &rarr; integer square root routine from `celt/mathops.c`.
 
 ### `types.rs`
 - Scalar aliases `OpusInt32`, `OpusUint32`, `OpusVal16`, `OpusVal32`,
