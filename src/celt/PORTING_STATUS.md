@@ -45,6 +45,14 @@ safely.
   `ec_laplace_decode_p0` &rarr; port the Laplace probability model from
   `celt/laplace.c`, including the helper `ec_laplace_get_freq1`.
 
+### `entcode.rs`
+- `EcCtx`, `EcWindow`, and helper accessors &rarr; mirror the shared range coder
+  context declared in `celt/entcode.h`.
+- `ec_ilog`, `ec_tell`, and `ec_tell_frac` &rarr; port the bit accounting
+  routines implemented in `celt/entcode.c`.
+- `SMALL_DIV_TABLE`, `celt_udiv`, and `celt_sudiv` &rarr; translate the
+  optimised small divisor helpers from `celt/entcode.c`/`entcode.h`.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
