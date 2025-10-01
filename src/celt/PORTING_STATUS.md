@@ -89,6 +89,14 @@ safely.
   `celt/celt_lpc.c` for the float build, supplying the filter primitives used by
   the pitch analysis and postfilter paths.
 
+### `pitch.rs`
+- `celt_inner_prod` &rarr; scalar dot product helper from `celt/pitch.c` used by the
+  pitch correlation routines.
+- `dual_inner_prod` &rarr; simultaneous dot-product helper mirroring
+  `dual_inner_prod_c()` in `celt/pitch.c`.
+- `compute_pitch_gain` &rarr; float pitch gain normalisation matching the
+  `compute_pitch_gain()` utility in `celt/pitch.c`.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
