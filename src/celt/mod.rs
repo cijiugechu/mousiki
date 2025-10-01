@@ -8,11 +8,14 @@
 mod entcode;
 mod entdec;
 mod entenc;
+mod cwrs;
 mod laplace;
 mod math;
 mod types;
 mod vq;
 
+#[allow(unused_imports)]
+pub(crate) use cwrs::*;
 #[allow(unused_imports)]
 pub(crate) use entcode::*;
 #[allow(unused_imports)]

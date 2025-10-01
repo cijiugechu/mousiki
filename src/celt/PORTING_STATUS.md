@@ -65,6 +65,10 @@ safely.
   `celt/entenc.c`, including carry propagation, binary/ICDF symbol coding,
   unsigned integer support, raw bit packing, and buffer finalisation.
 
+### `cwrs.rs`
+- `log2_frac` &rarr; ports the conservative fractional logarithm estimator used
+  by the pulse codeword enumerator in `celt/cwrs.c`.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
@@ -79,7 +83,7 @@ support headers.
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `celt_lpc.c` | LPC analysis helpers (short-term prediction). | `celt_lpc`, `mathops`, `pitch` |
-| `cwrs.c` | Combinatorial pulse encoding/decoding. | `cwrs`, `mathops` |
+| `cwrs.c` | Combinatorial pulse encoding/decoding (excluding `log2_frac`, now ported). | `cwrs`, `mathops` |
 | `entcode.c` | Range encoder utilities shared by `entenc`/`entdec`. | `entcode` |
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
 | `mathops.c` | Fixed- and float-point math helpers beyond the ones already ported. | `mathops`, `float_cast` |
