@@ -69,9 +69,75 @@ pub(crate) fn celt_lpc(lpc: &mut [OpusVal16], ac: &[OpusVal32]) {
     }
 }
 
+/// Applies a causal FIR filter to the input sequence.
+///
+/// Mirrors the behaviour of `celt_fir_c()` from `celt/celt_lpc.c` for the float
+/// build where the optimisation-specific helpers collapse to straightforward
+/// scalar operations. The `x` slice must contain the `ord` samples of history
+/// followed by `N` new samples, where `N` matches the length of `y`.
+///
+/// The implementation intentionally keeps the history layout identical to the C
+/// code: `x[ord + i]` corresponds to the current sample while `x[ord + i - 1 - j]`
+/// exposes the `j`-th past value.
+pub(crate) fn celt_fir(x: &[OpusVal16], num: &[OpusVal16], y: &mut [OpusVal16]) {
+    debug_assert!(!core::ptr::eq(x.as_ptr(), y.as_ptr()));
+
+    let ord = num.len();
+    let n = y.len();
+    assert!(x.len() >= ord + n, "input must provide ord history samples");
+
+    for i in 0..n {
+        let mut acc = x[ord + i];
+        for (tap, coeff) in num.iter().enumerate() {
+            acc += coeff * x[ord + i - 1 - tap];
+        }
+        y[i] = acc;
+    }
+}
+
+/// Applies an all-pole IIR filter and updates the provided memory buffer.
+///
+/// Mirrors the small-footprint implementation of `celt_iir()` in
+/// `celt/celt_lpc.c` for the float build. The denominator coefficients in
+/// `den` encode the autoregressive part of the filter and the `mem` slice stores
+/// the past outputs (`y[n-1]`, `y[n-2]`, ...).
+pub(crate) fn celt_iir(
+    x: &[OpusVal32],
+    den: &[OpusVal16],
+    y: &mut [OpusVal32],
+    mem: &mut [OpusVal16],
+) {
+    let ord = den.len();
+    assert_eq!(mem.len(), ord, "IIR memory must match denominator order");
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "input and output must have the same length"
+    );
+
+    if ord == 0 {
+        y.copy_from_slice(x);
+        return;
+    }
+
+    for (input, output) in x.iter().zip(y.iter_mut()) {
+        let mut acc = *input;
+        for (coeff, state) in den.iter().zip(mem.iter()) {
+            acc -= coeff * *state;
+        }
+
+        *output = acc;
+
+        for idx in (1..ord).rev() {
+            mem[idx] = mem[idx - 1];
+        }
+        mem[0] = acc as OpusVal16;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::celt_lpc;
+    use super::{celt_fir, celt_iir, celt_lpc};
     use crate::celt::types::{OpusVal16, OpusVal32};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -175,5 +241,69 @@ mod tests {
         let mut coeffs: [OpusVal16; 0] = [];
         let ac: [OpusVal32; 1] = [1.0];
         celt_lpc(&mut coeffs, &ac);
+    }
+
+    #[test]
+    fn fir_matches_reference_response() {
+        let ord = 4;
+        let taps = [0.2f32, -0.15, 0.05, 0.1];
+        let history = [0.5f32, -0.25, 0.1, 0.0];
+        let input = [0.3f32, -0.4, 0.2, -0.1, 0.05, 0.6];
+
+        let mut buffer = history.to_vec();
+        buffer.extend_from_slice(&input);
+
+        let mut output = vec![0.0f32; input.len()];
+        celt_fir(&buffer, &taps, &mut output);
+
+        for (i, got) in output.iter().enumerate() {
+            let mut expected = buffer[ord + i];
+            for k in 0..ord {
+                expected += taps[k] * buffer[ord + i - 1 - k];
+            }
+            assert!(
+                (expected - *got).abs() <= 1e-6,
+                "idx {i}: got {got}, want {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn iir_matches_reference_response() {
+        let den = [0.4f32, -0.2, 0.1];
+        let input = [0.5f32, 0.1, -0.3, 0.2, 0.0, -0.1, 0.4];
+
+        let mut mem = vec![0.0f32; den.len()];
+        let mut output = vec![0.0f32; input.len()];
+        celt_iir(&input, &den, &mut output, &mut mem);
+
+        let mut ref_mem = vec![0.0f32; den.len()];
+        let mut expected = vec![0.0f32; input.len()];
+        for (idx, (&x, y)) in input.iter().zip(expected.iter_mut()).enumerate() {
+            let mut acc = x;
+            for (coeff, state) in den.iter().zip(ref_mem.iter()) {
+                acc -= coeff * *state;
+            }
+            *y = acc;
+            for j in (1..den.len()).rev() {
+                ref_mem[j] = ref_mem[j - 1];
+            }
+            if !den.is_empty() {
+                ref_mem[0] = acc;
+            }
+            assert!(
+                (output[idx] - acc).abs() <= 1e-6,
+                "idx {idx}: got {}, want {acc}",
+                output[idx]
+            );
+        }
+
+        assert_eq!(mem.len(), ref_mem.len());
+        for (idx, (got, want)) in mem.iter().zip(ref_mem.iter()).enumerate() {
+            assert!(
+                (got - want).abs() <= 1e-6,
+                "mem {idx}: got {got}, want {want}"
+            );
+        }
     }
 }
