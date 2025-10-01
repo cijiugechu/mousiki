@@ -8,6 +8,24 @@ pub type EcWindow = OpusUint32;
 /// Number of bits in the range coder's window.
 pub const EC_WINDOW_SIZE: usize = core::mem::size_of::<EcWindow>() * 8;
 
+/// Number of bits output at a time by the range coder.
+pub const EC_SYM_BITS: u32 = 8;
+
+/// Total number of bits in the coder's internal state registers.
+pub const EC_CODE_BITS: u32 = 32;
+
+/// Maximum value that a coded symbol can take.
+pub const EC_SYM_MAX: OpusUint32 = (1u32 << EC_SYM_BITS) - 1;
+
+/// Carry bit associated with the high-order range symbol.
+pub const EC_CODE_TOP: OpusUint32 = 1u32 << (EC_CODE_BITS - 1);
+
+/// Low-order bit of the high-order range symbol.
+pub const EC_CODE_BOT: OpusUint32 = EC_CODE_TOP >> EC_SYM_BITS;
+
+/// Number of extra bits stored in the range coder state.
+pub const EC_CODE_EXTRA: u32 = ((EC_CODE_BITS - 2) % EC_SYM_BITS) + 1;
+
 /// Number of bits consumed when encoding unsigned integers.
 pub const EC_UINT_BITS: usize = 8;
 
