@@ -109,6 +109,11 @@ safely.
 - `celt_pitch_xcorr` &rarr; scalar pitch cross-correlation routine from
   `celt/pitch.c` that evaluates delayed inner products between the excitation and
   target windows.
+- `celt_fir5` &rarr; ports the 5-tap FIR helper from `celt/pitch.c` used during
+  the downsampling pre-filter.
+- `pitch_downsample` &rarr; mirrors the low-pass downsampling stage implemented
+  in `celt/pitch.c`, including the LPC-based pre-emphasis used before the pitch
+  search.
 
 ### `mini_kfft.rs`
 - `MiniKissFft` and butterfly helpers &rarr; port the minimalist complex FFT
