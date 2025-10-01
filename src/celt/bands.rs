@@ -7,7 +7,51 @@
 //! more complex pieces of the encoder so that future ports can focus on the
 //! higher-level control flow.
 
-use crate::celt::types::OpusVal16;
+use crate::celt::{ec_ilog, types::OpusVal16};
+
+/// Fixed-point fractional multiply mirroring the `FRAC_MUL16` macro from the C
+/// sources.
+#[inline]
+fn frac_mul16(a: i32, b: i32) -> i32 {
+    let a = a as i16;
+    let b = b as i16;
+    ((16_384 + i32::from(a) * i32::from(b)) >> 15) as i32
+}
+
+/// Bit-exact cosine approximation used by the band analysis heuristics.
+///
+/// Mirrors `bitexact_cos()` from `celt/bands.c`. The helper operates entirely
+/// in 16-bit fixed-point arithmetic so that it matches the reference
+/// implementation across platforms.
+#[must_use]
+pub(crate) fn bitexact_cos(x: i16) -> i16 {
+    let tmp = (4_096 + i32::from(x) * i32::from(x)) >> 13;
+    let mut x2 = tmp;
+    x2 = (32_767 - x2) + frac_mul16(x2, -7_651 + frac_mul16(x2, 8_277 + frac_mul16(-626, x2)));
+    (1 + x2) as i16
+}
+
+/// Bit-exact logarithmic tangent helper used by the stereo analysis logic.
+///
+/// Mirrors `bitexact_log2tan()` from `celt/bands.c`, relying on the shared
+/// range coder log helper to normalise the sine and cosine magnitudes before
+/// evaluating the polynomial approximation.
+#[must_use]
+pub(crate) fn bitexact_log2tan(isin: i32, icos: i32) -> i32 {
+    let lc = ec_ilog(icos as u32) as i32;
+    let ls = ec_ilog(isin as u32) as i32;
+
+    let shift_cos = 15 - lc;
+    debug_assert!(shift_cos >= 0);
+    let icos = icos << shift_cos;
+
+    let shift_sin = 15 - ls;
+    debug_assert!(shift_sin >= 0);
+    let isin = isin << shift_sin;
+
+    ((ls - lc) << 11) + frac_mul16(isin, frac_mul16(isin, -2_597) + 7_932)
+        - frac_mul16(icos, frac_mul16(icos, -2_597) + 7_932)
+}
 
 /// Applies a hysteresis decision to a scalar value.
 ///
@@ -35,15 +79,13 @@ pub(crate) fn hysteresis_decision(
         index += 1;
     }
 
-    if prev < count && index > prev
-        && value < thresholds[prev] + hysteresis[prev] {
-            index = prev;
-        }
+    if prev < count && index > prev && value < thresholds[prev] + hysteresis[prev] {
+        index = prev;
+    }
 
-    if prev > 0 && index < prev
-        && value > thresholds[prev - 1] - hysteresis[prev - 1] {
-            index = prev;
-        }
+    if prev > 0 && index < prev && value > thresholds[prev - 1] - hysteresis[prev - 1] {
+        index = prev;
+    }
 
     index
 }
@@ -60,7 +102,7 @@ pub(crate) fn celt_lcg_rand(seed: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{celt_lcg_rand, hysteresis_decision};
+    use super::{bitexact_cos, bitexact_log2tan, celt_lcg_rand, frac_mul16, hysteresis_decision};
 
     #[test]
     fn hysteresis_matches_reference_logic() {
@@ -115,6 +157,61 @@ mod tests {
         for &value in &expected {
             seed = celt_lcg_rand(seed);
             assert_eq!(seed, value);
+        }
+    }
+
+    #[test]
+    fn frac_mul16_matches_c_macro() {
+        // Compare a handful of values against a direct evaluation of the C
+        // macro written in Rust.
+        fn reference(a: i32, b: i32) -> i32 {
+            let a = a as i16;
+            let b = b as i16;
+            (16_384 + i32::from(a) * i32::from(b)) >> 15
+        }
+
+        let samples = [
+            (-32_768, -32_768),
+            (-32_768, 32_767),
+            (-20_000, 16_000),
+            (-626, 8_000),
+            (8_277, -5_000),
+            (7_932, 2_000),
+            (32_767, 32_767),
+        ];
+
+        for &(a, b) in &samples {
+            assert_eq!(frac_mul16(a, b), reference(a, b));
+        }
+    }
+
+    #[test]
+    fn bitexact_cos_matches_reference_samples() {
+        let inputs = [-16_383, -12_000, -6_000, -1, 0, 1, 6_000, 12_000, 16_383];
+        let expected = [
+            3, 13_371, 27_494, -32_768, -32_768, -32_768, 27_494, 13_371, 3,
+        ];
+
+        for (&input, &value) in inputs.iter().zip(expected.iter()) {
+            assert_eq!(bitexact_cos(input), value);
+        }
+    }
+
+    #[test]
+    fn bitexact_log2tan_matches_reference_samples() {
+        let inputs = [
+            (23_170, 32_767),
+            (11_585, 32_767),
+            (16_384, 23_170),
+            (30_000, 12_345),
+            (12_345, 30_000),
+            (1, 32_767),
+            (32_767, 1),
+        ];
+        let expected = [-1_025, -3_073, -993, 2_631, -2_631, -30_690, 30_690];
+
+        for ((isin, icos), &value) in inputs.iter().zip(expected.iter()) {
+            assert_eq!(bitexact_log2tan(*isin, *icos), value);
         }
     }
 }

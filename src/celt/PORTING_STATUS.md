@@ -13,6 +13,9 @@ safely.
   thresholds.
 - `celt_lcg_rand` &rarr; mirrors the linear congruential pseudo-random number
   generator used by the band analysis heuristics in `celt/bands.c`.
+- `bitexact_cos` and `bitexact_log2tan` &rarr; translate the bit-exact cosine
+  and logarithmic tangent approximations used by the stereo analysis tools in
+  `celt/bands.c`.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
