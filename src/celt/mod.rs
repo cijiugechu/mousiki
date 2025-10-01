@@ -10,6 +10,7 @@ mod entcode;
 mod entdec;
 mod entenc;
 mod laplace;
+mod lpc;
 mod math;
 mod types;
 mod vq;
@@ -24,6 +25,8 @@ pub(crate) use entdec::*;
 pub(crate) use entenc::*;
 #[allow(unused_imports)]
 pub(crate) use laplace::*;
+#[allow(unused_imports)]
+pub(crate) use lpc::*;
 #[allow(unused_imports)]
 pub(crate) use math::*;
 #[allow(unused_imports)]

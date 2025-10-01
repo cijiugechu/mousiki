@@ -264,11 +264,11 @@ pub(crate) fn decode_pulses(
 #[cfg(test)]
 mod tests {
     use super::{decode_pulses, encode_pulses, log2_frac, ncwrs_urow, unext, uprev};
-    use alloc::vec::Vec;
-    use alloc::vec;
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
     use crate::celt::types::{OpusInt32, OpusUint32, OpusVal32};
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn reference_log2_frac(val: u32, frac: i32) -> i32 {
         let scale = 1 << frac;
