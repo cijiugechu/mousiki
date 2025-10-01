@@ -168,6 +168,12 @@ safely.
   pulse cache.
 - `compute_pulse_cache` &rarr; recreates the PVQ cache generation routine from
   `celt/rate.c`, including the per-band bit caps used by custom modes.
+- `interp_bits2pulses` &rarr; ports the allocation interpolation helper from
+  `celt/rate.c`, including the encode/decode logic for skip, intensity, and
+  dual-stereo signalling.
+- `clt_compute_allocation` &rarr; mirrors the top-level CELT allocation sweep
+  that searches the static vectors, applies trim offsets, and delegates to the
+  pulse interpolation helper.
 
 ### `quant_bands.rs`
 - `loss_distortion` &rarr; ports the distortion metric helper from
@@ -212,7 +218,6 @@ support headers.
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
-| `rate.c` | Remaining bitrate distribution heuristics (the helper constants and pulse cache builder now live in Rust). | `modes`, `cwrs`, `entcode`, `rate` |
 | `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
