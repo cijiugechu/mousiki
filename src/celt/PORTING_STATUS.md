@@ -174,6 +174,15 @@ safely.
   `celt/quant_bands.c` that scores how far the current coarse band energies have
   drifted from the historical estimates, clamping the accumulated squared
   difference to a conservative upper bound.
+- `quant_fine_energy` &rarr; translates the float quantiser that refines band
+  energies and pushes the raw decisions into the entropy encoder's tail bits.
+- `quant_energy_finalise` &rarr; ports the float helper that allocates any
+  remaining fine energy bits based on per-band priorities and updates the
+  running error estimates.
+- `unquant_fine_energy` &rarr; mirrors the decoder-side reconstruction of the
+  fine energy steps produced by `quant_fine_energy`.
+- `unquant_energy_finalise` &rarr; ports the float routine that consumes the
+  final one-bit decisions used to top up the fine energy resolution.
 - `E_MEANS`, `PRED_COEF`, `BETA_COEF`, `BETA_INTRA`, `E_PROB_MODEL`, and
   `SMALL_ENERGY_ICDF` &rarr; port the constant tables from `celt/quant_bands.c`
   used by the coarse energy quantiser and small energy Laplace model.
