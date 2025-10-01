@@ -7,9 +7,11 @@
 //! reimplemented.  These helpers expose the same behaviour for the float build
 //! of CELT while leveraging Rust's slice-based APIs for memory safety.
 
-use crate::celt::math::celt_sqrt;
+use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
-use crate::celt::{celt_autocorr, celt_lpc};
+use crate::celt::{celt_autocorr, celt_lpc, celt_udiv};
+use alloc::vec;
+use core::cmp::min;
 
 /// Selects the two most promising pitch lags based on normalised correlation.
 ///
@@ -173,6 +175,282 @@ pub(crate) fn celt_pitch_xcorr(
     }
 }
 
+/// Performs the coarse-to-fine pitch search used by the encoder analysis paths.
+///
+/// This mirrors the float implementation of `pitch_search()` from
+/// `celt/pitch.c`. The routine operates on downsampled input buffers,
+/// performing a decimated sweep followed by a refined search around the best
+/// candidates. The final pitch lag is pseudo-interpolated using the
+/// neighbouring correlations to match the C reference behaviour.
+pub(crate) fn pitch_search(
+    x_lp: &[OpusVal16],
+    y: &[OpusVal16],
+    len: usize,
+    max_pitch: usize,
+    _arch: i32,
+) -> i32 {
+    assert!(len > 0, "pitch_search requires a non-empty target length");
+    assert!(
+        max_pitch > 0,
+        "pitch_search requires a positive search span"
+    );
+    assert!(x_lp.len() >= len, "x_lp must provide len samples");
+
+    let lag = len + max_pitch;
+    assert!(
+        y.len() >= lag,
+        "y must contain len + max_pitch samples for the search window",
+    );
+
+    let len_quarter = len >> 2;
+    let lag_quarter = lag >> 2;
+    let max_pitch_half = max_pitch >> 1;
+    let max_pitch_quarter = max_pitch >> 2;
+
+    let mut best_pitch = [0i32, 0i32];
+
+    if len_quarter > 0 && max_pitch_quarter > 0 {
+        let mut x_lp4 = vec![0.0; len_quarter];
+        for (j, slot) in x_lp4.iter_mut().enumerate() {
+            *slot = x_lp[2 * j];
+        }
+
+        let mut y_lp4 = vec![0.0; lag_quarter];
+        for (j, slot) in y_lp4.iter_mut().enumerate() {
+            *slot = y[2 * j];
+        }
+
+        let mut xcorr = vec![0.0; max_pitch_quarter];
+        celt_pitch_xcorr(&x_lp4, &y_lp4, len_quarter, max_pitch_quarter, &mut xcorr);
+
+        let y_needed = min(y_lp4.len(), len_quarter + max_pitch_quarter);
+        find_best_pitch(
+            &xcorr,
+            &y_lp4[..y_needed],
+            len_quarter,
+            max_pitch_quarter,
+            &mut best_pitch,
+        );
+    }
+
+    let mut xcorr = vec![0.0; max_pitch_half.max(1)];
+
+    if max_pitch_half > 0 {
+        let len_half = len >> 1;
+        if len_half > 0 {
+            for i in 0..max_pitch_half {
+                if (i as i32 - 2 * best_pitch[0]).abs() > 2
+                    && (i as i32 - 2 * best_pitch[1]).abs() > 2
+                {
+                    continue;
+                }
+                let start = i;
+                let end = start + len_half;
+                if end > y.len() {
+                    break;
+                }
+                let sum: OpusVal32 = x_lp[..len_half]
+                    .iter()
+                    .zip(&y[start..end])
+                    .map(|(&a, &b)| a * b)
+                    .sum();
+                xcorr[i] = sum.max(-1.0);
+            }
+
+            let y_needed = min(y.len(), len_half + max_pitch_half);
+            find_best_pitch(
+                &xcorr[..max_pitch_half],
+                &y[..y_needed],
+                len_half,
+                max_pitch_half,
+                &mut best_pitch,
+            );
+
+            if best_pitch[0] > 0 && (best_pitch[0] as usize) < max_pitch_half - 1 {
+                let a = xcorr[(best_pitch[0] - 1) as usize];
+                let b = xcorr[best_pitch[0] as usize];
+                let c = xcorr[(best_pitch[0] + 1) as usize];
+                let mut offset = 0;
+                if (c - a) > 0.7 * (b - a) {
+                    offset = 1;
+                } else if (a - c) > 0.7 * (b - c) {
+                    offset = -1;
+                }
+                return 2 * best_pitch[0] - offset;
+            }
+        }
+    }
+
+    2 * best_pitch[0]
+}
+
+const SECOND_CHECK: [i32; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
+
+fn window<'a>(data: &'a [OpusVal16], center: usize, offset: isize, len: usize) -> &'a [OpusVal16] {
+    let start = center as isize + offset;
+    assert!(start >= 0, "window would start before the buffer");
+    let start = start as usize;
+    let end = start + len;
+    assert!(end <= data.len(), "window extends beyond the buffer");
+    &data[start..end]
+}
+
+/// Suppresses spurious pitch-doubling detections.
+///
+/// Mirrors the float variant of `remove_doubling()` from `celt/pitch.c`. The
+/// routine evaluates nearby subharmonics of the detected pitch and returns an
+/// adjusted lag alongside the updated harmonic gain.
+pub(crate) fn remove_doubling(
+    x: &[OpusVal16],
+    maxperiod: usize,
+    minperiod: usize,
+    n: usize,
+    t0: &mut i32,
+    prev_period: i32,
+    prev_gain: OpusVal16,
+    _arch: i32,
+) -> OpusVal16 {
+    assert!(maxperiod > 0, "maxperiod must be positive");
+    assert!(minperiod > 0, "minperiod must be positive");
+    assert!(n > 0, "window size must be positive");
+    assert!(
+        x.len() >= maxperiod + n,
+        "x must contain maxperiod + n samples",
+    );
+
+    let minperiod0 = minperiod as i32;
+    let maxperiod_half = maxperiod >> 1;
+    let minperiod_half = minperiod >> 1;
+    let t0_half = (*t0 >> 1).clamp(0, maxperiod_half.saturating_sub(1) as i32);
+    let prev_period_half = prev_period >> 1;
+    let n_half = n >> 1;
+
+    if maxperiod_half <= 1 || n_half == 0 {
+        *t0 = (*t0).max(minperiod0);
+        return prev_gain;
+    }
+
+    let center = maxperiod_half;
+    assert!(
+        center + n_half <= x.len(),
+        "insufficient samples for windowed view"
+    );
+
+    let x_center = window(x, center, 0, n_half);
+    let x_t0 = window(x, center, -(t0_half as isize), n_half);
+    let (xx, xy) = dual_inner_prod(x_center, x_center, x_t0);
+
+    let mut yy_lookup = vec![0.0; maxperiod_half + 1];
+    yy_lookup[0] = xx;
+    let mut yy = xx;
+
+    for i in 1..=maxperiod_half {
+        let prev_sample = x[center - i];
+        let enter_sample = x[center + n_half - i];
+        yy += prev_sample * prev_sample - enter_sample * enter_sample;
+        yy_lookup[i] = yy.max(0.0);
+    }
+
+    yy = yy_lookup[t0_half as usize];
+    let mut best_xy = xy;
+    let mut best_yy = yy;
+    let mut g = compute_pitch_gain(xy, xx, yy);
+    let g0 = g;
+    let max_allowed = maxperiod_half.saturating_sub(1) as i32;
+    let mut t = if max_allowed >= 1 {
+        t0_half.clamp(1, max_allowed)
+    } else {
+        0
+    };
+
+    for k in 2..=15 {
+        let t1 = celt_udiv((2 * t0_half + k) as u32, (2 * k) as u32) as i32;
+        if t1 < minperiod_half as i32 {
+            break;
+        }
+        if t1 as usize > maxperiod_half {
+            continue;
+        }
+        let t1b = if k == 2 {
+            if t1 + t0_half > maxperiod_half as i32 {
+                t0_half
+            } else {
+                t0_half + t1
+            }
+        } else {
+            let check = SECOND_CHECK[k as usize];
+            celt_udiv((2 * check * t0_half + k) as u32, (2 * k) as u32) as i32
+        };
+        if t1b as usize > maxperiod_half {
+            continue;
+        }
+
+        let x_t1 = window(x, center, -(t1 as isize), n_half);
+        let x_t1b = window(x, center, -(t1b as isize), n_half);
+        let (mut xy1, xy2) = dual_inner_prod(x_center, x_t1, x_t1b);
+        xy1 = 0.5 * (xy1 + xy2);
+        let yy1 = 0.5 * (yy_lookup[t1 as usize] + yy_lookup[t1b as usize]);
+        let g1 = compute_pitch_gain(xy1, xx, yy1);
+
+        let diff = (t1 - prev_period_half).abs();
+        let cont = if diff <= 1 {
+            prev_gain
+        } else if diff <= 2 && 5 * ((k * k) as i32) < t0_half {
+            0.5 * prev_gain
+        } else {
+            0.0
+        };
+
+        let mut thresh = (0.7 * g0 - cont).max(0.3);
+        if t1 < 3 * minperiod_half as i32 {
+            thresh = (0.85 * g0 - cont).max(0.4);
+        } else if t1 < 2 * minperiod_half as i32 {
+            thresh = (0.9 * g0 - cont).max(0.5);
+        }
+
+        if g1 > thresh {
+            best_xy = xy1;
+            best_yy = yy1;
+            if max_allowed >= 1 {
+                t = t1.clamp(1, max_allowed);
+            } else {
+                t = 0;
+            }
+            g = g1;
+        }
+    }
+
+    best_xy = best_xy.max(0.0);
+    let mut pg = if best_yy <= best_xy {
+        1.0
+    } else {
+        frac_div32(best_xy, best_yy + 1.0)
+    };
+
+    let mut xcorr = [0.0; 3];
+    for (k, slot) in xcorr.iter_mut().enumerate() {
+        let lag = t + k as i32 - 1;
+        let windowed = window(x, center, -(lag as isize), n_half);
+        *slot = celt_inner_prod(x_center, windowed);
+    }
+
+    let mut offset = 0;
+    if (xcorr[2] - xcorr[0]) > 0.7 * (xcorr[1] - xcorr[0]) {
+        offset = 1;
+    } else if (xcorr[0] - xcorr[2]) > 0.7 * (xcorr[1] - xcorr[2]) {
+        offset = -1;
+    }
+
+    if pg > g {
+        pg = g;
+    }
+
+    let updated = 2 * t - offset;
+    *t0 = updated.max(minperiod0);
+
+    pg
+}
+
 fn celt_fir5(x: &mut [OpusVal16], num: &[OpusVal16; 5]) {
     let [num0, num1, num2, num3, num4] = *num;
     let mut mem0 = 0.0;
@@ -272,14 +550,15 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
 #[cfg(test)]
 mod tests {
     use super::{
-        celt_fir5, celt_inner_prod, celt_pitch_xcorr, compute_pitch_gain, dual_inner_prod,
-        find_best_pitch, pitch_downsample,
+        SECOND_CHECK, celt_fir5, celt_inner_prod, celt_pitch_xcorr, compute_pitch_gain,
+        dual_inner_prod, find_best_pitch, pitch_downsample, pitch_search, remove_doubling,
     };
     use crate::celt::math::celt_sqrt;
     use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
-    use crate::celt::{celt_autocorr, celt_lpc};
+    use crate::celt::{celt_autocorr, celt_lpc, celt_udiv, frac_div32};
     use alloc::vec;
     use alloc::vec::Vec;
+    use core::f32::consts::PI;
 
     fn generate_sequence(len: usize, seed: u32) -> Vec<OpusVal16> {
         let mut state = seed;
@@ -504,5 +783,305 @@ mod tests {
         for (result, reference) in output.iter().zip(expected.iter()) {
             assert!((result - reference).abs() < 1e-6);
         }
+    }
+
+    fn reference_pitch_search(
+        x_lp: &[OpusVal16],
+        y: &[OpusVal16],
+        len: usize,
+        max_pitch: usize,
+    ) -> i32 {
+        let lag = len + max_pitch;
+        let len_quarter = len >> 2;
+        let lag_quarter = lag >> 2;
+        let max_pitch_quarter = max_pitch >> 2;
+
+        let mut best = [0, if max_pitch_quarter > 1 { 1 } else { 0 }];
+        if len_quarter > 0 && max_pitch_quarter > 0 {
+            let mut x_lp4 = vec![0.0; len_quarter];
+            for (j, slot) in x_lp4.iter_mut().enumerate() {
+                *slot = x_lp[2 * j];
+            }
+
+            let mut y_lp4 = vec![0.0; lag_quarter];
+            for (j, slot) in y_lp4.iter_mut().enumerate() {
+                *slot = y[2 * j];
+            }
+
+            let mut xcorr = vec![0.0; max_pitch_quarter];
+            for i in 0..max_pitch_quarter {
+                let mut sum = 0.0;
+                for j in 0..len_quarter {
+                    sum += x_lp4[j] * y_lp4[i + j];
+                }
+                xcorr[i] = sum;
+            }
+
+            find_best_pitch(
+                &xcorr,
+                &y_lp4[..len_quarter + max_pitch_quarter],
+                len_quarter,
+                max_pitch_quarter,
+                &mut best,
+            );
+        }
+
+        let max_pitch_half = max_pitch >> 1;
+        if max_pitch_half == 0 {
+            return 2 * best[0];
+        }
+
+        let len_half = len >> 1;
+        let mut xcorr = vec![0.0; max_pitch_half];
+        if len_half > 0 {
+            for i in 0..max_pitch_half {
+                if (i as i32 - 2 * best[0]).abs() > 2 && (i as i32 - 2 * best[1]).abs() > 2 {
+                    continue;
+                }
+                let mut sum = 0.0;
+                for j in 0..len_half {
+                    sum += x_lp[j] * y[i + j];
+                }
+                xcorr[i] = sum.max(-1.0);
+            }
+
+            find_best_pitch(
+                &xcorr,
+                &y[..len_half + max_pitch_half],
+                len_half,
+                max_pitch_half,
+                &mut best,
+            );
+        }
+
+        let mut offset = 0;
+        if best[0] > 0 && (best[0] as usize) < max_pitch_half - 1 {
+            let a = xcorr[(best[0] - 1) as usize];
+            let b = xcorr[best[0] as usize];
+            let c = xcorr[(best[0] + 1) as usize];
+            if (c - a) > 0.7 * (b - a) {
+                offset = 1;
+            } else if (a - c) > 0.7 * (b - c) {
+                offset = -1;
+            }
+        }
+
+        2 * best[0] - offset
+    }
+
+    fn reference_remove_doubling(
+        x: &[OpusVal16],
+        maxperiod: usize,
+        minperiod: usize,
+        n: usize,
+        t0: &mut i32,
+        prev_period: i32,
+        prev_gain: OpusVal16,
+    ) -> OpusVal16 {
+        let minperiod0 = minperiod as i32;
+        let maxperiod_half = maxperiod >> 1;
+        let minperiod_half = minperiod >> 1;
+        let t0_half = (*t0 >> 1).clamp(0, maxperiod_half.saturating_sub(1) as i32);
+        let prev_period_half = prev_period >> 1;
+        let n_half = n >> 1;
+
+        if maxperiod_half <= 1 || n_half == 0 {
+            *t0 = (*t0).max(minperiod0);
+            return prev_gain;
+        }
+
+        let center = maxperiod_half;
+        let x_center = &x[center..center + n_half];
+        let x_t0 = &x[center - t0_half as usize..center - t0_half as usize + n_half];
+
+        let mut xx = 0.0;
+        let mut xy = 0.0;
+        for j in 0..n_half {
+            xx += x_center[j] * x_center[j];
+            xy += x_center[j] * x_t0[j];
+        }
+
+        let mut yy_lookup = vec![0.0; maxperiod_half + 1];
+        yy_lookup[0] = xx;
+        let mut yy = xx;
+        for i in 1..=maxperiod_half {
+            let prev_sample = x[center - i];
+            let enter_sample = x[center + n_half - i];
+            yy += prev_sample * prev_sample - enter_sample * enter_sample;
+            yy_lookup[i] = yy.max(0.0);
+        }
+
+        yy = yy_lookup[t0_half as usize];
+        let mut best_xy = xy;
+        let mut best_yy = yy;
+        let g0 = compute_pitch_gain(xy, xx, yy);
+        let mut g = g0;
+        let max_allowed = maxperiod_half.saturating_sub(1) as i32;
+        let mut t = if max_allowed >= 1 {
+            t0_half.clamp(1, max_allowed)
+        } else {
+            0
+        };
+
+        for k in 2..=15 {
+            let t1 = celt_udiv((2 * t0_half + k) as u32, (2 * k) as u32) as i32;
+            if t1 < minperiod_half as i32 {
+                break;
+            }
+            if t1 as usize > maxperiod_half {
+                continue;
+            }
+            let t1b = if k == 2 {
+                if t1 + t0_half > maxperiod_half as i32 {
+                    t0_half
+                } else {
+                    t0_half + t1
+                }
+            } else {
+                let check = SECOND_CHECK[k as usize];
+                celt_udiv((2 * check * t0_half + k) as u32, (2 * k) as u32) as i32
+            };
+            if t1b as usize > maxperiod_half {
+                continue;
+            }
+
+            let x_t1 = &x[center - t1 as usize..center - t1 as usize + n_half];
+            let x_t1b = &x[center - t1b as usize..center - t1b as usize + n_half];
+            let mut xy1 = 0.0;
+            let mut xy2 = 0.0;
+            for j in 0..n_half {
+                xy1 += x_center[j] * x_t1[j];
+                xy2 += x_center[j] * x_t1b[j];
+            }
+            xy1 = 0.5 * (xy1 + xy2);
+            let yy1 = 0.5 * (yy_lookup[t1 as usize] + yy_lookup[t1b as usize]);
+            let g1 = compute_pitch_gain(xy1, xx, yy1);
+
+            let diff = (t1 - prev_period_half).abs();
+            let cont = if diff <= 1 {
+                prev_gain
+            } else if diff <= 2 && 5 * ((k * k) as i32) < t0_half {
+                0.5 * prev_gain
+            } else {
+                0.0
+            };
+
+            let mut thresh = (0.7 * g0 - cont).max(0.3);
+            if t1 < 3 * minperiod_half as i32 {
+                thresh = (0.85 * g0 - cont).max(0.4);
+            } else if t1 < 2 * minperiod_half as i32 {
+                thresh = (0.9 * g0 - cont).max(0.5);
+            }
+
+            if g1 > thresh {
+                best_xy = xy1;
+                best_yy = yy1;
+                if max_allowed >= 1 {
+                    t = t1.clamp(1, max_allowed);
+                } else {
+                    t = 0;
+                }
+                g = g1;
+            }
+        }
+
+        best_xy = best_xy.max(0.0);
+        let mut pg = if best_yy <= best_xy {
+            1.0
+        } else {
+            frac_div32(best_xy, best_yy + 1.0)
+        };
+
+        let mut xcorr = [0.0; 3];
+        for (k, slot) in xcorr.iter_mut().enumerate() {
+            let lag = t + k as i32 - 1;
+            let lag_usize = lag as usize;
+            let x_lag = &x[center - lag_usize..center - lag_usize + n_half];
+            let mut sum = 0.0;
+            for j in 0..n_half {
+                sum += x_center[j] * x_lag[j];
+            }
+            *slot = sum;
+        }
+
+        let mut offset = 0;
+        if (xcorr[2] - xcorr[0]) > 0.7 * (xcorr[1] - xcorr[0]) {
+            offset = 1;
+        } else if (xcorr[0] - xcorr[2]) > 0.7 * (xcorr[1] - xcorr[2]) {
+            offset = -1;
+        }
+
+        if pg > g {
+            pg = g;
+        }
+
+        let updated = 2 * t - offset;
+        *t0 = updated.max(minperiod0);
+        pg
+    }
+
+    #[test]
+    fn pitch_search_matches_reference() {
+        let len = 96usize;
+        let max_pitch = 48usize;
+        let fundamental = 34usize;
+
+        let mut x_lp = vec![0.0; len];
+        for (i, sample) in x_lp.iter_mut().enumerate() {
+            let phase = 2.0 * PI * (i as f32) / fundamental as f32;
+            *sample = phase.sin();
+        }
+
+        let mut y = vec![0.0; len + max_pitch];
+        for i in 0..len {
+            y[i + fundamental] += x_lp[i];
+        }
+        for i in 0..len {
+            y[i + 20] += 0.4 * x_lp[i];
+        }
+
+        let reference = reference_pitch_search(&x_lp, &y, len, max_pitch);
+        let result = pitch_search(&x_lp, &y, len, max_pitch, 0);
+        assert_eq!(result, reference);
+    }
+
+    #[test]
+    fn remove_doubling_matches_reference() {
+        let maxperiod = 120usize;
+        let minperiod = 40usize;
+        let n = 80usize;
+        let fundamental = 60usize;
+
+        let mut x = vec![0.0; maxperiod + n];
+        for (i, sample) in x.iter_mut().enumerate() {
+            let phase = 2.0 * PI * (i as f32) / fundamental as f32;
+            *sample = phase.sin();
+        }
+
+        let mut t0_reference = (2 * fundamental) as i32;
+        let mut t0_result = t0_reference;
+
+        let expected = reference_remove_doubling(
+            &x,
+            maxperiod,
+            minperiod,
+            n,
+            &mut t0_reference,
+            fundamental as i32,
+            0.8,
+        );
+        let gain = remove_doubling(
+            &x,
+            maxperiod,
+            minperiod,
+            n,
+            &mut t0_result,
+            fundamental as i32,
+            0.8,
+            0,
+        );
+
+        assert_eq!(t0_result, t0_reference);
+        assert!((gain - expected).abs() < 1e-6);
     }
 }
