@@ -10,7 +10,9 @@
 use core::f32::consts::LN_2;
 use core::f32::consts::{LOG2_E, PI};
 
-use libm::{cosf, expf, logf};
+use libm::{cosf, expf, logf, rintf};
+
+const CELT_SIG_SCALE: f32 = 32_768.0;
 
 /// Integer square root mirroring `isqrt32()` from `celt/mathops.c`.
 ///
@@ -120,6 +122,27 @@ pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
     false
 }
 
+/// Converts floating-point samples to 16-bit integers as in `celt_float2int16_c()`.
+///
+/// The helper scales the input by CELT's fixed-point signal scaling factor,
+/// clamps the result to the signed 16-bit range, and rounds to the nearest
+/// integer following the default IEEE 754 rounding mode. The C implementation
+/// uses the `FLOAT2INT16` macro from `float_cast.h`; this port matches its
+/// semantics so that callers relying on the float API can operate on Rust
+/// slices directly.
+pub(crate) fn celt_float2int16(input: &[f32], output: &mut [i16]) {
+    assert_eq!(
+        input.len(),
+        output.len(),
+        "input and output slices must have the same length"
+    );
+
+    for (dst, &sample) in output.iter_mut().zip(input.iter()) {
+        let scaled = (sample * CELT_SIG_SCALE).clamp(-32_768.0, 32_767.0);
+        *dst = rintf(scaled) as i16;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::f32::consts::PI;
@@ -127,10 +150,11 @@ mod tests {
     use alloc::vec;
     use libm::cosf;
 
-    use super::isqrt32;
+    use super::{isqrt32, CELT_SIG_SCALE};
 
     use super::{
-        celt_cos_norm, celt_div, celt_exp2, celt_log2, fast_atan2f, opus_limit2_checkwithin1,
+        celt_cos_norm, celt_div, celt_exp2, celt_float2int16, celt_log2, fast_atan2f,
+        opus_limit2_checkwithin1,
     };
 
     #[test]
@@ -198,6 +222,56 @@ mod tests {
 
         let mut empty: [f32; 0] = [];
         assert!(opus_limit2_checkwithin1(&mut empty));
+    }
+
+    #[test]
+    fn float2int16_matches_reference_scaling() {
+        let input = [-2.0_f32, -1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0, 2.0];
+        let mut output = [0_i16; 9];
+        celt_float2int16(&input, &mut output);
+
+        assert_eq!(
+            output,
+            [-32_768, -32_768, -16_384, -8_192, 0, 8_192, 16_384, 32_767, 32_767]
+        );
+    }
+
+    #[test]
+    fn float2int16_uses_saturating_round_to_nearest() {
+        let input = [
+            -1.001_f32, -1.000_03, -0.999_9, -0.500_3, -0.499_7, 0.499_7, 0.500_3, 0.999_9,
+            1.000_03, 1.001,
+        ];
+        let mut output = [0_i16; 10];
+        celt_float2int16(&input, &mut output);
+
+        assert_eq!(output[0], -32_768);
+        assert_eq!(output[1], -32_768);
+        assert_eq!(output[8], 32_767);
+        assert_eq!(output[9], 32_767);
+
+        for (&input_sample, &output_sample) in input.iter().zip(&output) {
+            let output_sample = i32::from(output_sample);
+            assert!(output_sample >= -32_768 && output_sample <= 32_767);
+
+            let scaled = (input_sample * CELT_SIG_SCALE).clamp(-32_768.0, 32_767.0);
+            let diff = scaled - output_sample as f32;
+            assert!(
+                diff.abs() <= 0.500_1,
+                "diff {} for input {} (scaled {})",
+                diff,
+                input_sample,
+                scaled
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "input and output slices must have the same length")]
+    fn float2int16_panics_on_length_mismatch() {
+        let input = [0.0_f32, 1.0];
+        let mut output = [0_i16; 1];
+        celt_float2int16(&input, &mut output);
     }
 
     #[test]
