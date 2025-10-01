@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+/// Corresponds to `opus_int16` in the C implementation.
+pub type OpusInt16 = i16;
 /// Corresponds to `opus_int32` in the C implementation.
 pub type OpusInt32 = i32;
 /// Corresponds to `opus_uint32` in the C implementation.
