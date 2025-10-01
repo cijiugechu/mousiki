@@ -12,6 +12,7 @@ mod entenc;
 mod laplace;
 mod lpc;
 mod math;
+mod mini_kfft;
 mod pitch;
 mod types;
 mod vq;
@@ -30,6 +31,8 @@ pub(crate) use laplace::*;
 pub(crate) use lpc::*;
 #[allow(unused_imports)]
 pub(crate) use math::*;
+#[allow(unused_imports)]
+pub(crate) use mini_kfft::*;
 #[allow(unused_imports)]
 pub(crate) use pitch::*;
 #[allow(unused_imports)]
