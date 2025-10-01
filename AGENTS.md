@@ -12,4 +12,6 @@ The directory where the C version is located is `/opus-c`.
  
 - Variable, type, and function naming in Rust needs to follow Rust conventions.
 
+- When using constants for mathematical operations, give priority to whether rust core provides them.
+
 - Run `cargo check` and `cargo test` automatically after making code changes.
