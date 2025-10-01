@@ -1,4 +1,13 @@
+use alloc::vec::Vec;
+
 use crate::silk::icdf::ICDFContext;
+
+const EC_SYM_BITS: u32 = 8;
+const EC_SYM_MAX: u32 = (1 << EC_SYM_BITS) - 1;
+const EC_CODE_BITS: u32 = 32;
+const EC_CODE_TOP: u32 = 1 << (EC_CODE_BITS - 1);
+const EC_CODE_BOT: u32 = EC_CODE_TOP >> EC_SYM_BITS;
+const EC_CODE_SHIFT: u32 = EC_CODE_BITS - EC_SYM_BITS - 1;
 
 /// See [section-4.1](https://datatracker.ietf.org/doc/html/rfc6716#section-4.1)
 // Opus uses an entropy coder based on range coding [RANGE-CODING]
@@ -77,7 +86,7 @@ pub struct RangeDecoder<'a> {
 
 /// `MIN_RANGE_SIZE` is the minimum allowed size for rng.
 /// It's equal to `2.pow(23)`.
-const MIN_RANGE_SIZE: u32 = 1 << 23;
+const MIN_RANGE_SIZE: u32 = EC_CODE_BOT;
 
 impl<'a> RangeDecoder<'a> {
     // To normalize the range, the decoder repeats the following process,
@@ -95,12 +104,44 @@ impl<'a> RangeDecoder<'a> {
     // val = ((val<<8) + (255-sym)) & 0x7FFFFFFF
     //
     /// See [section-4.1.2.1](https://datatracker.ietf.org/doc/html/rfc6716#section-4.1.2.1)
-    fn normalize(&mut self) {
+    pub(crate) fn normalize(&mut self) {
         while self.range_size <= MIN_RANGE_SIZE {
             self.range_size <<= 8;
             self.high_and_coded_difference =
                 ((self.high_and_coded_difference << 8) + (255 - self.get_bits(8))) & 0x7FFFFFFF;
         }
+    }
+
+    pub(crate) fn decode_bin(&self, bits: u32) -> u32 {
+        let scale = self.range_size >> bits;
+        let max = 1u32 << bits;
+        let s = self.high_and_coded_difference / scale;
+        max - (s + 1).min(max)
+    }
+
+    pub(crate) fn decode_icdf16(&mut self, icdf: &[u16], ftb: u32) -> usize {
+        let mut range = self.range_size;
+        let val = self.high_and_coded_difference;
+        let scale = range >> ftb;
+
+        let mut symbol = -1i32;
+        let mut prev_range: u32;
+
+        loop {
+            symbol += 1;
+            prev_range = range;
+            let entry = icdf[symbol as usize] as u32;
+            range = scale * entry;
+            if val >= range {
+                break;
+            }
+        }
+
+        self.high_and_coded_difference = val - range;
+        self.range_size = prev_range - range;
+        self.normalize();
+
+        symbol as usize
     }
 
     fn get_bit(&mut self) -> u32 {
@@ -129,7 +170,7 @@ impl<'a> RangeDecoder<'a> {
         bits
     }
 
-    fn update(&mut self, scale: u32, low: u32, high: u32, total: u32) {
+    pub(crate) fn update(&mut self, scale: u32, low: u32, high: u32, total: u32) {
         self.high_and_coded_difference -= scale * (total - high);
 
         if low == 0 {
@@ -204,6 +245,148 @@ impl<'a> RangeDecoder<'a> {
         decoder.normalize();
 
         decoder
+    }
+}
+
+fn ec_ilog(value: u32) -> i32 {
+    if value == 0 {
+        0
+    } else {
+        32 - value.leading_zeros() as i32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RangeEncoder {
+    data: Vec<u8>,
+    range_size: u32,
+    low_value: u32,
+    rem: i32,
+    ext: u32,
+    end_window: u32,
+    nend_bits: u32,
+    nbits_total: i32,
+    tail: Vec<u8>,
+}
+
+impl RangeEncoder {
+    pub fn new() -> Self {
+        RangeEncoder {
+            data: Vec::new(),
+            range_size: EC_CODE_TOP,
+            low_value: 0,
+            rem: -1,
+            ext: 0,
+            end_window: 0,
+            nend_bits: 0,
+            nbits_total: (EC_CODE_BITS + 1) as i32,
+            tail: Vec::new(),
+        }
+    }
+
+    fn carry_out(&mut self, symbol: u32) {
+        if symbol != EC_SYM_MAX {
+            let carry = (symbol >> EC_SYM_BITS) as u8;
+            if self.rem >= 0 {
+                let byte = (self.rem as u32 + carry as u32) as u8;
+                self.data.push(byte);
+            }
+            if self.ext > 0 {
+                let repeated = ((EC_SYM_MAX + carry as u32) & EC_SYM_MAX) as u8;
+                for _ in 0..self.ext {
+                    self.data.push(repeated);
+                }
+                self.ext = 0;
+            }
+            self.rem = (symbol & EC_SYM_MAX) as i32;
+        } else {
+            self.ext = self.ext.saturating_add(1);
+        }
+    }
+
+    fn normalize(&mut self) {
+        while self.range_size <= EC_CODE_BOT {
+            self.carry_out(self.low_value >> EC_CODE_SHIFT);
+            self.low_value = (self.low_value << EC_SYM_BITS) & (EC_CODE_TOP - 1);
+            self.range_size <<= EC_SYM_BITS;
+            self.nbits_total += EC_SYM_BITS as i32;
+        }
+    }
+
+    pub fn encode_bin(&mut self, low: u32, high: u32, bits: u32) {
+        let r = self.range_size >> bits;
+        let total = 1u32 << bits;
+
+        if low > 0 {
+            let offset = (r as u64) * (total - low) as u64;
+            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
+            let width = (r as u64) * (high - low) as u64;
+            self.range_size = width as u32;
+        } else {
+            let offset = (r as u64) * (total - high) as u64;
+            self.range_size -= offset as u32;
+        }
+
+        self.normalize();
+    }
+
+    pub fn encode_icdf16(&mut self, symbol: usize, icdf: &[u16], ftb: u32) {
+        let r = self.range_size >> ftb;
+
+        if symbol > 0 {
+            let prev = icdf[symbol - 1] as u32;
+            let curr = icdf[symbol] as u32;
+            let offset = (r as u64) * prev as u64;
+            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
+            self.range_size = ((r as u64) * (prev - curr) as u64) as u32;
+        } else {
+            let offset = (r as u64) * icdf[symbol] as u64;
+            self.range_size -= offset as u32;
+        }
+
+        self.normalize();
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        let mut l = EC_CODE_BITS as i32 - ec_ilog(self.range_size);
+        let mut mask = (EC_CODE_TOP - 1) >> l;
+        let mut end = (self.low_value + mask) & !mask;
+
+        if (end | mask) >= self.low_value + self.range_size {
+            l += 1;
+            mask >>= 1;
+            end = (self.low_value + mask) & !mask;
+        }
+
+        while l > 0 {
+            self.carry_out(end >> EC_CODE_SHIFT);
+            end = (end << EC_SYM_BITS) & (EC_CODE_TOP - 1);
+            l -= EC_SYM_BITS as i32;
+        }
+
+        if self.rem >= 0 || self.ext > 0 {
+            self.carry_out(0);
+        }
+
+        while self.nend_bits >= EC_SYM_BITS {
+            self.tail.push((self.end_window & EC_SYM_MAX) as u8);
+            self.end_window >>= EC_SYM_BITS;
+            self.nend_bits -= EC_SYM_BITS;
+        }
+
+        if self.nend_bits > 0 {
+            let byte = (self.end_window & ((1 << self.nend_bits) - 1)) as u8;
+            if let Some(last) = self.tail.last_mut() {
+                *last |= byte;
+            } else {
+                self.tail.push(byte);
+            }
+        }
+
+        self.tail.reverse();
+        self.data.extend_from_slice(&self.tail);
+
+        self.data
     }
 }
 

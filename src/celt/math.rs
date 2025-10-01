@@ -104,8 +104,8 @@ pub(crate) fn celt_cos_norm(x: f32) -> f32 {
 mod tests {
     use core::f32::consts::PI;
 
-    use libm::cosf;
     use alloc::vec;
+    use libm::cosf;
 
     use super::isqrt32;
 
