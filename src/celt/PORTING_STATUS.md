@@ -86,3 +86,12 @@ support headers.
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
 ported once the scalar logic is in place.
+
+## Modules intentionally left unported
+
+### `os_support.h`
+- The C helpers in `celt/os_support.h` wrap manual heap management and raw
+  memory utilities. Rust's standard library already provides safe and idiomatic
+  equivalents (`Vec`, RAII-managed drops, and slice copying/clearing
+  primitives), so introducing a dedicated wrapper module would only duplicate
+  existing functionality without aiding the porting effort.
