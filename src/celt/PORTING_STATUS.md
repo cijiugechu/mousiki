@@ -201,6 +201,14 @@ safely.
   including the packing buffers and super-twiddle generation used by the MDCT
   paths.
 
+### `kiss_fft.rs`
+- `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
+  `celt/kiss_fft.c`, keeping the cached twiddle tables and scratch buffers
+  inside a reusable state object.
+- `opus_fft_alloc`, `opus_fft`, and `opus_ifft` &rarr; expose the allocation and
+  transform entry points required by the MDCT, matching the forward 1/`N`
+  normalisation and unscaled inverse behaviour of the reference code.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
@@ -214,7 +222,6 @@ support headers.
 | `celt.c` | Top-level encoder/decoder glue (frame dispatch, overlap-add). | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
-| `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
