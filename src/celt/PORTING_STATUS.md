@@ -131,6 +131,12 @@ safely.
   whether `V(N, K)` fits inside an unsigned 32-bit integer when building the
   pulse cache.
 
+### `quant_bands.rs`
+- `loss_distortion` &rarr; ports the distortion metric helper from
+  `celt/quant_bands.c` that scores how far the current coarse band energies have
+  drifted from the historical estimates, clamping the accumulated squared
+  difference to a conservative upper bound.
+
 ### `mini_kfft.rs`
 - `MiniKissFft` and butterfly helpers &rarr; port the minimalist complex FFT
   kernels from `celt/mini_kfft.c`, including radix-2/3/4/5 butterflies and the
