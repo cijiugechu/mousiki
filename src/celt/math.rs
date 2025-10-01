@@ -99,6 +99,26 @@ pub(crate) fn celt_cos_norm(x: f32) -> f32 {
     cosf(0.5 * PI * x)
 }
 
+/// Clamps samples to the `[-2, 2]` range as in `opus_limit2_checkwithin1_c()`.
+///
+/// The C helper returns a hint indicating whether all samples were guaranteed to
+/// fall inside `[-1, 1]`. The scalar implementation always pessimistically
+/// returns `0` (false) when samples are present, because it cannot cheaply
+/// provide this guarantee after the clamping pass. The Rust port mirrors this
+/// behaviour by returning `false` for non-empty slices and `true` only when the
+/// slice is empty.
+pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+
+    for sample in samples {
+        *sample = sample.clamp(-2.0, 2.0);
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use core::f32::consts::PI;
@@ -108,7 +128,9 @@ mod tests {
 
     use super::isqrt32;
 
-    use super::{celt_cos_norm, celt_div, celt_exp2, celt_log2, fast_atan2f};
+    use super::{
+        celt_cos_norm, celt_div, celt_exp2, celt_log2, fast_atan2f, opus_limit2_checkwithin1,
+    };
 
     #[test]
     fn fast_atan2f_matches_std() {
@@ -164,6 +186,17 @@ mod tests {
             let expected = cosf(0.5 * PI * input);
             assert!((celt_cos_norm(input) - expected).abs() <= 1e-6);
         }
+    }
+
+    #[test]
+    fn limit2_clamps_and_returns_hint() {
+        let mut samples = [-3.5_f32, -2.0, -0.5, 0.75, 1.5, 3.75];
+        let hint = opus_limit2_checkwithin1(&mut samples);
+        assert!(!hint);
+        assert_eq!(samples, [-2.0, -2.0, -0.5, 0.75, 1.5, 2.0]);
+
+        let mut empty: [f32; 0] = [];
+        assert!(opus_limit2_checkwithin1(&mut empty));
     }
 
     #[test]
