@@ -10,8 +10,8 @@
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::celt::{
-    ec_ilog,
-    types::{OpusVal16, OpusVal32},
+    celt_inner_prod, celt_sqrt, ec_ilog,
+    types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 
 /// Fixed-point fractional multiply mirroring the `FRAC_MUL16` macro from the C
@@ -142,12 +142,121 @@ pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
     }
 }
 
+/// Computes the per-band energy for the supplied channels.
+///
+/// Ports the float build of `compute_band_energies()` from `celt/bands.c`. The
+/// helper sums the squared magnitudes within each critical band and stores the
+/// square-rooted result in `band_e`. A small bias of `1e-27` mirrors the
+/// reference implementation and keeps the normalisation stable even for silent
+/// bands.
+pub(crate) fn compute_band_energies(
+    mode: &OpusCustomMode<'_>,
+    x: &[CeltSig],
+    band_e: &mut [CeltGlog],
+    end: usize,
+    channels: usize,
+    lm: usize,
+    arch: i32,
+) {
+    let _ = arch;
+
+    assert!(
+        end <= mode.num_ebands,
+        "end band must not exceed mode bands"
+    );
+    assert!(
+        mode.e_bands.len() >= end + 1,
+        "eBands must contain end + 1 entries"
+    );
+
+    let n = mode.short_mdct_size << lm;
+    assert!(
+        x.len() >= channels * n,
+        "input spectrum is too short for the mode"
+    );
+
+    let stride = mode.num_ebands;
+    assert!(
+        band_e.len() >= channels * stride,
+        "band energy buffer too small"
+    );
+
+    for c in 0..channels {
+        let signal_base = c * n;
+        let energy_base = c * stride;
+
+        for band in 0..end {
+            let band_start = (mode.e_bands[band] as usize) << lm;
+            let band_end = (mode.e_bands[band + 1] as usize) << lm;
+            assert!(band_end <= n, "band end exceeds MDCT length");
+
+            let slice = &x[signal_base + band_start..signal_base + band_end];
+            let sum = 1e-27_f32 + celt_inner_prod(slice, slice);
+            band_e[energy_base + band] = celt_sqrt(sum);
+        }
+    }
+}
+
+/// Normalises each band to unit energy.
+///
+/// Mirrors the float implementation of `normalise_bands()` from `celt/bands.c`
+/// by scaling the MDCT spectrum in-place. The gain for each band is computed
+/// from the `band_e` table produced by [`compute_band_energies`], with the same
+/// `1e-27` bias to guard against division by zero.
+pub(crate) fn normalise_bands(
+    mode: &OpusCustomMode<'_>,
+    freq: &[CeltSig],
+    x: &mut [OpusVal16],
+    band_e: &[CeltGlog],
+    end: usize,
+    channels: usize,
+    m: usize,
+) {
+    assert!(
+        end <= mode.num_ebands,
+        "end band must not exceed mode bands"
+    );
+    assert!(
+        mode.e_bands.len() >= end + 1,
+        "eBands must contain end + 1 entries"
+    );
+
+    let n = m * mode.short_mdct_size;
+    assert!(freq.len() >= channels * n, "frequency buffer too small");
+    assert!(x.len() >= channels * n, "normalisation buffer too small");
+
+    let stride = mode.num_ebands;
+    assert!(
+        band_e.len() >= channels * stride,
+        "band energy buffer too small"
+    );
+
+    for c in 0..channels {
+        let freq_base = c * n;
+        let energy_base = c * stride;
+
+        for band in 0..end {
+            let start = m * (mode.e_bands[band] as usize);
+            let stop = m * (mode.e_bands[band + 1] as usize);
+            assert!(stop <= n, "band end exceeds MDCT length");
+
+            let gain = 1.0 / (1e-27_f32 + band_e[energy_base + band]);
+            for idx in start..stop {
+                x[freq_base + idx] = freq[freq_base + idx] * gain;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_channel_weights, frac_mul16,
-        hysteresis_decision, stereo_split,
+        bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
+        compute_channel_weights, frac_mul16, hysteresis_decision, normalise_bands, stereo_split,
     };
+    use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCache};
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     #[test]
     fn hysteresis_matches_reference_logic() {
@@ -302,6 +411,113 @@ mod tests {
 
         for ((isin, icos), &value) in inputs.iter().zip(expected.iter()) {
             assert_eq!(bitexact_log2tan(*isin, *icos), value);
+        }
+    }
+
+    fn dummy_mode<'a>(e_bands: &'a [i16], short_mdct_size: usize) -> OpusCustomMode<'a> {
+        let mdct = MdctLookup::new(short_mdct_size, 0, &[]);
+        OpusCustomMode {
+            sample_rate: 48_000,
+            overlap: 0,
+            num_ebands: e_bands.len() - 1,
+            effective_ebands: e_bands.len() - 1,
+            pre_emphasis: [0.0; 4],
+            e_bands,
+            max_lm: 0,
+            num_short_mdcts: 1,
+            short_mdct_size,
+            num_alloc_vectors: 0,
+            alloc_vectors: &[],
+            log_n: &[],
+            window: &[],
+            mdct,
+            cache: PulseCache {
+                size: 0,
+                index: &[],
+                bits: &[],
+                caps: &[],
+            },
+        }
+    }
+
+    #[test]
+    fn compute_band_energies_matches_manual_sum() {
+        let e_bands = [0i16, 2, 4];
+        let mode = dummy_mode(&e_bands, 4);
+        let channels = 2;
+        let lm = 1usize;
+        let n = mode.short_mdct_size << lm;
+
+        let mut spectrum = Vec::with_capacity(channels * n);
+        for idx in 0..channels * n {
+            spectrum.push((idx as f32 * 0.13 - 0.5).sin());
+        }
+
+        let mut band_e = vec![0.0; mode.num_ebands * channels];
+        compute_band_energies(
+            &mode,
+            &spectrum,
+            &mut band_e,
+            mode.num_ebands,
+            channels,
+            lm,
+            0,
+        );
+
+        for c in 0..channels {
+            for b in 0..mode.num_ebands {
+                let start = ((mode.e_bands[b] as usize) << lm) + c * n;
+                let stop = ((mode.e_bands[b + 1] as usize) << lm) + c * n;
+                let sum: f32 = spectrum[start..stop].iter().map(|v| v * v).sum();
+                let expected = (1e-27_f32 + sum).sqrt();
+                let idx = b + c * mode.num_ebands;
+                assert!(
+                    (band_e[idx] - expected).abs() <= 1e-6,
+                    "channel {c}, band {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalise_bands_scales_by_inverse_energy() {
+        let e_bands = [0i16, 2, 4];
+        let mode = dummy_mode(&e_bands, 4);
+        let channels = 1usize;
+        let m = 2usize;
+        let n = mode.short_mdct_size * m;
+
+        let freq: Vec<CeltSig> = (0..n).map(|i| (i as f32 * 0.21 - 0.4).cos()).collect();
+        let mut norm = vec![0.0f32; freq.len()];
+
+        let mut band_e = vec![0.0f32; mode.num_ebands * channels];
+        for b in 0..mode.num_ebands {
+            let start = m * (mode.e_bands[b] as usize);
+            let stop = m * (mode.e_bands[b + 1] as usize);
+            let sum: f32 = freq[start..stop].iter().map(|v| v * v).sum();
+            band_e[b] = (1e-27_f32 + sum).sqrt();
+        }
+
+        normalise_bands(
+            &mode,
+            &freq,
+            &mut norm,
+            &band_e,
+            mode.num_ebands,
+            channels,
+            m,
+        );
+
+        for b in 0..mode.num_ebands {
+            let start = m * (mode.e_bands[b] as usize);
+            let stop = m * (mode.e_bands[b + 1] as usize);
+            let gain = 1.0 / (1e-27_f32 + band_e[b]);
+            for j in start..stop {
+                assert!(
+                    (norm[j] - freq[j] * gain).abs() <= 1e-6,
+                    "band {b}, index {j}"
+                );
+            }
         }
     }
 }

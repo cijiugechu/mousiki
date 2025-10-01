@@ -19,6 +19,11 @@ safely.
 - `compute_channel_weights` &rarr; ports the stereo weighting helper from
   `celt/bands.c` that balances distortion across channels using adjusted
   energy estimates.
+- `compute_band_energies` &rarr; ports the float helper from `celt/bands.c`
+  that accumulates per-band MDCT magnitudes before normalisation.
+- `normalise_bands` &rarr; mirrors the float implementation from
+  `celt/bands.c` that scales each MDCT band to unit energy using the computed
+  magnitudes.
 - `stereo_split` &rarr; ports the mid/side-to-left/right transform from
   `celt/bands.c`, applying the orthonormal scaling used when decoding stereo
   bands.
