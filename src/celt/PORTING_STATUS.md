@@ -149,6 +149,8 @@ safely.
 - `fits_in32` &rarr; ports the custom-modes guard from `celt/rate.c` that checks
   whether `V(N, K)` fits inside an unsigned 32-bit integer when building the
   pulse cache.
+- `compute_pulse_cache` &rarr; recreates the PVQ cache generation routine from
+  `celt/rate.c`, including the per-band bit caps used by custom modes.
 
 ### `quant_bands.rs`
 - `loss_distortion` &rarr; ports the distortion metric helper from
@@ -187,7 +189,7 @@ support headers.
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `pitch.c` | Pitch correlation/search and postfilter helpers. | `modes`, `mathops`, `celt_lpc` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
-| `rate.c` | Bitrate distribution and pulse cache logic (excluding the helper constants and guards now in `rate.rs`). | `modes`, `cwrs`, `entcode`, `rate` |
+| `rate.c` | Remaining bitrate distribution heuristics (the helper constants and pulse cache builder now live in Rust). | `modes`, `cwrs`, `entcode`, `rate` |
 | `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
