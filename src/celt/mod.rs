@@ -15,6 +15,7 @@ mod lpc;
 mod math;
 mod mini_kfft;
 mod pitch;
+mod quant_bands;
 mod rate;
 mod types;
 mod vq;
@@ -39,6 +40,8 @@ pub(crate) use math::*;
 pub(crate) use mini_kfft::*;
 #[allow(unused_imports)]
 pub(crate) use pitch::*;
+#[allow(unused_imports)]
+pub(crate) use quant_bands::*;
 #[allow(unused_imports)]
 pub(crate) use rate::*;
 #[allow(unused_imports)]
