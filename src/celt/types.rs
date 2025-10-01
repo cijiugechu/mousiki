@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use super::kiss_fft::KissFftState;
+
 /// Corresponds to `opus_int16` in the C implementation.
 pub type OpusInt16 = i16;
 /// Corresponds to `opus_int32` in the C implementation.
@@ -18,10 +20,6 @@ pub type CeltSig = OpusVal32;
 pub type CeltGlog = OpusVal32;
 /// Coefficients used by the MDCT windows.
 pub type CeltCoef = OpusVal16;
-
-/// Placeholder for the KISS FFT state referenced by the MDCT lookup tables.
-#[derive(Debug, Clone, Default)]
-pub struct KissFftState;
 
 /// Scalar type used by the KISS FFT tables.
 pub type KissTwiddleScalar = f32;

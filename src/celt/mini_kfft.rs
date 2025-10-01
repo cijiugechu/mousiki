@@ -13,7 +13,7 @@ pub struct KissFftCpx {
 
 impl KissFftCpx {
     #[inline]
-    const fn new(r: f32, i: f32) -> Self {
+    pub const fn new(r: f32, i: f32) -> Self {
         Self { r, i }
     }
 }
