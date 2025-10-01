@@ -139,6 +139,9 @@ safely.
   `celt/quant_bands.c` that scores how far the current coarse band energies have
   drifted from the historical estimates, clamping the accumulated squared
   difference to a conservative upper bound.
+- `E_MEANS`, `PRED_COEF`, `BETA_COEF`, `BETA_INTRA`, `E_PROB_MODEL`, and
+  `SMALL_ENERGY_ICDF` &rarr; port the constant tables from `celt/quant_bands.c`
+  used by the coarse energy quantiser and small energy Laplace model.
 
 ### `mini_kfft.rs`
 - `MiniKissFft` and butterfly helpers &rarr; port the minimalist complex FFT
