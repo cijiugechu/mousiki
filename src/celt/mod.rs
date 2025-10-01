@@ -5,10 +5,13 @@
 //! structures so that subsequent ports can translate field-by-field logic while
 //! relying on Rust's ownership and lifetime tracking for safety.
 
+mod laplace;
 mod math;
 mod types;
 mod vq;
 
+#[allow(unused_imports)]
+pub(crate) use laplace::*;
 #[allow(unused_imports)]
 pub(crate) use math::*;
 #[allow(unused_imports)]

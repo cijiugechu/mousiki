@@ -40,6 +40,11 @@ safely.
 - `exp_rotation` and the helper `exp_rotation1` &rarr; mirror the coefficient
   rotation routines in `celt/vq.c`.
 
+### `laplace.rs`
+- `ec_laplace_encode`, `ec_laplace_decode`, `ec_laplace_encode_p0`, and
+  `ec_laplace_decode_p0` &rarr; port the Laplace probability model from
+  `celt/laplace.c`, including the helper `ec_laplace_get_freq1`.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
@@ -59,7 +64,6 @@ support headers.
 | `entdec.c` | Entropy decoder implementation. | `entdec`, `mfrngcod` |
 | `entenc.c` | Entropy encoder implementation. | `entenc`, `mfrngcod` |
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
-| `laplace.c` | Laplace probability modelling for band quantisation. | `laplace`, `mathops` |
 | `mathops.c` | Fixed- and float-point math helpers beyond the ones already ported. | `mathops`, `float_cast` |
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
 | `mini_kfft.c` | Reduced FFT variant for small MDCT sizes. | `kiss_fft` |
