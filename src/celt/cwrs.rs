@@ -7,8 +7,12 @@
 //! primarily operate on integer combinatorics used by the codeword
 //! enumeration logic in `cwrs.c`.
 
+use alloc::vec;
+
 use crate::celt::entcode::ec_ilog;
-use crate::celt::types::{OpusInt32, OpusUint32};
+use crate::celt::entdec::EcDec;
+use crate::celt::entenc::EcEnc;
+use crate::celt::types::{OpusInt32, OpusUint32, OpusVal32};
 
 /// Returns a conservatively large estimate of `log2(val)` with `frac` fractional bits.
 ///
@@ -126,12 +130,145 @@ pub(crate) fn ncwrs_urow(n: usize, k: usize, u: &mut [OpusUint32]) -> OpusUint32
         .expect("V(n, k) overflowed 32 bits")
 }
 
+fn icwrs1(value: OpusInt32) -> (OpusUint32, usize) {
+    let pulses = value.unsigned_abs() as usize;
+    let index = OpusUint32::from(value < 0);
+    (index, pulses)
+}
+
+fn icwrs(
+    y: &[OpusInt32],
+    n: usize,
+    total_pulses: usize,
+    u: &mut [OpusUint32],
+) -> (OpusUint32, OpusUint32) {
+    debug_assert!(n >= 2);
+    debug_assert!(total_pulses > 0);
+    debug_assert!(y.len() >= n);
+    debug_assert!(u.len() >= total_pulses + 2);
+
+    u[0] = 0;
+    for (idx, slot) in u.iter_mut().enumerate().skip(1).take(total_pulses + 1) {
+        *slot = ((idx as OpusUint32) << 1) - 1;
+    }
+
+    let last = y[n - 1];
+    let (mut index, pulses_used) = icwrs1(last);
+
+    let mut j = n - 2;
+    index = index
+        .checked_add(u[pulses_used])
+        .expect("icwrs index overflowed 32 bits");
+
+    let mut pulses_acc = pulses_used + y[j].unsigned_abs() as usize;
+    if y[j] < 0 {
+        index = index
+            .checked_add(u[pulses_acc + 1])
+            .expect("icwrs index overflowed 32 bits");
+    }
+
+    while j > 0 {
+        unext(&mut u[..total_pulses + 2], 0);
+        j -= 1;
+        index = index
+            .checked_add(u[pulses_acc])
+            .expect("icwrs index overflowed 32 bits");
+        pulses_acc += y[j].unsigned_abs() as usize;
+        if y[j] < 0 {
+            index = index
+                .checked_add(u[pulses_acc + 1])
+                .expect("icwrs index overflowed 32 bits");
+        }
+    }
+
+    let nc = u[pulses_acc]
+        .checked_add(u[pulses_acc + 1])
+        .expect("V(n, k) overflowed 32 bits");
+    (index, nc)
+}
+
+fn cwrsi(
+    n: usize,
+    mut k: usize,
+    mut index: OpusUint32,
+    y: &mut [OpusInt32],
+    u: &mut [OpusUint32],
+) -> OpusVal32 {
+    debug_assert!(n > 0);
+    debug_assert!(y.len() >= n);
+    debug_assert!(u.len() >= k + 2);
+
+    let mut energy: OpusVal32 = 0.0;
+
+    for j in 0..n {
+        let sign_threshold = u[k + 1];
+        let sign = if index >= sign_threshold {
+            index -= sign_threshold;
+            -1
+        } else {
+            0
+        };
+
+        let mut pulses_in_dim = k;
+        let mut entry = u[k];
+        while entry > index {
+            k -= 1;
+            entry = u[k];
+        }
+
+        index -= entry;
+        pulses_in_dim -= k;
+
+        let value = if sign == 0 {
+            pulses_in_dim as OpusInt32
+        } else {
+            -(pulses_in_dim as OpusInt32)
+        };
+
+        y[j] = value;
+        let val = value as OpusVal32;
+        energy += val * val;
+
+        uprev(&mut u[..k + 2], 0);
+    }
+
+    energy
+}
+
+pub(crate) fn encode_pulses(y: &[OpusInt32], n: usize, k: usize, enc: &mut EcEnc<'_>) {
+    debug_assert!(k > 0);
+    debug_assert!(n >= 2);
+    debug_assert!(y.len() >= n);
+
+    let mut workspace = vec![0u32; k + 2];
+    let (index, total) = icwrs(y, n, k, &mut workspace);
+    enc.enc_uint(index, total);
+}
+
+pub(crate) fn decode_pulses(
+    y: &mut [OpusInt32],
+    n: usize,
+    k: usize,
+    dec: &mut EcDec<'_>,
+) -> OpusVal32 {
+    debug_assert!(k > 0);
+    debug_assert!(n >= 2);
+    debug_assert!(y.len() >= n);
+
+    let mut workspace = vec![0u32; k + 2];
+    let total = ncwrs_urow(n, k, &mut workspace);
+    let index = dec.dec_uint(total);
+    cwrsi(n, k, index, y, &mut workspace)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{log2_frac, ncwrs_urow, unext, uprev};
-    use crate::celt::types::OpusUint32;
-    use alloc::vec;
+    use super::{decode_pulses, encode_pulses, log2_frac, ncwrs_urow, unext, uprev};
     use alloc::vec::Vec;
+    use alloc::vec;
+    use crate::celt::entdec::EcDec;
+    use crate::celt::entenc::EcEnc;
+    use crate::celt::types::{OpusInt32, OpusUint32, OpusVal32};
 
     fn reference_log2_frac(val: u32, frac: i32) -> i32 {
         let scale = 1 << frac;
@@ -244,5 +381,69 @@ mod tests {
         expected[1..1 + slice_len].copy_from_slice(&working);
 
         assert_eq!(row, expected);
+    }
+
+    fn enumerate_pulses(n: usize, k: usize) -> Vec<Vec<OpusInt32>> {
+        let mut current = vec![0; n];
+        let mut out = Vec::new();
+
+        fn search(
+            idx: usize,
+            n: usize,
+            k: usize,
+            current: &mut [OpusInt32],
+            out: &mut Vec<Vec<OpusInt32>>,
+        ) {
+            if idx == n {
+                let total: usize = current.iter().map(|&v| v.unsigned_abs() as usize).sum();
+                if total == k {
+                    out.push(current.to_vec());
+                }
+                return;
+            }
+
+            let limit = k as OpusInt32;
+            for value in -limit..=limit {
+                current[idx] = value;
+                search(idx + 1, n, k, current, out);
+            }
+        }
+
+        search(0, n, k, &mut current, &mut out);
+        out
+    }
+
+    #[test]
+    fn encode_and_decode_round_trip_small_vectors() {
+        let configs = &[(2usize, 1usize), (2, 2), (3, 2)];
+
+        for &(n, k) in configs {
+            for pulses in enumerate_pulses(n, k) {
+                if pulses.iter().all(|&v| v == 0) {
+                    continue;
+                }
+
+                let mut buffer = vec![0u8; 128];
+                let mut encoder = EcEnc::new(buffer.as_mut_slice());
+                encode_pulses(&pulses, n, k, &mut encoder);
+                encoder.enc_done();
+
+                let mut decode_buf = buffer.clone();
+                let mut decoder = EcDec::new(decode_buf.as_mut_slice());
+                let mut decoded = vec![0; n];
+                let energy = decode_pulses(&mut decoded, n, k, &mut decoder);
+
+                assert_eq!(decoded, pulses);
+
+                let expected: OpusVal32 = pulses
+                    .iter()
+                    .map(|&v| {
+                        let val = v as OpusVal32;
+                        val * val
+                    })
+                    .sum();
+                assert!((energy - expected).abs() < 1e-6);
+            }
+        }
     }
 }
