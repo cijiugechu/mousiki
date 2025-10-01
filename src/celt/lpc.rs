@@ -28,7 +28,7 @@ use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
 pub(crate) fn celt_lpc(lpc: &mut [OpusVal16], ac: &[OpusVal32]) {
     let order = lpc.len();
     assert!(
-        ac.len() >= order + 1,
+        ac.len() > order,
         "autocorrelation must provide order + 1 samples"
     );
 
@@ -162,7 +162,7 @@ pub(crate) fn celt_autocorr(
         "input signal must contain at least one sample"
     );
     assert!(
-        ac.len() >= lag + 1,
+        ac.len() > lag,
         "autocorrelation buffer must hold lag + 1 values"
     );
     assert!(lag <= x.len(), "lag must not exceed the input length");

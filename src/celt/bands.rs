@@ -35,17 +35,15 @@ pub(crate) fn hysteresis_decision(
         index += 1;
     }
 
-    if prev < count && index > prev {
-        if value < thresholds[prev] + hysteresis[prev] {
+    if prev < count && index > prev
+        && value < thresholds[prev] + hysteresis[prev] {
             index = prev;
         }
-    }
 
-    if prev > 0 && index < prev {
-        if value > thresholds[prev - 1] - hysteresis[prev - 1] {
+    if prev > 0 && index < prev
+        && value > thresholds[prev - 1] - hysteresis[prev - 1] {
             index = prev;
         }
-    }
 
     index
 }

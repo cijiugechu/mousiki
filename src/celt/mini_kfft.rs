@@ -90,7 +90,7 @@ impl MiniKissFft {
     pub fn process_stride(&self, fin: &[KissFftCpx], fout: &mut [KissFftCpx], in_stride: usize) {
         assert_eq!(fout.len(), self.nfft);
         assert!(in_stride > 0);
-        assert!(fin.len() >= (self.nfft - 1) * in_stride + 1);
+        assert!(fin.len() > (self.nfft - 1) * in_stride);
         self.kf_work(fout, fin, 0, 1, in_stride, 0);
     }
 
@@ -278,7 +278,7 @@ pub struct MiniKissFftr {
 
 impl MiniKissFftr {
     pub fn new(nfft: usize, inverse_fft: bool) -> Self {
-        assert!(nfft % 2 == 0, "Real FFT requires an even length");
+        assert!(nfft.is_multiple_of(2), "Real FFT requires an even length");
         let ncfft = nfft / 2;
         let substate = MiniKissFft::new(ncfft, inverse_fft);
         let pack_buffer = vec![KissFftCpx::default(); ncfft];
@@ -334,7 +334,7 @@ fn kf_factor(mut n: usize) -> Vec<i32> {
     let mut p = 4usize;
     let floor_sqrt = floor(sqrt(n as f64)) as usize;
     while n > 1 {
-        while n % p != 0 {
+        while !n.is_multiple_of(p) {
             p = match p {
                 4 => 2,
                 2 => 3,
