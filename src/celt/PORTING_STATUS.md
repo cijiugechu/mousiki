@@ -22,6 +22,9 @@ safely.
   `celt/mathops.h`.
 - `celt_log2`, `celt_exp2`, `celt_div`, and `celt_cos_norm` &rarr; float build
   math helpers implemented in `celt/mathops.h`/`mathops.c`.
+- `celt_ilog2` and `celt_zlog2` &rarr; wrap the integer logarithm helpers from
+  `celt/mathops.h`, forwarding to the shared range coder bit count while
+  handling zero inputs.
 - `celt_sqrt`, `celt_rsqrt`, `celt_rsqrt_norm`, `celt_rcp`, `frac_div32`, and
   `frac_div32_q29` &rarr; remaining scalar helpers from `celt/mathops.c`.
 - `isqrt32` &rarr; integer square root routine from `celt/mathops.c`.
