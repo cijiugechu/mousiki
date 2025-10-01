@@ -7,7 +7,10 @@
 //! more complex pieces of the encoder so that future ports can focus on the
 //! higher-level control flow.
 
-use crate::celt::{ec_ilog, types::OpusVal16};
+use crate::celt::{
+    ec_ilog,
+    types::{OpusVal16, OpusVal32},
+};
 
 /// Fixed-point fractional multiply mirroring the `FRAC_MUL16` macro from the C
 /// sources.
@@ -100,9 +103,26 @@ pub(crate) fn celt_lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
 }
 
+/// Computes stereo weighting factors used when balancing channel distortion.
+///
+/// Mirrors `compute_channel_weights()` from `celt/bands.c`. The helper adjusts
+/// the per-channel energies by a fraction of the smaller energy so that the
+/// stereo weighting is slightly more conservative than a pure proportional
+/// split.
+#[must_use]
+pub(crate) fn compute_channel_weights(ex: OpusVal32, ey: OpusVal32) -> [OpusVal16; 2] {
+    let min_energy = ex.min(ey);
+    let adjusted_ex = ex + min_energy / 3.0;
+    let adjusted_ey = ey + min_energy / 3.0;
+    [adjusted_ex, adjusted_ey]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{bitexact_cos, bitexact_log2tan, celt_lcg_rand, frac_mul16, hysteresis_decision};
+    use super::{
+        bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_channel_weights, frac_mul16,
+        hysteresis_decision,
+    };
 
     #[test]
     fn hysteresis_matches_reference_logic() {
@@ -140,6 +160,27 @@ mod tests {
                     "value {value}, prev {prev}",
                 );
             }
+        }
+    }
+
+    #[test]
+    fn channel_weights_match_reference_formula() {
+        let cases = [
+            (0.0, 0.0),
+            (1.0, 4.0),
+            (4.0, 1.0),
+            (10.0, 10.0),
+            (3.75, 0.25),
+        ];
+
+        for &(ex, ey) in &cases {
+            let weights = compute_channel_weights(ex, ey);
+            let min_energy = ex.min(ey);
+            let reference_ex = ex + min_energy / 3.0;
+            let reference_ey = ey + min_energy / 3.0;
+
+            assert!((weights[0] - reference_ex).abs() <= f32::EPSILON * 4.0);
+            assert!((weights[1] - reference_ey).abs() <= f32::EPSILON * 4.0);
         }
     }
 
