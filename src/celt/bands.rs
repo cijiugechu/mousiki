@@ -10,7 +10,7 @@
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::celt::{
-    celt_inner_prod, celt_sqrt, ec_ilog,
+    celt_inner_prod, celt_rsqrt_norm, celt_sqrt, dual_inner_prod, ec_ilog,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 
@@ -142,6 +142,47 @@ pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
     }
 }
 
+/// Reconstructs left/right stereo samples from a mid/side representation.
+///
+/// Mirrors the float configuration of `stereo_merge()` from `celt/bands.c`.
+/// The helper evaluates the energies of the `X ± Y` combinations to derive
+/// normalisation gains, then applies the inverse transform to recover the
+/// left and right channels. If either energy falls below the conservative
+/// threshold used by the reference implementation, the side channel is
+/// replaced by the mid channel to avoid amplifying near-silent noise.
+pub(crate) fn stereo_merge(x: &mut [OpusVal16], y: &mut [OpusVal16], mid: OpusVal32) {
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "stereo_merge expects slices of equal length",
+    );
+
+    if x.is_empty() {
+        return;
+    }
+
+    let (mut cross, side_energy) = dual_inner_prod(y, x, y);
+    cross *= mid;
+    let mid_energy = mid * mid;
+    let el = mid_energy + side_energy - 2.0 * cross;
+    let er = mid_energy + side_energy + 2.0 * cross;
+
+    if er < 6e-4 || el < 6e-4 {
+        y.copy_from_slice(x);
+        return;
+    }
+
+    let lgain = celt_rsqrt_norm(el);
+    let rgain = celt_rsqrt_norm(er);
+
+    for (left, right) in x.iter_mut().zip(y.iter_mut()) {
+        let mid_scaled = mid * *left;
+        let side_val = *right;
+        *left = lgain * (mid_scaled - side_val);
+        *right = rgain * (mid_scaled + side_val);
+    }
+}
+
 /// Computes the per-band energy for the supplied channels.
 ///
 /// Ports the float build of `compute_band_energies()` from `celt/bands.c`. The
@@ -252,9 +293,11 @@ pub(crate) fn normalise_bands(
 mod tests {
     use super::{
         bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
-        compute_channel_weights, frac_mul16, hysteresis_decision, normalise_bands, stereo_split,
+        compute_channel_weights, frac_mul16, hysteresis_decision, normalise_bands, stereo_merge,
+        stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCache};
+    use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -357,6 +400,66 @@ mod tests {
         for (observed, reference) in side.iter().zip(expected_side.iter()) {
             assert!((observed - reference).abs() <= f32::EPSILON * 16.0);
         }
+    }
+
+    fn reference_stereo_merge(x: &[f32], y: &[f32], mid: f32) -> (Vec<f32>, Vec<f32>) {
+        let mut left = x.to_vec();
+        let mut right = y.to_vec();
+
+        let (mut cross, side_energy) = dual_inner_prod(&right, &left, &right);
+        cross *= mid;
+        let mid_energy = mid * mid;
+        let el = mid_energy + side_energy - 2.0 * cross;
+        let er = mid_energy + side_energy + 2.0 * cross;
+
+        if er < 6e-4 || el < 6e-4 {
+            right.copy_from_slice(&left);
+            return (left, right);
+        }
+
+        let lgain = celt_rsqrt_norm(el);
+        let rgain = celt_rsqrt_norm(er);
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let mid_scaled = mid * *l;
+            let side_val = *r;
+            *l = lgain * (mid_scaled - side_val);
+            *r = rgain * (mid_scaled + side_val);
+        }
+
+        (left, right)
+    }
+
+    #[test]
+    fn stereo_merge_matches_reference_transform() {
+        let mut left = [0.8, -0.25, 0.5, -0.75, 0.1, 0.3];
+        let mut right = [-0.2, 0.4, -0.6, 0.3, -0.1, 0.2];
+        let mid = 0.9;
+
+        let (expected_left, expected_right) = reference_stereo_merge(&left, &right, mid);
+        stereo_merge(&mut left, &mut right, mid);
+
+        for (idx, (&value, &expected)) in left.iter().zip(expected_left.iter()).enumerate() {
+            assert!(
+                (value - expected).abs() <= 1e-6,
+                "left[{idx}] mismatch: value={value}, expected={expected}"
+            );
+        }
+
+        for (idx, (&value, &expected)) in right.iter().zip(expected_right.iter()).enumerate() {
+            assert!(
+                (value - expected).abs() <= 1e-6,
+                "right[{idx}] mismatch: value={value}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn stereo_merge_copies_mid_for_low_energy() {
+        let mut left = [0.0f32; 4];
+        let mut right = [1e-3f32, -1e-3, 2e-3, -2e-3];
+        stereo_merge(&mut left, &mut right, 0.0);
+        assert_eq!(right, left);
     }
 
     #[test]
