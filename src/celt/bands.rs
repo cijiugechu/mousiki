@@ -296,7 +296,7 @@ mod tests {
         compute_channel_weights, frac_mul16, hysteresis_decision, normalise_bands, stereo_merge,
         stereo_split,
     };
-    use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCache};
+    use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -534,12 +534,7 @@ mod tests {
             log_n: &[],
             window: &[],
             mdct,
-            cache: PulseCache {
-                size: 0,
-                index: &[],
-                bits: &[],
-                caps: &[],
-            },
+            cache: PulseCacheData::default(),
         }
     }
 

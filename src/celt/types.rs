@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use alloc::vec::Vec;
+
 /// Corresponds to `opus_int16` in the C implementation.
 pub type OpusInt16 = i16;
 /// Corresponds to `opus_int32` in the C implementation.
@@ -49,13 +51,46 @@ impl<'a> MdctLookup<'a> {
     }
 }
 
-/// Pulse cache information embedded inside `OpusCustomMode`.
-#[derive(Debug, Clone)]
+/// Borrowed view of the pulse cache information embedded inside `OpusCustomMode`.
+#[derive(Debug, Clone, Copy)]
 pub struct PulseCache<'a> {
     pub size: usize,
     pub index: &'a [i16],
     pub bits: &'a [u8],
     pub caps: &'a [u8],
+}
+
+/// Owned storage for the pulse cache tables referenced by custom modes.
+#[derive(Debug, Clone, Default)]
+pub struct PulseCacheData {
+    pub size: usize,
+    pub index: Vec<i16>,
+    pub bits: Vec<u8>,
+    pub caps: Vec<u8>,
+}
+
+impl PulseCacheData {
+    /// Creates a new cache from fully-populated buffers.
+    pub fn new(index: Vec<i16>, bits: Vec<u8>, caps: Vec<u8>) -> Self {
+        let size = bits.len();
+        Self {
+            size,
+            index,
+            bits,
+            caps,
+        }
+    }
+
+    /// Returns a borrowed representation of the cached tables.
+    #[must_use]
+    pub fn as_view(&self) -> PulseCache<'_> {
+        PulseCache {
+            size: self.size,
+            index: &self.index,
+            bits: &self.bits,
+            caps: &self.caps,
+        }
+    }
 }
 
 /// Rust port of the opaque `OpusCustomMode`/`CELTMode` type.
@@ -75,7 +110,7 @@ pub struct OpusCustomMode<'a> {
     pub log_n: &'a [i16],
     pub window: &'a [CeltCoef],
     pub mdct: MdctLookup<'a>,
-    pub cache: PulseCache<'a>,
+    pub cache: PulseCacheData,
 }
 
 impl<'a> OpusCustomMode<'a> {
@@ -88,7 +123,7 @@ impl<'a> OpusCustomMode<'a> {
         log_n: &'a [i16],
         window: &'a [CeltCoef],
         mdct: MdctLookup<'a>,
-        cache: PulseCache<'a>,
+        cache: PulseCacheData,
     ) -> Self {
         Self {
             sample_rate,
@@ -107,6 +142,12 @@ impl<'a> OpusCustomMode<'a> {
             mdct,
             cache,
         }
+    }
+
+    /// Returns a borrowed view of the cached pulse tables.
+    #[must_use]
+    pub fn pulse_cache(&self) -> PulseCache<'_> {
+        self.cache.as_view()
     }
 }
 
