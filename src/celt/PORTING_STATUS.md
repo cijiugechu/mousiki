@@ -77,6 +77,9 @@ safely.
 - `unext`, `uprev`, and `ncwrs_urow` &rarr; port the small-footprint PVQ
   recurrence helpers from `celt/cwrs.c` that build `U(n, k)` rows without the
   precomputed tables.
+- `icwrs1`, `icwrs`, `cwrsi`, `encode_pulses`, and `decode_pulses` &rarr; port
+  the small-footprint PVQ indexer, decoder, and entropy coder glue from
+  `celt/cwrs.c`.
 
 ## Remaining C modules and their dependencies
 
