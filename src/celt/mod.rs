@@ -7,8 +7,11 @@
 
 mod math;
 mod types;
+mod vq;
 
 #[allow(unused_imports)]
 pub(crate) use math::*;
 #[allow(unused_imports)]
 pub(crate) use types::*;
+#[allow(unused_imports)]
+pub(crate) use vq::*;
