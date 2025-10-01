@@ -74,6 +74,9 @@ safely.
 ### `cwrs.rs`
 - `log2_frac` &rarr; ports the conservative fractional logarithm estimator used
   by the pulse codeword enumerator in `celt/cwrs.c`.
+- `unext`, `uprev`, and `ncwrs_urow` &rarr; port the small-footprint PVQ
+  recurrence helpers from `celt/cwrs.c` that build `U(n, k)` rows without the
+  precomputed tables.
 
 ## Remaining C modules and their dependencies
 
