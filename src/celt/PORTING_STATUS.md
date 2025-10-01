@@ -121,6 +121,16 @@ safely.
   in `celt/pitch.c`, including the LPC-based pre-emphasis used before the pitch
   search.
 
+### `rate.rs`
+- `MAX_PSEUDO`, `LOG_MAX_PSEUDO`, `CELT_MAX_PULSES`, `MAX_FINE_BITS`,
+  `FINE_OFFSET`, `QTHETA_OFFSET`, and `QTHETA_OFFSET_TWOPHASE` &rarr; translate
+  the constant definitions shared through `celt/rate.h`.
+- `get_pulses` &rarr; mirrors the inline helper that maps pseudo-pulse indices
+  to their pulse counts in `celt/rate.h`.
+- `fits_in32` &rarr; ports the custom-modes guard from `celt/rate.c` that checks
+  whether `V(N, K)` fits inside an unsigned 32-bit integer when building the
+  pulse cache.
+
 ### `mini_kfft.rs`
 - `MiniKissFft` and butterfly helpers &rarr; port the minimalist complex FFT
   kernels from `celt/mini_kfft.c`, including radix-2/3/4/5 butterflies and the
@@ -150,7 +160,7 @@ support headers.
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `pitch.c` | Pitch correlation/search and postfilter helpers. | `modes`, `mathops`, `celt_lpc` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
-| `rate.c` | Bitrate distribution and pulse cache logic. | `modes`, `cwrs`, `entcode`, `rate` |
+| `rate.c` | Bitrate distribution and pulse cache logic (excluding the helper constants and guards now in `rate.rs`). | `modes`, `cwrs`, `entcode`, `rate` |
 | `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
