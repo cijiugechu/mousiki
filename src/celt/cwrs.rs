@@ -12,7 +12,7 @@ use alloc::vec;
 use crate::celt::entcode::ec_ilog;
 use crate::celt::entdec::EcDec;
 use crate::celt::entenc::EcEnc;
-use crate::celt::types::{OpusInt32, OpusUint32, OpusVal32};
+use crate::celt::types::{OpusInt16, OpusInt32, OpusUint32, OpusVal32};
 
 /// Returns a conservatively large estimate of `log2(val)` with `frac` fractional bits.
 ///
@@ -261,12 +261,51 @@ pub(crate) fn decode_pulses(
     cwrsi(n, k, index, y, &mut workspace)
 }
 
+/// Computes the number of fractional bits required to represent each pulse count.
+///
+/// Mirrors `get_required_bits()` from `celt/cwrs.c` in the reference
+/// implementation. The output slice must have capacity for `max_k + 1` entries,
+/// matching the C routine which fills indices `0..=max_k`. The first element is
+/// always set to zero. For `n == 1` the bit requirement is constant across all
+/// pulse counts; otherwise the helper evaluates the `U(n, k)` recurrence and
+/// applies [`log2_frac`] to the resulting `V(n, k)` table entries.
+pub(crate) fn get_required_bits(bits: &mut [OpusInt16], n: usize, max_k: usize, frac: OpusInt32) {
+    debug_assert!(max_k > 0);
+    debug_assert!(bits.len() >= max_k + 1);
+    debug_assert!(frac >= 0);
+
+    bits[0] = 0;
+    if n == 1 {
+        let value = 1i32 << frac;
+        debug_assert!(value <= OpusInt16::MAX as i32);
+        for slot in bits.iter_mut().take(max_k + 1).skip(1) {
+            *slot = value as OpusInt16;
+        }
+        return;
+    }
+
+    let mut u = vec![0u32; max_k + 2];
+    let _ = ncwrs_urow(n, max_k, &mut u);
+
+    for (k, slot) in bits.iter_mut().enumerate().take(max_k + 1).skip(1) {
+        let total = u[k]
+            .checked_add(u[k + 1])
+            .expect("V(n, k) exceeded 32 bits");
+        let required = log2_frac(total, frac);
+        debug_assert!(required >= 0);
+        debug_assert!(required <= OpusInt16::MAX as OpusInt32);
+        *slot = required as OpusInt16;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{decode_pulses, encode_pulses, log2_frac, ncwrs_urow, unext, uprev};
+    use super::{
+        decode_pulses, encode_pulses, get_required_bits, log2_frac, ncwrs_urow, unext, uprev,
+    };
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
-    use crate::celt::types::{OpusInt32, OpusUint32, OpusVal32};
+    use crate::celt::types::{OpusInt16, OpusInt32, OpusUint32, OpusVal32};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -324,18 +363,15 @@ mod tests {
         let mut table = vec![vec![0u64; k_max + 2]; n_max + 1];
         table[0][0] = 1;
 
-        for n in 0..=n_max {
-            for k in 0..=k_max + 1 {
-                if n == 0 && k == 0 {
-                    continue;
-                }
-                if n == 0 {
-                    table[n][k] = 0;
-                } else if k == 0 {
-                    table[n][k] = 0;
-                } else {
-                    table[n][k] = table[n - 1][k] + table[n][k - 1] + table[n - 1][k - 1];
-                }
+        if n_max >= 1 {
+            for k in 1..=k_max + 1 {
+                table[1][k] = 1;
+            }
+        }
+
+        for n in 2..=n_max {
+            for k in 1..=k_max + 1 {
+                table[n][k] = table[n - 1][k] + table[n][k - 1] + table[n - 1][k - 1];
             }
         }
 
@@ -443,6 +479,41 @@ mod tests {
                     })
                     .sum();
                 assert!((energy - expected).abs() < 1e-6);
+            }
+        }
+    }
+
+    fn reference_required_bits(n: usize, max_k: usize, frac: OpusInt32) -> Vec<OpusInt16> {
+        let mut bits = vec![0i16; max_k + 1];
+        if n == 1 {
+            let value = 1i32 << frac;
+            for slot in bits.iter_mut().skip(1) {
+                *slot = value as i16;
+            }
+            return bits;
+        }
+
+        let table = reference_u_table(n, max_k);
+        for k in 1..=max_k {
+            let total = table[n][k] + table[n][k + 1];
+            let required = reference_log2_frac(total as u32, frac);
+            bits[k] = required as i16;
+        }
+
+        bits
+    }
+
+    #[test]
+    fn get_required_bits_matches_reference() {
+        let max_n = 5;
+        let max_k = 5;
+
+        for n in 1..=max_n {
+            for frac in 0..=6 {
+                let mut bits = vec![0i16; max_k + 1];
+                get_required_bits(&mut bits, n, max_k, frac);
+                let expected = reference_required_bits(n, max_k, frac);
+                assert_eq!(bits, expected, "Mismatch for n={n}, frac={frac}");
             }
         }
     }
