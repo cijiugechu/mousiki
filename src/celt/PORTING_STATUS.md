@@ -150,6 +150,12 @@ safely.
 - `pitch_downsample` &rarr; mirrors the low-pass downsampling stage implemented
   in `celt/pitch.c`, including the LPC-based pre-emphasis used before the pitch
   search.
+- `pitch_search` &rarr; ports the coarse-to-fine open-loop lag search from
+  `celt/pitch.c`, including the pseudo-interpolation that refines the best
+  candidate after the decimated sweeps.
+- `remove_doubling` &rarr; mirrors the subharmonic inspection helper from
+  `celt/pitch.c` that suppresses doubled pitch estimates and returns the
+  adjusted gain.
 
 ### `rate.rs`
 - `MAX_PSEUDO`, `LOG_MAX_PSEUDO`, `CELT_MAX_PULSES`, `MAX_FINE_BITS`,
@@ -196,7 +202,6 @@ support headers.
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
-| `pitch.c` | Pitch correlation/search and postfilter helpers. | `modes`, `mathops`, `celt_lpc` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
 | `rate.c` | Remaining bitrate distribution heuristics (the helper constants and pulse cache builder now live in Rust). | `modes`, `cwrs`, `entcode`, `rate` |
 | `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
