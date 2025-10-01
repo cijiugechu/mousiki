@@ -15,6 +15,8 @@ safely.
 - `isqrt32` &rarr; integer square root routine from `celt/mathops.c`.
 - `opus_limit2_checkwithin1` &rarr; scalar sample clamp helper from
   `celt/mathops.c`.
+- `celt_float2int16` &rarr; float-to-int16 conversion helper from
+  `celt/mathops.c`.
 
 ### `types.rs`
 - Scalar aliases `OpusInt32`, `OpusUint32`, `OpusVal16`, `OpusVal32`,
