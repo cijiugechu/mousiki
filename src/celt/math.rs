@@ -10,6 +10,8 @@
 use core::f32::consts::LN_2;
 use core::f32::consts::{LOG2_E, PI};
 
+use crate::celt::entcode::ec_ilog;
+use crate::celt::types::OpusInt32;
 use libm::{cosf, expf, logf, rintf, sqrtf};
 
 const CELT_SIG_SCALE: f32 = 32_768.0;
@@ -41,6 +43,28 @@ pub(crate) fn isqrt32(mut value: u32) -> u32 {
     }
 
     root
+}
+
+/// Integer base-2 logarithm used by the fixed-point helpers.
+///
+/// Mirrors `celt_ilog2()` from `celt/mathops.h`, wrapping the shared range coder
+/// helper while enforcing that the input is strictly positive. The return value
+/// matches the C implementation by reporting the position of the highest set
+/// bit (zero-indexed).
+#[must_use]
+pub(crate) fn celt_ilog2(value: OpusInt32) -> OpusInt32 {
+    assert!(value > 0, "celt_ilog2 expects a strictly positive input");
+    ec_ilog(value as u32) - 1
+}
+
+/// Integer base-2 logarithm defined for zero.
+///
+/// Ports `celt_zlog2()` from `celt/mathops.h`. The helper mirrors
+/// `celt_ilog2()` for positive inputs while returning `0` when the argument is
+/// zero or negative, matching the guard in the reference implementation.
+#[must_use]
+pub(crate) fn celt_zlog2(value: OpusInt32) -> OpusInt32 {
+    if value <= 0 { 0 } else { celt_ilog2(value) }
 }
 
 /// Fast arctangent approximation used by the psychoacoustic analysis code.
@@ -215,10 +239,11 @@ mod tests {
     use super::{CELT_SIG_SCALE, isqrt32};
 
     use super::{
-        celt_cos_norm, celt_div, celt_exp2, celt_float2int16, celt_log2, celt_maxabs16,
-        celt_maxabs32, celt_rcp, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, fast_atan2f, frac_div32,
-        frac_div32_q29, opus_limit2_checkwithin1,
+        celt_cos_norm, celt_div, celt_exp2, celt_float2int16, celt_ilog2, celt_log2, celt_maxabs16,
+        celt_maxabs32, celt_rcp, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_zlog2, fast_atan2f,
+        frac_div32, frac_div32_q29, opus_limit2_checkwithin1,
     };
+    use crate::celt::entcode::ec_ilog;
 
     #[test]
     fn fast_atan2f_matches_std() {
@@ -387,6 +412,25 @@ mod tests {
         let input = [0.0_f32, 1.0];
         let mut output = [0_i16; 1];
         celt_float2int16(&input, &mut output);
+    }
+
+    #[test]
+    fn celt_ilog2_matches_ec_ilog_minus_one() {
+        let values = [
+            1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 1_024, 65_535, 65_536, 1_048_576,
+        ];
+
+        for &value in &values {
+            assert_eq!(celt_ilog2(value), ec_ilog(value as u32) - 1);
+        }
+    }
+
+    #[test]
+    fn celt_zlog2_handles_non_positive_inputs() {
+        assert_eq!(celt_zlog2(0), 0);
+        assert_eq!(celt_zlog2(-123), 0);
+        assert_eq!(celt_zlog2(1), celt_ilog2(1));
+        assert_eq!(celt_zlog2(2_048), celt_ilog2(2_048));
     }
 
     #[test]
