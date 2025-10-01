@@ -380,16 +380,7 @@ mod tests {
             }
         }
 
-        let samples = [
-            0u32,
-            1,
-            7,
-            255,
-            256,
-            65_535,
-            1_048_575,
-            u32::MAX,
-        ];
+        let samples = [0u32, 1, 7, 255, 256, 65_535, 1_048_575, u32::MAX];
         for &n in &samples {
             for d in [3u32, 17, 63, 127, 181, 233, 255, 256] {
                 assert_eq!(celt_udiv(n, d), n / d, "n={n}, d={d}");
