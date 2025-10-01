@@ -73,6 +73,10 @@ pub(crate) fn celt_cos_norm(x: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use core::f32::consts::PI;
+
+    use libm::cosf;
+
     use super::{celt_cos_norm, celt_div, celt_exp2, celt_log2, fast_atan2f};
 
     #[test]

@@ -118,6 +118,8 @@ pub(crate) fn exp_rotation(
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::{SPREAD_NORMAL, exp_rotation};
 
     fn seed_samples(len: usize) -> Vec<f32> {
@@ -146,7 +148,7 @@ mod tests {
     }
 
     fn rotation_case(len: usize, k: i32) {
-        let mut baseline = seed_samples(len);
+        let baseline = seed_samples(len);
         let mut rotated = baseline.clone();
 
         exp_rotation(&mut rotated, len, 1, 1, k, SPREAD_NORMAL);
