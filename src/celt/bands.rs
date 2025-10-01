@@ -7,6 +7,8 @@
 //! more complex pieces of the encoder so that future ports can focus on the
 //! higher-level control flow.
 
+use core::f32::consts::FRAC_1_SQRT_2;
+
 use crate::celt::{
     ec_ilog,
     types::{OpusVal16, OpusVal32},
@@ -117,11 +119,34 @@ pub(crate) fn compute_channel_weights(ex: OpusVal32, ey: OpusVal32) -> [OpusVal1
     [adjusted_ex, adjusted_ey]
 }
 
+/// Converts a mid/side representation into left/right stereo samples.
+///
+/// Mirrors `stereo_split()` from `celt/bands.c`. The helper applies the
+/// orthonormal transform that maps a mid (sum) signal and a side (difference)
+/// signal back to the left/right domain while preserving energy. CELT encodes
+/// mid/side pairs using Q15 fixed-point arithmetic; the float build operates on
+/// `f32`, so the Rust port multiplies by `FRAC_1_SQRT_2` instead of the
+/// `QCONST16(0.70710678f, 15)` constant used in the original source.
+pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "stereo_split expects slices of equal length",
+    );
+
+    for (left, right) in x.iter_mut().zip(y.iter_mut()) {
+        let mid = FRAC_1_SQRT_2 * *left;
+        let side = FRAC_1_SQRT_2 * *right;
+        *left = mid + side;
+        *right = side - mid;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_channel_weights, frac_mul16,
-        hysteresis_decision,
+        hysteresis_decision, stereo_split,
     };
 
     #[test]
@@ -198,6 +223,30 @@ mod tests {
         for &value in &expected {
             seed = celt_lcg_rand(seed);
             assert_eq!(seed, value);
+        }
+    }
+
+    #[test]
+    fn stereo_split_matches_reference_transform() {
+        let mut mid = [1.0_f32, -1.5, 0.25, 0.0];
+        let mut side = [0.5_f32, 2.0, -0.75, 1.25];
+
+        let mut expected_mid = mid;
+        let mut expected_side = side;
+        for idx in 0..mid.len() {
+            let m = core::f32::consts::FRAC_1_SQRT_2 * expected_mid[idx];
+            let s = core::f32::consts::FRAC_1_SQRT_2 * expected_side[idx];
+            expected_mid[idx] = m + s;
+            expected_side[idx] = s - m;
+        }
+
+        stereo_split(&mut mid, &mut side);
+
+        for (observed, reference) in mid.iter().zip(expected_mid.iter()) {
+            assert!((observed - reference).abs() <= f32::EPSILON * 16.0);
+        }
+        for (observed, reference) in side.iter().zip(expected_side.iter()) {
+            assert!((observed - reference).abs() <= f32::EPSILON * 16.0);
         }
     }
 
