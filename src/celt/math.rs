@@ -48,9 +48,10 @@ pub(crate) fn isqrt32(mut value: u32) -> u32 {
 /// heuristics that rely on it while avoiding the cost of calling into libm.
 #[allow(clippy::many_single_char_names)]
 pub(crate) fn fast_atan2f(y: f32, x: f32) -> f32 {
-    const CA: f32 = 0.431_579_74;
-    const CB: f32 = 0.678_484_03;
-    const CC: f32 = 0.085_955_42;
+    const CA: f32 = 0.431_579_74_f32;
+    // Matches the 0.67848403f literal used in `celt/mathops.h` in the C tree.
+    const CB: f32 = f32::from_bits(0x3f2d_b121);
+    const CC: f32 = 0.085_955_42_f32;
     const CE: f32 = PI / 2.0;
 
     let x2 = x * x;
