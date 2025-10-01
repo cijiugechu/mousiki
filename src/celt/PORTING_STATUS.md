@@ -88,6 +88,9 @@ safely.
 - `celt_fir` and `celt_iir` &rarr; translate the FIR/IIR helpers in
   `celt/celt_lpc.c` for the float build, supplying the filter primitives used by
   the pitch analysis and postfilter paths.
+- `celt_autocorr` &rarr; evaluates the autocorrelation sequence with optional
+  analysis windowing, matching `_celt_autocorr()` in `celt/celt_lpc.c` for the
+  float configuration.
 
 ### `pitch.rs`
 - `celt_inner_prod` &rarr; scalar dot product helper from `celt/pitch.c` used by the
@@ -113,7 +116,6 @@ support headers.
 | `celt.c` | Top-level encoder/decoder glue (frame dispatch, overlap-add). | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
-| `celt_lpc.c` | LPC analysis helpers (short-term prediction). Remaining routines include the FIR/IIR filters and `_celt_autocorr`. | `celt_lpc`, `mathops`, `pitch` |
 | `cwrs.c` | Combinatorial pulse encoding/decoding (excluding `log2_frac`, now ported). | `cwrs`, `mathops` |
 | `entcode.c` | Range encoder utilities shared by `entenc`/`entdec`. | `entcode` |
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |

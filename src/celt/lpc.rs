@@ -7,8 +7,11 @@
 //! makes it a convenient building block to port early, as later modules such as
 //! the pitch analysis and postfilter reuse it.
 
+use alloc::borrow::Cow;
+
 use crate::celt::math::frac_div32;
-use crate::celt::types::{OpusVal16, OpusVal32};
+use crate::celt::pitch::celt_pitch_xcorr;
+use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
 
 /// Computes LPC coefficients from the autocorrelation sequence using the
 /// Levinson-Durbin recursion.
@@ -135,9 +138,81 @@ pub(crate) fn celt_iir(
     }
 }
 
+/// Computes the autocorrelation sequence of the input signal.
+///
+/// Mirrors the float configuration of `_celt_autocorr()` from `celt/celt_lpc.c`.
+/// The routine optionally applies a symmetric analysis window spanning
+/// `overlap` samples at the start and end of `x` before evaluating the
+/// autocorrelation up to `lag`.
+///
+/// The returned shift value is specific to the fixed-point build in the
+/// reference implementation; for the float configuration it always resolves to
+/// zero and is provided only for API compatibility with future ports that may
+/// consume the output.
+pub(crate) fn celt_autocorr(
+    x: &[OpusVal16],
+    ac: &mut [OpusVal32],
+    window: Option<&[CeltCoef]>,
+    overlap: usize,
+    lag: usize,
+    arch: i32,
+) -> i32 {
+    assert!(
+        !x.is_empty(),
+        "input signal must contain at least one sample"
+    );
+    assert!(
+        ac.len() >= lag + 1,
+        "autocorrelation buffer must hold lag + 1 values"
+    );
+    assert!(lag <= x.len(), "lag must not exceed the input length");
+    assert!(
+        overlap <= x.len(),
+        "window overlap cannot exceed the input length"
+    );
+
+    let n = x.len();
+    let fast_n = n - lag;
+
+    let xptr_cow = if overlap == 0 {
+        Cow::Borrowed(x)
+    } else {
+        let window = window.expect("window coefficients required when overlap > 0");
+        assert!(
+            window.len() >= overlap,
+            "window must provide at least overlap coefficients"
+        );
+
+        let mut buffer = x.to_vec();
+        for i in 0..overlap {
+            let w = window[i];
+            buffer[i] *= w;
+            let tail = n - i - 1;
+            buffer[tail] *= w;
+        }
+
+        Cow::Owned(buffer)
+    };
+    let xptr = xptr_cow.as_ref();
+
+    let _ = arch;
+
+    celt_pitch_xcorr(xptr, xptr, fast_n, lag + 1, ac);
+
+    for (k, slot) in ac.iter_mut().enumerate().take(lag + 1) {
+        let mut d = 0.0;
+        for i in k + fast_n..n {
+            d += xptr[i] * xptr[i - k];
+        }
+        *slot += d;
+    }
+
+    0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{celt_fir, celt_iir, celt_lpc};
+    use super::{celt_autocorr, celt_fir, celt_iir, celt_lpc};
     use crate::celt::types::{OpusVal16, OpusVal32};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -208,6 +283,72 @@ mod tests {
             ac[lag] = sum;
         }
         ac
+    }
+
+    fn reference_autocorr(signal: &[OpusVal16], lag: usize) -> Vec<OpusVal32> {
+        let n = signal.len();
+        (0..=lag)
+            .map(|k| {
+                let mut acc = 0.0f32;
+                for i in 0..n.saturating_sub(k) {
+                    acc += signal[i] * signal[i + k];
+                }
+                acc
+            })
+            .collect()
+    }
+
+    #[test]
+    fn autocorr_matches_reference_without_window() {
+        let n = 32;
+        let lag = 6;
+        let mut seed = 0x2468_acdfu32;
+        let mut signal = vec![0.0f32; n];
+        for sample in &mut signal {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *sample = ((seed >> 9) as f32 / (u32::MAX >> 1) as f32) - 1.0;
+        }
+
+        let mut ac = vec![0.0f32; lag + 1];
+        let shift = celt_autocorr(&signal, &mut ac, None, 0, lag, 0);
+
+        let expected = reference_autocorr(&signal, lag);
+        for (lhs, rhs) in ac.iter().zip(expected.iter()) {
+            assert!((lhs - rhs).abs() < 1e-5);
+        }
+        assert_eq!(shift, 0);
+    }
+
+    #[test]
+    fn autocorr_applies_window_symmetrically() {
+        let n = 24;
+        let lag = 4;
+        let overlap = 6;
+        let mut signal = vec![0.0f32; n];
+        for (idx, sample) in signal.iter_mut().enumerate() {
+            *sample = (idx as f32 * 0.1).sin();
+        }
+
+        let mut window = vec![0.0f32; overlap];
+        for (i, slot) in window.iter_mut().enumerate() {
+            let phase = core::f32::consts::PI * (i as f32 + 0.5) / overlap as f32;
+            *slot = phase.sin();
+        }
+
+        let mut windowed = signal.clone();
+        for i in 0..overlap {
+            windowed[i] *= window[i];
+            let tail = n - i - 1;
+            windowed[tail] *= window[i];
+        }
+
+        let mut ac = vec![0.0f32; lag + 1];
+        celt_autocorr(&signal, &mut ac, Some(window.as_slice()), overlap, lag, 0);
+
+        let expected = reference_autocorr(&windowed, lag);
+        for (lhs, rhs) in ac.iter().zip(expected.iter()) {
+            assert!((lhs - rhs).abs() < 1e-6);
+        }
     }
 
     #[test]
