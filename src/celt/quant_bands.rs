@@ -6,7 +6,13 @@
 //! dependencies so they can be ported in isolation. The helpers operate on the
 //! logarithmic band energy buffers shared between the encoder and decoder.
 
-use crate::celt::types::CeltGlog;
+use crate::celt::entdec::EcDec;
+use crate::celt::entenc::EcEnc;
+use crate::celt::rate::MAX_FINE_BITS;
+use crate::celt::types::{CeltGlog, OpusCustomMode};
+use libm::floorf;
+
+const INV_Q15: f32 = 1.0 / 16_384.0;
 
 /// Mean band energies mirroring `eMeans` from `celt/quant_bands.c`.
 #[allow(dead_code)]
@@ -138,11 +144,241 @@ pub(crate) fn loss_distortion(
     distortion.min(200.0)
 }
 
+fn fine_energy_scale(fine: usize) -> f32 {
+    debug_assert!(fine <= 14);
+    let shift = 14usize.saturating_sub(fine);
+    ((1usize << shift) as f32) * INV_Q15
+}
+
+fn fine_energy_final_scale(fine: usize) -> f32 {
+    debug_assert!(fine <= 13);
+    let shift = 14usize.saturating_sub(fine + 1);
+    ((1usize << shift) as f32) * INV_Q15
+}
+
+/// Quantises the finer energy resolution bits for each band.
+///
+/// Mirrors the float portion of `quant_fine_energy()` from
+/// `celt/quant_bands.c`. The function scans the requested bands, quantises the
+/// fractional energy error, and accumulates the residual back into
+/// `old_ebands`/`error` while appending the raw bits to `enc`.
+pub(crate) fn quant_fine_energy(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [CeltGlog],
+    error: &mut [CeltGlog],
+    fine_quant: &[i32],
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+) {
+    assert_eq!(old_ebands.len(), error.len(), "band buffers must align");
+    assert!(start <= end, "start band must not exceed end band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    assert!(fine_quant.len() >= end, "fine quantiser metadata too short");
+    assert!(
+        channels * mode.num_ebands <= old_ebands.len(),
+        "insufficient band data"
+    );
+
+    let stride = mode.num_ebands;
+
+    for band in start..end {
+        let fine = fine_quant[band];
+        if fine <= 0 {
+            continue;
+        }
+
+        let fine_bits = fine as usize;
+        let frac = 1i32 << fine_bits;
+        let max_q = frac - 1;
+        let scale = fine_energy_scale(fine_bits);
+
+        for channel in 0..channels {
+            let idx = channel * stride + band;
+            let target = error[idx] + 0.5;
+            let mut q2 = floorf(target * frac as f32) as i32;
+            q2 = q2.clamp(0, max_q);
+
+            enc.enc_bits(q2 as u32, fine_bits as u32);
+
+            let offset = (q2 as f32 + 0.5) * scale - 0.5;
+            old_ebands[idx] += offset;
+            error[idx] -= offset;
+        }
+    }
+}
+
+/// Consumes the remaining fine energy bits based on their priority.
+///
+/// Ports the float implementation of `quant_energy_finalise()` which allocates
+/// leftover bits to low-priority bands and updates the running energy/error
+/// estimates accordingly.
+pub(crate) fn quant_energy_finalise(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [CeltGlog],
+    error: &mut [CeltGlog],
+    fine_quant: &[i32],
+    fine_priority: &[i32],
+    mut bits_left: i32,
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+) {
+    assert_eq!(old_ebands.len(), error.len(), "band buffers must align");
+    assert!(start <= end, "start band must not exceed end band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    assert!(fine_quant.len() >= end, "fine quantiser metadata too short");
+    assert!(
+        fine_priority.len() >= end,
+        "fine priority metadata too short"
+    );
+    assert!(
+        channels * mode.num_ebands <= old_ebands.len(),
+        "insufficient band data"
+    );
+
+    let stride = mode.num_ebands;
+    let channels_i32 = channels as i32;
+
+    for priority in 0..2 {
+        for band in start..end {
+            if bits_left < channels_i32 {
+                break;
+            }
+
+            let fine = fine_quant[band];
+            if fine >= MAX_FINE_BITS || fine_priority[band] != priority {
+                continue;
+            }
+
+            let fine_bits = fine.max(0) as usize;
+            let scale = fine_energy_final_scale(fine_bits);
+
+            for channel in 0..channels {
+                let idx = channel * stride + band;
+                let q2 = if error[idx] < 0.0 { 0 } else { 1 };
+                enc.enc_bits(q2 as u32, 1);
+
+                let offset = (q2 as f32 - 0.5) * scale;
+                old_ebands[idx] += offset;
+                error[idx] -= offset;
+                bits_left -= 1;
+            }
+        }
+    }
+}
+
+/// Restores the fine energy quantisation from the bit-stream.
+///
+/// Mirrors the float path of `unquant_fine_energy()` by replaying the raw bits
+/// written by [`quant_fine_energy`] and accumulating the reconstructed energy
+/// back into `old_ebands`.
+pub(crate) fn unquant_fine_energy(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [CeltGlog],
+    fine_quant: &[i32],
+    dec: &mut EcDec<'_>,
+    channels: usize,
+) {
+    assert!(start <= end, "start band must not exceed end band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    assert!(fine_quant.len() >= end, "fine quantiser metadata too short");
+    assert!(
+        channels * mode.num_ebands <= old_ebands.len(),
+        "insufficient band data"
+    );
+
+    let stride = mode.num_ebands;
+
+    for band in start..end {
+        let fine = fine_quant[band];
+        if fine <= 0 {
+            continue;
+        }
+
+        let fine_bits = fine as usize;
+        let scale = fine_energy_scale(fine_bits);
+
+        for channel in 0..channels {
+            let idx = channel * stride + band;
+            let q2 = dec.dec_bits(fine_bits as u32) as i32;
+            let offset = (q2 as f32 + 0.5) * scale - 0.5;
+            old_ebands[idx] += offset;
+        }
+    }
+}
+
+/// Replays the final fine energy decisions for the decoder.
+///
+/// Ports the float build of `unquant_energy_finalise()` which consumes the
+/// leftover single-bit decisions and updates the reconstructed energy buffer.
+pub(crate) fn unquant_energy_finalise(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [CeltGlog],
+    fine_quant: &[i32],
+    fine_priority: &[i32],
+    mut bits_left: i32,
+    dec: &mut EcDec<'_>,
+    channels: usize,
+) {
+    assert!(start <= end, "start band must not exceed end band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    assert!(fine_quant.len() >= end, "fine quantiser metadata too short");
+    assert!(
+        fine_priority.len() >= end,
+        "fine priority metadata too short"
+    );
+    assert!(
+        channels * mode.num_ebands <= old_ebands.len(),
+        "insufficient band data"
+    );
+
+    let stride = mode.num_ebands;
+    let channels_i32 = channels as i32;
+
+    for priority in 0..2 {
+        for band in start..end {
+            if bits_left < channels_i32 {
+                break;
+            }
+
+            let fine = fine_quant[band];
+            if fine >= MAX_FINE_BITS || fine_priority[band] != priority {
+                continue;
+            }
+
+            let fine_bits = fine.max(0) as usize;
+            let scale = fine_energy_final_scale(fine_bits);
+
+            for channel in 0..channels {
+                let idx = channel * stride + band;
+                let q2 = dec.dec_bits(1) as i32;
+                let offset = (q2 as f32 - 0.5) * scale;
+                old_ebands[idx] += offset;
+                bits_left -= 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::{
-        BETA_COEF, BETA_INTRA, E_MEANS, E_PROB_MODEL, PRED_COEF, SMALL_ENERGY_ICDF, loss_distortion,
+        BETA_COEF, BETA_INTRA, E_MEANS, E_PROB_MODEL, PRED_COEF, SMALL_ENERGY_ICDF,
+        loss_distortion, quant_energy_finalise, quant_fine_energy, unquant_energy_finalise,
+        unquant_fine_energy,
     };
+    use crate::celt::entdec::EcDec;
+    use crate::celt::entenc::EcEnc;
+    use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
 
     #[test]
     fn loss_distortion_matches_manual_accumulation() {
@@ -212,5 +448,89 @@ mod tests {
         assert_eq!(E_PROB_MODEL[1][0][10], 90);
         assert_eq!(E_PROB_MODEL[2][1][20], 105);
         assert_eq!(E_PROB_MODEL[3][0][41], 15);
+    }
+
+    #[test]
+    fn fine_energy_quantisation_round_trips() {
+        let e_bands = [0i16; 4];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 4];
+        let window = [0.0f32; 4];
+        let twiddle = [0.0f32; 1];
+        let mdct = MdctLookup::new(1, 0, &twiddle);
+        let mode = OpusCustomMode::new(
+            48_000,
+            0,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
+
+        let mut encoded_old = [0.0f32; 8];
+        let mut error = [0.6, -0.25, 0.1, -0.05, 0.4, -0.3, 0.0, 0.2];
+        let fine_quant = [2, 1, 0, 3];
+        let fine_priority = [0, 1, 0, 1];
+        let bits_left = 4;
+        let channels = 2;
+
+        let mut buffer = vec![0u8; 32];
+        {
+            let mut enc = EcEnc::new(&mut buffer);
+            quant_fine_energy(
+                &mode,
+                0,
+                4,
+                &mut encoded_old,
+                &mut error,
+                &fine_quant,
+                &mut enc,
+                channels,
+            );
+            quant_energy_finalise(
+                &mode,
+                0,
+                4,
+                &mut encoded_old,
+                &mut error,
+                &fine_quant,
+                &fine_priority,
+                bits_left,
+                &mut enc,
+                channels,
+            );
+            enc.enc_done();
+        }
+
+        let mut decoded_old = [0.0f32; 8];
+        {
+            let mut dec = EcDec::new(&mut buffer);
+            unquant_fine_energy(
+                &mode,
+                0,
+                4,
+                &mut decoded_old,
+                &fine_quant,
+                &mut dec,
+                channels,
+            );
+            unquant_energy_finalise(
+                &mode,
+                0,
+                4,
+                &mut decoded_old,
+                &fine_quant,
+                &fine_priority,
+                bits_left,
+                &mut dec,
+                channels,
+            );
+        }
+
+        for (enc, dec) in encoded_old.iter().zip(decoded_old.iter()) {
+            assert!((enc - dec).abs() <= 1e-6);
+        }
     }
 }
