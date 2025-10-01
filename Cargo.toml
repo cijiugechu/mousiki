@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "examples/playback"]
+resolver = "2"
+
 [package]
 name = "mousiki"
 description = "Pure Rust Opus decoder."
@@ -16,5 +20,3 @@ exclude = ["opus-go", "testdata"]
 libm = "0.2"
 log = { version = "0.4", default-features = false }
 
-[dev-dependencies]
-cpal = { version = "0.15", default-features = true }
