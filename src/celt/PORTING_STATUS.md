@@ -103,6 +103,14 @@ safely.
   `celt/pitch.c` that evaluates delayed inner products between the excitation and
   target windows.
 
+### `mini_kfft.rs`
+- `MiniKissFft` and butterfly helpers &rarr; port the minimalist complex FFT
+  kernels from `celt/mini_kfft.c`, including radix-2/3/4/5 butterflies and the
+  recursive factor planner.
+- `MiniKissFftr` &rarr; ports the real FFT wrapper from `celt/mini_kfft.c`,
+  including the packing buffers and super-twiddle generation used by the MDCT
+  paths.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
@@ -121,7 +129,6 @@ support headers.
 | `kiss_fft.c` | KISS FFT backend used by the MDCT. | `kiss_fft`, `mathops`, `stack_alloc` |
 | `mathops.c` | Fixed- and float-point math helpers beyond the ones already ported. | `mathops`, `float_cast` |
 | `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
-| `mini_kfft.c` | Reduced FFT variant for small MDCT sizes. | `kiss_fft` |
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `pitch.c` | Pitch correlation/search and postfilter helpers. | `modes`, `mathops`, `celt_lpc` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
