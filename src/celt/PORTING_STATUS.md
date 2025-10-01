@@ -16,6 +16,9 @@ safely.
 - `bitexact_cos` and `bitexact_log2tan` &rarr; translate the bit-exact cosine
   and logarithmic tangent approximations used by the stereo analysis tools in
   `celt/bands.c`.
+- `compute_channel_weights` &rarr; ports the stereo weighting helper from
+  `celt/bands.c` that balances distortion across channels using adjusted
+  energy estimates.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
