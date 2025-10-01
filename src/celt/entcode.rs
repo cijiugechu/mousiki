@@ -147,6 +147,12 @@ pub fn ec_tell_frac(ctx: &EcCtx<'_>) -> OpusUint32 {
 }
 
 /// Lookup table used by the small divisor optimisation in [`celt_udiv`].
+///
+/// The entries match the `SMALL_DIV_TABLE` defined in `celt/entcode.c` and are
+/// indexed by `d >> t`, where `d` is the divisor and `t` is the position of the
+/// least-significant set bit. The port keeps the exact values so that the
+/// integer arithmetic used by `celt_udiv()` is bit-for-bit identical to the C
+/// implementation.
 #[allow(clippy::unreadable_literal)]
 pub const SMALL_DIV_TABLE: [OpusUint32; 128] = [
     0xFFFF_FFFF,
@@ -287,10 +293,10 @@ pub fn celt_udiv(n: OpusUint32, d: OpusUint32) -> OpusUint32 {
         n / d
     } else {
         let t = ec_ilog(d & d.wrapping_neg()) as u32;
-        let shift = t.saturating_sub(1);
-        let q = ((SMALL_DIV_TABLE[(d >> t) as usize] as u64) * ((n >> shift) as u64)) >> 32;
+        debug_assert!(t >= 1);
+        let q = ((SMALL_DIV_TABLE[(d >> t) as usize] as u64) * ((n >> (t - 1)) as u64)) >> 32;
         let q = q as OpusUint32;
-        q + OpusUint32::from(n - q * d >= d)
+        q + OpusUint32::from(n.wrapping_sub(q * d) >= d)
     }
 }
 
@@ -369,7 +375,23 @@ mod tests {
     #[test]
     fn small_division_matches_builtin() {
         for d in 1..=256u32 {
-            for &n in &[0u32, 1, 7, 255, 256, 511, 1024, u32::MAX] {
+            for n in 0..=2048u32 {
+                assert_eq!(celt_udiv(n, d), n / d, "n={n}, d={d}");
+            }
+        }
+
+        let samples = [
+            0u32,
+            1,
+            7,
+            255,
+            256,
+            65_535,
+            1_048_575,
+            u32::MAX,
+        ];
+        for &n in &samples {
+            for d in [3u32, 17, 63, 127, 181, 233, 255, 256] {
                 assert_eq!(celt_udiv(n, d), n / d, "n={n}, d={d}");
             }
         }
