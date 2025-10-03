@@ -30,6 +30,9 @@ safely.
 - `stereo_merge` &rarr; mirrors the float mid/side reconstruction helper from
   `celt/bands.c`, including the energy guards and normalisation gains used when
   converting encoded mid/side pairs back to left/right channels.
+- `haar1` &rarr; ports the single-level Haar transform from `celt/bands.c` that
+  mixes adjacent interleaved coefficients using an orthonormal sum/difference
+  stage.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in

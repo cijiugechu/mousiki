@@ -183,6 +183,44 @@ pub(crate) fn stereo_merge(x: &mut [OpusVal16], y: &mut [OpusVal16], mid: OpusVa
     }
 }
 
+/// Applies a single-level Haar transform across interleaved coefficients.
+///
+/// Mirrors `haar1()` from `celt/bands.c`, scaling each pair of samples by
+/// `1/sqrt(2)` before computing their sum and difference. The coefficients are
+/// laid out in `stride` interleaved groups, matching the memory layout used by
+/// CELT's band folding routines.
+pub(crate) fn haar1(x: &mut [OpusVal16], n0: usize, stride: usize) {
+    if stride == 0 || n0 < 2 {
+        return;
+    }
+
+    let half = n0 / 2;
+    if half == 0 {
+        return;
+    }
+
+    let required = stride * n0;
+    assert!(
+        x.len() >= required,
+        "haar1 expects at least stride * n0 coefficients"
+    );
+
+    let scale = FRAC_1_SQRT_2 as OpusVal16;
+
+    for i in 0..stride {
+        for j in 0..half {
+            let idx0 = stride * (2 * j) + i;
+            let idx1 = idx0 + stride;
+            debug_assert!(idx1 < x.len());
+
+            let tmp1 = scale * x[idx0];
+            let tmp2 = scale * x[idx1];
+            x[idx0] = tmp1 + tmp2;
+            x[idx1] = tmp1 - tmp2;
+        }
+    }
+}
+
 /// Computes the per-band energy for the supplied channels.
 ///
 /// Ports the float build of `compute_band_energies()` from `celt/bands.c`. The
@@ -293,8 +331,8 @@ pub(crate) fn normalise_bands(
 mod tests {
     use super::{
         bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
-        compute_channel_weights, frac_mul16, hysteresis_decision, normalise_bands, stereo_merge,
-        stereo_split,
+        compute_channel_weights, frac_mul16, haar1, hysteresis_decision, normalise_bands,
+        stereo_merge, stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
@@ -337,6 +375,26 @@ mod tests {
                     "value {value}, prev {prev}",
                 );
             }
+        }
+    }
+
+    #[test]
+    fn haar1_preserves_signal_when_applied_twice() {
+        let mut data = vec![
+            0.25_f32, -1.5, 3.5, 0.75, -2.25, 1.0, 0.5, -0.125, 2.0, -3.0, 1.5, 0.25,
+        ];
+        let original = data.clone();
+
+        // Apply the transform twice; the Haar matrix is orthonormal so the
+        // second application inverts the first.
+        haar1(&mut data, 12, 1);
+        haar1(&mut data, 12, 1);
+
+        for (expected, observed) in original.iter().zip(data.iter()) {
+            assert!(
+                (expected - observed).abs() <= 1e-6,
+                "expected {expected}, got {observed}"
+            );
         }
     }
 
