@@ -15,6 +15,7 @@ mod laplace;
 mod lpc;
 mod math;
 pub(crate) mod math_fixed;
+mod mdct;
 mod mini_kfft;
 mod pitch;
 mod quant_bands;
@@ -40,6 +41,8 @@ pub(crate) use laplace::*;
 pub(crate) use lpc::*;
 #[allow(unused_imports)]
 pub(crate) use math::*;
+#[allow(unused_imports)]
+pub(crate) use mdct::*;
 #[allow(unused_imports)]
 pub(crate) use mini_kfft::*;
 #[allow(unused_imports)]

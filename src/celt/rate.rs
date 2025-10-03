@@ -760,7 +760,7 @@ mod tests {
             alloc_vectors,
             log_n,
             window: &[],
-            mdct: MdctLookup::new(0, 0, &[]),
+            mdct: MdctLookup::new(4, 0),
             cache,
         }
     }

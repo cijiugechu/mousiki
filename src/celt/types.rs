@@ -2,7 +2,8 @@
 
 use alloc::vec::Vec;
 
-use super::kiss_fft::KissFftState;
+use super::mini_kfft::MiniKissFft;
+use libm::cosf;
 
 /// Corresponds to `opus_int16` in the C implementation.
 pub type OpusInt16 = i16;
@@ -31,21 +32,93 @@ pub type KissTwiddleScalar = f32;
 /// lifetimes keep the dependency graph explicit without resorting to raw
 /// pointers.
 #[derive(Debug, Clone)]
-pub struct MdctLookup<'a> {
+pub struct MdctLookup {
     pub len: usize,
     pub max_shift: usize,
-    pub fft: [Option<&'a KissFftState>; 4],
-    pub twiddle: &'a [KissTwiddleScalar],
+    pub forward: Vec<MiniKissFft>,
+    pub inverse: Vec<MiniKissFft>,
+    pub twiddle: Vec<KissTwiddleScalar>,
+    pub twiddle_offsets: Vec<usize>,
 }
 
-impl<'a> MdctLookup<'a> {
-    pub fn new(len: usize, max_shift: usize, twiddle: &'a [KissTwiddleScalar]) -> Self {
+impl MdctLookup {
+    #[must_use]
+    pub fn new(len: usize, max_shift: usize) -> Self {
+        assert!(len.is_power_of_two(), "MDCT length must be a power of two");
+        assert!(max_shift < 8, "unsupported MDCT shift");
+
+        let mut forward = Vec::with_capacity(max_shift + 1);
+        let mut inverse = Vec::with_capacity(max_shift + 1);
+        for shift in 0..=max_shift {
+            let n = len >> shift;
+            assert!(n % 4 == 0, "MDCT length must be a multiple of four");
+            forward.push(MiniKissFft::new(n >> 2, false));
+            inverse.push(MiniKissFft::new(n >> 2, true));
+        }
+
+        let mut twiddle = Vec::new();
+        let mut offsets = Vec::with_capacity(max_shift + 2);
+        offsets.push(0);
+        for shift in 0..=max_shift {
+            let n = len >> shift;
+            let n2 = n >> 1;
+            for i in 0..n2 {
+                let angle = 2.0 * core::f32::consts::PI * (i as f32 + 0.125) / n as f32;
+                twiddle.push(cosf(angle));
+            }
+            offsets.push(twiddle.len());
+        }
+
         Self {
             len,
             max_shift,
-            fft: [None; 4],
+            forward,
+            inverse,
             twiddle,
+            twiddle_offsets: offsets,
         }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn max_shift(&self) -> usize {
+        self.max_shift
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn effective_len(&self, shift: usize) -> usize {
+        assert!(shift <= self.max_shift);
+        self.len >> shift
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn forward_plan(&self, shift: usize) -> &MiniKissFft {
+        assert!(shift < self.forward.len());
+        &self.forward[shift]
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn inverse_plan(&self, shift: usize) -> &MiniKissFft {
+        assert!(shift < self.inverse.len());
+        &self.inverse[shift]
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn twiddles(&self, shift: usize) -> &[KissTwiddleScalar] {
+        assert!(shift <= self.max_shift);
+        let start = self.twiddle_offsets[shift];
+        let end = self.twiddle_offsets[shift + 1];
+        &self.twiddle[start..end]
     }
 }
 
@@ -107,7 +180,7 @@ pub struct OpusCustomMode<'a> {
     pub alloc_vectors: &'a [u8],
     pub log_n: &'a [i16],
     pub window: &'a [CeltCoef],
-    pub mdct: MdctLookup<'a>,
+    pub mdct: MdctLookup,
     pub cache: PulseCacheData,
 }
 
@@ -120,7 +193,7 @@ impl<'a> OpusCustomMode<'a> {
         alloc_vectors: &'a [u8],
         log_n: &'a [i16],
         window: &'a [CeltCoef],
-        mdct: MdctLookup<'a>,
+        mdct: MdctLookup,
         cache: PulseCacheData,
     ) -> Self {
         Self {
