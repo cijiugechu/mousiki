@@ -88,6 +88,12 @@ safely.
   definitions in `celt/bands.h` and `celt/vq.c`.
 - `exp_rotation` and the helper `exp_rotation1` &rarr; mirror the coefficient
   rotation routines in `celt/vq.c`.
+- `normalise_residual` &rarr; ports the decoder/encoder helper in `celt/vq.c`
+  that scales the quantised pulse vector by the pitch gain so the mixed
+  excitation preserves unit energy.
+- `extract_collapse_mask` &rarr; mirrors the collapse mask generator from
+  `celt/vq.c`, grouping PVQ pulses per band to flag spectral regions that need
+  spreading after quantisation.
 
 ### `laplace.rs`
 - `ec_laplace_encode`, `ec_laplace_decode`, `ec_laplace_encode_p0`, and
