@@ -456,8 +456,8 @@ mod tests {
         let alloc_vectors = [0u8; 4];
         let log_n = [0i16; 4];
         let window = [0.0f32; 4];
-        let twiddle = [0.0f32; 1];
-        let mdct = MdctLookup::new(1, 0, &twiddle);
+        let _twiddle = [0.0f32; 1];
+        let mdct = MdctLookup::new(4, 0);
         let mode = OpusCustomMode::new(
             48_000,
             0,

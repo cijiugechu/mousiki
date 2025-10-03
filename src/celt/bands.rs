@@ -518,7 +518,7 @@ mod tests {
     }
 
     fn dummy_mode<'a>(e_bands: &'a [i16], short_mdct_size: usize) -> OpusCustomMode<'a> {
-        let mdct = MdctLookup::new(short_mdct_size, 0, &[]);
+        let mdct = MdctLookup::new(short_mdct_size, 0);
         OpusCustomMode {
             sample_rate: 48_000,
             overlap: 0,

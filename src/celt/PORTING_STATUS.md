@@ -209,6 +209,17 @@ safely.
   transform entry points required by the MDCT, matching the forward 1/`N`
   normalisation and unscaled inverse behaviour of the reference code.
 
+### `mdct.rs`
+- `MdctLookup::new` &rarr; owns the per-shift FFT plans and twiddle tables used
+  by CELT's MDCT, mirroring the allocation performed by `clt_mdct_init()` in
+  `celt/mdct.c` while enforcing Rust's safety checks on the transform sizes.
+- `clt_mdct_forward` &rarr; ports the forward MDCT including the windowed
+  folding step, pre/post-rotations, and N/4 complex FFT driven by the KISS FFT
+  kernel, yielding the 4/`N` scaled coefficients expected by the rest of CELT.
+- `clt_mdct_backward` &rarr; mirrors the inverse MDCT and TDAC overlap-add paths
+  from `celt/mdct.c`, including the twiddle symmetry, inverse FFT, and final
+  window mixing used to reconstruct the time-domain signal.
+
 ## Remaining C modules and their dependencies
 
 The table below lists the major `.c` files under `celt/` in the reference tree
@@ -222,7 +233,6 @@ support headers.
 | `celt.c` | Top-level encoder/decoder glue (frame dispatch, overlap-add). | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
-| `mdct.c` | Forward/inverse MDCT built on top of KISS FFT. | `mdct`, `kiss_fft`, `mathops` |
 | `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
 | `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
