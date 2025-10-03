@@ -2,17 +2,170 @@
 
 //! Quantisation helpers for band energies.
 //!
-//! This module gathers small routines from `celt/quant_bands.c` that have few
+//! This module gathers routines from `celt/quant_bands.c` that have few
 //! dependencies so they can be ported in isolation. The helpers operate on the
 //! logarithmic band energy buffers shared between the encoder and decoder.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
+use crate::celt::entcode::{EcWindow, ec_tell, ec_tell_frac};
 use crate::celt::entdec::EcDec;
 use crate::celt::entenc::EcEnc;
 use crate::celt::rate::MAX_FINE_BITS;
 use crate::celt::types::{CeltGlog, OpusCustomMode};
 use libm::floorf;
 
+use crate::celt::math::celt_log2;
+const TOTAL_FREQ: u32 = 1 << 15;
+const LAPLACE_MINP: u32 = 1;
+const LAPLACE_NMIN: u32 = 16;
+
 const INV_Q15: f32 = 1.0 / 16_384.0;
+
+#[derive(Clone)]
+struct EcEncSnapshot {
+    storage: u32,
+    end_offs: u32,
+    end_window: EcWindow,
+    nend_bits: i32,
+    nbits_total: i32,
+    offs: u32,
+    rng: u32,
+    val: u32,
+    ext: u32,
+    rem: i32,
+    error: i32,
+    buffer: Vec<u8>,
+}
+
+impl EcEncSnapshot {
+    fn capture(enc: &EcEnc<'_>) -> Self {
+        let ctx = enc.ctx();
+        Self {
+            storage: ctx.storage,
+            end_offs: ctx.end_offs,
+            end_window: ctx.end_window,
+            nend_bits: ctx.nend_bits,
+            nbits_total: ctx.nbits_total,
+            offs: ctx.offs,
+            rng: ctx.rng,
+            val: ctx.val,
+            ext: ctx.ext,
+            rem: ctx.rem,
+            error: ctx.error,
+            buffer: ctx.buffer().to_vec(),
+        }
+    }
+
+    fn restore(&self, enc: &mut EcEnc<'_>) {
+        let ctx = enc.ctx_mut();
+        assert_eq!(self.buffer.len(), ctx.buffer().len());
+        ctx.storage = self.storage;
+        ctx.end_offs = self.end_offs;
+        ctx.end_window = self.end_window;
+        ctx.nend_bits = self.nend_bits;
+        ctx.nbits_total = self.nbits_total;
+        ctx.offs = self.offs;
+        ctx.rng = self.rng;
+        ctx.val = self.val;
+        ctx.ext = self.ext;
+        ctx.rem = self.rem;
+        ctx.error = self.error;
+        ctx.buffer_mut().copy_from_slice(&self.buffer);
+    }
+}
+
+fn laplace_get_freq1(fs0: u32, decay: u32) -> u32 {
+    let remaining = TOTAL_FREQ - LAPLACE_MINP * (2 * LAPLACE_NMIN) - fs0;
+    if decay >= 16_384 {
+        0
+    } else {
+        let factor = 16_384 - decay;
+        ((remaining as u64 * factor as u64) >> 15) as u32
+    }
+}
+
+fn apply_sign(value: i32, sign: i32) -> i32 {
+    (value + sign) ^ sign
+}
+
+fn laplace_encode(enc: &mut EcEnc<'_>, value: &mut i32, mut fs: u32, decay: u32) {
+    let mut fl = 0u32;
+    let mut val = *value;
+
+    if val != 0 {
+        let sign = if val < 0 { -1 } else { 0 };
+        val = apply_sign(val, sign);
+        let mut i = 1;
+        fl = fs;
+        fs = laplace_get_freq1(fs, decay);
+
+        while fs > 0 && i < val {
+            fs *= 2;
+            fl += fs + 2 * LAPLACE_MINP;
+            fs = ((fs as u64 * decay as u64) >> 15) as u32;
+            i += 1;
+        }
+
+        if fs == 0 {
+            let mut ndi_max = ((TOTAL_FREQ - fl + LAPLACE_MINP - 1) >> 0) as i32;
+            ndi_max = (ndi_max - sign) >> 1;
+            let di = core::cmp::min(val - i, ndi_max - 1);
+            fl += ((2 * di + 1 + sign) as u32) * LAPLACE_MINP;
+            fs = core::cmp::min(LAPLACE_MINP, TOTAL_FREQ - fl);
+            *value = apply_sign(i + di, sign);
+        } else {
+            fs += LAPLACE_MINP;
+            if sign == 0 {
+                fl += fs;
+            }
+        }
+
+        debug_assert!(fl + fs <= TOTAL_FREQ);
+        debug_assert!(fs > 0);
+    }
+
+    let high = (fl + fs).min(TOTAL_FREQ);
+    enc.encode_bin(fl, high, 15);
+}
+
+fn laplace_decode(dec: &mut EcDec<'_>, mut fs: u32, decay: u32) -> i32 {
+    let mut val = 0i32;
+    let mut fl = 0u32;
+    let fm = dec.decode_bin(15);
+
+    if fm >= fs {
+        val += 1;
+        fl = fs;
+        fs = laplace_get_freq1(fs, decay) + LAPLACE_MINP;
+
+        while fs > LAPLACE_MINP && fm >= fl + 2 * fs {
+            fs *= 2;
+            fl += fs;
+            fs = (((fs - 2 * LAPLACE_MINP) as u64 * decay as u64) >> 15) as u32;
+            fs += LAPLACE_MINP;
+            val += 1;
+        }
+
+        if fs <= LAPLACE_MINP {
+            let di = ((fm - fl) >> 1) as i32;
+            val += di;
+            fl += 2 * di as u32 * LAPLACE_MINP;
+        }
+
+        if fm < fl + fs {
+            val = -val;
+        } else {
+            fl += fs;
+        }
+    }
+
+    let high = (fl + fs).min(TOTAL_FREQ);
+    dec.update(fl, high, TOTAL_FREQ);
+
+    val
+}
 
 /// Mean band energies mirroring `eMeans` from `celt/quant_bands.c`.
 #[allow(dead_code)]
@@ -142,6 +295,323 @@ pub(crate) fn loss_distortion(
     }
 
     distortion.min(200.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quant_coarse_energy_impl(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    e_bands: &[CeltGlog],
+    old_e_bands: &mut [CeltGlog],
+    budget: i32,
+    initial_tell: i32,
+    prob_model: &[u8],
+    error: &mut [CeltGlog],
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+    lm: usize,
+    intra: bool,
+    max_decay: f32,
+    lfe: bool,
+) -> i32 {
+    assert!(lm < PRED_COEF.len());
+    assert_eq!(old_e_bands.len(), channels * mode.num_ebands);
+    assert_eq!(e_bands.len(), channels * mode.num_ebands);
+    assert_eq!(error.len(), channels * mode.num_ebands);
+    assert!(end <= mode.num_ebands);
+    assert!(start <= end);
+    assert!(prob_model.len() >= 2 * core::cmp::min(end, 21));
+
+    let stride = mode.num_ebands;
+    let mut prev = vec![0.0f32; channels];
+    let coef = if intra { 0.0 } else { PRED_COEF[lm] };
+    let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
+    let mut badness = 0;
+    let channels_i32 = channels as i32;
+
+    if initial_tell + 3 <= budget {
+        enc.enc_bit_logp(intra as i32, 3);
+    }
+
+    for band in start..end {
+        for channel in 0..channels {
+            let idx = channel * stride + band;
+            let x = e_bands[idx];
+            let old_e = old_e_bands[idx].max(-9.0);
+            let f = x - coef * old_e - prev[channel];
+            let mut qi = floorf(f + 0.5) as i32;
+            let decay_bound = old_e_bands[idx].max(-28.0) - max_decay;
+            if qi < 0 && x < decay_bound {
+                qi += (decay_bound - x) as i32;
+                if qi > 0 {
+                    qi = 0;
+                }
+            }
+
+            let qi0 = qi;
+            let tell = ec_tell(enc.ctx());
+            let bits_left = budget - tell - 3 * channels_i32 * (end - band) as i32;
+            if band != start && bits_left < 30 {
+                if bits_left < 24 {
+                    qi = qi.min(1);
+                }
+                if bits_left < 16 {
+                    qi = qi.max(-1);
+                }
+            }
+            if lfe && band >= 2 {
+                qi = qi.min(0);
+            }
+
+            if budget - tell >= 15 {
+                let pi = 2 * core::cmp::min(band, 20);
+                let mut symbol = qi;
+                laplace_encode(
+                    enc,
+                    &mut symbol,
+                    (prob_model[pi] as u32) << 7,
+                    (prob_model[pi + 1] as u32) << 6,
+                );
+                qi = symbol;
+            } else if budget - tell >= 2 {
+                qi = qi.clamp(-1, 1);
+                let symbol = ((2 * qi) ^ -i32::from(qi < 0)) as usize;
+                enc.enc_icdf(symbol, &SMALL_ENERGY_ICDF, 2);
+            } else if budget - tell >= 1 {
+                qi = qi.min(0);
+                enc.enc_bit_logp((-qi) as i32, 1);
+            } else {
+                qi = -1;
+            }
+
+            error[idx] = f - qi as f32;
+            badness += (qi0 - qi).abs();
+            let q = qi as f32;
+            let tmp = (coef * old_e) + prev[channel] + q;
+            old_e_bands[idx] = tmp.max(-28.0);
+            prev[channel] += q - beta * q;
+        }
+    }
+
+    if lfe { 0 } else { badness }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quant_coarse_energy(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    eff_end: usize,
+    e_bands: &[CeltGlog],
+    old_e_bands: &mut [CeltGlog],
+    budget: u32,
+    error: &mut [CeltGlog],
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+    lm: usize,
+    nb_available_bytes: i32,
+    force_intra: bool,
+    delayed_intra: &mut f32,
+    mut two_pass: bool,
+    loss_rate: i32,
+    lfe: bool,
+) {
+    assert!(end <= mode.num_ebands);
+    assert!(eff_end <= end);
+    assert_eq!(e_bands.len(), channels * mode.num_ebands);
+    assert_eq!(old_e_bands.len(), channels * mode.num_ebands);
+    assert_eq!(error.len(), channels * mode.num_ebands);
+    assert!(lm < PRED_COEF.len());
+
+    let channels_i32 = channels as i32;
+    let band_span = (end - start) as i32;
+    let mut intra = force_intra
+        || (!two_pass
+            && *delayed_intra > 2.0 * channels as f32 * band_span as f32
+            && nb_available_bytes > band_span * channels_i32);
+
+    let budget_i32 = budget as i32;
+    let initial_tell = ec_tell(enc.ctx());
+    if initial_tell + 3 > budget_i32 {
+        two_pass = false;
+        intra = false;
+    }
+
+    let intra_bias =
+        ((budget as f32) * *delayed_intra * loss_rate as f32 / (channels as f32 * 512.0)) as i32;
+    let new_distortion = loss_distortion(
+        e_bands,
+        old_e_bands,
+        start,
+        eff_end,
+        mode.num_ebands,
+        channels,
+    );
+
+    let mut max_decay = 16.0f32;
+    if end - start > 10 {
+        max_decay = max_decay.min(0.125f32 * nb_available_bytes as f32);
+    }
+    if lfe {
+        max_decay = 3.0;
+    }
+
+    let start_snapshot = EcEncSnapshot::capture(enc);
+    let mut old_intra = vec![0.0f32; old_e_bands.len()];
+    let mut error_intra = vec![0.0f32; error.len()];
+    let mut intra_snapshot = None;
+    let mut badness_intra = 0;
+    let mut tell_intra = 0u32;
+
+    if two_pass || intra {
+        old_intra.copy_from_slice(old_e_bands);
+        error_intra.copy_from_slice(error);
+        badness_intra = quant_coarse_energy_impl(
+            mode,
+            start,
+            end,
+            e_bands,
+            &mut old_intra,
+            budget_i32,
+            initial_tell,
+            &E_PROB_MODEL[lm][1],
+            &mut error_intra,
+            enc,
+            channels,
+            lm,
+            true,
+            max_decay,
+            lfe,
+        );
+        intra_snapshot = Some(EcEncSnapshot::capture(enc));
+        tell_intra = ec_tell_frac(enc.ctx());
+    }
+
+    if !intra {
+        start_snapshot.restore(enc);
+        let badness_inter = quant_coarse_energy_impl(
+            mode,
+            start,
+            end,
+            e_bands,
+            old_e_bands,
+            budget_i32,
+            initial_tell,
+            &E_PROB_MODEL[lm][0],
+            error,
+            enc,
+            channels,
+            lm,
+            false,
+            max_decay,
+            lfe,
+        );
+
+        if two_pass
+            && (badness_intra < badness_inter
+                || (badness_intra == badness_inter
+                    && (ec_tell_frac(enc.ctx()) as i32 + intra_bias) > tell_intra as i32))
+        {
+            if let Some(snapshot) = &intra_snapshot {
+                snapshot.restore(enc);
+            }
+            old_e_bands.copy_from_slice(&old_intra);
+            error.copy_from_slice(&error_intra);
+            intra = true;
+        }
+    } else {
+        if let Some(snapshot) = &intra_snapshot {
+            snapshot.restore(enc);
+        }
+        old_e_bands.copy_from_slice(&old_intra);
+        error.copy_from_slice(&error_intra);
+    }
+
+    if intra {
+        *delayed_intra = new_distortion;
+    } else {
+        let coef = PRED_COEF[lm];
+        *delayed_intra = coef * coef * *delayed_intra + new_distortion;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unquant_coarse_energy(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_e_bands: &mut [CeltGlog],
+    intra: bool,
+    dec: &mut EcDec<'_>,
+    channels: usize,
+    lm: usize,
+) {
+    assert!(end <= mode.num_ebands);
+    assert_eq!(old_e_bands.len(), channels * mode.num_ebands);
+    assert!(lm < PRED_COEF.len());
+
+    let stride = mode.num_ebands;
+    let prob_model = &E_PROB_MODEL[lm][usize::from(intra)];
+    let mut prev = vec![0.0f32; channels];
+    let coef = if intra { 0.0 } else { PRED_COEF[lm] };
+    let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
+    let budget = (dec.ctx().storage * 8) as i32;
+
+    for band in start..end {
+        for channel in 0..channels {
+            let idx = channel * stride + band;
+            let tell = ec_tell(dec.ctx());
+            let qi = if budget - tell >= 15 {
+                let pi = 2 * core::cmp::min(band, 20);
+                laplace_decode(
+                    dec,
+                    (prob_model[pi] as u32) << 7,
+                    (prob_model[pi + 1] as u32) << 6,
+                )
+            } else if budget - tell >= 2 {
+                let sym = dec.dec_icdf(&SMALL_ENERGY_ICDF, 2) as i32;
+                (sym >> 1) ^ -((sym & 1) as i32)
+            } else if budget - tell >= 1 {
+                -dec.dec_bit_logp(1)
+            } else {
+                -1
+            };
+
+            old_e_bands[idx] = old_e_bands[idx].max(-9.0);
+            let q = qi as f32;
+            let tmp = coef * old_e_bands[idx] + prev[channel] + q;
+            old_e_bands[idx] = tmp.clamp(-28.0, 28.0);
+            prev[channel] += q - beta * q;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn amp2_log2(
+    mode: &OpusCustomMode<'_>,
+    eff_end: usize,
+    end: usize,
+    band_e: &[CeltGlog],
+    band_log_e: &mut [CeltGlog],
+    channels: usize,
+) {
+    assert!(eff_end <= end);
+    assert!(end <= mode.num_ebands);
+    assert_eq!(band_e.len(), channels * mode.num_ebands);
+    assert_eq!(band_log_e.len(), channels * mode.num_ebands);
+
+    let stride = mode.num_ebands;
+    for channel in 0..channels {
+        for band in 0..eff_end {
+            let idx = channel * stride + band;
+            band_log_e[idx] = celt_log2(band_e[idx]) - E_MEANS[band];
+        }
+        for band in eff_end..end {
+            let idx = channel * stride + band;
+            band_log_e[idx] = -14.0;
+        }
+    }
 }
 
 fn fine_energy_scale(fine: usize) -> f32 {
@@ -372,10 +842,11 @@ mod tests {
     use alloc::vec;
 
     use super::{
-        BETA_COEF, BETA_INTRA, E_MEANS, E_PROB_MODEL, PRED_COEF, SMALL_ENERGY_ICDF,
-        loss_distortion, quant_energy_finalise, quant_fine_energy, unquant_energy_finalise,
-        unquant_fine_energy,
+        BETA_COEF, BETA_INTRA, E_MEANS, E_PROB_MODEL, PRED_COEF, SMALL_ENERGY_ICDF, amp2_log2,
+        loss_distortion, quant_coarse_energy, quant_energy_finalise, quant_fine_energy,
+        unquant_coarse_energy, unquant_energy_finalise, unquant_fine_energy,
     };
+    use crate::celt::entcode::ec_tell;
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
@@ -532,5 +1003,117 @@ mod tests {
         for (enc, dec) in encoded_old.iter().zip(decoded_old.iter()) {
             assert!((enc - dec).abs() <= 1e-6);
         }
+    }
+
+    #[test]
+    fn coarse_energy_round_trip_matches_encoder() {
+        let e_bands = [0i16; 6];
+        let alloc_vectors = [0u8; 6];
+        let log_n = [0i16; 6];
+        let window = [0.0f32; 6];
+        let mdct = MdctLookup::new(8, 0);
+        let mode = OpusCustomMode::new(
+            48_000,
+            0,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
+
+        let channels = 1usize;
+        let start = 0usize;
+        let end = 4usize;
+        let eff_end = 4usize;
+        let lm = 0usize;
+        let budget = 64u32;
+        let nb_available_bytes = 12;
+        let mut delayed_intra = 0.0f32;
+        let mut old = [-2.0f32, -1.0, -0.5, 0.0, 0.0, 0.0];
+        let mut error = [0.0f32; 6];
+        let original_old = old;
+        let e = [1.2f32, 0.5, -0.3, 2.0, 0.0, 0.0];
+
+        let mut buffer = vec![0u8; 64];
+        {
+            let mut enc = EcEnc::new(&mut buffer);
+            quant_coarse_energy(
+                &mode,
+                start,
+                end,
+                eff_end,
+                &e,
+                &mut old,
+                budget,
+                &mut error,
+                &mut enc,
+                channels,
+                lm,
+                nb_available_bytes,
+                false,
+                &mut delayed_intra,
+                true,
+                0,
+                false,
+            );
+            enc.enc_done();
+        }
+
+        let mut decoded_old = original_old;
+        {
+            let mut dec = EcDec::new(&mut buffer);
+            let tell = ec_tell(dec.ctx());
+            let intra = if tell + 3 <= budget as i32 {
+                dec.dec_bit_logp(3) != 0
+            } else {
+                false
+            };
+
+            unquant_coarse_energy(
+                &mode,
+                start,
+                end,
+                &mut decoded_old,
+                intra,
+                &mut dec,
+                channels,
+                lm,
+            );
+        }
+
+        for (enc, dec) in old.iter().zip(decoded_old.iter()) {
+            assert!((enc - dec).abs() <= 1e-5);
+        }
+    }
+
+    #[test]
+    fn amp2_log2_matches_expected_logarithm() {
+        let e_bands = [0i16; 6];
+        let alloc_vectors = [0u8; 6];
+        let log_n = [0i16; 6];
+        let window = [0.0f32; 6];
+        let mdct = MdctLookup::new(8, 0);
+        let mode = OpusCustomMode::new(
+            48_000,
+            0,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
+
+        let channels = 1usize;
+        let mut band_log_e = [0.0f32; 6];
+        let band_e = [1.0f32, 2.0, 4.0, 8.0, 1.0, 1.0];
+
+        amp2_log2(&mode, 3, 4, &band_e, &mut band_log_e, channels);
+
+        assert!((band_log_e[0] - (band_e[0].log2() - E_MEANS[0])).abs() <= 1e-6);
+        assert!((band_log_e[1] - (band_e[1].log2() - E_MEANS[1])).abs() <= 1e-6);
+        assert_eq!(band_log_e[3], -14.0);
     }
 }
