@@ -221,6 +221,9 @@ safely.
 - `compute_ebands` &rarr; ports the Bark-scale band layout generator from
   `celt/modes.c`, returning the dynamic band edges used when constructing custom
   CELT modes.
+- `compute_allocation_table` &rarr; ports the allocation vector interpolation
+  helper from `celt/modes.c`, remapping the 5 ms reference bit-allocation table
+  to the dynamically generated Bark-based band layout used by custom modes.
 
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
