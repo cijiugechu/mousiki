@@ -17,6 +17,7 @@ mod math;
 pub(crate) mod math_fixed;
 mod mdct;
 mod mini_kfft;
+mod modes;
 mod pitch;
 mod quant_bands;
 mod rate;
@@ -45,6 +46,8 @@ pub(crate) use math::*;
 pub(crate) use mdct::*;
 #[allow(unused_imports)]
 pub(crate) use mini_kfft::*;
+#[allow(unused_imports)]
+pub(crate) use modes::*;
 #[allow(unused_imports)]
 pub(crate) use pitch::*;
 #[allow(unused_imports)]

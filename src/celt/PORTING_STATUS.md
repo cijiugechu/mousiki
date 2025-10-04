@@ -217,6 +217,11 @@ safely.
   including the packing buffers and super-twiddle generation used by the MDCT
   paths.
 
+### `modes.rs`
+- `compute_ebands` &rarr; ports the Bark-scale band layout generator from
+  `celt/modes.c`, returning the dynamic band edges used when constructing custom
+  CELT modes.
+
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
   `celt/kiss_fft.c`, keeping the cached twiddle tables and scratch buffers
@@ -249,7 +254,7 @@ support headers.
 | `celt.c` | Top-level encoder/decoder glue (frame dispatch, overlap-add). | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
-| `modes.c` | Mode construction, static tables, precomputed caches. | `celt`, `modes`, `rate`, `quant_bands` |
+| `modes.c` | Mode construction, static tables, precomputed caches (core layout helper ported to `modes.rs`). | `celt`, `modes`, `rate`, `quant_bands` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
 | `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
 
