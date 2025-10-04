@@ -7,12 +7,38 @@
 //! more complex pieces of the encoder so that future ports can focus on the
 //! higher-level control flow.
 
+use alloc::vec;
+
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::celt::{
     celt_inner_prod, celt_rsqrt_norm, celt_sqrt, dual_inner_prod, ec_ilog,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
+
+/// Indexing table for converting natural-order Hadamard coefficients into the
+/// "ordery" permutation used by CELT's spreading analysis.
+///
+/// The layout mirrors the compact array embedded in `celt/bands.c`, grouping
+/// permutations for strides of 2, 4, 8, and 16. The Hadamard interleaving logic
+/// selects the slice corresponding to the current stride when the `hadamard`
+/// flag is active.
+const ORDERY_TABLES: [&[usize]; 4] = [
+    &[1, 0],
+    &[3, 0, 2, 1],
+    &[7, 0, 4, 3, 6, 1, 5, 2],
+    &[15, 0, 8, 7, 12, 3, 11, 4, 14, 1, 9, 6, 13, 2, 10, 5],
+];
+
+fn hadamard_ordery(stride: usize) -> Option<&'static [usize]> {
+    match stride {
+        2 => Some(ORDERY_TABLES[0]),
+        4 => Some(ORDERY_TABLES[1]),
+        8 => Some(ORDERY_TABLES[2]),
+        16 => Some(ORDERY_TABLES[3]),
+        _ => None,
+    }
+}
 
 /// Fixed-point fractional multiply mirroring the `FRAC_MUL16` macro from the C
 /// sources.
@@ -183,6 +209,88 @@ pub(crate) fn stereo_merge(x: &mut [OpusVal16], y: &mut [OpusVal16], mid: OpusVa
     }
 }
 
+/// Restores the natural band ordering after a Hadamard transform.
+///
+/// Mirrors `deinterleave_hadamard()` from `celt/bands.c`. The routine copies the
+/// interleaved coefficients into a temporary buffer before writing them back in
+/// natural band order. When `hadamard` is `true`, the function applies the
+/// "ordery" permutation so that the Hadamard DC term appears at the end of the
+/// output sequence, matching the reference implementation.
+pub(crate) fn deinterleave_hadamard(x: &mut [OpusVal16], n0: usize, stride: usize, hadamard: bool) {
+    if stride == 0 {
+        return;
+    }
+
+    let n = n0.checked_mul(stride).expect("stride * n0 overflowed");
+    assert!(x.len() >= n, "input buffer too small for deinterleave");
+
+    if n == 0 {
+        return;
+    }
+
+    let mut tmp = vec![0.0f32; n];
+
+    if hadamard {
+        let ordery = hadamard_ordery(stride)
+            .expect("hadamard interleave only defined for strides of 2, 4, 8, or 16");
+        assert_eq!(ordery.len(), stride);
+        for (i, &ord) in ordery.iter().enumerate() {
+            for j in 0..n0 {
+                tmp[ord * n0 + j] = x[j * stride + i];
+            }
+        }
+    } else {
+        for i in 0..stride {
+            for j in 0..n0 {
+                tmp[i * n0 + j] = x[j * stride + i];
+            }
+        }
+    }
+
+    x[..n].copy_from_slice(&tmp);
+}
+
+/// Applies the Hadamard interleaving used by CELT's spreading decisions.
+///
+/// Mirrors `interleave_hadamard()` from `celt/bands.c`. The helper stores the
+/// natural-order coefficients into a temporary buffer, optionally applying the
+/// "ordery" permutation when `hadamard` is `true`. The resulting layout matches
+/// the reference code, ensuring that deinterleaving reverses the transform
+/// exactly.
+pub(crate) fn interleave_hadamard(x: &mut [OpusVal16], n0: usize, stride: usize, hadamard: bool) {
+    if stride == 0 {
+        return;
+    }
+
+    let n = n0.checked_mul(stride).expect("stride * n0 overflowed");
+    assert!(x.len() >= n, "input buffer too small for interleave");
+
+    if n == 0 {
+        return;
+    }
+
+    let mut tmp = vec![0.0f32; n];
+
+    if hadamard {
+        let ordery = hadamard_ordery(stride)
+            .expect("hadamard interleave only defined for strides of 2, 4, 8, or 16");
+        assert_eq!(ordery.len(), stride);
+        for (i, &ord) in ordery.iter().enumerate() {
+            for j in 0..n0 {
+                tmp[j * stride + i] = x[ord * n0 + j];
+            }
+        }
+    } else {
+        for i in 0..stride {
+            for j in 0..n0 {
+                tmp[j * stride + i] = x[i * n0 + j];
+            }
+        }
+    }
+
+    x[..n].copy_from_slice(&tmp);
+}
+
 /// Applies a single-level Haar transform across interleaved coefficients.
 ///
 /// Mirrors `haar1()` from `celt/bands.c`, scaling each pair of samples by
@@ -331,8 +439,8 @@ pub(crate) fn normalise_bands(
 mod tests {
     use super::{
         bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
-        compute_channel_weights, frac_mul16, haar1, hysteresis_decision, normalise_bands,
-        stereo_merge, stereo_split,
+        compute_channel_weights, deinterleave_hadamard, frac_mul16, haar1, hysteresis_decision,
+        interleave_hadamard, normalise_bands, stereo_merge, stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
@@ -518,6 +626,55 @@ mod tests {
         let mut right = [1e-3f32, -1e-3, 2e-3, -2e-3];
         stereo_merge(&mut left, &mut right, 0.0);
         assert_eq!(right, left);
+    }
+
+    fn reference_ordery(stride: usize) -> &'static [usize] {
+        match stride {
+            2 => &[1, 0],
+            4 => &[3, 0, 2, 1],
+            8 => &[7, 0, 4, 3, 6, 1, 5, 2],
+            16 => &[15, 0, 8, 7, 12, 3, 11, 4, 14, 1, 9, 6, 13, 2, 10, 5],
+            _ => panic!("unsupported stride"),
+        }
+    }
+
+    #[test]
+    fn hadamard_interleave_matches_reference_layout() {
+        for &stride in &[2, 4, 8, 16] {
+            let n0 = 4usize;
+            let n = n0 * stride;
+            let mut data: Vec<f32> = (0..n).map(|v| v as f32).collect();
+            let mut expected = data.clone();
+
+            let ordery = reference_ordery(stride);
+            for (i, &ord) in ordery.iter().enumerate() {
+                for j in 0..n0 {
+                    expected[j * stride + i] = data[ord * n0 + j];
+                }
+            }
+
+            interleave_hadamard(&mut data, n0, stride, true);
+            assert_eq!(data[..n], expected[..n]);
+        }
+    }
+
+    #[test]
+    fn interleave_and_deinterleave_round_trip() {
+        let cases = [
+            (4usize, 2usize, false),
+            (4, 2, true),
+            (8, 4, false),
+            (8, 4, true),
+        ];
+
+        for &(n0, stride, hadamard) in &cases {
+            let n = n0 * stride;
+            let data: Vec<f32> = (0..n).map(|v| (v as f32) * 0.5 - 3.0).collect();
+            let mut transformed = data.clone();
+            interleave_hadamard(&mut transformed, n0, stride, hadamard);
+            deinterleave_hadamard(&mut transformed, n0, stride, hadamard);
+            assert_eq!(transformed[..n], data[..n]);
+        }
     }
 
     #[test]

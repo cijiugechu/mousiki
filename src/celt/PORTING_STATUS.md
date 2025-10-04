@@ -33,6 +33,12 @@ safely.
 - `haar1` &rarr; ports the single-level Haar transform from `celt/bands.c` that
   mixes adjacent interleaved coefficients using an orthonormal sum/difference
   stage.
+- `deinterleave_hadamard` &rarr; mirrors the helper from `celt/bands.c` that
+  reshuffles Hadamard-transformed coefficients back into natural order using the
+  "ordery" permutation employed by the spreading analysis.
+- `interleave_hadamard` &rarr; ports the Hadamard interleaver from
+  `celt/bands.c`, applying the stride-specific permutation that positions the DC
+  term at the end of each band block.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
