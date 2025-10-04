@@ -16,6 +16,9 @@ use crate::celt::{
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 
+/// Small positive constant used throughout the CELT band tools to avoid divisions by zero.
+const EPSILON: f32 = 1e-15;
+
 /// Indexing table for converting natural-order Hadamard coefficients into the
 /// "ordery" permutation used by CELT's spreading analysis.
 ///
@@ -143,6 +146,50 @@ pub(crate) fn compute_channel_weights(ex: OpusVal32, ey: OpusVal32) -> [OpusVal1
     let adjusted_ex = ex + min_energy / 3.0;
     let adjusted_ey = ey + min_energy / 3.0;
     [adjusted_ex, adjusted_ey]
+}
+
+/// Collapses an intensity-coded stereo band back into the mid channel.
+///
+/// Mirrors the float configuration of `intensity_stereo()` from `celt/bands.c`.
+/// The helper derives linear weights from the per-channel band energies and
+/// mixes the encoded side channel into the mid channel while preserving the
+/// overall energy of the pair.
+pub(crate) fn intensity_stereo(
+    mode: &OpusCustomMode<'_>,
+    x: &mut [OpusVal16],
+    y: &[OpusVal16],
+    band_e: &[OpusVal32],
+    band_id: usize,
+    n: usize,
+) {
+    assert!(
+        band_id < mode.num_ebands,
+        "band index must be within the mode range"
+    );
+    assert!(x.len() >= n, "output band must contain at least n samples");
+    assert!(y.len() >= n, "side band must contain at least n samples");
+
+    let stride = mode.num_ebands;
+    assert!(
+        band_e.len() >= stride * 2,
+        "band energy buffer must store both channel energies",
+    );
+    assert!(
+        band_id + stride < band_e.len(),
+        "band energy buffer too small for right channel",
+    );
+
+    let left = band_e[band_id];
+    let right = band_e[band_id + stride];
+    let norm = EPSILON + celt_sqrt(EPSILON + left * left + right * right);
+    let a1 = left / norm;
+    let a2 = right / norm;
+
+    for idx in 0..n {
+        let l = x[idx];
+        let r = y[idx];
+        x[idx] = a1 * l + a2 * r;
+    }
 }
 
 /// Converts a mid/side representation into left/right stereo samples.
@@ -438,9 +485,9 @@ pub(crate) fn normalise_bands(
 #[cfg(test)]
 mod tests {
     use super::{
-        bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
+        EPSILON, bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
         compute_channel_weights, deinterleave_hadamard, frac_mul16, haar1, hysteresis_decision,
-        interleave_hadamard, normalise_bands, stereo_merge, stereo_split,
+        intensity_stereo, interleave_hadamard, normalise_bands, stereo_merge, stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
@@ -524,6 +571,50 @@ mod tests {
 
             assert!((weights[0] - reference_ex).abs() <= f32::EPSILON * 4.0);
             assert!((weights[1] - reference_ey).abs() <= f32::EPSILON * 4.0);
+        }
+    }
+
+    #[test]
+    fn intensity_stereo_matches_reference_weights() {
+        let e_bands = [0i16, 2, 4, 6, 8];
+        let alloc_vectors = [0u8; 5];
+        let log_n = [0i16; 5];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(4, 0);
+        let mode = OpusCustomMode::new(
+            48_000,
+            0,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
+
+        let mut x = vec![0.5, -0.75, 0.25, -0.125];
+        let y = vec![0.25, 0.5, -0.5, 0.75];
+        let mut band_e = vec![0.0f32; mode.num_ebands * 2];
+        band_e[2] = 1.8;
+        band_e[2 + mode.num_ebands] = 0.9;
+
+        let left = band_e[2];
+        let right = band_e[2 + mode.num_ebands];
+        let norm = EPSILON + (EPSILON + left * left + right * right).sqrt();
+        let a1 = left / norm;
+        let a2 = right / norm;
+        let mut expected = x.clone();
+        for (idx, value) in expected.iter_mut().enumerate() {
+            *value = a1 * *value + a2 * y[idx];
+        }
+
+        intensity_stereo(&mode, &mut x, &y, &band_e, 2, y.len());
+
+        for (idx, (&observed, &reference)) in x.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (observed - reference).abs() <= 1e-6,
+                "sample {idx}: observed={observed}, expected={reference}"
+            );
         }
     }
 
