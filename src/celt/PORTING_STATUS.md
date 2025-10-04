@@ -94,6 +94,16 @@ safely.
 - `extract_collapse_mask` &rarr; mirrors the collapse mask generator from
   `celt/vq.c`, grouping PVQ pulses per band to flag spectral regions that need
   spreading after quantisation.
+- `op_pvq_search` &rarr; ports the greedy PVQ pulse search from `celt/vq.c`,
+  distributing pulses while maximising the correlation proxy used by the
+  encoder.
+- `alg_quant` and `alg_unquant` &rarr; translate the algebraic quantiser pair
+  that wraps the PVQ search, entropy coder integration, and optional
+  resynthesis of the excitation vector.
+- `renormalise_vector` &rarr; mirrors the float helper that rescales excitation
+  vectors to a target gain using the reciprocal square root approximation.
+- `stereo_itheta` &rarr; ports the stereo intensity angle estimator that derives
+  the mid/side rotation from the per-channel energies.
 
 ### `laplace.rs`
 - `ec_laplace_encode`, `ec_laplace_decode`, `ec_laplace_encode_p0`, and
@@ -259,7 +269,6 @@ support headers.
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `modes.c` | Mode construction, static tables, precomputed caches (core layout helper ported to `modes.rs`). | `celt`, `modes`, `rate`, `quant_bands` |
 | `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
-| `vq.c` (remaining parts) | Pulse allocation, PVQ search, and quantiser core. | `mathops`, `cwrs`, `bands`, `rate`, `pitch` |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be

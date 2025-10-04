@@ -7,9 +7,19 @@
 //! map closely to their C counterparts, making them ideal candidates for early
 //! porting efforts.
 
+use alloc::vec;
+use core::convert::TryFrom;
+
+use crate::celt::cwrs::{decode_pulses, encode_pulses};
 use crate::celt::entcode::celt_udiv;
-use crate::celt::math::{celt_cos_norm, celt_div, celt_rsqrt_norm};
-use crate::celt::types::{OpusVal16, OpusVal32};
+use crate::celt::entdec::EcDec;
+use crate::celt::entenc::EcEnc;
+use crate::celt::math::{
+    celt_cos_norm, celt_div, celt_rcp, celt_rsqrt_norm, celt_sqrt, fast_atan2f,
+};
+use crate::celt::pitch::celt_inner_prod;
+use crate::celt::types::{OpusInt32, OpusVal16, OpusVal32};
+use libm::floorf;
 
 /// Spread decisions mirrored from `celt/bands.h`.
 pub(crate) const SPREAD_NONE: i32 = 0;
@@ -19,6 +29,7 @@ pub(crate) const SPREAD_AGGRESSIVE: i32 = 3;
 
 const SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
 const Q15_ONE: OpusVal16 = 1.0;
+const EPSILON: OpusVal32 = 1e-15;
 
 fn exp_rotation1(x: &mut [OpusVal16], stride: usize, c: OpusVal16, s: OpusVal16) {
     let len = x.len();
@@ -149,6 +160,230 @@ pub(crate) fn normalise_residual(
     }
 }
 
+/// Float port of `op_pvq_search_c()` from `celt/vq.c`.
+///
+/// The helper distributes `K` algebraic pulses across the `N`-dimensional
+/// coefficient vector `x`, returning the squared energy of the chosen pulse
+/// vector. The routine mirrors the reference implementation by performing a
+/// greedy search that maximises the correlation proxy `Rxy / sqrt(Ryy)` without
+/// taking expensive square roots inside the inner loop.
+fn op_pvq_search(
+    x: &mut [OpusVal16],
+    pulses: &mut [OpusInt32],
+    n: usize,
+    k: i32,
+    _arch: i32,
+) -> OpusVal32 {
+    assert!(n > 0, "vector dimension must be positive");
+    assert!(k >= 0, "pulse count must be non-negative");
+    assert!(x.len() >= n, "coefficient buffer shorter than band size");
+    assert!(pulses.len() >= n, "pulse buffer shorter than band size");
+
+    let mut y = vec![0.0f32; n];
+    let mut sign = vec![false; n];
+
+    for (idx, sample) in x.iter_mut().enumerate().take(n) {
+        let value = *sample;
+        sign[idx] = value < 0.0;
+        *sample = value.abs();
+        pulses[idx] = 0;
+        y[idx] = 0.0;
+    }
+
+    let mut xy = 0.0f32;
+    let mut yy = 0.0f32;
+    let mut pulses_left = k;
+
+    if k > ((n as i32) >> 1) {
+        let mut sum = 0.0f32;
+        for &sample in x.iter().take(n) {
+            sum += sample;
+        }
+
+        if !(sum > EPSILON && sum < 64.0) {
+            if n > 0 {
+                x[0] = 1.0;
+                for coeff in x.iter_mut().take(n).skip(1) {
+                    *coeff = 0.0;
+                }
+            }
+            sum = 1.0;
+        }
+
+        let rcp = (k as OpusVal32 + 0.8) * celt_rcp(sum);
+        for idx in 0..n {
+            let projected = floorf(rcp * x[idx]);
+            let pulse = projected as OpusInt32;
+            pulses[idx] = pulse;
+            let val = pulse as OpusVal16;
+            y[idx] = val;
+            yy += val * val;
+            xy += x[idx] * val;
+            y[idx] *= 2.0;
+            pulses_left -= pulse;
+        }
+    }
+
+    debug_assert!(pulses_left >= 0, "pulse allocation exceeded target count");
+    if pulses_left < 0 {
+        pulses_left = 0;
+    }
+
+    if pulses_left > n as i32 + 3 {
+        let tmp = pulses_left as OpusVal16;
+        yy += tmp * tmp;
+        yy += tmp * y[0];
+        pulses[0] += pulses_left;
+        pulses_left = 0;
+    }
+
+    for _ in 0..pulses_left {
+        yy += 1.0;
+
+        let mut best_id = 0usize;
+        let mut best_den = yy + y[0];
+        let mut best_num = (xy + x[0]) * (xy + x[0]);
+
+        for idx in 1..n {
+            let rxy = xy + x[idx];
+            let ryy = yy + y[idx];
+            let num = rxy * rxy;
+            if best_den * num > ryy * best_num {
+                best_den = ryy;
+                best_num = num;
+                best_id = idx;
+            }
+        }
+
+        xy += x[best_id];
+        yy += y[best_id];
+        y[best_id] += 2.0;
+        pulses[best_id] += 1;
+    }
+
+    for (idx, pulse) in pulses.iter_mut().take(n).enumerate() {
+        if sign[idx] {
+            *pulse = -*pulse;
+        }
+    }
+
+    yy
+}
+
+/// Algebraic pulse quantiser from `celt/vq.c`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn alg_quant(
+    x: &mut [OpusVal16],
+    n: usize,
+    k: i32,
+    spread: i32,
+    b: usize,
+    enc: &mut EcEnc<'_>,
+    gain: OpusVal32,
+    resynth: bool,
+    arch: i32,
+) -> u32 {
+    assert!(k > 0, "alg_quant requires at least one pulse");
+    assert!(n > 1, "alg_quant requires at least two dimensions");
+    assert!(x.len() >= n, "input vector shorter than band size");
+
+    let mut pulses = vec![0i32; n + 3];
+
+    exp_rotation(x, n, 1, b, k, spread);
+
+    let yy = op_pvq_search(x, &mut pulses, n, k, arch);
+
+    let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
+    encode_pulses(&pulses[..n], n, total_pulses, enc);
+
+    if resynth {
+        normalise_residual(&pulses[..n], x, n, yy, gain);
+        exp_rotation(x, n, -1, b, k, spread);
+    }
+
+    extract_collapse_mask(&pulses[..n], n, b)
+}
+
+/// Algebraic pulse decoder mirroring `alg_unquant()`.
+pub(crate) fn alg_unquant(
+    x: &mut [OpusVal16],
+    n: usize,
+    k: i32,
+    spread: i32,
+    b: usize,
+    dec: &mut EcDec<'_>,
+    gain: OpusVal32,
+) -> u32 {
+    assert!(k > 0, "alg_unquant requires at least one pulse");
+    assert!(n > 1, "alg_unquant requires at least two dimensions");
+    assert!(x.len() >= n, "input vector shorter than band size");
+
+    let mut pulses = vec![0i32; n];
+    let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
+    let ryy = decode_pulses(&mut pulses, n, total_pulses, dec);
+    normalise_residual(&pulses, x, n, ryy, gain);
+    exp_rotation(x, n, -1, b, k, spread);
+    extract_collapse_mask(&pulses, n, b)
+}
+
+/// Renormalises a vector to unit gain, matching `renormalise_vector()`.
+pub(crate) fn renormalise_vector(x: &mut [OpusVal16], n: usize, gain: OpusVal32, arch: i32) {
+    assert!(x.len() >= n, "input vector shorter than band size");
+    let len = n.min(x.len());
+    let slice = &mut x[..len];
+
+    let energy = EPSILON + celt_inner_prod(slice, slice);
+    let scale = celt_rsqrt_norm(energy) * gain;
+
+    if arch != 0 {
+        let _ = arch;
+    }
+
+    for sample in slice.iter_mut() {
+        *sample *= scale;
+    }
+}
+
+/// Computes the stereo intensity angle mirroring `stereo_itheta()`.
+pub(crate) fn stereo_itheta(
+    x: &[OpusVal16],
+    y: &[OpusVal16],
+    stereo: bool,
+    n: usize,
+    arch: i32,
+) -> i32 {
+    assert!(x.len() >= n, "mid channel shorter than requested length");
+    assert!(y.len() >= n, "side channel shorter than requested length");
+
+    let len = n.min(x.len()).min(y.len());
+    let mut emid = EPSILON;
+    let mut eside = EPSILON;
+
+    if stereo {
+        for i in 0..len {
+            let m = 0.5 * (x[i] + y[i]);
+            let s = 0.5 * (x[i] - y[i]);
+            emid += m * m;
+            eside += s * s;
+        }
+    } else {
+        let mid = &x[..len];
+        let side = &y[..len];
+        emid += celt_inner_prod(mid, mid);
+        eside += celt_inner_prod(side, side);
+    }
+
+    if arch != 0 {
+        let _ = arch;
+    }
+
+    let mid = celt_sqrt(emid);
+    let side = celt_sqrt(eside);
+    let angle = fast_atan2f(side, mid);
+
+    floorf(0.5 + 16_384.0 * 0.63662 * angle) as i32
+}
+
 /// Mirrors `extract_collapse_mask()` from `celt/vq.c`.
 ///
 /// The helper inspects the quantised PVQ pulses and determines which of the
@@ -188,9 +423,15 @@ pub(crate) fn extract_collapse_mask(pulses: &[i32], n: usize, b: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{SPREAD_NORMAL, exp_rotation, extract_collapse_mask, normalise_residual};
+    use super::{
+        SPREAD_NORMAL, alg_quant, alg_unquant, exp_rotation, extract_collapse_mask,
+        normalise_residual, renormalise_vector, stereo_itheta,
+    };
+    use crate::celt::entdec::EcDec;
+    use crate::celt::entenc::EcEnc;
 
     fn seed_samples(len: usize) -> Vec<f32> {
         let mut seed = 0x1234_5678u32;
@@ -271,5 +512,64 @@ mod tests {
     fn collapse_mask_for_single_band_is_one() {
         let pulses = [0, 0, 0, 0];
         assert_eq!(extract_collapse_mask(&pulses, pulses.len(), 1), 1);
+    }
+
+    #[test]
+    fn op_pvq_search_distributes_requested_pulses() {
+        let mut coeffs = [0.6f32, -0.4, 0.2, 0.1];
+        let mut pulses = vec![0i32; coeffs.len()];
+        let len = coeffs.len();
+        let energy = super::op_pvq_search(&mut coeffs, &mut pulses, len, 5, 0);
+
+        let total: i32 = pulses.iter().map(|&p| p.abs()).sum();
+        assert_eq!(total, 5);
+        assert!(energy > 0.0);
+    }
+
+    #[test]
+    fn alg_quant_and_unquant_round_trip() {
+        let coeffs = seed_samples(6);
+        let mut encoded = coeffs.clone();
+        let gain = 1.0f32;
+        let n = coeffs.len();
+        let k = 5;
+        let spread = SPREAD_NORMAL;
+        let b = 2usize;
+        let arch = 0;
+
+        let mut buffer = vec![0u8; 64];
+        let mask;
+        {
+            let mut enc = EcEnc::new(&mut buffer);
+            mask = alg_quant(&mut encoded, n, k, spread, b, &mut enc, gain, true, arch);
+            enc.enc_done();
+        }
+
+        let mut decoded = coeffs.clone();
+        let mut dec = EcDec::new(&mut buffer);
+        let mask_dec = alg_unquant(&mut decoded, n, k, spread, b, &mut dec, gain);
+
+        assert_eq!(mask, mask_dec);
+        for (a, b) in encoded.iter().zip(decoded.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn renormalise_vector_matches_expected_gain() {
+        let mut data = seed_samples(8);
+        let gain = 0.75f32;
+        let len = data.len();
+        renormalise_vector(&mut data, len, gain, 0);
+        let energy: f32 = data.iter().map(|&v| v * v).sum();
+        assert!((energy - gain * gain).abs() < 1e-5);
+    }
+
+    #[test]
+    fn stereo_itheta_returns_expected_half_pi_value() {
+        let x = [0.0f32; 8];
+        let y = [1.0f32; 8];
+        let angle = stereo_itheta(&x, &y, false, x.len(), 0);
+        assert!((angle - 16_384).abs() <= 1);
     }
 }
