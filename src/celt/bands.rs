@@ -12,7 +12,8 @@ use alloc::vec;
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::celt::{
-    celt_inner_prod, celt_rsqrt_norm, celt_sqrt, dual_inner_prod, ec_ilog,
+    celt_exp2, celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_udiv, dual_inner_prod,
+    ec_ilog, renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 
@@ -212,6 +213,146 @@ pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
         let side = FRAC_1_SQRT_2 * *right;
         *left = mid + side;
         *right = side - mid;
+    }
+}
+
+/// Restores energy to bands that collapsed during transient coding.
+///
+/// Mirrors the float build of `anti_collapse()` from `celt/bands.c`. When a
+/// short MDCT band loses all pulses the decoder injects shaped noise with a
+/// gain derived from recent band energies. The helper mirrors the reference
+/// pseudo-random sequence, energy guards, and subsequent renormalisation so the
+/// decoder matches the C implementation bit-for-bit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn anti_collapse(
+    mode: &OpusCustomMode<'_>,
+    x: &mut [OpusVal16],
+    collapse_masks: &[u8],
+    lm: usize,
+    channels: usize,
+    size: usize,
+    start: usize,
+    end: usize,
+    log_e: &[CeltGlog],
+    prev1_log_e: &[CeltGlog],
+    prev2_log_e: &[CeltGlog],
+    pulses: &[i32],
+    mut seed: u32,
+    encode: bool,
+    arch: i32,
+) {
+    assert!(channels > 0, "anti_collapse requires at least one channel");
+    assert!(start <= end, "start band must not exceed end band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    assert!(
+        collapse_masks.len() >= channels * end,
+        "collapse masks too short"
+    );
+    assert!(
+        log_e.len() >= channels * mode.num_ebands,
+        "logE buffer too small"
+    );
+    assert!(
+        prev1_log_e.len() >= channels * mode.num_ebands,
+        "prev1 buffer too small"
+    );
+    assert!(
+        prev2_log_e.len() >= channels * mode.num_ebands,
+        "prev2 buffer too small"
+    );
+    assert!(
+        pulses.len() >= end,
+        "pulse buffer too small for requested bands"
+    );
+
+    let expected_stride = mode.short_mdct_size << lm;
+    assert_eq!(
+        size, expected_stride,
+        "channel stride must match the MDCT length for the block size",
+    );
+    assert!(
+        x.len() >= channels * size,
+        "spectrum buffer shorter than the requested channel span",
+    );
+
+    let block_count = 1usize << lm;
+    let band_stride = mode.num_ebands;
+
+    for band in start..end {
+        let band_begin =
+            usize::try_from(mode.e_bands[band]).expect("band index must be non-negative");
+        let band_end =
+            usize::try_from(mode.e_bands[band + 1]).expect("band index must be non-negative");
+        let width = band_end.saturating_sub(band_begin);
+        if width == 0 {
+            continue;
+        }
+
+        let pulses_for_band = pulses[band];
+        assert!(pulses_for_band >= 0, "pulse counts must be non-negative");
+        let numerator = u32::try_from(pulses_for_band)
+            .expect("pulse count fits in u32")
+            .wrapping_add(1);
+        let denom = u32::try_from(width).expect("band width fits in u32");
+        debug_assert!(denom > 0, "band width must be positive");
+        let depth = (celt_udiv(numerator, denom) >> lm) as i32;
+
+        let thresh = 0.5 * celt_exp2(-0.125 * depth as f32);
+        let sqrt_1 = celt_rsqrt((width << lm) as f32);
+
+        for channel in 0..channels {
+            let mask = collapse_masks[band * channels + channel] as u32;
+            let channel_base = channel * size;
+            let band_base = channel_base + (band_begin << lm);
+            let band_len = width << lm;
+            assert!(
+                band_base + band_len <= x.len(),
+                "band slice exceeds spectrum length"
+            );
+
+            let mut prev1 = prev1_log_e[channel * band_stride + band];
+            let mut prev2 = prev2_log_e[channel * band_stride + band];
+
+            if !encode && channels == 1 {
+                let alt = band_stride + band;
+                if alt < prev1_log_e.len() {
+                    prev1 = prev1.max(prev1_log_e[alt]);
+                }
+                if alt < prev2_log_e.len() {
+                    prev2 = prev2.max(prev2_log_e[alt]);
+                }
+            }
+
+            let mut ediff = log_e[channel * band_stride + band] - prev1.min(prev2);
+            if ediff < 0.0 {
+                ediff = 0.0;
+            }
+
+            let mut r = 2.0 * celt_exp2(-ediff);
+            if lm == 3 {
+                r *= 1.414_213_56;
+            }
+            r = r.min(thresh);
+            r *= sqrt_1;
+
+            let mut needs_renorm = false;
+
+            for k in 0..block_count {
+                if mask & (1u32 << k) == 0 {
+                    for j in 0..width {
+                        seed = celt_lcg_rand(seed);
+                        let idx = band_base + (j << lm) + k;
+                        x[idx] = if seed & 0x8000 != 0 { r } else { -r };
+                    }
+                    needs_renorm = true;
+                }
+            }
+
+            if needs_renorm {
+                let end_idx = band_base + band_len;
+                renormalise_vector(&mut x[band_base..end_idx], band_len, 1.0, arch);
+            }
+        }
     }
 }
 
@@ -485,9 +626,10 @@ pub(crate) fn normalise_bands(
 #[cfg(test)]
 mod tests {
     use super::{
-        EPSILON, bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
-        compute_channel_weights, deinterleave_hadamard, frac_mul16, haar1, hysteresis_decision,
-        intensity_stereo, interleave_hadamard, normalise_bands, stereo_merge, stereo_split,
+        EPSILON, anti_collapse, bitexact_cos, bitexact_log2tan, celt_lcg_rand,
+        compute_band_energies, compute_channel_weights, deinterleave_hadamard, frac_mul16, haar1,
+        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, stereo_merge,
+        stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
@@ -923,5 +1065,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn anti_collapse_fills_collapsed_band_with_noise() {
+        let e_bands = [0i16, 2];
+        let mode = dummy_mode(&e_bands, 4);
+        let lm = 1usize;
+        let channels = 1usize;
+        let size = mode.short_mdct_size << lm;
+        let mut spectrum = vec![0.0f32; channels * size];
+        let collapse_masks = vec![0u8; mode.num_ebands * channels];
+        let log_e = vec![5.0f32; mode.num_ebands * channels];
+        let prev1 = vec![0.0f32; mode.num_ebands * channels];
+        let prev2 = vec![0.0f32; mode.num_ebands * channels];
+        let pulses = vec![0i32; mode.num_ebands];
+
+        anti_collapse(
+            &mode,
+            &mut spectrum,
+            &collapse_masks,
+            lm,
+            channels,
+            size,
+            0,
+            mode.num_ebands,
+            &log_e,
+            &prev1,
+            &prev2,
+            &pulses,
+            0xDEAD_BEEF,
+            false,
+            0,
+        );
+
+        let band_width = usize::try_from(e_bands[1] - e_bands[0]).unwrap();
+        let samples = band_width << lm;
+        let energy: f32 = spectrum[..samples].iter().map(|v| v * v).sum();
+
+        assert!(spectrum[..samples].iter().any(|v| *v != 0.0));
+        assert!(energy > 0.0);
+        assert!((energy - 1.0).abs() <= 1e-3, "renormalised energy {energy}");
     }
 }

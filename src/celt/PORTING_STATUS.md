@@ -22,6 +22,9 @@ safely.
 - `intensity_stereo` &rarr; mirrors the intensity mixing helper from
   `celt/bands.c` that reconstructs mid-channel samples from the
   intensity-coded side data using the per-band energy weights.
+- `anti_collapse` &rarr; recreates the transient noise injection used in
+  `celt/bands.c` to repopulate collapsed short MDCT bands and renormalises the
+  affected coefficients after seeding the pseudo-random spectrum.
 - `compute_band_energies` &rarr; ports the float helper from `celt/bands.c`
   that accumulates per-band MDCT magnitudes before normalisation.
 - `normalise_bands` &rarr; mirrors the float implementation from
