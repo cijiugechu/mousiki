@@ -19,6 +19,9 @@ safely.
 - `compute_channel_weights` &rarr; ports the stereo weighting helper from
   `celt/bands.c` that balances distortion across channels using adjusted
   energy estimates.
+- `intensity_stereo` &rarr; mirrors the intensity mixing helper from
+  `celt/bands.c` that reconstructs mid-channel samples from the
+  intensity-coded side data using the per-band energy weights.
 - `compute_band_energies` &rarr; ports the float helper from `celt/bands.c`
   that accumulates per-band MDCT magnitudes before normalisation.
 - `normalise_bands` &rarr; mirrors the float implementation from
