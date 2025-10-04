@@ -18,6 +18,27 @@ const EBAND_5MS: [i16; 22] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 34, 40, 48, 60, 78, 100,
 ];
 
+/// Number of bands represented by [`EBAND_5MS`].
+const MAX_BANDS: usize = EBAND_5MS.len() - 1;
+
+/// Number of allocation vectors precomputed by the reference implementation.
+pub(crate) const BITALLOC_SIZE: usize = 11;
+
+/// Bit allocation matrix copied from `celt/modes.c`.
+const BAND_ALLOCATION: [u8; BITALLOC_SIZE * MAX_BANDS] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90, 80, 75, 69, 63, 56, 49, 40,
+    34, 29, 20, 18, 10, 0, 0, 0, 0, 0, 0, 0, 0, 110, 100, 90, 84, 78, 71, 65, 58, 51, 45, 39, 32,
+    26, 20, 12, 0, 0, 0, 0, 0, 0, 118, 110, 103, 93, 86, 80, 75, 70, 65, 59, 53, 47, 40, 31, 23,
+    15, 4, 0, 0, 0, 0, 126, 119, 112, 104, 95, 89, 83, 78, 72, 66, 60, 54, 47, 39, 32, 25, 17, 12,
+    1, 0, 0, 134, 127, 120, 114, 103, 97, 91, 85, 78, 72, 66, 60, 54, 47, 41, 35, 29, 23, 16, 10,
+    1, 144, 137, 130, 124, 113, 107, 101, 95, 88, 82, 76, 70, 64, 57, 51, 45, 39, 33, 26, 15, 1,
+    152, 145, 138, 132, 123, 117, 111, 105, 98, 92, 86, 80, 74, 67, 61, 55, 49, 43, 36, 20, 1, 162,
+    155, 148, 142, 133, 127, 121, 115, 108, 102, 96, 90, 84, 77, 71, 65, 59, 53, 46, 30, 1, 172,
+    165, 158, 152, 143, 137, 131, 125, 118, 112, 106, 100, 94, 87, 81, 75, 69, 63, 56, 45, 20, 200,
+    200, 200, 200, 200, 200, 200, 200, 198, 193, 188, 183, 178, 173, 168, 163, 158, 153, 148, 129,
+    104,
+];
+
 /// Bark-scale breakpoints used when constructing the band layout for custom modes.
 const BARK_FREQ: [i32; BARK_BANDS + 1] = [
     0, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000, 2320, 2700, 3150,
@@ -40,6 +61,38 @@ impl EBandLayout {
     fn new(bands: Vec<i16>, num_bands: usize) -> Self {
         debug_assert_eq!(bands.len(), num_bands + 1);
         Self { bands, num_bands }
+    }
+}
+
+/// Interpolated allocation vectors describing how many bits each band should receive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AllocationTable {
+    vectors: Vec<u8>,
+    num_bands: usize,
+}
+
+impl AllocationTable {
+    fn new(vectors: Vec<u8>, num_bands: usize) -> Self {
+        debug_assert_eq!(vectors.len(), num_bands * BITALLOC_SIZE);
+        Self { vectors, num_bands }
+    }
+
+    /// Returns the flattened allocation vectors with `num_bands` elements per row.
+    #[must_use]
+    pub fn vectors(&self) -> &[u8] {
+        &self.vectors
+    }
+
+    /// Number of allocation bands represented by the table.
+    #[must_use]
+    pub fn num_bands(&self) -> usize {
+        self.num_bands
+    }
+
+    /// Number of allocation vectors stored in the table.
+    #[must_use]
+    pub fn num_vectors(&self) -> usize {
+        BITALLOC_SIZE
     }
 }
 
@@ -155,12 +208,71 @@ pub(crate) fn compute_ebands(
     EBandLayout::new(final_bands, num_bands)
 }
 
+/// Computes the bit allocation vectors for a given band layout.
+///
+/// Ports `compute_allocation_table()` from `celt/modes.c`. The helper interpolates the
+/// 5 ms reference bit-allocation curves so that custom band layouts receive a consistent
+/// distribution of coarse energy bits.
+#[must_use]
+pub(crate) fn compute_allocation_table(
+    sample_rate: OpusInt32,
+    short_mdct_size: usize,
+    layout: &EBandLayout,
+) -> AllocationTable {
+    assert!(short_mdct_size > 0, "short MDCT size must be non-zero");
+    let nb_bands = layout.num_bands;
+    assert!(layout.bands.len() >= nb_bands + 1);
+
+    let mut vectors = vec![0u8; BITALLOC_SIZE * nb_bands];
+    let mdct_size_i64 = i64::try_from(short_mdct_size).expect("short MDCT size fits in 64 bits");
+    if i64::from(sample_rate) == 400 * mdct_size_i64 {
+        let count = BITALLOC_SIZE * nb_bands;
+        vectors.copy_from_slice(&BAND_ALLOCATION[..count]);
+        return AllocationTable::new(vectors, nb_bands);
+    }
+
+    let sample_rate_i64 = i64::from(sample_rate);
+
+    for vec_idx in 0..BITALLOC_SIZE {
+        for band in 0..nb_bands {
+            let mut k = 0usize;
+            let target = i64::from(layout.bands[band]) * sample_rate_i64 / mdct_size_i64;
+            while k < MAX_BANDS {
+                let threshold = 400 * i64::from(EBAND_5MS[k]);
+                if threshold > target {
+                    break;
+                }
+                k += 1;
+            }
+
+            let value = if k >= MAX_BANDS {
+                BAND_ALLOCATION[vec_idx * MAX_BANDS + (MAX_BANDS - 1)]
+            } else {
+                let upper = k.max(1);
+                let prev_freq = 400 * i64::from(EBAND_5MS[upper - 1]);
+                let next_freq = 400 * i64::from(EBAND_5MS[upper]);
+                let a1 = target - prev_freq;
+                let a0 = next_freq - target;
+                let numerator = a0 * i64::from(BAND_ALLOCATION[vec_idx * MAX_BANDS + (upper - 1)])
+                    + a1 * i64::from(BAND_ALLOCATION[vec_idx * MAX_BANDS + upper]);
+                (numerator / (a0 + a1)) as u8
+            };
+
+            vectors[vec_idx * nb_bands + band] = value;
+        }
+    }
+
+    AllocationTable::new(vectors, nb_bands)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{EBAND_5MS, compute_ebands};
+    use super::{
+        BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, compute_allocation_table, compute_ebands,
+    };
 
     #[test]
     fn returns_standard_layout_for_5ms_frames() {
@@ -193,5 +305,42 @@ mod tests {
         ];
         assert_eq!(layout.num_bands, expected.len() - 1);
         assert_eq!(layout.bands, expected);
+    }
+
+    #[test]
+    fn allocation_table_matches_reference_for_standard_mode() {
+        let layout = super::EBandLayout::new(EBAND_5MS.to_vec(), EBAND_5MS.len() - 1);
+        let table = compute_allocation_table(48_000, 120, &layout);
+        assert_eq!(table.num_vectors(), BITALLOC_SIZE);
+        assert_eq!(table.num_bands(), layout.num_bands);
+        let expected = &BAND_ALLOCATION[..BITALLOC_SIZE * layout.num_bands];
+        assert_eq!(table.vectors(), expected);
+    }
+
+    #[test]
+    fn allocation_table_interpolates_for_custom_mode() {
+        let short_mdct_size = 240usize;
+        let resolution = ((48_000 + short_mdct_size as i32) / (2 * short_mdct_size as i32)) as i32;
+        let layout = compute_ebands(48_000, short_mdct_size, resolution);
+        let table = compute_allocation_table(48_000, short_mdct_size, &layout);
+        assert_eq!(table.num_vectors(), BITALLOC_SIZE);
+        assert_eq!(table.num_bands(), layout.num_bands);
+        let expected: Vec<u8> = vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90, 85, 80,
+            77, 75, 72, 69, 63, 56, 49, 40, 34, 31, 29, 20, 18, 10, 2, 0, 0, 0, 0, 0, 0, 0, 110,
+            105, 100, 95, 90, 87, 84, 78, 71, 65, 58, 51, 48, 45, 39, 32, 26, 21, 16, 3, 0, 0, 0,
+            0, 0, 118, 114, 110, 106, 103, 98, 93, 86, 80, 75, 70, 65, 62, 59, 53, 47, 40, 33, 27,
+            17, 7, 0, 0, 0, 0, 126, 122, 119, 115, 112, 108, 104, 95, 89, 83, 78, 72, 69, 66, 60,
+            54, 47, 41, 35, 26, 19, 12, 1, 0, 0, 134, 130, 127, 123, 120, 117, 114, 103, 97, 91,
+            85, 78, 75, 72, 66, 60, 54, 48, 44, 36, 31, 24, 16, 10, 1, 144, 140, 137, 133, 130,
+            127, 124, 113, 107, 101, 95, 88, 85, 82, 76, 70, 64, 58, 54, 46, 41, 34, 26, 15, 1,
+            152, 148, 145, 141, 138, 135, 132, 123, 117, 111, 105, 98, 95, 92, 86, 80, 74, 68, 64,
+            56, 51, 44, 36, 20, 1, 162, 158, 155, 151, 148, 145, 142, 133, 127, 121, 115, 108, 105,
+            102, 96, 90, 84, 78, 74, 66, 61, 54, 46, 30, 1, 172, 168, 165, 161, 158, 155, 152, 143,
+            137, 131, 125, 118, 115, 112, 106, 100, 94, 88, 84, 76, 71, 64, 56, 45, 20, 200, 200,
+            200, 200, 200, 200, 200, 200, 200, 200, 200, 198, 195, 193, 188, 183, 178, 174, 170,
+            164, 159, 153, 148, 129, 104,
+        ];
+        assert_eq!(table.vectors(), expected.as_slice());
     }
 }
