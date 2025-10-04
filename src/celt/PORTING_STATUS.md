@@ -43,6 +43,11 @@ safely.
   `celt/bands.c`, applying the stride-specific permutation that positions the DC
   term at the end of each band block.
 
+### `celt.rs`
+- `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor
+  mapping in `celt/celt.c`, returning the ratios used by the pitch analysis
+  when converting from the 48 kHz reference rate.
+
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
   `celt/mathops.h`.
