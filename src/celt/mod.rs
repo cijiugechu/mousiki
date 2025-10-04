@@ -6,6 +6,7 @@
 //! relying on Rust's ownership and lifetime tracking for safety.
 
 mod bands;
+mod celt;
 mod cpu_support;
 mod cwrs;
 mod entcode;
@@ -27,6 +28,8 @@ mod vq;
 
 #[allow(unused_imports)]
 pub(crate) use bands::*;
+#[allow(unused_imports)]
+pub(crate) use celt::*;
 #[allow(unused_imports)]
 pub(crate) use cpu_support::*;
 #[allow(unused_imports)]
