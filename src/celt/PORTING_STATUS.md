@@ -111,6 +111,11 @@ safely.
 - `stereo_itheta` &rarr; ports the stereo intensity angle estimator that derives
   the mid/side rotation from the per-channel energies.
 
+### `cpu_support.rs`
+- `OPUS_ARCHMASK` and `opus_select_arch` &rarr; mirror the fallback CPU
+  detection stub from `celt/cpu_support.h`, returning zero when runtime dispatch
+  is disabled.
+
 ### `laplace.rs`
 - `ec_laplace_encode`, `ec_laplace_decode`, `ec_laplace_encode_p0`, and
   `ec_laplace_decode_p0` &rarr; port the Laplace probability model from
