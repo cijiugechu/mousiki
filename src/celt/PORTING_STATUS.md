@@ -266,6 +266,12 @@ safely.
 - `compute_preemphasis` &rarr; mirrors the sampling-rate-dependent pre-emphasis
   tap selection from `celt/modes.c`, returning the four filter coefficients used
   to initialise `mode->preemph` during custom mode construction.
+- `compute_mdct_window` &rarr; ports the nested sine window generation performed
+  by `opus_custom_mode_create()` in `celt/modes.c`, producing the overlap-add
+  coefficients required by CELT's MDCT.
+- `compute_log_band_widths` &rarr; mirrors the loop in `opus_custom_mode_create()`
+  that fills the `logN` table by applying `log2_frac()` to each Bark-derived
+  band width, preserving the `BITRES` fractional precision.
 
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
