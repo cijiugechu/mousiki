@@ -44,8 +44,12 @@ pub struct MdctLookup {
 impl MdctLookup {
     #[must_use]
     pub fn new(len: usize, max_shift: usize) -> Self {
-        assert!(len.is_power_of_two(), "MDCT length must be a power of two");
+        assert!(len % 2 == 0, "MDCT length must be even");
         assert!(max_shift < 8, "unsupported MDCT shift");
+        assert!(
+            len >> max_shift > 0,
+            "MDCT length too small for requested shift"
+        );
 
         let mut forward = Vec::with_capacity(max_shift + 1);
         let mut inverse = Vec::with_capacity(max_shift + 1);
@@ -196,17 +200,23 @@ impl<'a> OpusCustomMode<'a> {
         mdct: MdctLookup,
         cache: PulseCacheData,
     ) -> Self {
+        let num_ebands = e_bands.len().saturating_sub(1);
+        let num_alloc_vectors = if num_ebands > 0 {
+            alloc_vectors.len() / num_ebands
+        } else {
+            0
+        };
         Self {
             sample_rate,
             overlap,
-            num_ebands: e_bands.len(),
-            effective_ebands: e_bands.len(),
+            num_ebands,
+            effective_ebands: num_ebands,
             pre_emphasis: [0.0; 4],
             e_bands,
             max_lm: 0,
             num_short_mdcts: 0,
             short_mdct_size: 0,
-            num_alloc_vectors: alloc_vectors.len(),
+            num_alloc_vectors,
             alloc_vectors,
             log_n,
             window,

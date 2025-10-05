@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn fine_energy_quantisation_round_trips() {
-        let e_bands = [0i16; 4];
+        let e_bands = [0i16, 1, 2, 3, 4];
         let alloc_vectors = [0u8; 4];
         let log_n = [0i16; 4];
         let window = [0.0f32; 4];
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn coarse_energy_round_trip_matches_encoder() {
-        let e_bands = [0i16; 6];
+        let e_bands = [0i16, 1, 2, 3, 4, 5, 6];
         let alloc_vectors = [0u8; 6];
         let log_n = [0i16; 6];
         let window = [0.0f32; 6];
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn amp2_log2_matches_expected_logarithm() {
-        let e_bands = [0i16; 6];
+        let e_bands = [0i16, 1, 2, 3, 4, 5, 6];
         let alloc_vectors = [0u8; 6];
         let log_n = [0i16; 6];
         let window = [0.0f32; 6];
@@ -1154,7 +1154,7 @@ mod tests {
 
     #[test]
     fn log2_amp_restores_linear_energies() {
-        let e_bands = [0i16; 6];
+        let e_bands = [0i16, 1, 2, 3, 4, 5, 6];
         let alloc_vectors = [0u8; 6];
         let log_n = [0i16; 6];
         let window = [0.0f32; 6];

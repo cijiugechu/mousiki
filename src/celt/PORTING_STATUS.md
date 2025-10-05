@@ -272,6 +272,10 @@ safely.
 - `compute_log_band_widths` &rarr; mirrors the loop in `opus_custom_mode_create()`
   that fills the `logN` table by applying `log2_frac()` to each Bark-derived
   band width, preserving the `BITRES` fractional precision.
+- `opus_custom_mode_create` and `OwnedOpusCustomMode` &rarr; port the dynamic
+  mode constructor from `celt/modes.c`, validating inputs, generating the Bark
+  layout, allocation tables, MDCT lookup, and pulse caches, and wrapping the
+  results in a safe owner that mirrors the lifetime of `CELTMode`.
 
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
