@@ -237,6 +237,9 @@ safely.
   final one-bit decisions used to top up the fine energy resolution.
 - `amp2_log2` &rarr; ports the amplitude-to-log-energy conversion helper that
   subtracts the per-band means prior to coarse quantisation.
+- `log2_amp` &rarr; mirrors the inverse conversion from `celt/quant_bands.c`
+  that reconstructs linear band energies from their quantised logarithmic
+  representation.
 - `E_MEANS`, `PRED_COEF`, `BETA_COEF`, `BETA_INTRA`, `E_PROB_MODEL`, and
   `SMALL_ENERGY_ICDF` &rarr; port the constant tables from `celt/quant_bands.c`
   used by the coarse energy quantiser and small energy Laplace model.
@@ -290,7 +293,6 @@ support headers.
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `modes.c` | Mode construction, static tables, precomputed caches (core layout helper ported to `modes.rs`). | `celt`, `modes`, `rate`, `quant_bands` |
-| `quant_bands.c` | Band quantisation tables and rate allocation. | `quant_bands`, `laplace`, `mathops`, `rate` |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
