@@ -10,8 +10,12 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::TryFrom;
+use core::fmt;
 
-use crate::celt::types::{CeltCoef, OpusInt16, OpusInt32, OpusVal16};
+use crate::celt::rate::compute_pulse_cache;
+use crate::celt::types::{
+    CeltCoef, MdctLookup, OpusCustomMode, OpusInt16, OpusInt32, OpusVal16, PulseCacheData,
+};
 use libm::sinf;
 
 /// Precomputed 5 ms critical band edges used by CELT's reference configuration.
@@ -337,14 +341,180 @@ pub(crate) fn compute_log_band_widths(layout: &EBandLayout) -> Vec<OpusInt16> {
     log_n
 }
 
+/// Errors that can occur while constructing a custom CELT mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModeError {
+    /// The requested sampling rate is outside the supported range.
+    BadSampleRate,
+    /// The requested frame size violates the constraints from the reference implementation.
+    BadFrameSize,
+    /// The frame is shorter than the minimum 1 ms supported by CELT.
+    FrameTooShort,
+    /// The computed short MDCT exceeds the duration allowed by the format.
+    ShortBlockTooLong,
+    /// The largest energy band would exceed the PVQ lookup tables.
+    BandTooWide,
+}
+
+impl fmt::Display for ModeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadSampleRate => write!(f, "unsupported sampling rate"),
+            Self::BadFrameSize => write!(f, "unsupported frame size"),
+            Self::FrameTooShort => write!(f, "frame duration shorter than 1 ms"),
+            Self::ShortBlockTooLong => write!(f, "short blocks exceed maximum duration"),
+            Self::BandTooWide => write!(f, "energy band exceeds PVQ cache limits"),
+        }
+    }
+}
+
+/// Owned representation of a dynamically constructed CELT mode.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedOpusCustomMode {
+    sample_rate: OpusInt32,
+    frame_size: usize,
+    overlap: usize,
+    max_lm: usize,
+    num_short_mdcts: usize,
+    short_mdct_size: usize,
+    pre_emphasis: [OpusVal16; 4],
+    layout: EBandLayout,
+    effective_ebands: usize,
+    alloc_vectors: Vec<u8>,
+    num_alloc_vectors: usize,
+    window: Vec<CeltCoef>,
+    log_n: Vec<OpusInt16>,
+    mdct: MdctLookup,
+    cache: PulseCacheData,
+}
+
+impl OwnedOpusCustomMode {
+    #[must_use]
+    pub fn mode(&self) -> OpusCustomMode<'_> {
+        OpusCustomMode {
+            sample_rate: self.sample_rate,
+            overlap: self.overlap,
+            num_ebands: self.layout.num_bands,
+            effective_ebands: self.effective_ebands,
+            pre_emphasis: self.pre_emphasis,
+            e_bands: &self.layout.bands,
+            max_lm: self.max_lm,
+            num_short_mdcts: self.num_short_mdcts,
+            short_mdct_size: self.short_mdct_size,
+            num_alloc_vectors: self.num_alloc_vectors,
+            alloc_vectors: &self.alloc_vectors,
+            log_n: &self.log_n,
+            window: &self.window,
+            mdct: self.mdct.clone(),
+            cache: self.cache.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn layout(&self) -> &EBandLayout {
+        &self.layout
+    }
+
+    #[must_use]
+    pub fn frame_size(&self) -> usize {
+        self.frame_size
+    }
+}
+
+/// Ports the custom-mode construction from `opus_custom_mode_create()`.
+pub(crate) fn opus_custom_mode_create(
+    sample_rate: OpusInt32,
+    frame_size: usize,
+) -> Result<OwnedOpusCustomMode, ModeError> {
+    if sample_rate < 8_000 || sample_rate > 96_000 {
+        return Err(ModeError::BadSampleRate);
+    }
+    if frame_size < 40 || frame_size > 1024 || frame_size % 2 != 0 {
+        return Err(ModeError::BadFrameSize);
+    }
+
+    let frame_size_i32 = i32::try_from(frame_size).map_err(|_| ModeError::BadFrameSize)?;
+    if frame_size_i32 * 1000 < sample_rate {
+        return Err(ModeError::FrameTooShort);
+    }
+
+    let lm = if frame_size_i32 * 75 >= sample_rate && frame_size % 16 == 0 {
+        3usize
+    } else if frame_size_i32 * 150 >= sample_rate && frame_size % 8 == 0 {
+        2
+    } else if frame_size_i32 * 300 >= sample_rate && frame_size % 4 == 0 {
+        1
+    } else {
+        0
+    };
+
+    let short_mdct_size = frame_size >> lm;
+    if (short_mdct_size * 300) as OpusInt32 > sample_rate {
+        return Err(ModeError::ShortBlockTooLong);
+    }
+
+    let pre_emphasis = compute_preemphasis(sample_rate);
+    let num_short_mdcts = 1 << lm;
+    let overlap = (short_mdct_size >> 2) << 2;
+    let resolution =
+        (sample_rate + short_mdct_size as OpusInt32) / (2 * short_mdct_size as OpusInt32);
+
+    let layout = compute_ebands(sample_rate, short_mdct_size, resolution);
+    if layout.num_bands == 0 {
+        return Err(ModeError::BadFrameSize);
+    }
+
+    let mut effective_ebands = layout.num_bands;
+    while effective_ebands > 0
+        && usize::try_from(layout.bands[effective_ebands]).expect("band boundary is non-negative")
+            > short_mdct_size
+    {
+        effective_ebands -= 1;
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    let last_width = layout.bands[layout.num_bands] - layout.bands[layout.num_bands - 1];
+    if (last_width as usize) << lm > 208 {
+        return Err(ModeError::BandTooWide);
+    }
+
+    let allocation = compute_allocation_table(sample_rate, short_mdct_size, &layout);
+    let alloc_vectors = allocation.vectors().to_vec();
+    let num_alloc_vectors = allocation.num_vectors();
+    let window = compute_mdct_window(overlap);
+    let log_n = compute_log_band_widths(&layout);
+    let cache = compute_pulse_cache(&layout.bands, &log_n, lm);
+    let mdct_len = 2 * short_mdct_size * num_short_mdcts;
+    let mdct = MdctLookup::new(mdct_len, lm);
+
+    Ok(OwnedOpusCustomMode {
+        sample_rate,
+        frame_size,
+        overlap,
+        max_lm: lm,
+        num_short_mdcts,
+        short_mdct_size,
+        pre_emphasis,
+        layout,
+        effective_ebands,
+        alloc_vectors,
+        num_alloc_vectors,
+        window,
+        log_n,
+        mdct,
+        cache,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
     use super::{
-        BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, compute_allocation_table, compute_ebands,
-        compute_log_band_widths, compute_mdct_window, compute_preemphasis,
+        BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, ModeError, compute_allocation_table,
+        compute_ebands, compute_log_band_widths, compute_mdct_window, compute_preemphasis,
+        opus_custom_mode_create,
     };
     use crate::celt::cwrs::log2_frac;
 
@@ -464,5 +634,52 @@ mod tests {
             let expected = log2_frac(width as u32, 3) as i16;
             assert_eq!(value, expected, "band {} mismatch", band);
         }
+    }
+
+    #[test]
+    fn custom_mode_matches_reference_configuration() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("custom mode");
+        assert_eq!(owned.frame_size(), 960);
+        let mode = owned.mode();
+        assert_eq!(mode.sample_rate, 48_000);
+        assert_eq!(mode.overlap, 120);
+        assert_eq!(mode.max_lm, 3);
+        assert_eq!(mode.num_short_mdcts, 8);
+        assert_eq!(mode.short_mdct_size, 120);
+        assert_eq!(mode.num_ebands, EBAND_5MS.len() - 1);
+        assert_eq!(mode.effective_ebands, mode.num_ebands);
+        assert_eq!(mode.e_bands, EBAND_5MS);
+        assert_eq!(mode.num_alloc_vectors, BITALLOC_SIZE);
+        assert_eq!(
+            mode.alloc_vectors,
+            &BAND_ALLOCATION[..BITALLOC_SIZE * mode.num_ebands]
+        );
+        assert_eq!(mode.window.len(), mode.overlap);
+        assert_eq!(mode.log_n.len(), mode.num_ebands);
+        assert_eq!(mode.mdct.len(), 1_920);
+        assert_eq!(mode.mdct.max_shift(), 3);
+        assert_eq!(mode.cache.size, mode.cache.bits.len());
+        assert!((mode.pre_emphasis[0] - 0.850_006_1).abs() < 1e-6);
+        assert!((mode.pre_emphasis[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn custom_mode_validates_parameters() {
+        assert_eq!(
+            opus_custom_mode_create(4_000, 960).unwrap_err(),
+            ModeError::BadSampleRate
+        );
+        assert_eq!(
+            opus_custom_mode_create(48_000, 39).unwrap_err(),
+            ModeError::BadFrameSize
+        );
+        assert_eq!(
+            opus_custom_mode_create(48_000, 40).unwrap_err(),
+            ModeError::FrameTooShort
+        );
+        assert_eq!(
+            opus_custom_mode_create(96_000, 2048).unwrap_err(),
+            ModeError::BadFrameSize
+        );
     }
 }

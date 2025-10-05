@@ -858,8 +858,8 @@ mod tests {
     #[test]
     fn intensity_stereo_matches_reference_weights() {
         let e_bands = [0i16, 2, 4, 6, 8];
-        let alloc_vectors = [0u8; 5];
-        let log_n = [0i16; 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 4];
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(4, 0);
         let mode = OpusCustomMode::new(
