@@ -276,6 +276,10 @@ safely.
   mode constructor from `celt/modes.c`, validating inputs, generating the Bark
   layout, allocation tables, MDCT lookup, and pulse caches, and wrapping the
   results in a safe owner that mirrors the lifetime of `CELTMode`.
+- `opus_custom_mode_find_static` &rarr; recreates the `static_mode_list`
+  dispatch from `celt/modes.c`, lazily constructing the shared 48 kHz / 960
+  sample mode so that standard configurations reuse the precomputed
+  allocation tables.
 
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
@@ -309,7 +313,6 @@ support headers.
 | `celt.c` | Top-level encoder/decoder glue (frame dispatch, overlap-add). | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
 | `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
 | `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
-| `modes.c` | Mode construction, static tables, precomputed caches (core layout helper ported to `modes.rs`). | `celt`, `modes`, `rate`, `quant_bands` |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
