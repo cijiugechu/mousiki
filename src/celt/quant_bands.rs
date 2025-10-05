@@ -16,7 +16,7 @@ use crate::celt::rate::MAX_FINE_BITS;
 use crate::celt::types::{CeltGlog, OpusCustomMode};
 use libm::floorf;
 
-use crate::celt::math::celt_log2;
+use crate::celt::math::{celt_exp2, celt_log2};
 const TOTAL_FREQ: u32 = 1 << 15;
 const LAPLACE_MINP: u32 = 1;
 const LAPLACE_NMIN: u32 = 16;
@@ -614,6 +614,41 @@ pub(crate) fn amp2_log2(
     }
 }
 
+/// Converts logarithmic band energies back to linear amplitudes.
+///
+/// Mirrors the float variant of `log2Amp()` from `celt/quant_bands.c`. The
+/// helper reverses the transform performed by [`amp2_log2`] by reapplying the
+/// per-band energy means and evaluating the base-2 exponential.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn log2_amp(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    e_bands: &mut [CeltGlog],
+    old_e_bands: &[CeltGlog],
+    channels: usize,
+) {
+    assert!(start <= end, "start band must not exceed end band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    let stride = mode.num_ebands;
+    assert!(
+        channels * stride <= e_bands.len(),
+        "insufficient energy storage"
+    );
+    assert!(
+        channels * stride <= old_e_bands.len(),
+        "insufficient log energy storage"
+    );
+
+    for band in start..end {
+        let mean = E_MEANS[band];
+        for channel in 0..channels {
+            let idx = channel * stride + band;
+            e_bands[idx] = celt_exp2(old_e_bands[idx] + mean);
+        }
+    }
+}
+
 fn fine_energy_scale(fine: usize) -> f32 {
     debug_assert!(fine <= 14);
     let shift = 14usize.saturating_sub(fine);
@@ -1115,5 +1150,44 @@ mod tests {
         assert!((band_log_e[0] - (band_e[0].log2() - E_MEANS[0])).abs() <= 1e-6);
         assert!((band_log_e[1] - (band_e[1].log2() - E_MEANS[1])).abs() <= 1e-6);
         assert_eq!(band_log_e[3], -14.0);
+    }
+
+    #[test]
+    fn log2_amp_restores_linear_energies() {
+        let e_bands = [0i16; 6];
+        let alloc_vectors = [0u8; 6];
+        let log_n = [0i16; 6];
+        let window = [0.0f32; 6];
+        let mdct = MdctLookup::new(8, 0);
+        let mode = OpusCustomMode::new(
+            48_000,
+            0,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
+
+        let channels = 2usize;
+        let mut e = [0.0f32; 12];
+        let log_e = [
+            0.1f32, -0.3, 0.0, -1.0, 0.0, 0.0, 0.4, -0.2, 0.2, 0.0, 0.0, 0.0,
+        ];
+
+        super::log2_amp(&mode, 1, 4, &mut e, &log_e, channels);
+
+        for channel in 0..channels {
+            for band in 1..4 {
+                let idx = channel * mode.num_ebands + band;
+                let expected = crate::celt::math::celt_exp2(log_e[idx] + E_MEANS[band]);
+                assert!((e[idx] - expected).abs() <= 1e-6);
+            }
+        }
+
+        // Bands outside the requested range remain untouched.
+        assert_eq!(e[0], 0.0);
+        assert_eq!(e[mode.num_ebands], 0.0);
     }
 }
