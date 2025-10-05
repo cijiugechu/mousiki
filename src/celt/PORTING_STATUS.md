@@ -259,6 +259,9 @@ safely.
 - `compute_allocation_table` &rarr; ports the allocation vector interpolation
   helper from `celt/modes.c`, remapping the 5 ms reference bit-allocation table
   to the dynamically generated Bark-based band layout used by custom modes.
+- `compute_preemphasis` &rarr; mirrors the sampling-rate-dependent pre-emphasis
+  tap selection from `celt/modes.c`, returning the four filter coefficients used
+  to initialise `mode->preemph` during custom mode construction.
 
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
