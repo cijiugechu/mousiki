@@ -45,6 +45,10 @@ safely.
 - `interleave_hadamard` &rarr; ports the Hadamard interleaver from
   `celt/bands.c`, applying the stride-specific permutation that positions the DC
   term at the end of each band block.
+- `spreading_decision` &rarr; ports the frame-level spreading classifier from
+  `celt/bands.c`, building per-band histograms, smoothing the score, and
+  applying the hysteresis used to stabilise PVQ spreading decisions while
+  updating the high-frequency tapset selection heuristics.
 
 ### `celt.rs`
 - `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor

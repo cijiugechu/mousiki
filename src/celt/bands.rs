@@ -12,8 +12,9 @@ use alloc::vec;
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::celt::{
-    celt_exp2, celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_udiv, dual_inner_prod,
-    ec_ilog, renormalise_vector,
+    SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2, celt_inner_prod,
+    celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_udiv, dual_inner_prod, ec_ilog,
+    renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 
@@ -397,6 +398,142 @@ pub(crate) fn stereo_merge(x: &mut [OpusVal16], y: &mut [OpusVal16], mid: OpusVa
     }
 }
 
+/// Decides how aggressively PVQ pulses should be spread in the current frame.
+///
+/// Mirrors the float configuration of `spreading_decision()` from
+/// `celt/bands.c`. The helper analyses the normalised spectrum stored in `x`
+/// and classifies each band based on the proportion of low-energy coefficients.
+/// The resulting score is filtered through a simple recursive average and a
+/// small hysteresis term controlled by the previous decision. High-frequency
+/// statistics optionally update the pitch tapset selector when `update_hf` is
+/// `true`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spreading_decision(
+    mode: &OpusCustomMode,
+    x: &[OpusVal16],
+    average: &mut i32,
+    last_decision: i32,
+    hf_average: &mut i32,
+    tapset_decision: &mut i32,
+    update_hf: bool,
+    end: usize,
+    channels: usize,
+    m: usize,
+    spread_weight: &[i32],
+) -> i32 {
+    assert!(end > 0, "band range must contain at least one band");
+    assert!(end <= mode.num_ebands, "band range exceeds mode span");
+    assert!(spread_weight.len() >= end, "insufficient spread weights");
+
+    let n0 = m * mode.short_mdct_size;
+    assert!(x.len() >= channels * n0, "spectrum buffer too small");
+
+    let last_band_width =
+        m * (mode.e_bands[end] as usize).saturating_sub(mode.e_bands[end - 1] as usize);
+    if last_band_width <= 8 {
+        return SPREAD_NONE;
+    }
+
+    let mut sum = 0i32;
+    let mut nb_bands = 0i32;
+    let mut hf_sum = 0i32;
+
+    for c in 0..channels {
+        let channel_base = c * n0;
+        for band in 0..end {
+            let start = m * (mode.e_bands[band] as usize);
+            let stop = m * (mode.e_bands[band + 1] as usize);
+            let n = stop - start;
+            if n <= 8 {
+                continue;
+            }
+
+            let slice = &x[channel_base + start..channel_base + stop];
+            let mut tcount = [0i32; 3];
+            for &value in slice {
+                let x2n = value * value * n as OpusVal16;
+                if x2n < 0.25 {
+                    tcount[0] += 1;
+                }
+                if x2n < 0.0625 {
+                    tcount[1] += 1;
+                }
+                if x2n < 0.015625 {
+                    tcount[2] += 1;
+                }
+            }
+
+            if band + 4 > mode.num_ebands {
+                let numerator = 32 * (tcount[1] + tcount[0]);
+                hf_sum += celt_udiv(numerator as u32, n as u32) as i32;
+            }
+
+            let mut tmp = 0i32;
+            if 2 * tcount[2] >= n as i32 {
+                tmp += 1;
+            }
+            if 2 * tcount[1] >= n as i32 {
+                tmp += 1;
+            }
+            if 2 * tcount[0] >= n as i32 {
+                tmp += 1;
+            }
+
+            let weight = spread_weight[band];
+            sum += tmp * weight;
+            nb_bands += weight;
+        }
+    }
+
+    if update_hf {
+        if hf_sum != 0 {
+            let denom = (channels as i32) * (4 - mode.num_ebands as i32 + end as i32);
+            if denom > 0 {
+                hf_sum = celt_udiv(hf_sum as u32, denom as u32) as i32;
+            } else {
+                hf_sum = 0;
+            }
+        }
+        *hf_average = (*hf_average + hf_sum) >> 1;
+        hf_sum = *hf_average;
+        match *tapset_decision {
+            2 => hf_sum += 4,
+            0 => hf_sum -= 4,
+            _ => {}
+        }
+        if hf_sum > 22 {
+            *tapset_decision = 2;
+        } else if hf_sum > 18 {
+            *tapset_decision = 1;
+        } else {
+            *tapset_decision = 0;
+        }
+    }
+
+    assert!(
+        nb_bands > 0,
+        "spreading analysis requires at least one band"
+    );
+    let scaled = ((sum as i64) << 8) as u32;
+    let denom = nb_bands as u32;
+    let mut sum = celt_udiv(scaled, denom) as i32;
+    sum = (sum + *average) >> 1;
+    *average = sum;
+
+    let hysteresis = ((3 - last_decision) << 7) + 64;
+    sum = (3 * sum + hysteresis + 2) >> 2;
+
+    if sum < 80 {
+        SPREAD_AGGRESSIVE
+    } else if sum < 256 {
+        SPREAD_NORMAL
+    } else if sum < 384 {
+        SPREAD_LIGHT
+    } else {
+        SPREAD_NONE
+    }
+}
+
 /// Restores the natural band ordering after a Hadamard transform.
 ///
 /// Mirrors `deinterleave_hadamard()` from `celt/bands.c`. The routine copies the
@@ -628,11 +765,13 @@ mod tests {
     use super::{
         EPSILON, anti_collapse, bitexact_cos, bitexact_log2tan, celt_lcg_rand,
         compute_band_energies, compute_channel_weights, deinterleave_hadamard, frac_mul16, haar1,
-        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, stereo_merge,
-        stereo_split,
+        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands,
+        spreading_decision, stereo_merge, stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
-    use crate::celt::{celt_rsqrt_norm, dual_inner_prod};
+    use crate::celt::{
+        SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, celt_rsqrt_norm, dual_inner_prod,
+    };
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -775,6 +914,144 @@ mod tests {
             seed = celt_lcg_rand(seed);
             assert_eq!(seed, value);
         }
+    }
+
+    #[test]
+    fn spreading_returns_aggressive_for_concentrated_energy() {
+        let e_bands = [0i16, 16, 32];
+        let mode = dummy_mode(&e_bands, 32);
+        let channels = 1;
+        let m = 1;
+        let end = 2;
+        let spread_weight = [1, 1];
+        let spectrum = vec![1.0f32; channels * m * mode.short_mdct_size];
+        let mut average = 0;
+        let mut hf_average = 0;
+        let mut tapset = 1;
+
+        let decision = spreading_decision(
+            &mode,
+            &spectrum,
+            &mut average,
+            SPREAD_NORMAL,
+            &mut hf_average,
+            &mut tapset,
+            false,
+            end,
+            channels,
+            m,
+            &spread_weight,
+        );
+
+        assert_eq!(decision, SPREAD_AGGRESSIVE);
+        assert_eq!(tapset, 1);
+        assert_eq!(hf_average, 0);
+        assert_eq!(average, 0);
+    }
+
+    #[test]
+    fn spreading_returns_normal_when_single_threshold_met() {
+        let e_bands = [0i16, 16, 32];
+        let mode = dummy_mode(&e_bands, 32);
+        let channels = 1;
+        let m = 1;
+        let end = 2;
+        let spread_weight = [1, 1];
+        let mut spectrum = vec![1.0f32; channels * m * mode.short_mdct_size];
+        for idx in 0..8 {
+            spectrum[idx] = 0.1;
+        }
+        let mut average = 0;
+        let mut hf_average = 0;
+        let mut tapset = 1;
+
+        let decision = spreading_decision(
+            &mode,
+            &spectrum,
+            &mut average,
+            SPREAD_NORMAL,
+            &mut hf_average,
+            &mut tapset,
+            false,
+            end,
+            channels,
+            m,
+            &spread_weight,
+        );
+
+        assert_eq!(decision, SPREAD_NORMAL);
+        assert_eq!(tapset, 1);
+        assert_eq!(hf_average, 0);
+        assert_eq!(average, 64);
+    }
+
+    #[test]
+    fn spreading_returns_none_when_all_thresholds_met() {
+        let e_bands = [0i16, 16, 32];
+        let mode = dummy_mode(&e_bands, 32);
+        let channels = 1;
+        let m = 1;
+        let end = 1;
+        let spread_weight = [1];
+        let mut spectrum = vec![1.0f32; channels * m * mode.short_mdct_size];
+        for idx in 0..8 {
+            spectrum[idx] = 0.01;
+        }
+        let mut average = 0;
+        let mut hf_average = 0;
+        let mut tapset = 1;
+
+        let decision = spreading_decision(
+            &mode,
+            &spectrum,
+            &mut average,
+            SPREAD_NONE,
+            &mut hf_average,
+            &mut tapset,
+            false,
+            end,
+            channels,
+            m,
+            &spread_weight,
+        );
+
+        assert_eq!(decision, SPREAD_NONE);
+        assert_eq!(tapset, 1);
+        assert_eq!(hf_average, 0);
+        assert_eq!(average, 384);
+    }
+
+    #[test]
+    fn spreading_updates_hf_tracking() {
+        let e_bands: Vec<i16> = (0..=10).map(|i| (i * 24) as i16).collect();
+        let mode = dummy_mode(&e_bands, 256);
+        let channels = 1;
+        let m = 1;
+        let end = mode.num_ebands;
+        let spread_weight = vec![1; end];
+        let spectrum = vec![0.0f32; channels * m * mode.short_mdct_size];
+        let mut average = 0;
+        let mut hf_average = 0;
+        let mut tapset = 1;
+
+        let decision = spreading_decision(
+            &mode,
+            &spectrum,
+            &mut average,
+            SPREAD_NONE,
+            &mut hf_average,
+            &mut tapset,
+            true,
+            end,
+            channels,
+            m,
+            &spread_weight,
+        );
+
+        assert_eq!(decision, SPREAD_NONE);
+        assert_eq!(tapset, 2);
+        assert_eq!(hf_average, 24);
+        assert_eq!(average, 384);
     }
 
     #[test]
