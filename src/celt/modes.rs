@@ -11,7 +11,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::TryFrom;
 
-use crate::celt::types::{OpusInt32, OpusVal16};
+use crate::celt::types::{CeltCoef, OpusInt16, OpusInt32, OpusVal16};
+use libm::sinf;
 
 /// Precomputed 5 ms critical band edges used by CELT's reference configuration.
 const EBAND_5MS: [i16; 22] = [
@@ -275,29 +276,65 @@ pub(crate) fn compute_allocation_table(
 #[must_use]
 pub(crate) fn compute_preemphasis(sample_rate: OpusInt32) -> [OpusVal16; 4] {
     if sample_rate < 12_000 {
-        [
-            0.350_006_1,
-            -0.179_992_68,
-            0.271_996_8,
-            3.676_513_7,
-        ]
+        [0.350_006_1, -0.179_992_68, 0.271_996_8, 3.676_513_7]
     } else if sample_rate < 24_000 {
-        [
-            0.600_006_1,
-            -0.179_992_68,
-            0.442_499_88,
-            2.259_887_7,
-        ]
+        [0.600_006_1, -0.179_992_68, 0.442_499_88, 2.259_887_7]
     } else if sample_rate < 40_000 {
-        [
-            0.779_998_8,
-            -0.100_006_1,
-            0.749_977_1,
-            1.333_374,
-        ]
+        [0.779_998_8, -0.100_006_1, 0.749_977_1, 1.333_374]
     } else {
         [0.850_006_1, 0.0, 1.0, 1.0]
     }
+}
+
+/// Generates the sine-window used by CELT's MDCT overlap.
+///
+/// Ports the float configuration of the window initialisation performed inside
+/// `opus_custom_mode_create()` in `celt/modes.c`.  The helper reproduces the
+/// nested sine computation so that the resulting coefficients match the
+/// bit-exact tables expected by the transform.
+#[must_use]
+pub(crate) fn compute_mdct_window(overlap: usize) -> Vec<CeltCoef> {
+    assert!(overlap > 0, "overlap must be strictly positive");
+
+    let mut window = Vec::with_capacity(overlap);
+    let scale = core::f32::consts::FRAC_PI_2;
+    let denom = overlap as f32;
+
+    for i in 0..overlap {
+        let phase = scale * ((i as f32 + 0.5) / denom);
+        let sin_phase = sinf(phase);
+        let value = sinf(scale * sin_phase * sin_phase);
+        window.push(value);
+    }
+
+    window
+}
+
+/// Computes the log-band widths used by CELT's allocation heuristics.
+///
+/// Mirrors the loop inside `opus_custom_mode_create()` that populates the
+/// `mode->logN` array by applying the `log2_frac()` helper to each energy band.
+/// The results are expressed with [`BITRES`] fractional bits, matching the
+/// conservative rounding performed by the C reference implementation.
+#[must_use]
+pub(crate) fn compute_log_band_widths(layout: &EBandLayout) -> Vec<OpusInt16> {
+    use crate::celt::cwrs::log2_frac;
+    use crate::celt::entcode::BITRES;
+    use crate::celt::types::OpusInt16;
+
+    assert!(layout.bands.len() >= layout.num_bands + 1);
+
+    let mut log_n = Vec::with_capacity(layout.num_bands);
+    for band in 0..layout.num_bands {
+        let start = layout.bands[band];
+        let end = layout.bands[band + 1];
+        let width = i32::from(end - start);
+        assert!(width > 0, "band width must be positive");
+        let value = log2_frac(width as u32, BITRES as i32) as OpusInt16;
+        log_n.push(value);
+    }
+
+    log_n
 }
 
 #[cfg(test)]
@@ -307,8 +344,9 @@ mod tests {
 
     use super::{
         BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, compute_allocation_table, compute_ebands,
-        compute_preemphasis,
+        compute_log_band_widths, compute_mdct_window, compute_preemphasis,
     };
+    use crate::celt::cwrs::log2_frac;
 
     #[test]
     fn returns_standard_layout_for_5ms_frames() {
@@ -393,5 +431,38 @@ mod tests {
 
         let full = compute_preemphasis(48_000);
         assert_eq!(full, [0.850_006_1, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn compute_mdct_window_matches_reference_formula() {
+        let overlap = 16usize;
+        let window = compute_mdct_window(overlap);
+        assert_eq!(window.len(), overlap);
+
+        for (i, value) in window.iter().enumerate() {
+            let phase = core::f64::consts::FRAC_PI_2 * ((i as f64 + 0.5) / overlap as f64);
+            let sin_phase = phase.sin();
+            let expected = (core::f64::consts::FRAC_PI_2 * sin_phase * sin_phase).sin();
+            assert!(
+                (f64::from(*value) - expected).abs() < 1e-6,
+                "window[{}] mismatch: {} vs {}",
+                i,
+                value,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn compute_log_band_widths_matches_log2_frac() {
+        let layout = compute_ebands(48_000, 120, 200);
+        let log_n = compute_log_band_widths(&layout);
+        assert_eq!(log_n.len(), layout.num_bands);
+
+        for (band, &value) in log_n.iter().enumerate() {
+            let width = i32::from(layout.bands[band + 1] - layout.bands[band]);
+            let expected = log2_frac(width as u32, 3) as i16;
+            assert_eq!(value, expected, "band {} mismatch", band);
+        }
     }
 }
