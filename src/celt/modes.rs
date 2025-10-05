@@ -9,8 +9,11 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
 use core::convert::TryFrom;
 use core::fmt;
+use core::hint::spin_loop;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::celt::rate::compute_pulse_cache;
 use crate::celt::types::{
@@ -75,6 +78,87 @@ pub(crate) struct AllocationTable {
     vectors: Vec<u8>,
     num_bands: usize,
 }
+
+/// Lazily-instantiated representation of a statically-defined CELT mode.
+struct StaticMode {
+    sample_rate: OpusInt32,
+    base_frame_size: usize,
+    storage: UnsafeCell<Option<OwnedOpusCustomMode>>,
+    initialised: AtomicBool,
+    lock: AtomicBool,
+}
+
+impl StaticMode {
+    /// Creates a new static mode description matching the reference lookup table.
+    const fn new(sample_rate: OpusInt32, base_frame_size: usize) -> Self {
+        Self {
+            sample_rate,
+            base_frame_size,
+            storage: UnsafeCell::new(None),
+            initialised: AtomicBool::new(false),
+            lock: AtomicBool::new(false),
+        }
+    }
+
+    /// Returns `true` when the requested configuration aliases this static entry.
+    fn matches(&self, sample_rate: OpusInt32, frame_size: usize) -> bool {
+        if sample_rate != self.sample_rate {
+            return false;
+        }
+
+        if frame_size == 0 {
+            return false;
+        }
+
+        let mut candidate = frame_size;
+        for _ in 0..4 {
+            if candidate == self.base_frame_size {
+                return true;
+            }
+            if candidate > self.base_frame_size {
+                break;
+            }
+            candidate = candidate.saturating_mul(2);
+        }
+
+        false
+    }
+
+    /// Returns the lazily constructed mode matching this entry.
+    fn mode(&self) -> &OwnedOpusCustomMode {
+        if !self.initialised.load(Ordering::Acquire) {
+            while self
+                .lock
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                spin_loop();
+            }
+
+            if !self.initialised.load(Ordering::Acquire) {
+                let value = build_custom_mode(self.sample_rate, self.base_frame_size)
+                    .expect("static mode configuration is valid");
+                unsafe {
+                    *self.storage.get() = Some(value);
+                }
+                self.initialised.store(true, Ordering::Release);
+            }
+
+            self.lock.store(false, Ordering::Release);
+        }
+
+        unsafe {
+            (*self.storage.get())
+                .as_ref()
+                .expect("static mode initialised")
+        }
+    }
+}
+
+unsafe impl Sync for StaticMode {}
+
+static MODE_48KHZ_960: StaticMode = StaticMode::new(48_000, 960);
+static STATIC_MODES: [&StaticMode; 1] = [&MODE_48KHZ_960];
 
 impl AllocationTable {
     fn new(vectors: Vec<u8>, num_bands: usize) -> Self {
@@ -421,8 +505,7 @@ impl OwnedOpusCustomMode {
     }
 }
 
-/// Ports the custom-mode construction from `opus_custom_mode_create()`.
-pub(crate) fn opus_custom_mode_create(
+fn build_custom_mode(
     sample_rate: OpusInt32,
     frame_size: usize,
 ) -> Result<OwnedOpusCustomMode, ModeError> {
@@ -506,6 +589,32 @@ pub(crate) fn opus_custom_mode_create(
     })
 }
 
+/// Returns the statically-defined CELT mode that matches the reference tables.
+///
+/// Mirrors the `static_mode_list` lookup from `celt/modes.c`, lazily
+/// constructing the precomputed 48 kHz / 960 sample mode on first use so that
+/// subsequent calls share the same allocation.
+pub(crate) fn opus_custom_mode_find_static(
+    sample_rate: OpusInt32,
+    frame_size: usize,
+) -> Option<OpusCustomMode<'static>> {
+    for entry in STATIC_MODES.iter() {
+        if entry.matches(sample_rate, frame_size) {
+            return Some(entry.mode().mode());
+        }
+    }
+
+    None
+}
+
+/// Ports the custom-mode construction from `opus_custom_mode_create()`.
+pub(crate) fn opus_custom_mode_create(
+    sample_rate: OpusInt32,
+    frame_size: usize,
+) -> Result<OwnedOpusCustomMode, ModeError> {
+    build_custom_mode(sample_rate, frame_size)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -514,7 +623,7 @@ mod tests {
     use super::{
         BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, ModeError, compute_allocation_table,
         compute_ebands, compute_log_band_widths, compute_mdct_window, compute_preemphasis,
-        opus_custom_mode_create,
+        opus_custom_mode_create, opus_custom_mode_find_static,
     };
     use crate::celt::cwrs::log2_frac;
 
@@ -681,5 +790,49 @@ mod tests {
             opus_custom_mode_create(96_000, 2048).unwrap_err(),
             ModeError::BadFrameSize
         );
+    }
+
+    #[test]
+    fn static_mode_lookup_matches_reference_mode() {
+        let static_mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let dynamic = opus_custom_mode_create(48_000, 960).expect("dynamic mode");
+        let dynamic_mode = dynamic.mode();
+
+        assert_eq!(static_mode.sample_rate, dynamic_mode.sample_rate);
+        assert_eq!(static_mode.overlap, dynamic_mode.overlap);
+        assert_eq!(static_mode.num_ebands, dynamic_mode.num_ebands);
+        assert_eq!(static_mode.effective_ebands, dynamic_mode.effective_ebands);
+        assert_eq!(static_mode.pre_emphasis, dynamic_mode.pre_emphasis);
+        assert_eq!(static_mode.e_bands, dynamic_mode.e_bands);
+        assert_eq!(static_mode.max_lm, dynamic_mode.max_lm);
+        assert_eq!(static_mode.num_short_mdcts, dynamic_mode.num_short_mdcts);
+        assert_eq!(static_mode.short_mdct_size, dynamic_mode.short_mdct_size);
+        assert_eq!(
+            static_mode.num_alloc_vectors,
+            dynamic_mode.num_alloc_vectors
+        );
+        assert_eq!(static_mode.alloc_vectors, dynamic_mode.alloc_vectors);
+        assert_eq!(static_mode.log_n, dynamic_mode.log_n);
+        assert_eq!(static_mode.window, dynamic_mode.window);
+        assert_eq!(static_mode.mdct.len(), dynamic_mode.mdct.len());
+        assert_eq!(static_mode.mdct.max_shift(), dynamic_mode.mdct.max_shift());
+        assert_eq!(static_mode.cache.size, dynamic_mode.cache.size);
+        assert_eq!(static_mode.cache.index, dynamic_mode.cache.index);
+        assert_eq!(static_mode.cache.bits, dynamic_mode.cache.bits);
+        assert_eq!(static_mode.cache.caps, dynamic_mode.cache.caps);
+    }
+
+    #[test]
+    fn static_mode_lookup_supports_shorter_frames() {
+        let mode = opus_custom_mode_find_static(48_000, 480).expect("static mode");
+        assert_eq!(mode.sample_rate, 48_000);
+        assert_eq!(mode.short_mdct_size, 120);
+        assert_eq!(mode.max_lm, 3);
+    }
+
+    #[test]
+    fn static_mode_lookup_rejects_unknown_combinations() {
+        assert!(opus_custom_mode_find_static(32_000, 960).is_none());
+        assert!(opus_custom_mode_find_static(48_000, 1920).is_none());
     }
 }
