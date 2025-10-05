@@ -11,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::TryFrom;
 
-use crate::celt::types::OpusInt32;
+use crate::celt::types::{OpusInt32, OpusVal16};
 
 /// Precomputed 5 ms critical band edges used by CELT's reference configuration.
 const EBAND_5MS: [i16; 22] = [
@@ -265,6 +265,41 @@ pub(crate) fn compute_allocation_table(
     AllocationTable::new(vectors, nb_bands)
 }
 
+/// Returns the pre-emphasis filter coefficients for a given sampling rate.
+///
+/// Ports the float configuration of the `opus_custom_mode_create()` logic from
+/// `celt/modes.c`. The reference implementation selects one of four
+/// hard-coded responses depending on the sampling rate, approximating the
+/// behaviour of the canonical 48 kHz filter at lower rates. The returned taps
+/// are ordered to match the `mode->preemph` initialisation in the C source.
+#[must_use]
+pub(crate) fn compute_preemphasis(sample_rate: OpusInt32) -> [OpusVal16; 4] {
+    if sample_rate < 12_000 {
+        [
+            0.350_006_1,
+            -0.179_992_68,
+            0.271_996_8,
+            3.676_513_7,
+        ]
+    } else if sample_rate < 24_000 {
+        [
+            0.600_006_1,
+            -0.179_992_68,
+            0.442_499_88,
+            2.259_887_7,
+        ]
+    } else if sample_rate < 40_000 {
+        [
+            0.779_998_8,
+            -0.100_006_1,
+            0.749_977_1,
+            1.333_374,
+        ]
+    } else {
+        [0.850_006_1, 0.0, 1.0, 1.0]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -272,6 +307,7 @@ mod tests {
 
     use super::{
         BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, compute_allocation_table, compute_ebands,
+        compute_preemphasis,
     };
 
     #[test]
@@ -342,5 +378,20 @@ mod tests {
             164, 159, 153, 148, 129, 104,
         ];
         assert_eq!(table.vectors(), expected.as_slice());
+    }
+
+    #[test]
+    fn compute_preemphasis_matches_reference_thresholds() {
+        let low = compute_preemphasis(8_000);
+        assert_eq!(low, [0.350_006_1, -0.179_992_68, 0.271_996_8, 3.676_513_7]);
+
+        let mid = compute_preemphasis(16_000);
+        assert_eq!(mid, [0.600_006_1, -0.179_992_68, 0.442_499_88, 2.259_887_7]);
+
+        let high = compute_preemphasis(32_000);
+        assert_eq!(high, [0.779_998_8, -0.100_006_1, 0.749_977_1, 1.333_374]);
+
+        let full = compute_preemphasis(48_000);
+        assert_eq!(full, [0.850_006_1, 0.0, 1.0, 1.0]);
     }
 }
