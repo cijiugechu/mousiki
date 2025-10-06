@@ -150,6 +150,15 @@ safely.
   detection stub from `celt/cpu_support.h`, returning zero when runtime dispatch
   is disabled.
 
+### `float_cast.rs`
+- `CELT_SIG_SCALE` &rarr; exposes the floating-point scaling factor defined in
+  `celt/float_cast.h` that bridges the public float API and the fixed-point
+  internals.
+- `float2int` &rarr; ports the rounding helper built on top of `lrintf()` to
+  obtain saturated 32-bit integers from `f32` inputs.
+- `float2int16` &rarr; mirrors the `FLOAT2INT16` macro that scales, clamps, and
+  rounds float samples to signed 16-bit values.
+
 ### `laplace.rs`
 - `ec_laplace_encode`, `ec_laplace_decode`, `ec_laplace_encode_p0`, and
   `ec_laplace_decode_p0` &rarr; port the Laplace probability model from
