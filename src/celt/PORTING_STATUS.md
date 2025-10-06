@@ -232,6 +232,9 @@ safely.
   pulse cache.
 - `compute_pulse_cache` &rarr; recreates the PVQ cache generation routine from
   `celt/rate.c`, including the per-band bit caps used by custom modes.
+- `bits2pulses` and `pulses2bits` &rarr; translate the inline helpers from
+  `celt/rate.h` that map between the cached pulse tables and their bit
+  consumption, performing the same binary search used by the C implementation.
 - `interp_bits2pulses` &rarr; ports the allocation interpolation helper from
   `celt/rate.c`, including the encode/decode logic for skip, intensity, and
   dual-stereo signalling.
