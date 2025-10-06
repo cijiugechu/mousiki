@@ -9,7 +9,7 @@
 
 use alloc::vec;
 
-use core::f32::consts::FRAC_1_SQRT_2;
+use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 
 use crate::celt::{
     BITRES, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
@@ -365,7 +365,7 @@ pub(crate) fn anti_collapse(
 
             let mut r = 2.0 * celt_exp2(-ediff);
             if lm == 3 {
-                r *= 1.414_213_56;
+                r *= SQRT_2;
             }
             r = r.min(thresh);
             r *= sqrt_1;

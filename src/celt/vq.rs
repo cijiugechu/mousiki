@@ -9,6 +9,7 @@
 
 use alloc::vec;
 use core::convert::TryFrom;
+use core::f32::consts::FRAC_2_PI;
 
 use crate::celt::cwrs::{decode_pulses, encode_pulses};
 use crate::celt::entcode::celt_udiv;
@@ -381,7 +382,7 @@ pub(crate) fn stereo_itheta(
     let side = celt_sqrt(eside);
     let angle = fast_atan2f(side, mid);
 
-    floorf(0.5 + 16_384.0 * 0.63662 * angle) as i32
+    floorf(0.5 + 16_384.0 * FRAC_2_PI * angle) as i32
 }
 
 /// Mirrors `extract_collapse_mask()` from `celt/vq.c`.
