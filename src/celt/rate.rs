@@ -51,6 +51,88 @@ pub(crate) fn get_pulses(i: i32) -> i32 {
     }
 }
 
+/// Converts a bit budget into the number of PVQ pulses for the given band.
+///
+/// Mirrors the inline helper from `celt/rate.h`. The function performs a
+/// binary search through the cached pulse tables embedded in
+/// [`OpusCustomMode`], matching the behaviour of the reference C
+/// implementation while relying on Rust's slice indexing for safety.
+#[must_use]
+pub(crate) fn bits2pulses(mode: &OpusCustomMode<'_>, band: usize, lm: i32, bits: i32) -> i32 {
+    debug_assert!(band < mode.num_ebands);
+    debug_assert!(lm >= -1);
+
+    if bits <= 0 {
+        return 0;
+    }
+
+    let lm_index = (lm + 1) as usize;
+    let rows = mode.num_ebands;
+    let cache_index = mode.cache.index[lm_index * rows + band] as i32;
+    if cache_index < 0 {
+        return 0;
+    }
+
+    let table = &mode.cache.bits[cache_index as usize..];
+    let mut lo = 0i32;
+    let mut hi = i32::from(table[0]);
+    let max_index = (table.len().saturating_sub(1)) as i32;
+    hi = hi.min(max_index.max(0));
+    let target = bits - 1;
+
+    for _ in 0..LOG_MAX_PSEUDO {
+        let mid = (lo + hi + 1) >> 1;
+        let value = i32::from(table[mid as usize]);
+        if value >= target {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+
+    let lo_value = if lo == 0 {
+        -1
+    } else {
+        i32::from(table[lo as usize])
+    };
+    let hi_value = i32::from(table[hi as usize]);
+
+    if target - lo_value <= hi_value - target {
+        lo
+    } else {
+        hi
+    }
+}
+
+/// Returns the number of bits consumed by `pulses` for the requested band.
+///
+/// Matches the inline helper from `celt/rate.h`, using the cached pulse tables
+/// stored in [`OpusCustomMode`].
+#[must_use]
+pub(crate) fn pulses2bits(mode: &OpusCustomMode<'_>, band: usize, lm: i32, pulses: i32) -> i32 {
+    if pulses == 0 {
+        return 0;
+    }
+
+    debug_assert!(band < mode.num_ebands);
+    debug_assert!(lm >= -1);
+
+    let lm_index = (lm + 1) as usize;
+    let rows = mode.num_ebands;
+    let cache_index = mode.cache.index[lm_index * rows + band] as i32;
+    if cache_index < 0 {
+        return 0;
+    }
+
+    let table = &mode.cache.bits[cache_index as usize..];
+    let index = pulses as usize;
+    if index >= table.len() {
+        i32::from(*table.last().unwrap_or(&0)) + 1
+    } else {
+        i32::from(table[index]) + 1
+    }
+}
+
 /// Determines if `V(N, K)` fits inside an unsigned 32-bit integer.
 ///
 /// In the reference C implementation this guard is only compiled for custom
@@ -664,8 +746,8 @@ mod tests {
     use alloc::vec;
 
     use super::{
-        LOG2_FRAC_TABLE, clt_compute_allocation, compute_pulse_cache, fits_in32, get_pulses,
-        interp_bits2pulses,
+        LOG2_FRAC_TABLE, bits2pulses, clt_compute_allocation, compute_pulse_cache, fits_in32,
+        get_pulses, interp_bits2pulses, pulses2bits,
     };
     use crate::celt::entcode::BITRES;
     use crate::celt::entdec::EcDec;
@@ -744,17 +826,22 @@ mod tests {
         log_n: &'a [i16],
         cache: PulseCacheData,
     ) -> OpusCustomMode<'a> {
+        let nb_ebands = e_bands.len().saturating_sub(1);
         OpusCustomMode {
             sample_rate: 48_000,
             overlap: 0,
-            num_ebands: e_bands.len(),
-            effective_ebands: e_bands.len(),
+            num_ebands: nb_ebands,
+            effective_ebands: nb_ebands,
             pre_emphasis: [0.0; 4],
             e_bands,
             max_lm: 2,
             num_short_mdcts: 0,
             short_mdct_size: 0,
-            num_alloc_vectors: alloc_vectors.len() / e_bands.len(),
+            num_alloc_vectors: if nb_ebands > 0 {
+                alloc_vectors.len() / nb_ebands
+            } else {
+                0
+            },
             alloc_vectors,
             log_n,
             window: &[],
@@ -946,5 +1033,47 @@ mod tests {
         assert_eq!(balance_encode, balance_decode);
         assert_eq!(intensity_encode, intensity_decode);
         assert_eq!(dual_stereo_encode, dual_stereo_decode);
+    }
+
+    #[test]
+    fn bits2pulses_and_pulses2bits_round_trip() {
+        let e_bands = [0i16, 2, 6];
+        let log_n = [6i16, 7];
+        let alloc_vectors = [8u8, 9, 12, 13, 16, 17];
+        let cache = compute_pulse_cache(&e_bands, &log_n, 1);
+        let mode = simple_mode(&e_bands, &alloc_vectors, &log_n, cache);
+
+        let rows = mode.num_ebands;
+        for lm in 0..=1 {
+            let row_offset = (lm + 1) * rows;
+            for band in 0..rows {
+                let index = mode.cache.index[row_offset + band] as i32;
+                if index < 0 {
+                    continue;
+                }
+                let table = &mode.cache.bits[index as usize..];
+                let max_pulses = table[0] as usize;
+                let limit = max_pulses.min(table.len().saturating_sub(1));
+                for pulses in 0..=limit {
+                    let bits = pulses2bits(&mode, band, lm as i32, pulses as i32);
+                    if pulses == 0 {
+                        assert_eq!(bits, 0);
+                        continue;
+                    }
+
+                    let current = i32::from(table[pulses]);
+                    if pulses > 0 {
+                        let prev = i32::from(table[pulses - 1]);
+                        if current == prev {
+                            continue;
+                        }
+                    }
+
+                    assert!(bits >= 1);
+                    let restored = bits2pulses(&mode, band, lm as i32, bits);
+                    assert_eq!(restored, pulses as i32);
+                }
+            }
+        }
     }
 }
