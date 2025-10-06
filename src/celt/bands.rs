@@ -12,15 +12,84 @@ use alloc::vec;
 use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 
 use crate::celt::{
-    BITRES, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
+    BITRES, EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
     celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv, celt_udiv,
-    dual_inner_prod, ec_ilog, quant_bands::E_MEANS, renormalise_vector,
+    dual_inner_prod, ec_ilog,
+    quant_bands::E_MEANS,
+    renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 use core::convert::TryFrom;
 
 /// Small positive constant used throughout the CELT band tools to avoid divisions by zero.
 const EPSILON: f32 = 1e-15;
+
+/// Scaling factor applied to unit-norm vectors in the float build.
+const NORM_SCALING: OpusVal16 = 1.0;
+
+/// Shared context mirroring the state tracked by `struct band_ctx` in `celt/bands.c`.
+#[derive(Debug)]
+pub(crate) struct BandCtx<'a> {
+    /// Whether the caller is encoding (`true`) or decoding (`false`).
+    pub encode: bool,
+    /// When `true`, the quantiser should resynthesise the canonical unit vector.
+    pub resynth: bool,
+    /// Active CELT mode driving the band configuration.
+    pub mode: &'a OpusCustomMode<'a>,
+    /// Index of the band currently being processed.
+    pub band: usize,
+    /// First band where intensity stereo becomes active.
+    pub intensity: usize,
+    /// Spreading decision selected for the frame.
+    pub spread: i32,
+    /// Time/frequency resolution change applied to the band.
+    pub tf_change: i32,
+    /// Remaining fractional bits available to the band quantiser.
+    pub remaining_bits: i32,
+    /// Per-band energy targets.
+    pub band_e: &'a [CeltGlog],
+    /// Random seed used for collapse prevention.
+    pub seed: u32,
+    /// Architecture hint for platform-specific optimisations.
+    pub arch: i32,
+    /// Theta rounding mode used by the stereo splitting logic.
+    pub theta_round: i32,
+    /// Whether inverse signalling is disabled for this band.
+    pub disable_inv: bool,
+    /// Forces deterministic synthesis when splitting noise.
+    pub avoid_split_noise: bool,
+}
+
+/// Abstraction over the entropy coder used by the band quantisers.
+pub(crate) enum BandCodingState<'a, 'b> {
+    /// Encoding path using [`EcEnc`].
+    Encoder(&'b mut EcEnc<'a>),
+    /// Decoding path using [`EcDec`].
+    Decoder(&'b mut EcDec<'a>),
+}
+
+impl<'a, 'b> BandCodingState<'a, 'b> {
+    #[inline]
+    fn is_encoder(&self) -> bool {
+        matches!(self, Self::Encoder(_))
+    }
+
+    #[inline]
+    fn encode_bits(&mut self, value: u32, bits: u32) {
+        match self {
+            Self::Encoder(enc) => enc.enc_bits(value, bits),
+            Self::Decoder(_) => unreachable!("encoding requested on a decoder"),
+        }
+    }
+
+    #[inline]
+    fn decode_bits(&mut self, bits: u32) -> u32 {
+        match self {
+            Self::Decoder(dec) => dec.dec_bits(bits),
+            Self::Encoder(_) => unreachable!("decoding requested on an encoder"),
+        }
+    }
+}
 
 /// Indexing table for converting natural-order Hadamard coefficients into the
 /// "ordery" permutation used by CELT's spreading analysis.
@@ -152,7 +221,7 @@ pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bo
     }
 
     let mut qb = celt_sudiv(b + n2 * offset, n2);
-    let pulse_guard = b - pulse_cap - ((4 << BITRES));
+    let pulse_guard = b - pulse_cap - (4 << BITRES);
     qb = qb.min(pulse_guard);
     qb = qb.min(8 << BITRES);
 
@@ -169,6 +238,68 @@ pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bo
 
     debug_assert!(qn <= 256);
     qn
+}
+
+fn quant_band_n1_channel<'a, 'b>(
+    ctx: &mut BandCtx<'a>,
+    samples: &mut [OpusVal16],
+    coder: &mut BandCodingState<'a, 'b>,
+) {
+    assert!(
+        !samples.is_empty(),
+        "quant_band_n1 expects non-empty coefficient slices",
+    );
+
+    let mut sign = 0;
+    let bit_budget = 1_i32 << BITRES;
+    if ctx.remaining_bits >= bit_budget {
+        if ctx.encode {
+            debug_assert!(coder.is_encoder());
+            sign = (samples[0] < 0.0) as i32;
+            coder.encode_bits(sign as u32, 1);
+        } else {
+            debug_assert!(!coder.is_encoder());
+            sign = coder.decode_bits(1) as i32;
+        }
+        ctx.remaining_bits -= bit_budget;
+    }
+
+    if ctx.resynth {
+        samples[0] = if sign != 0 {
+            -NORM_SCALING
+        } else {
+            NORM_SCALING
+        };
+    }
+}
+
+/// Handles the single-pulse PVQ case where only the sign needs to be coded.
+///
+/// Mirrors `quant_band_n1()` from `celt/bands.c`, emitting (or consuming) a raw
+/// sign bit when enough range coder budget is available. The helper optionally
+/// resynthesises the canonical unit vector so that future spreading and collapse
+/// prevention logic can operate on the reconstructed coefficients.
+pub(crate) fn quant_band_n1<'a, 'b>(
+    ctx: &mut BandCtx<'a>,
+    x: &mut [OpusVal16],
+    y: Option<&mut [OpusVal16]>,
+    lowband_out: Option<&mut [OpusVal16]>,
+    coder: &mut BandCodingState<'a, 'b>,
+) -> usize {
+    debug_assert_eq!(ctx.encode, coder.is_encoder());
+
+    quant_band_n1_channel(ctx, x, coder);
+    if let Some(mut y_samples) = y {
+        quant_band_n1_channel(ctx, &mut y_samples, coder);
+    }
+
+    if let Some(lowband) = lowband_out {
+        if !lowband.is_empty() {
+            lowband[0] = x[0];
+        }
+    }
+
+    1
 }
 
 /// Computes stereo weighting factors used when balancing channel distortion.
@@ -814,8 +945,14 @@ pub(crate) fn denormalise_bands(
     downsample: usize,
     silence: bool,
 ) {
-    assert!(end <= mode.num_ebands, "end band must not exceed mode bands");
-    assert!(mode.e_bands.len() > end, "eBands must contain end + 1 entries");
+    assert!(
+        end <= mode.num_ebands,
+        "end band must not exceed mode bands"
+    );
+    assert!(
+        mode.e_bands.len() > end,
+        "eBands must contain end + 1 entries"
+    );
     assert!(band_log_e.len() >= end, "bandLogE must provide end entries");
 
     let n = m * mode.short_mdct_size;
@@ -823,9 +960,8 @@ pub(crate) fn denormalise_bands(
     assert!(x.len() >= n, "normalised spectrum buffer too small");
     assert!(downsample > 0, "downsample factor must be non-zero");
 
-    let mut bound = m
-        * usize::try_from(mode.e_bands[end])
-            .expect("band edge must be non-negative")
+    let mut bound = m * usize::try_from(mode.e_bands[end])
+        .expect("band edge must be non-negative")
         .min(n);
 
     if downsample != 1 {
@@ -838,18 +974,16 @@ pub(crate) fn denormalise_bands(
         end = 0;
     }
 
-    let start_edge = m
-        * usize::try_from(mode.e_bands[start])
-            .expect("band edge must be non-negative");
+    let start_edge =
+        m * usize::try_from(mode.e_bands[start]).expect("band edge must be non-negative");
     freq[..start_edge].fill(0.0);
 
     let mut freq_idx = start_edge;
     let mut x_idx = start_edge;
 
     for band in start..end {
-        let band_end = m
-            * usize::try_from(mode.e_bands[band + 1])
-                .expect("band edge must be non-negative");
+        let band_end =
+            m * usize::try_from(mode.e_bands[band + 1]).expect("band edge must be non-negative");
         assert!(band_end <= n, "band end exceeds MDCT length");
         assert!(band < E_MEANS.len(), "E_MEANS lacks entry for band");
 
@@ -867,16 +1001,19 @@ pub(crate) fn denormalise_bands(
 #[cfg(test)]
 mod tests {
     use super::{
-        EPSILON, anti_collapse, bitexact_cos, bitexact_log2tan, celt_lcg_rand,
-        compute_band_energies, compute_channel_weights, compute_qn, deinterleave_hadamard,
-        denormalise_bands, frac_mul16, haar1, hysteresis_decision, intensity_stereo,
-        interleave_hadamard, normalise_bands, spreading_decision, stereo_merge, stereo_split,
+        BandCodingState, BandCtx, EPSILON, NORM_SCALING, anti_collapse, bitexact_cos,
+        bitexact_log2tan, celt_lcg_rand, compute_band_energies, compute_channel_weights,
+        compute_qn, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
+        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
+        spreading_decision, stereo_merge, stereo_split,
     };
+    use crate::celt::entcode::BITRES;
     use crate::celt::math::celt_exp2;
     use crate::celt::quant_bands::E_MEANS;
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{
-        SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, celt_rsqrt_norm, dual_inner_prod,
+        EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, celt_rsqrt_norm,
+        dual_inner_prod,
     };
     use alloc::vec;
     use alloc::vec::Vec;
@@ -1386,6 +1523,83 @@ mod tests {
             mdct,
             cache: PulseCacheData::default(),
         }
+    }
+
+    #[test]
+    fn quant_band_n1_round_trips_sign_information() {
+        let e_bands = [0i16, 1];
+        let mode = dummy_mode(&e_bands, 4);
+        let bit_budget = (1_i32) << BITRES;
+
+        let mut storage = vec![0u8; 8];
+        let mut x = [-0.5_f32];
+        let mut y = [0.25_f32];
+        let mut lowband = [0.0_f32];
+
+        {
+            let mut enc = EcEnc::new(&mut storage);
+            let mut ctx = BandCtx {
+                encode: true,
+                resynth: true,
+                mode: &mode,
+                band: 0,
+                intensity: 0,
+                spread: 0,
+                tf_change: 0,
+                remaining_bits: 2 * bit_budget,
+                band_e: &[],
+                seed: 0,
+                arch: 0,
+                theta_round: 0,
+                disable_inv: false,
+                avoid_split_noise: false,
+            };
+            {
+                let mut coder = BandCodingState::Encoder(&mut enc);
+                let coded = quant_band_n1(
+                    &mut ctx,
+                    &mut x,
+                    Some(&mut y),
+                    Some(&mut lowband),
+                    &mut coder,
+                );
+                assert_eq!(coded, 1);
+            }
+            assert_eq!(ctx.remaining_bits, 0);
+            assert!((x[0] + NORM_SCALING).abs() <= f32::EPSILON * 2.0);
+            assert!((y[0] - NORM_SCALING).abs() <= f32::EPSILON * 2.0);
+            assert_eq!(lowband[0], x[0]);
+            enc.enc_done();
+        }
+
+        let mut decode_buf = storage.clone();
+        let mut dec = EcDec::new(&mut decode_buf);
+        let mut ctx = BandCtx {
+            encode: false,
+            resynth: true,
+            mode: &mode,
+            band: 0,
+            intensity: 0,
+            spread: 0,
+            tf_change: 0,
+            remaining_bits: 2 * bit_budget,
+            band_e: &[],
+            seed: 0,
+            arch: 0,
+            theta_round: 0,
+            disable_inv: false,
+            avoid_split_noise: false,
+        };
+        let mut x_dec = [0.0_f32];
+        let mut y_dec = [0.0_f32];
+        {
+            let mut coder = BandCodingState::Decoder(&mut dec);
+            let coded = quant_band_n1(&mut ctx, &mut x_dec, Some(&mut y_dec), None, &mut coder);
+            assert_eq!(coded, 1);
+        }
+        assert_eq!(ctx.remaining_bits, 0);
+        assert!((x_dec[0] + NORM_SCALING).abs() <= f32::EPSILON * 2.0);
+        assert!((y_dec[0] - NORM_SCALING).abs() <= f32::EPSILON * 2.0);
     }
 
     #[test]
