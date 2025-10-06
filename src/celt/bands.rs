@@ -51,7 +51,7 @@ fn hadamard_ordery(stride: usize) -> Option<&'static [usize]> {
 fn frac_mul16(a: i32, b: i32) -> i32 {
     let a = a as i16;
     let b = b as i16;
-    ((16_384 + i32::from(a) * i32::from(b)) >> 15)
+    (16_384 + i32::from(a) * i32::from(b)) >> 15
 }
 
 /// Bit-exact cosine approximation used by the band analysis heuristics.
@@ -153,9 +153,9 @@ pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bo
     let mut qb = celt_sudiv(b + n2 * offset, n2);
     let pulse_guard = b - pulse_cap - ((4 << BITRES));
     qb = qb.min(pulse_guard);
-    qb = qb.min(((8 << BITRES)));
+    qb = qb.min((8 << BITRES));
 
-    let threshold = ((1 << BITRES) >> 1);
+    let threshold = (1 << BITRES) >> 1;
     let qn = if qb < threshold {
         1
     } else {
