@@ -12,6 +12,7 @@ mod cwrs;
 mod entcode;
 mod entdec;
 mod entenc;
+mod float_cast;
 mod kiss_fft;
 mod laplace;
 mod lpc;
@@ -40,6 +41,8 @@ pub(crate) use entcode::*;
 pub(crate) use entdec::*;
 #[allow(unused_imports)]
 pub(crate) use entenc::*;
+#[allow(unused_imports)]
+pub(crate) use float_cast::*;
 #[allow(unused_imports)]
 pub(crate) use kiss_fft::*;
 #[allow(unused_imports)]

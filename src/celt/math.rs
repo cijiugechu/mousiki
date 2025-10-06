@@ -11,10 +11,9 @@ use core::f32::consts::LN_2;
 use core::f32::consts::{LOG2_E, PI};
 
 use crate::celt::entcode::ec_ilog;
+use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
-use libm::{cosf, expf, logf, rintf, sqrtf};
-
-const CELT_SIG_SCALE: f32 = 32_768.0;
+use libm::{cosf, expf, logf, sqrtf};
 
 /// Integer square root mirroring `isqrt32()` from `celt/mathops.c`.
 ///
@@ -224,8 +223,7 @@ pub(crate) fn celt_float2int16(input: &[f32], output: &mut [i16]) {
     );
 
     for (dst, &sample) in output.iter_mut().zip(input.iter()) {
-        let scaled = (sample * CELT_SIG_SCALE).clamp(-32_768.0, 32_767.0);
-        *dst = rintf(scaled) as i16;
+        *dst = float_cast::float2int16(sample);
     }
 }
 
@@ -236,7 +234,8 @@ mod tests {
     use alloc::vec;
     use libm::cosf;
 
-    use super::{CELT_SIG_SCALE, isqrt32};
+    use super::isqrt32;
+    use crate::celt::float_cast::CELT_SIG_SCALE;
 
     use super::{
         celt_cos_norm, celt_div, celt_exp2, celt_float2int16, celt_ilog2, celt_log2, celt_maxabs16,
