@@ -12,9 +12,9 @@ use alloc::vec;
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::celt::{
-    SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2, celt_inner_prod,
-    celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_udiv, dual_inner_prod, ec_ilog,
-    renormalise_vector,
+    BITRES, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
+    celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv, celt_udiv,
+    dual_inner_prod, ec_ilog, renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
 
@@ -134,6 +134,40 @@ pub(crate) fn hysteresis_decision(
 #[inline]
 pub(crate) fn celt_lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
+}
+
+/// Computes the number of quantisation levels available for the stereo split angle.
+///
+/// Mirrors the `compute_qn()` helper from `celt/bands.c`. The routine determines how
+/// finely the mid/side angle can be quantised given the number of available bits and
+/// the band configuration. The return value is always even so that the subsequent
+/// entropy coding can mirror the reference implementation's lookup table.
+pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -> i32 {
+    const EXP2_TABLE8: [i32; 8] = [16384, 17866, 19483, 21247, 23170, 25267, 27554, 30048];
+
+    let mut n2 = 2 * n - 1;
+    if stereo && n == 2 {
+        n2 -= 1;
+    }
+
+    let mut qb = celt_sudiv(b + n2 * offset, n2);
+    let pulse_guard = b - pulse_cap - ((4 << BITRES) as i32);
+    qb = qb.min(pulse_guard);
+    qb = qb.min((8 << BITRES) as i32);
+
+    let threshold = ((1 << BITRES) >> 1) as i32;
+    let qn = if qb < threshold {
+        1
+    } else {
+        let index = (qb & 0x7) as usize;
+        let shift = 14 - (qb >> BITRES);
+        let mut value = EXP2_TABLE8[index] >> shift;
+        value = (value + 1) >> 1;
+        value << 1
+    };
+
+    debug_assert!(qn <= 256);
+    qn
 }
 
 /// Computes stereo weighting factors used when balancing channel distortion.
@@ -764,9 +798,9 @@ pub(crate) fn normalise_bands(
 mod tests {
     use super::{
         EPSILON, anti_collapse, bitexact_cos, bitexact_log2tan, celt_lcg_rand,
-        compute_band_energies, compute_channel_weights, deinterleave_hadamard, frac_mul16, haar1,
-        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands,
-        spreading_decision, stereo_merge, stereo_split,
+        compute_band_energies, compute_channel_weights, compute_qn, deinterleave_hadamard,
+        frac_mul16, haar1, hysteresis_decision, intensity_stereo, interleave_hadamard,
+        normalise_bands, spreading_decision, stereo_merge, stereo_split,
     };
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{
@@ -913,6 +947,25 @@ mod tests {
         for &value in &expected {
             seed = celt_lcg_rand(seed);
             assert_eq!(seed, value);
+        }
+    }
+
+    #[test]
+    fn compute_qn_covers_reference_cases() {
+        let cases = [
+            ((1, 12, 3, 8, false), 1),
+            ((2, 20, 2, 16, true), 1),
+            ((4, 64, 1, 24, false), 2),
+            ((8, 200, 0, 32, true), 4),
+            ((3, 48, 4, 12, false), 2),
+        ];
+
+        for ((n, b, offset, pulse_cap, stereo), expected) in cases {
+            assert_eq!(
+                compute_qn(n, b, offset, pulse_cap, stereo),
+                expected,
+                "compute_qn({n}, {b}, {offset}, {pulse_cap}, {stereo})",
+            );
         }
     }
 

@@ -45,6 +45,10 @@ safely.
 - `interleave_hadamard` &rarr; ports the Hadamard interleaver from
   `celt/bands.c`, applying the stride-specific permutation that positions the DC
   term at the end of each band block.
+- `compute_qn` &rarr; ports the helper from `celt/bands.c` that selects the
+  number of quantisation levels used for the stereo angle, capping the
+  resolution to guarantee that at least one pulse remains available for the side
+  channel.
 - `spreading_decision` &rarr; ports the frame-level spreading classifier from
   `celt/bands.c`, building per-band histograms, smoothing the score, and
   applying the hysteresis used to stabilise PVQ spreading decisions while
