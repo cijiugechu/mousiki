@@ -14,9 +14,10 @@ use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 use crate::celt::{
     BITRES, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
     celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv, celt_udiv,
-    dual_inner_prod, ec_ilog, renormalise_vector,
+    dual_inner_prod, ec_ilog, quant_bands::E_MEANS, renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
 };
+use core::convert::TryFrom;
 
 /// Small positive constant used throughout the CELT band tools to avoid divisions by zero.
 const EPSILON: f32 = 1e-15;
@@ -794,14 +795,85 @@ pub(crate) fn normalise_bands(
     }
 }
 
+/// Rescales the unit-energy coefficients back to their target magnitudes.
+///
+/// Mirrors the float variant of `denormalise_bands()` from `celt/bands.c` by
+/// multiplying each normalised coefficient by the exponential of its target
+/// log-energy. The helper also zeroes samples preceding the `start` band and
+/// clears the tail of the buffer based on the downsampling factor so that the
+/// reconstruction matches the reference implementation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn denormalise_bands(
+    mode: &OpusCustomMode<'_>,
+    x: &[OpusVal16],
+    freq: &mut [CeltSig],
+    band_log_e: &[CeltGlog],
+    mut start: usize,
+    mut end: usize,
+    m: usize,
+    downsample: usize,
+    silence: bool,
+) {
+    assert!(end <= mode.num_ebands, "end band must not exceed mode bands");
+    assert!(mode.e_bands.len() > end, "eBands must contain end + 1 entries");
+    assert!(band_log_e.len() >= end, "bandLogE must provide end entries");
+
+    let n = m * mode.short_mdct_size;
+    assert!(freq.len() >= n, "frequency buffer too small");
+    assert!(x.len() >= n, "normalised spectrum buffer too small");
+    assert!(downsample > 0, "downsample factor must be non-zero");
+
+    let mut bound = m
+        * usize::try_from(mode.e_bands[end])
+            .expect("band edge must be non-negative")
+        .min(n);
+
+    if downsample != 1 {
+        bound = bound.min(n / downsample);
+    }
+
+    if silence {
+        bound = 0;
+        start = 0;
+        end = 0;
+    }
+
+    let start_edge = m
+        * usize::try_from(mode.e_bands[start])
+            .expect("band edge must be non-negative");
+    freq[..start_edge].fill(0.0);
+
+    let mut freq_idx = start_edge;
+    let mut x_idx = start_edge;
+
+    for band in start..end {
+        let band_end = m
+            * usize::try_from(mode.e_bands[band + 1])
+                .expect("band edge must be non-negative");
+        assert!(band_end <= n, "band end exceeds MDCT length");
+        assert!(band < E_MEANS.len(), "E_MEANS lacks entry for band");
+
+        let gain = celt_exp2((band_log_e[band] + E_MEANS[band]).min(32.0));
+        while freq_idx < band_end {
+            freq[freq_idx] = x[x_idx] * gain;
+            freq_idx += 1;
+            x_idx += 1;
+        }
+    }
+
+    freq[bound..n].fill(0.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EPSILON, anti_collapse, bitexact_cos, bitexact_log2tan, celt_lcg_rand,
         compute_band_energies, compute_channel_weights, compute_qn, deinterleave_hadamard,
-        frac_mul16, haar1, hysteresis_decision, intensity_stereo, interleave_hadamard,
-        normalise_bands, spreading_decision, stereo_merge, stereo_split,
+        denormalise_bands, frac_mul16, haar1, hysteresis_decision, intensity_stereo,
+        interleave_hadamard, normalise_bands, spreading_decision, stereo_merge, stereo_split,
     };
+    use crate::celt::math::celt_exp2;
+    use crate::celt::quant_bands::E_MEANS;
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use crate::celt::{
         SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, celt_rsqrt_norm, dual_inner_prod,
@@ -1395,6 +1467,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn denormalise_bands_restores_scaled_spectrum() {
+        let e_bands = [0i16, 2, 4];
+        let mode = dummy_mode(&e_bands, 4);
+        let m = 1usize;
+        let n = mode.short_mdct_size * m;
+
+        let x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.17 - 0.3).sin()).collect();
+        let mut freq = vec![1.0f32; n];
+        let band_log_e = vec![0.5f32, -0.25];
+
+        denormalise_bands(
+            &mode,
+            &x,
+            &mut freq,
+            &band_log_e,
+            0,
+            mode.num_ebands,
+            m,
+            1,
+            false,
+        );
+
+        let mut expected = vec![0.0f32; n];
+        let mut idx = 0usize;
+        for band in 0..mode.num_ebands {
+            let band_end = m * (mode.e_bands[band + 1] as usize);
+            let gain = celt_exp2((band_log_e[band] + E_MEANS[band]).min(32.0));
+            while idx < band_end {
+                expected[idx] = x[idx] * gain;
+                idx += 1;
+            }
+        }
+
+        for (i, (&observed, &reference)) in freq.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (observed - reference).abs() <= 1e-6,
+                "index {i}: observed={observed}, expected={reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn denormalise_bands_honours_downsample_and_silence() {
+        let e_bands = [0i16, 2, 4];
+        let mode = dummy_mode(&e_bands, 4);
+        let m = 1usize;
+        let n = mode.short_mdct_size * m;
+
+        let x = vec![0.5f32, -0.25, 0.125, -0.375];
+        let mut freq = vec![0.75f32; n];
+        let band_log_e = vec![0.0f32];
+
+        denormalise_bands(&mode, &x, &mut freq, &band_log_e, 0, 1, m, 2, false);
+
+        let gain = celt_exp2((band_log_e[0] + E_MEANS[0]).min(32.0));
+        assert!((freq[0] - x[0] * gain).abs() <= 1e-6);
+        assert!((freq[1] - x[1] * gain).abs() <= 1e-6);
+        assert_eq!(freq[2], 0.0);
+        assert_eq!(freq[3], 0.0);
+
+        denormalise_bands(&mode, &x, &mut freq, &band_log_e, 0, 1, m, 1, true);
+        assert!(freq.iter().all(|v| *v == 0.0));
     }
 
     #[test]

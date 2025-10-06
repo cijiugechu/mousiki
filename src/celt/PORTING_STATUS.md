@@ -30,6 +30,10 @@ safely.
 - `normalise_bands` &rarr; mirrors the float implementation from
   `celt/bands.c` that scales each MDCT band to unit energy using the computed
   magnitudes.
+- `denormalise_bands` &rarr; ports the float helper from `celt/bands.c` that
+  restores the MDCT spectrum by applying the exponentiated log-energy targets
+  and clearing samples outside the active bandwidth when downsampling or
+  silence flags are in effect.
 - `stereo_split` &rarr; ports the mid/side-to-left/right transform from
   `celt/bands.c`, applying the orthonormal scaling used when decoding stereo
   bands.
