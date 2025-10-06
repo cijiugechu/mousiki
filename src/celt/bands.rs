@@ -153,7 +153,7 @@ pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bo
     let mut qb = celt_sudiv(b + n2 * offset, n2);
     let pulse_guard = b - pulse_cap - ((4 << BITRES));
     qb = qb.min(pulse_guard);
-    qb = qb.min((8 << BITRES));
+    qb = qb.min(8 << BITRES);
 
     let threshold = (1 << BITRES) >> 1;
     let qn = if qb < threshold {
