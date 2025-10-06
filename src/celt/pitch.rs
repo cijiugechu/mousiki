@@ -286,7 +286,7 @@ pub(crate) fn pitch_search(
 
 const SECOND_CHECK: [i32; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
 
-fn window<'a>(data: &'a [OpusVal16], center: usize, offset: isize, len: usize) -> &'a [OpusVal16] {
+fn window(data: &[OpusVal16], center: usize, offset: isize, len: usize) -> &[OpusVal16] {
     let start = center as isize + offset;
     assert!(start >= 0, "window would start before the buffer");
     let start = start as usize;
@@ -395,7 +395,7 @@ pub(crate) fn remove_doubling(
         let diff = (t1 - prev_period_half).abs();
         let cont = if diff <= 1 {
             prev_gain
-        } else if diff <= 2 && 5 * ((k * k) as i32) < t0_half {
+        } else if diff <= 2 && 5 * (k * k) < t0_half {
             0.5 * prev_gain
         } else {
             0.0

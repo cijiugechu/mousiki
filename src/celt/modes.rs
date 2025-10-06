@@ -310,7 +310,7 @@ pub(crate) fn compute_allocation_table(
 ) -> AllocationTable {
     assert!(short_mdct_size > 0, "short MDCT size must be non-zero");
     let nb_bands = layout.num_bands;
-    assert!(layout.bands.len() >= nb_bands + 1);
+    assert!(layout.bands.len() > nb_bands);
 
     let mut vectors = vec![0u8; BITALLOC_SIZE * nb_bands];
     let mdct_size_i64 = i64::try_from(short_mdct_size).expect("short MDCT size fits in 64 bits");
@@ -410,7 +410,7 @@ pub(crate) fn compute_log_band_widths(layout: &EBandLayout) -> Vec<OpusInt16> {
     use crate::celt::entcode::BITRES;
     use crate::celt::types::OpusInt16;
 
-    assert!(layout.bands.len() >= layout.num_bands + 1);
+    assert!(layout.bands.len() > layout.num_bands);
 
     let mut log_n = Vec::with_capacity(layout.num_bands);
     for band in 0..layout.num_bands {
@@ -509,10 +509,10 @@ fn build_custom_mode(
     sample_rate: OpusInt32,
     frame_size: usize,
 ) -> Result<OwnedOpusCustomMode, ModeError> {
-    if sample_rate < 8_000 || sample_rate > 96_000 {
+    if !(8_000..=96_000).contains(&sample_rate) {
         return Err(ModeError::BadSampleRate);
     }
-    if frame_size < 40 || frame_size > 1024 || frame_size % 2 != 0 {
+    if !(40..=1024).contains(&frame_size) || !frame_size.is_multiple_of(2) {
         return Err(ModeError::BadFrameSize);
     }
 
@@ -521,11 +521,11 @@ fn build_custom_mode(
         return Err(ModeError::FrameTooShort);
     }
 
-    let lm = if frame_size_i32 * 75 >= sample_rate && frame_size % 16 == 0 {
+    let lm = if frame_size_i32 * 75 >= sample_rate && frame_size.is_multiple_of(16) {
         3usize
-    } else if frame_size_i32 * 150 >= sample_rate && frame_size % 8 == 0 {
+    } else if frame_size_i32 * 150 >= sample_rate && frame_size.is_multiple_of(8) {
         2
-    } else if frame_size_i32 * 300 >= sample_rate && frame_size % 4 == 0 {
+    } else if frame_size_i32 * 300 >= sample_rate && frame_size.is_multiple_of(4) {
         1
     } else {
         0

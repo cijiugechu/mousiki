@@ -44,7 +44,7 @@ pub struct MdctLookup {
 impl MdctLookup {
     #[must_use]
     pub fn new(len: usize, max_shift: usize) -> Self {
-        assert!(len % 2 == 0, "MDCT length must be even");
+        assert!(len.is_multiple_of(2), "MDCT length must be even");
         assert!(max_shift < 8, "unsupported MDCT shift");
         assert!(
             len >> max_shift > 0,
@@ -55,7 +55,7 @@ impl MdctLookup {
         let mut inverse = Vec::with_capacity(max_shift + 1);
         for shift in 0..=max_shift {
             let n = len >> shift;
-            assert!(n % 4 == 0, "MDCT length must be a multiple of four");
+            assert!(n.is_multiple_of(4), "MDCT length must be a multiple of four");
             forward.push(MiniKissFft::new(n >> 2, false));
             inverse.push(MiniKissFft::new(n >> 2, true));
         }

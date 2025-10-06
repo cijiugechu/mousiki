@@ -109,7 +109,7 @@ fn laplace_encode(enc: &mut EcEnc<'_>, value: &mut i32, mut fs: u32, decay: u32)
         }
 
         if fs == 0 {
-            let mut ndi_max = ((TOTAL_FREQ - fl + LAPLACE_MINP - 1) >> 0) as i32;
+            let mut ndi_max = ((TOTAL_FREQ - fl + LAPLACE_MINP - 1)) as i32;
             ndi_max = (ndi_max - sign) >> 1;
             let di = core::cmp::min(val - i, ndi_max - 1);
             fl += ((2 * di + 1 + sign) as u32) * LAPLACE_MINP;
@@ -570,8 +570,8 @@ pub(crate) fn unquant_coarse_energy(
                     (prob_model[pi + 1] as u32) << 6,
                 )
             } else if budget - tell >= 2 {
-                let sym = dec.dec_icdf(&SMALL_ENERGY_ICDF, 2) as i32;
-                (sym >> 1) ^ -((sym & 1) as i32)
+                let sym = dec.dec_icdf(&SMALL_ENERGY_ICDF, 2);
+                (sym >> 1) ^ -((sym & 1))
             } else if budget - tell >= 1 {
                 -dec.dec_bit_logp(1)
             } else {

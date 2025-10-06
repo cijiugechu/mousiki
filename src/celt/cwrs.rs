@@ -271,7 +271,7 @@ pub(crate) fn decode_pulses(
 /// applies [`log2_frac`] to the resulting `V(n, k)` table entries.
 pub(crate) fn get_required_bits(bits: &mut [OpusInt16], n: usize, max_k: usize, frac: OpusInt32) {
     debug_assert!(max_k > 0);
-    debug_assert!(bits.len() >= max_k + 1);
+    debug_assert!(bits.len() > max_k);
     debug_assert!(frac >= 0);
 
     bits[0] = 0;

@@ -200,7 +200,7 @@ pub(crate) fn compute_pulse_cache(
                     }
 
                     let ndof = (c_i32 * n0 - (c_i32 - 1)).max(1);
-                    local_bits = local_bits.min(c_i32 * n0 << shift);
+                    local_bits = local_bits.min((c_i32 * n0) << shift);
                     let pulses = get_pulses(entry_k) + 2 * (ndof - 1);
                     let floor = c_i32 * ((pulses / (2 * ndof)) << shift);
                     local_bits = local_bits.max(floor);
@@ -354,11 +354,10 @@ pub(crate) fn interp_bits2pulses(
                 if decision {
                     skip = true;
                 }
-            } else if let Some(dec) = decoder.as_deref_mut() {
-                if dec.dec_bit_logp(1) != 0 {
+            } else if let Some(dec) = decoder.as_deref_mut()
+                && dec.dec_bit_logp(1) != 0 {
                     skip = true;
                 }
-            }
 
             if skip {
                 break;
@@ -405,9 +404,9 @@ pub(crate) fn interp_bits2pulses(
     }
 
     if dual_stereo_rsv > 0 {
-        if let Some(enc) = encoder.as_deref_mut() {
+        if let Some(enc) = encoder {
             enc.enc_bit_logp(*dual_stereo, 1);
-        } else if let Some(dec) = decoder.as_deref_mut() {
+        } else if let Some(dec) = decoder {
             *dual_stereo = dec.dec_bit_logp(1);
         }
     } else {
@@ -451,9 +450,9 @@ pub(crate) fn interp_bits2pulses(
             if n == 2 {
                 offset += den << (BITRES - 2);
             }
-            if bits[j] + offset < den * 2 << BITRES {
+            if bits[j] + offset < (den * 2) << BITRES {
                 offset += nclogn >> 2;
-            } else if bits[j] + offset < den * 3 << BITRES {
+            } else if bits[j] + offset < (den * 3) << BITRES {
                 offset += nclogn >> 3;
             }
 
@@ -468,13 +467,13 @@ pub(crate) fn interp_bits2pulses(
             } else {
                 0
             };
-            bits[j] -= channels * eb << BITRES;
+            bits[j] -= (channels * eb) << BITRES;
             ebits[j] = eb;
 
             if excess > 0 {
                 let extra_fine = min(excess >> (stereo_shift + BITRES), MAX_FINE_BITS - ebits[j]);
                 ebits[j] += extra_fine;
-                let extra_bits = extra_fine * channels << BITRES;
+                let extra_bits = (extra_fine * channels) << BITRES;
                 if extra_bits >= excess - local_balance {
                     fine_priority[j] = 1;
                 }
@@ -562,12 +561,11 @@ pub(crate) fn clt_compute_allocation(
         let alloc_shift = (lm + BITRES as OpusInt32) as u32;
         thresh[j] = max(channels << BITRES, (3 * n) << alloc_shift >> 4);
         let split_shift = (lm + BITRES as OpusInt32) as u32;
-        trim_offset[j] = channels
+        trim_offset[j] = (channels
             * n
             * (alloc_trim - 5 - lm)
             * OpusInt32::try_from(end - j - 1).unwrap()
-            * (1 << split_shift)
-            >> 6;
+            * (1 << split_shift)) >> 6;
         if (n << lm) == 1 {
             trim_offset[j] -= channels << BITRES;
         }
@@ -582,7 +580,7 @@ pub(crate) fn clt_compute_allocation(
         for j in (start..end).rev() {
             let n = OpusInt32::from(mode.e_bands[j + 1] - mode.e_bands[j]);
             let mut bitsj =
-                channels * n * OpusInt32::from(mode.alloc_vectors[mid as usize * len + j]) << lm
+                (channels * n * OpusInt32::from(mode.alloc_vectors[mid as usize * len + j])) << lm
                     >> 2;
             if bitsj > 0 {
                 bitsj = max(0, bitsj + trim_offset[j]);
@@ -608,11 +606,11 @@ pub(crate) fn clt_compute_allocation(
     for j in start..end {
         let n = OpusInt32::from(mode.e_bands[j + 1] - mode.e_bands[j]);
         let mut bits1j =
-            channels * n * OpusInt32::from(mode.alloc_vectors[lo as usize * len + j]) << lm >> 2;
+            (channels * n * OpusInt32::from(mode.alloc_vectors[lo as usize * len + j])) << lm >> 2;
         let mut bits2j = if hi as usize >= mode.num_alloc_vectors {
             cap[j]
         } else {
-            channels * n * OpusInt32::from(mode.alloc_vectors[hi as usize * len + j]) << lm >> 2
+            (channels * n * OpusInt32::from(mode.alloc_vectors[hi as usize * len + j])) << lm >> 2
         };
         if bits1j > 0 {
             bits1j = max(0, bits1j + trim_offset[j]);

@@ -51,7 +51,7 @@ fn hadamard_ordery(stride: usize) -> Option<&'static [usize]> {
 fn frac_mul16(a: i32, b: i32) -> i32 {
     let a = a as i16;
     let b = b as i16;
-    ((16_384 + i32::from(a) * i32::from(b)) >> 15) as i32
+    ((16_384 + i32::from(a) * i32::from(b)) >> 15)
 }
 
 /// Bit-exact cosine approximation used by the band analysis heuristics.
@@ -151,11 +151,11 @@ pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bo
     }
 
     let mut qb = celt_sudiv(b + n2 * offset, n2);
-    let pulse_guard = b - pulse_cap - ((4 << BITRES) as i32);
+    let pulse_guard = b - pulse_cap - ((4 << BITRES));
     qb = qb.min(pulse_guard);
-    qb = qb.min((8 << BITRES) as i32);
+    qb = qb.min(((8 << BITRES)));
 
-    let threshold = ((1 << BITRES) >> 1) as i32;
+    let threshold = ((1 << BITRES) >> 1);
     let qn = if qb < threshold {
         1
     } else {
@@ -711,7 +711,7 @@ pub(crate) fn compute_band_energies(
         "end band must not exceed mode bands"
     );
     assert!(
-        mode.e_bands.len() >= end + 1,
+        mode.e_bands.len() > end,
         "eBands must contain end + 1 entries"
     );
 
@@ -763,7 +763,7 @@ pub(crate) fn normalise_bands(
         "end band must not exceed mode bands"
     );
     assert!(
-        mode.e_bands.len() >= end + 1,
+        mode.e_bands.len() > end,
         "eBands must contain end + 1 entries"
     );
 
