@@ -62,6 +62,17 @@ safely.
 - `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor
   mapping in `celt/celt.c`, returning the ratios used by the pitch analysis
   when converting from the 48 kHz reference rate.
+- `TF_SELECT_TABLE` &rarr; ports the TF change lookup table from `celt/celt.c`
+  that trades time resolution for frequency resolution based on transient
+  analysis.
+- `init_caps` &rarr; mirrors the allocation cap initialiser from `celt/celt.c`,
+  scaling the cached per-band limits by the channel count and effective band
+  width derived from the current `LM`.
+- `opus_strerror` &rarr; ports the error-to-string helper from `celt/celt.c`,
+  returning human-readable diagnostics for the core Opus error codes.
+- `opus_get_version_string` &rarr; mirrors the version helper from `celt/celt.c`,
+  exposing the library identifier used by applications to detect build
+  variants.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
