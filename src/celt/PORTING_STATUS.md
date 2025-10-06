@@ -53,6 +53,12 @@ safely.
   number of quantisation levels used for the stereo angle, capping the
   resolution to guarantee that at least one pulse remains available for the side
   channel.
+- `BandCtx` and `BandCodingState` &rarr; provide the Rust equivalents of the
+  `struct band_ctx` bookkeeping and entropy coder dispatch used throughout
+  `celt/bands.c`.
+- `quant_band_n1` &rarr; ports the single-pulse PVQ special case from
+  `celt/bands.c`, coding a raw sign bit when only one coefficient is active and
+  resynthesising the unit vector for collapse prevention.
 - `spreading_decision` &rarr; ports the frame-level spreading classifier from
   `celt/bands.c`, building per-band histograms, smoothing the score, and
   applying the hysteresis used to stabilise PVQ spreading decisions while
