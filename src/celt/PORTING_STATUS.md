@@ -59,6 +59,9 @@ safely.
 - `quant_band_n1` &rarr; ports the single-pulse PVQ special case from
   `celt/bands.c`, coding a raw sign bit when only one coefficient is active and
   resynthesising the unit vector for collapse prevention.
+- `compute_theta` &rarr; ports the stereo/partition angle quantiser from
+  `celt/bands.c`, handling probability modelling, intensity detection, and fill
+  mask updates while accounting for the available fractional bit budget.
 - `spreading_decision` &rarr; ports the frame-level spreading classifier from
   `celt/bands.c`, building per-band histograms, smoothing the score, and
   applying the hysteresis used to stabilise PVQ spreading decisions while
