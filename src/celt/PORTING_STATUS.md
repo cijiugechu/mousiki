@@ -72,13 +72,9 @@ safely.
   `celt/bands.c`, building per-band histograms, smoothing the score, and
   applying the hysteresis used to stabilise PVQ spreading decisions while
   updating the high-frequency tapset selection heuristics.
-
-#### Remaining work
-
-- TODO: `quant_all_bands` is still pending. Translating it on top of the newly
-  ported `quant_band` and `quant_band_stereo` routines will require careful
-  handling of the entropy coder snapshots and the per-band folding buffers, so
-  it should be tackled in a follow-up change to keep reviews manageable.
+ - `quant_all_bands` &rarr; covers the top-level PVQ loop from `celt/bands.c`
+   that allocates per-band bit budgets, tracks folding state, and invokes the
+   mono/stereo band quantisers while updating the collapse masks.
 
 ### `celt.rs`
 - `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor
