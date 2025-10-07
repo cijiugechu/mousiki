@@ -229,8 +229,8 @@ pub(crate) fn compute_ebands(
     let mut num_bands = low + high;
     let mut bands = vec![0i32; num_bands + 2];
 
-    for i in 0..low {
-        bands[i] = i as i32;
+    for (i, slot) in bands.iter_mut().take(low).enumerate() {
+        *slot = i as i32;
     }
 
     let mut offset = 0i32;
@@ -239,17 +239,17 @@ pub(crate) fn compute_ebands(
         offset = previous * resolution - BARK_FREQ[lin.saturating_sub(1)];
     }
 
-    for i in 0..high {
+    for (i, slot) in bands.iter_mut().skip(low).take(high).enumerate() {
         let target = BARK_FREQ[lin + i];
         let value = ((target + offset / 2 + resolution) / (2 * resolution)) * 2;
-        bands[i + low] = value;
+        *slot = value;
         offset = value * resolution - target;
     }
 
-    for i in 0..num_bands {
+    for (i, band) in bands.iter_mut().take(num_bands).enumerate() {
         let threshold = i as i32;
-        if bands[i] < threshold {
-            bands[i] = threshold;
+        if *band < threshold {
+            *band = threshold;
         }
     }
 
@@ -260,6 +260,7 @@ pub(crate) fn compute_ebands(
     bands[num_bands] = end_band;
 
     if num_bands > 1 {
+        #[allow(clippy::needless_range_loop)]
         for i in 1..(num_bands - 1) {
             let prev = bands[i - 1];
             let curr = bands[i];
@@ -271,6 +272,7 @@ pub(crate) fn compute_ebands(
     }
 
     let mut j = 0usize;
+    #[allow(clippy::needless_range_loop)]
     for i in 0..num_bands {
         if bands[i + 1] > bands[j] {
             j += 1;

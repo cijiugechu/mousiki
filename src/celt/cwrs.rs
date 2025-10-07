@@ -200,7 +200,7 @@ fn cwrsi(
 
     let mut energy: OpusVal32 = 0.0;
 
-    for j in 0..n {
+    for value_ref in y.iter_mut().take(n) {
         let sign_threshold = u[k + 1];
         let sign = if index >= sign_threshold {
             index -= sign_threshold;
@@ -225,7 +225,7 @@ fn cwrsi(
             -(pulses_in_dim as OpusInt32)
         };
 
-        y[j] = value;
+        *value_ref = value;
         let val = value as OpusVal32;
         energy += val * val;
 

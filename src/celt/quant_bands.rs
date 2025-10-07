@@ -109,7 +109,7 @@ fn laplace_encode(enc: &mut EcEnc<'_>, value: &mut i32, mut fs: u32, decay: u32)
         }
 
         if fs == 0 {
-            let mut ndi_max = ((TOTAL_FREQ - fl + LAPLACE_MINP - 1)) as i32;
+            let mut ndi_max = (TOTAL_FREQ - fl + LAPLACE_MINP - 1) as i32;
             ndi_max = (ndi_max - sign) >> 1;
             let di = core::cmp::min(val - i, ndi_max - 1);
             fl += ((2 * di + 1 + sign) as u32) * LAPLACE_MINP;
@@ -335,11 +335,11 @@ fn quant_coarse_energy_impl(
     }
 
     for band in start..end {
-        for channel in 0..channels {
+        for (channel, prev_entry) in prev.iter_mut().enumerate().take(channels) {
             let idx = channel * stride + band;
             let x = e_bands[idx];
             let old_e = old_e_bands[idx].max(-9.0);
-            let f = x - coef * old_e - prev[channel];
+            let f = x - coef * old_e - *prev_entry;
             let mut qi = floorf(f + 0.5) as i32;
             let decay_bound = old_e_bands[idx].max(-28.0) - max_decay;
             if qi < 0 && x < decay_bound {
@@ -388,9 +388,9 @@ fn quant_coarse_energy_impl(
             error[idx] = f - qi as f32;
             badness += (qi0 - qi).abs();
             let q = qi as f32;
-            let tmp = (coef * old_e) + prev[channel] + q;
+            let tmp = (coef * old_e) + *prev_entry + q;
             old_e_bands[idx] = tmp.max(-28.0);
-            prev[channel] += q - beta * q;
+            *prev_entry += q - beta * q;
         }
     }
 
@@ -559,7 +559,7 @@ pub(crate) fn unquant_coarse_energy(
     let budget = (dec.ctx().storage * 8) as i32;
 
     for band in start..end {
-        for channel in 0..channels {
+        for (channel, prev_entry) in prev.iter_mut().enumerate().take(channels) {
             let idx = channel * stride + band;
             let tell = ec_tell(dec.ctx());
             let qi = if budget - tell >= 15 {
@@ -571,7 +571,7 @@ pub(crate) fn unquant_coarse_energy(
                 )
             } else if budget - tell >= 2 {
                 let sym = dec.dec_icdf(&SMALL_ENERGY_ICDF, 2);
-                (sym >> 1) ^ -((sym & 1))
+                (sym >> 1) ^ -(sym & 1)
             } else if budget - tell >= 1 {
                 -dec.dec_bit_logp(1)
             } else {
@@ -580,9 +580,9 @@ pub(crate) fn unquant_coarse_energy(
 
             old_e_bands[idx] = old_e_bands[idx].max(-9.0);
             let q = qi as f32;
-            let tmp = coef * old_e_bands[idx] + prev[channel] + q;
+            let tmp = coef * old_e_bands[idx] + *prev_entry + q;
             old_e_bands[idx] = tmp.clamp(-28.0, 28.0);
-            prev[channel] += q - beta * q;
+            *prev_entry += q - beta * q;
         }
     }
 }
@@ -602,14 +602,20 @@ pub(crate) fn amp2_log2(
     assert_eq!(band_log_e.len(), channels * mode.num_ebands);
 
     let stride = mode.num_ebands;
-    for channel in 0..channels {
-        for band in 0..eff_end {
-            let idx = channel * stride + band;
-            band_log_e[idx] = celt_log2(band_e[idx]) - E_MEANS[band];
+    for (band_e_chunk, band_log_chunk) in band_e
+        .chunks(stride)
+        .zip(band_log_e.chunks_mut(stride))
+        .take(channels)
+    {
+        for ((energy, log_slot), &mean) in band_e_chunk[..eff_end]
+            .iter()
+            .zip(band_log_chunk[..eff_end].iter_mut())
+            .zip(E_MEANS[..eff_end].iter())
+        {
+            *log_slot = celt_log2(*energy) - mean;
         }
-        for band in eff_end..end {
-            let idx = channel * stride + band;
-            band_log_e[idx] = -14.0;
+        for log_slot in band_log_chunk.iter_mut().take(end).skip(eff_end) {
+            *log_slot = -14.0;
         }
     }
 }
@@ -640,11 +646,17 @@ pub(crate) fn log2_amp(
         "insufficient log energy storage"
     );
 
-    for band in start..end {
-        let mean = E_MEANS[band];
-        for channel in 0..channels {
-            let idx = channel * stride + band;
-            e_bands[idx] = celt_exp2(old_e_bands[idx] + mean);
+    for (band_slice, old_slice) in e_bands
+        .chunks_mut(stride)
+        .zip(old_e_bands.chunks(stride))
+        .take(channels)
+    {
+        for ((band_value, &old_value), &mean) in band_slice[start..end]
+            .iter_mut()
+            .zip(old_slice[start..end].iter())
+            .zip(E_MEANS[start..end].iter())
+        {
+            *band_value = celt_exp2(old_value + mean);
         }
     }
 }
@@ -667,6 +679,7 @@ fn fine_energy_final_scale(fine: usize) -> f32 {
 /// `celt/quant_bands.c`. The function scans the requested bands, quantises the
 /// fractional energy error, and accumulates the residual back into
 /// `old_ebands`/`error` while appending the raw bits to `enc`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn quant_fine_energy(
     mode: &OpusCustomMode<'_>,
     start: usize,
@@ -688,8 +701,12 @@ pub(crate) fn quant_fine_energy(
 
     let stride = mode.num_ebands;
 
-    for band in start..end {
-        let fine = fine_quant[band];
+    for (band, &fine) in fine_quant
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+    {
         if fine <= 0 {
             continue;
         }
@@ -699,17 +716,20 @@ pub(crate) fn quant_fine_energy(
         let max_q = frac - 1;
         let scale = fine_energy_scale(fine_bits);
 
-        for channel in 0..channels {
-            let idx = channel * stride + band;
-            let target = error[idx] + 0.5;
+        for (old_slice, error_slice) in old_ebands
+            .chunks_mut(stride)
+            .zip(error.chunks_mut(stride))
+            .take(channels)
+        {
+            let target = error_slice[band] + 0.5;
             let mut q2 = floorf(target * frac as f32) as i32;
             q2 = q2.clamp(0, max_q);
 
             enc.enc_bits(q2 as u32, fine_bits as u32);
 
             let offset = (q2 as f32 + 0.5) * scale - 0.5;
-            old_ebands[idx] += offset;
-            error[idx] -= offset;
+            old_slice[band] += offset;
+            error_slice[band] -= offset;
         }
     }
 }
@@ -719,6 +739,7 @@ pub(crate) fn quant_fine_energy(
 /// Ports the float implementation of `quant_energy_finalise()` which allocates
 /// leftover bits to low-priority bands and updates the running energy/error
 /// estimates accordingly.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn quant_energy_finalise(
     mode: &OpusCustomMode<'_>,
     start: usize,
@@ -748,27 +769,35 @@ pub(crate) fn quant_energy_finalise(
     let channels_i32 = channels as i32;
 
     for priority in 0..2 {
-        for band in start..end {
+        for (band, (&fine, &priority_flag)) in fine_quant
+            .iter()
+            .zip(fine_priority.iter())
+            .enumerate()
+            .take(end)
+            .skip(start)
+        {
             if bits_left < channels_i32 {
                 break;
             }
 
-            let fine = fine_quant[band];
-            if fine >= MAX_FINE_BITS || fine_priority[band] != priority {
+            if fine >= MAX_FINE_BITS || priority_flag != priority {
                 continue;
             }
 
             let fine_bits = fine.max(0) as usize;
             let scale = fine_energy_final_scale(fine_bits);
 
-            for channel in 0..channels {
-                let idx = channel * stride + band;
-                let q2 = if error[idx] < 0.0 { 0 } else { 1 };
+            for (old_slice, error_slice) in old_ebands
+                .chunks_mut(stride)
+                .zip(error.chunks_mut(stride))
+                .take(channels)
+            {
+                let q2 = if error_slice[band] < 0.0 { 0 } else { 1 };
                 enc.enc_bits(q2 as u32, 1);
 
                 let offset = (q2 as f32 - 0.5) * scale;
-                old_ebands[idx] += offset;
-                error[idx] -= offset;
+                old_slice[band] += offset;
+                error_slice[band] -= offset;
                 bits_left -= 1;
             }
         }
@@ -799,8 +828,12 @@ pub(crate) fn unquant_fine_energy(
 
     let stride = mode.num_ebands;
 
-    for band in start..end {
-        let fine = fine_quant[band];
+    for (band, &fine) in fine_quant
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+    {
         if fine <= 0 {
             continue;
         }
@@ -808,11 +841,10 @@ pub(crate) fn unquant_fine_energy(
         let fine_bits = fine as usize;
         let scale = fine_energy_scale(fine_bits);
 
-        for channel in 0..channels {
-            let idx = channel * stride + band;
+        for band_slice in old_ebands.chunks_mut(stride).take(channels) {
             let q2 = dec.dec_bits(fine_bits as u32) as i32;
             let offset = (q2 as f32 + 0.5) * scale - 0.5;
-            old_ebands[idx] += offset;
+            band_slice[band] += offset;
         }
     }
 }
@@ -821,6 +853,7 @@ pub(crate) fn unquant_fine_energy(
 ///
 /// Ports the float build of `unquant_energy_finalise()` which consumes the
 /// leftover single-bit decisions and updates the reconstructed energy buffer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn unquant_energy_finalise(
     mode: &OpusCustomMode<'_>,
     start: usize,

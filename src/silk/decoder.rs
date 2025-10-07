@@ -663,6 +663,7 @@ impl Decoder {
         bandwidth.samples_in_subframe() as usize
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn ltp_synthesis(
         &mut self,
         out: &mut [f32],
@@ -802,6 +803,7 @@ impl Decoder {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lpc_synthesis(
         &mut self,
         out: &mut [f32],
@@ -885,8 +887,12 @@ impl Decoder {
         let mut res_lag = [0.0f32; MAX_RES_LAG];
 
         let res_len = excitation.len.min(res.len());
-        for idx in 0..res_len {
-            res[idx] = (excitation.values[idx] as f32) * INV_Q23;
+        for (dst, &value) in res
+            .iter_mut()
+            .zip(excitation.values.iter())
+            .take(res_len)
+        {
+            *dst = (value as f32) * INV_Q23;
         }
 
         let mut res_lag_len = lag_max as usize + 2;
@@ -1233,15 +1239,14 @@ impl Decoder {
         );
 
         let mut excitation = ExcitationQ23::new(len);
-        for idx in 0..len {
-            let raw = e_raw[idx];
-            let mut value = (raw << 8) - sign(raw) * 20 + offset_q23;
+        for (raw, slot) in e_raw.iter().take(len).zip(excitation.values.iter_mut()) {
+            let mut value = (raw << 8) - sign(*raw) * 20 + offset_q23;
             seed = seed.wrapping_mul(196_314_165).wrapping_add(907_633_515);
             if seed & 0x8000_0000 != 0 {
                 value = -value;
             }
-            seed = seed.wrapping_add(raw as u32);
-            excitation.values[idx] = value;
+            seed = seed.wrapping_add(*raw as u32);
+            *slot = value;
         }
 
         excitation
@@ -1319,12 +1324,12 @@ impl Decoder {
         counts: &ShellBlockCounts,
         len: usize,
     ) {
-        for sample_idx in 0..len {
+        for (sample_idx, sample) in e_raw.iter_mut().take(len).enumerate() {
             let block_idx = sample_idx / PULSECOUNT_LARGEST_PARTITION_SIZE;
             let lsb_count = counts.lsb_counts[block_idx];
             for _ in 0..lsb_count {
                 let bit = range_decoder.decode_symbol_with_icdf(icdf::EXCITATION_LSB);
-                e_raw[sample_idx] = (e_raw[sample_idx] << 1) | bit as i32;
+                *sample = (*sample << 1) | bit as i32;
             }
         }
     }
@@ -1338,8 +1343,8 @@ impl Decoder {
         counts: &ShellBlockCounts,
         len: usize,
     ) {
-        for sample_idx in 0..len {
-            if e_raw[sample_idx] == 0 {
+        for (sample_idx, sample) in e_raw.iter_mut().take(len).enumerate() {
+            if *sample == 0 {
                 continue;
             }
 
@@ -1352,7 +1357,7 @@ impl Decoder {
             );
 
             if range_decoder.decode_symbol_with_icdf(icdf_ctx) == 0 {
-                e_raw[sample_idx] = -e_raw[sample_idx];
+                *sample = -*sample;
             }
         }
     }

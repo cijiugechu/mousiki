@@ -502,62 +502,78 @@ pub(crate) fn interp_bits2pulses(
     let mut left = total - psum;
     let per_coeff = celt_udiv(left.max(0) as OpusUint32, denom as OpusUint32) as OpusInt32;
     left -= denom * per_coeff;
-    for j in start..coded_bands as usize {
-        let width = OpusInt32::from(mode.e_bands[j + 1] - mode.e_bands[j]);
-        bits[j] += per_coeff * width;
+    for (band, bits_entry) in bits
+        .iter_mut()
+        .enumerate()
+        .take(coded_bands as usize)
+        .skip(start)
+    {
+        let width = OpusInt32::from(mode.e_bands[band + 1] - mode.e_bands[band]);
+        *bits_entry += per_coeff * width;
     }
-    for j in start..coded_bands as usize {
-        let width = OpusInt32::from(mode.e_bands[j + 1] - mode.e_bands[j]);
+    for (band, bits_entry) in bits
+        .iter_mut()
+        .enumerate()
+        .take(coded_bands as usize)
+        .skip(start)
+    {
+        let width = OpusInt32::from(mode.e_bands[band + 1] - mode.e_bands[band]);
         let add = min(width, left);
-        bits[j] += add;
+        *bits_entry += add;
         left -= add;
     }
 
     let mut local_balance = 0;
-    for j in start..coded_bands as usize {
-        let n0 = OpusInt32::from(mode.e_bands[j + 1] - mode.e_bands[j]);
+    for (band, bits_entry) in bits
+        .iter_mut()
+        .enumerate()
+        .take(coded_bands as usize)
+        .skip(start)
+    {
+        let n0 = OpusInt32::from(mode.e_bands[band + 1] - mode.e_bands[band]);
         let n = n0 << lm;
-        let bit = bits[j] + local_balance;
+        let bit = *bits_entry + local_balance;
 
         if n > 1 {
-            let excess = max(bit - cap[j], 0);
-            bits[j] = bit - excess;
+            let excess = max(bit - cap[band], 0);
+            *bits_entry = bit - excess;
 
             let mut den = channels * n;
-            if channels == 2 && n > 2 && *dual_stereo == 0 && (j as OpusInt32) < *intensity {
+            if channels == 2 && n > 2 && *dual_stereo == 0 && (band as OpusInt32) < *intensity {
                 den += 1;
             }
-            let nclogn = den * (OpusInt32::from(mode.log_n[j]) + log_m);
+            let nclogn = den * (OpusInt32::from(mode.log_n[band]) + log_m);
             let mut offset = (nclogn >> 1) - den * FINE_OFFSET;
             if n == 2 {
                 offset += den << (BITRES - 2);
             }
-            if bits[j] + offset < (den * 2) << BITRES {
+            if *bits_entry + offset < (den * 2) << BITRES {
                 offset += nclogn >> 2;
-            } else if bits[j] + offset < (den * 3) << BITRES {
+            } else if *bits_entry + offset < (den * 3) << BITRES {
                 offset += nclogn >> 3;
             }
 
-            let mut eb = max(0, bits[j] + offset + (den << (BITRES - 1)));
+            let mut eb = max(0, *bits_entry + offset + (den << (BITRES - 1)));
             eb = (celt_udiv(eb as OpusUint32, den as OpusUint32) as OpusInt32) >> BITRES;
-            if channels * eb > (bits[j] >> stereo_shift) >> BITRES {
-                eb = bits[j] >> stereo_shift >> BITRES;
+            if channels * eb > (*bits_entry >> stereo_shift) >> BITRES {
+                eb = *bits_entry >> stereo_shift >> BITRES;
             }
             eb = min(eb, MAX_FINE_BITS);
-            fine_priority[j] = if eb * (den << BITRES) >= bits[j] + offset {
+            fine_priority[band] = if eb * (den << BITRES) >= *bits_entry + offset {
                 1
             } else {
                 0
             };
-            bits[j] -= (channels * eb) << BITRES;
-            ebits[j] = eb;
+            *bits_entry -= (channels * eb) << BITRES;
+            ebits[band] = eb;
 
             if excess > 0 {
-                let extra_fine = min(excess >> (stereo_shift + BITRES), MAX_FINE_BITS - ebits[j]);
-                ebits[j] += extra_fine;
+                let extra_fine =
+                    min(excess >> (stereo_shift + BITRES), MAX_FINE_BITS - ebits[band]);
+                ebits[band] += extra_fine;
                 let extra_bits = (extra_fine * channels) << BITRES;
                 if extra_bits >= excess - local_balance {
-                    fine_priority[j] = 1;
+                    fine_priority[band] = 1;
                 }
                 local_balance = excess - extra_bits;
             } else {
@@ -565,14 +581,14 @@ pub(crate) fn interp_bits2pulses(
             }
         } else {
             let excess = max(0, bit - (channels << BITRES));
-            bits[j] = bit - excess;
-            ebits[j] = 0;
-            fine_priority[j] = 1;
+            *bits_entry = bit - excess;
+            ebits[band] = 0;
+            fine_priority[band] = 1;
             local_balance = excess;
         }
 
-        debug_assert!(bits[j] >= 0);
-        debug_assert!(ebits[j] >= 0);
+        debug_assert!(*bits_entry >= 0);
+        debug_assert!(ebits[band] >= 0);
     }
 
     *balance = local_balance;
