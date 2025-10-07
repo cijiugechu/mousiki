@@ -8,6 +8,9 @@ safely.
 ## Rust code that already mirrors the C sources
 
 ### `bands.rs`
+- `quant_partition` &rarr; ports the recursive mono-partition helper from
+  `celt/bands.c` that splits bands when sufficient bits are available for
+  additional time/frequency resolution.
 - `hysteresis_decision` &rarr; ports the decision helper from `celt/bands.c`
   that keeps the spread classification stable when values hover near
   thresholds.
@@ -69,6 +72,13 @@ safely.
   `celt/bands.c`, building per-band histograms, smoothing the score, and
   applying the hysteresis used to stabilise PVQ spreading decisions while
   updating the high-frequency tapset selection heuristics.
+
+#### Remaining work
+
+- TODO: `quant_band`, `quant_band_stereo`, and `quant_all_bands` are still
+  pending. Translating them on top of `quant_partition` will require careful
+  handling of the lowband folding buffers and entropy coder snapshots, so they
+  should be tackled in follow-up changes to keep reviews manageable.
 
 ### `celt.rs`
 - `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor
