@@ -238,7 +238,7 @@ pub(crate) fn pitch_search(
     if max_pitch_half > 0 {
         let len_half = len >> 1;
         if len_half > 0 {
-            for i in 0..max_pitch_half {
+            for (i, slot) in xcorr.iter_mut().enumerate().take(max_pitch_half) {
                 if (i as i32 - 2 * best_pitch[0]).abs() > 2
                     && (i as i32 - 2 * best_pitch[1]).abs() > 2
                 {
@@ -254,7 +254,7 @@ pub(crate) fn pitch_search(
                     .zip(&y[start..end])
                     .map(|(&a, &b)| a * b)
                     .sum();
-                xcorr[i] = sum.max(-1.0);
+                *slot = sum.max(-1.0);
             }
 
             let y_needed = min(y.len(), len_half + max_pitch_half);
@@ -300,6 +300,7 @@ fn window(data: &[OpusVal16], center: usize, offset: isize, len: usize) -> &[Opu
 /// Mirrors the float variant of `remove_doubling()` from `celt/pitch.c`. The
 /// routine evaluates nearby subharmonics of the detected pitch and returns an
 /// adjusted lag alongside the updated harmonic gain.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn remove_doubling(
     x: &[OpusVal16],
     maxperiod: usize,
@@ -511,9 +512,9 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
 
     for channel in x {
         x_lp[0] += 0.25 * channel[1] + 0.5 * channel[0];
-        for i in 1..half_len {
+        for (i, slot) in x_lp.iter_mut().enumerate().take(half_len).skip(1) {
             let base = 2 * i;
-            x_lp[i] += 0.25 * channel[base - 1] + 0.5 * channel[base] + 0.25 * channel[base + 1];
+            *slot += 0.25 * channel[base - 1] + 0.5 * channel[base] + 0.25 * channel[base + 1];
         }
     }
 
@@ -521,9 +522,9 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
     celt_autocorr(x_lp, &mut ac, None, 0, 4, arch);
 
     ac[0] *= 1.0001;
-    for i in 1..=4 {
+    for (i, value) in ac.iter_mut().enumerate().skip(1) {
         let coeff = 0.008 * i as f32;
-        ac[i] -= ac[i] * coeff * coeff;
+        *value -= *value * coeff * coeff;
     }
 
     let mut lpc = [0.0; 4];

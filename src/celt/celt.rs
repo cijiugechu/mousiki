@@ -62,7 +62,7 @@ pub(crate) fn init_caps(mode: &OpusCustomMode<'_>, cap: &mut [i32], lm: usize, c
     assert_eq!(cap.len(), nb_ebands, "cap slice must cover every band");
     assert!(channels > 0, "channel count must be positive");
     assert!(
-        mode.e_bands.len() >= nb_ebands + 1,
+        mode.e_bands.len() > nb_ebands,
         "mode does not expose the terminating band edge"
     );
 

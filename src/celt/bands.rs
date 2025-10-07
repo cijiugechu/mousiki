@@ -206,7 +206,7 @@ pub(crate) fn compute_theta<'a, 'b>(
     let band_e = ctx.band_e;
 
     let log_n = i32::from(mode.log_n[band]);
-    let pulse_cap = log_n + lm * ((1 << BITRES) as i32);
+    let pulse_cap = log_n + lm * (1_i32 << BITRES);
     let offset = (pulse_cap >> 1)
         - if stereo && n == 2 {
             QTHETA_OFFSET_TWOPHASE
@@ -604,14 +604,12 @@ pub(crate) fn quant_band_n1<'a, 'b>(
     debug_assert_eq!(ctx.encode, coder.is_encoder());
 
     quant_band_n1_channel(ctx, x, coder);
-    if let Some(mut y_samples) = y {
-        quant_band_n1_channel(ctx, &mut y_samples, coder);
+    if let Some(y_samples) = y {
+        quant_band_n1_channel(ctx, y_samples, coder);
     }
 
-    if let Some(lowband) = lowband_out {
-        if !lowband.is_empty() {
-            lowband[0] = x[0];
-        }
+    if let Some(lowband) = lowband_out.filter(|lowband| !lowband.is_empty()) {
+        lowband[0] = x[0];
     }
 
     1
@@ -760,7 +758,12 @@ pub(crate) fn anti_collapse(
     let block_count = 1usize << lm;
     let band_stride = mode.num_ebands;
 
-    for band in start..end {
+    for (band, &pulses_for_band) in pulses
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+    {
         let band_begin =
             usize::try_from(mode.e_bands[band]).expect("band index must be non-negative");
         let band_end =
@@ -770,7 +773,6 @@ pub(crate) fn anti_collapse(
             continue;
         }
 
-        let pulses_for_band = pulses[band];
         assert!(pulses_for_band >= 0, "pulse counts must be non-negative");
         let numerator = u32::try_from(pulses_for_band)
             .expect("pulse count fits in u32")
@@ -921,7 +923,7 @@ pub(crate) fn spreading_decision(
 
     for c in 0..channels {
         let channel_base = c * n0;
-        for band in 0..end {
+        for (band, &weight) in spread_weight.iter().take(end).enumerate() {
             let start = m * (mode.e_bands[band] as usize);
             let stop = m * (mode.e_bands[band + 1] as usize);
             let n = stop - start;
@@ -960,7 +962,6 @@ pub(crate) fn spreading_decision(
                 tmp += 1;
             }
 
-            let weight = spread_weight[band];
             sum += tmp * weight;
             nb_bands += weight;
         }
@@ -1296,13 +1297,18 @@ pub(crate) fn denormalise_bands(
     let mut freq_idx = start_edge;
     let mut x_idx = start_edge;
 
-    for band in start..end {
+    for (band, &band_gain_log) in band_log_e
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+    {
         let band_end =
             m * usize::try_from(mode.e_bands[band + 1]).expect("band edge must be non-negative");
         assert!(band_end <= n, "band end exceeds MDCT length");
         assert!(band < E_MEANS.len(), "E_MEANS lacks entry for band");
 
-        let gain = celt_exp2((band_log_e[band] + E_MEANS[band]).min(32.0));
+        let gain = celt_exp2((band_gain_log + E_MEANS[band]).min(32.0));
         while freq_idx < band_end {
             freq[freq_idx] = x[x_idx] * gain;
             freq_idx += 1;

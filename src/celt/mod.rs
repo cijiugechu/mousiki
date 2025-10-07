@@ -6,6 +6,7 @@
 //! relying on Rust's ownership and lifetime tracking for safety.
 
 mod bands;
+#[allow(clippy::module_inception)]
 mod celt;
 mod cpu_support;
 mod cwrs;

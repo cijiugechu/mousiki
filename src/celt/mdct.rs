@@ -180,22 +180,18 @@ fn post_rotate_backward(
         return;
     }
 
-    let mut xp1 = overlap - 1;
-    let mut yp1 = 0usize;
-    let mut wp1 = 0usize;
-    let mut wp2 = overlap - 1;
-
-    for _ in 0..(overlap >> 1) {
+    for (offset, (&w1, &w2)) in window
+        .iter()
+        .zip(window.iter().rev())
+        .take(overlap >> 1)
+        .enumerate()
+    {
+        let yp1 = offset;
+        let xp1 = overlap - 1 - offset;
         let x1 = out[xp1];
         let x2 = out[yp1];
-        let w1 = window[wp1];
-        let w2 = window[wp2];
         out[yp1] = x2 * w2 - x1 * w1;
         out[xp1] = x2 * w1 + x1 * w2;
-        yp1 += 1;
-        xp1 -= 1;
-        wp1 += 1;
-        wp2 -= 1;
     }
 }
 
