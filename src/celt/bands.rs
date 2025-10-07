@@ -14,15 +14,15 @@ use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 
 use crate::celt::entcode::ec_tell_frac;
 use crate::celt::{
+    rate::{bits2pulses, get_pulses, pulses2bits, QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE},
+    vq::{alg_quant, alg_unquant, stereo_itheta},
     BITRES, EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
     celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv, celt_udiv,
     dual_inner_prod, ec_ilog,
     math::isqrt32,
     quant_bands::E_MEANS,
-    rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE},
     renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
-    vq::stereo_itheta,
 };
 use core::convert::TryFrom;
 
@@ -156,6 +156,22 @@ impl<'a, 'b> BandCodingState<'a, 'b> {
         match self {
             Self::Decoder(dec) => dec.dec_bit_logp(logp),
             Self::Encoder(_) => unreachable!("decoding requested on an encoder"),
+        }
+    }
+
+    #[inline]
+    fn encoder_mut(&mut self) -> &mut EcEnc<'a> {
+        match self {
+            Self::Encoder(enc) => enc,
+            Self::Decoder(_) => unreachable!("encoder access requested on a decoder"),
+        }
+    }
+
+    #[inline]
+    fn decoder_mut(&mut self) -> &mut EcDec<'a> {
+        match self {
+            Self::Decoder(dec) => dec,
+            Self::Encoder(_) => unreachable!("decoder access requested on an encoder"),
         }
     }
 }
@@ -614,6 +630,226 @@ pub(crate) fn quant_band_n1<'a, 'b>(
     }
 
     1
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quant_partition<'a, 'b>(
+    ctx: &mut BandCtx<'a>,
+    x: &mut [OpusVal16],
+    n: usize,
+    mut b: i32,
+    mut b_blocks: i32,
+    lowband: Option<&mut [OpusVal16]>,
+    mut lm: i32,
+    gain: OpusVal32,
+    mut fill: u32,
+    coder: &mut BandCodingState<'a, 'b>,
+) -> u32 {
+    debug_assert!(n > 0, "partition length must be positive");
+    debug_assert!(x.len() >= n, "partition slice shorter than requested length");
+    if let Some(ref slice) = lowband {
+        debug_assert!(slice.len() >= n, "lowband slice shorter than partition");
+    }
+
+    let mode = ctx.mode;
+    let band = ctx.band;
+    let encode = ctx.encode;
+    let spread = ctx.spread;
+
+    let cache_index = mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band] as i32;
+    let cache_slice = if cache_index >= 0 {
+        &mode.cache.bits[cache_index as usize..]
+    } else {
+        &[]
+    };
+
+    let mut cm = 0u32;
+    let original_b = b_blocks;
+
+    if lm != -1 && n > 2 && !cache_slice.is_empty() {
+        let hi_index = cache_slice[0] as usize;
+        if hi_index < cache_slice.len() {
+            let threshold = i32::from(cache_slice[hi_index]) + 12;
+            if b > threshold {
+                let half = n >> 1;
+                let (x_left, x_right) = x.split_at_mut(half);
+
+                let (lowband_left, lowband_right) = match lowband {
+                    Some(slice) => {
+                        let (left, right) = slice.split_at_mut(half);
+                        (Some(left), Some(right))
+                    }
+                    None => (None, None),
+                };
+
+                lm -= 1;
+                if b_blocks == 1 {
+                    fill = (fill & 1) | (fill << 1);
+                }
+                b_blocks = (b_blocks + 1) >> 1;
+
+                let mut split = SplitCtx::default();
+                compute_theta(
+                    ctx,
+                    &mut split,
+                    x_left,
+                    x_right,
+                    half,
+                    &mut b,
+                    b_blocks,
+                    original_b,
+                    lm,
+                    false,
+                    &mut fill,
+                    coder,
+                );
+
+                let imid = split.imid as OpusVal32 / 32_768.0;
+                let iside = split.iside as OpusVal32 / 32_768.0;
+                let delta = split.delta;
+                let itheta = split.itheta;
+                let qalloc = split.qalloc;
+
+                ctx.remaining_bits -= qalloc;
+
+                let mut mbits = (b - delta) / 2;
+                mbits = mbits.clamp(0, b);
+                let mut sbits = b - mbits;
+
+                let mut rebalance = ctx.remaining_bits;
+
+                if mbits >= sbits {
+                    cm = quant_partition(
+                        ctx,
+                        x_left,
+                        half,
+                        mbits,
+                        b_blocks,
+                        lowband_left,
+                        lm,
+                        gain * imid,
+                        fill,
+                        coder,
+                    );
+                    let used = rebalance - ctx.remaining_bits;
+                    rebalance = mbits - used;
+                    if rebalance > (3 << BITRES) && itheta != 0 {
+                        sbits += rebalance - (3 << BITRES);
+                    }
+                    let cm_right = quant_partition(
+                        ctx,
+                        x_right,
+                        half,
+                        sbits,
+                        b_blocks,
+                        lowband_right,
+                        lm,
+                        gain * iside,
+                        fill >> (b_blocks as u32),
+                        coder,
+                    );
+                    cm |= cm_right << ((original_b >> 1) as u32);
+                } else {
+                    let cm_right = quant_partition(
+                        ctx,
+                        x_right,
+                        half,
+                        sbits,
+                        b_blocks,
+                        lowband_right,
+                        lm,
+                        gain * iside,
+                        fill >> (b_blocks as u32),
+                        coder,
+                    );
+                    cm = cm_right << ((original_b >> 1) as u32);
+                    let used = rebalance - ctx.remaining_bits;
+                    rebalance = sbits - used;
+                    if rebalance > (3 << BITRES) && itheta != 16_384 {
+                        mbits += rebalance - (3 << BITRES);
+                    }
+                    cm |= quant_partition(
+                        ctx,
+                        x_left,
+                        half,
+                        mbits,
+                        b_blocks,
+                        lowband_left,
+                        lm,
+                        gain * imid,
+                        fill,
+                        coder,
+                    );
+                }
+
+                return cm;
+            }
+        }
+    }
+
+    let mut q = bits2pulses(mode, band, lm, b);
+    let mut curr_bits = pulses2bits(mode, band, lm, q);
+    ctx.remaining_bits -= curr_bits;
+
+    while ctx.remaining_bits < 0 && q > 0 {
+        ctx.remaining_bits += curr_bits;
+        q -= 1;
+        curr_bits = pulses2bits(mode, band, lm, q);
+        ctx.remaining_bits -= curr_bits;
+    }
+
+    if q != 0 {
+        let k = get_pulses(q);
+        let block_count = b_blocks.max(1) as usize;
+        if encode {
+            cm = alg_quant(
+                x,
+                n,
+                k,
+                spread,
+                block_count,
+                coder.encoder_mut(),
+                gain,
+                ctx.resynth,
+                ctx.arch,
+            );
+        } else {
+            cm = alg_unquant(
+                x,
+                n,
+                k,
+                spread,
+                block_count,
+                coder.decoder_mut(),
+                gain,
+            );
+        }
+    } else if ctx.resynth {
+        let cm_mask = mask_from_bits(b_blocks);
+        fill &= cm_mask;
+        if fill == 0 {
+            x[..n].fill(0.0);
+        } else if let Some(lowband_slice) = lowband {
+            let tmp = 1.0 / 256.0;
+            for (dst, src) in x.iter_mut().zip(lowband_slice.iter()) {
+                ctx.seed = celt_lcg_rand(ctx.seed);
+                let noise = if (ctx.seed & 0x8000) != 0 { tmp } else { -tmp };
+                *dst = *src + noise;
+            }
+            cm = fill;
+            renormalise_vector(x, n, gain, ctx.arch);
+        } else {
+            for sample in &mut x[..n] {
+                ctx.seed = celt_lcg_rand(ctx.seed);
+                let value = ((ctx.seed as i32) >> 20) as OpusVal16;
+                *sample = value;
+            }
+            cm = cm_mask;
+            renormalise_vector(x, n, gain, ctx.arch);
+        }
+    }
+
+    cm
 }
 
 /// Computes stereo weighting factors used when balancing channel distortion.
