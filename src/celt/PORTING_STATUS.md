@@ -75,10 +75,10 @@ safely.
 
 #### Remaining work
 
-- TODO: `quant_band`, `quant_band_stereo`, and `quant_all_bands` are still
-  pending. Translating them on top of `quant_partition` will require careful
-  handling of the lowband folding buffers and entropy coder snapshots, so they
-  should be tackled in follow-up changes to keep reviews manageable.
+- TODO: `quant_all_bands` is still pending. Translating it on top of the newly
+  ported `quant_band` and `quant_band_stereo` routines will require careful
+  handling of the entropy coder snapshots and the per-band folding buffers, so
+  it should be tackled in a follow-up change to keep reviews manageable.
 
 ### `celt.rs`
 - `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor

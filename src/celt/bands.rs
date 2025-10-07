@@ -14,15 +14,15 @@ use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 
 use crate::celt::entcode::ec_tell_frac;
 use crate::celt::{
-    rate::{bits2pulses, get_pulses, pulses2bits, QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE},
-    vq::{alg_quant, alg_unquant, stereo_itheta},
     BITRES, EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
     celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv, celt_udiv,
     dual_inner_prod, ec_ilog,
     math::isqrt32,
     quant_bands::E_MEANS,
+    rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, bits2pulses, get_pulses, pulses2bits},
     renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
+    vq::{alg_quant, alg_unquant, stereo_itheta},
 };
 use core::convert::TryFrom;
 
@@ -33,7 +33,7 @@ const EPSILON: f32 = 1e-15;
 const NORM_SCALING: OpusVal16 = 1.0;
 
 /// Shared context mirroring the state tracked by `struct band_ctx` in `celt/bands.c`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct BandCtx<'a> {
     /// Whether the caller is encoding (`true`) or decoding (`false`).
     pub encode: bool,
@@ -646,7 +646,10 @@ fn quant_partition<'a, 'b>(
     coder: &mut BandCodingState<'a, 'b>,
 ) -> u32 {
     debug_assert!(n > 0, "partition length must be positive");
-    debug_assert!(x.len() >= n, "partition slice shorter than requested length");
+    debug_assert!(
+        x.len() >= n,
+        "partition slice shorter than requested length"
+    );
     if let Some(ref slice) = lowband {
         debug_assert!(slice.len() >= n, "lowband slice shorter than partition");
     }
@@ -690,18 +693,8 @@ fn quant_partition<'a, 'b>(
 
                 let mut split = SplitCtx::default();
                 compute_theta(
-                    ctx,
-                    &mut split,
-                    x_left,
-                    x_right,
-                    half,
-                    &mut b,
-                    b_blocks,
-                    original_b,
-                    lm,
-                    false,
-                    &mut fill,
-                    coder,
+                    ctx, &mut split, x_left, x_right, half, &mut b, b_blocks, original_b, lm,
+                    false, &mut fill, coder,
                 );
 
                 let imid = split.imid as OpusVal32 / 32_768.0;
@@ -814,15 +807,7 @@ fn quant_partition<'a, 'b>(
                 ctx.arch,
             );
         } else {
-            cm = alg_unquant(
-                x,
-                n,
-                k,
-                spread,
-                block_count,
-                coder.decoder_mut(),
-                gain,
-            );
+            cm = alg_unquant(x, n, k, spread, block_count, coder.decoder_mut(), gain);
         }
     } else if ctx.resynth {
         let cm_mask = mask_from_bits(b_blocks);
@@ -846,6 +831,395 @@ fn quant_partition<'a, 'b>(
             }
             cm = cm_mask;
             renormalise_vector(x, n, gain, ctx.arch);
+        }
+    }
+
+    cm
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quant_band<'a, 'b>(
+    ctx: &mut BandCtx<'a>,
+    x: &mut [OpusVal16],
+    n: usize,
+    b: i32,
+    mut b_blocks: i32,
+    lowband_input: Option<&mut [OpusVal16]>,
+    lm: i32,
+    mut lowband_out: Option<&mut [OpusVal16]>,
+    gain: OpusVal32,
+    mut lowband_scratch: Option<&mut [OpusVal16]>,
+    mut fill: u32,
+    coder: &mut BandCodingState<'a, 'b>,
+) -> u32 {
+    debug_assert!(x.len() >= n, "quant_band expects at least n coefficients");
+    if let Some(ref slice) = lowband_input {
+        debug_assert!(slice.len() >= n, "lowband slice shorter than partition");
+    }
+    if let Some(ref slice) = lowband_out {
+        debug_assert!(slice.len() >= n, "lowband_out slice shorter than partition");
+    }
+
+    let encode = ctx.encode;
+    let mut tf_change = ctx.tf_change;
+
+    let n0 = n;
+    let mut n_b = n;
+    let mut b0 = b_blocks;
+    let mut time_divide = 0;
+    let mut recombine = 0;
+    let long_blocks = b0 == 1;
+
+    if b_blocks > 0 {
+        n_b = celt_udiv(n_b as u32, b_blocks as u32) as usize;
+    }
+
+    if n == 1 {
+        return quant_band_n1(ctx, &mut x[..1], None, lowband_out, coder) as u32;
+    }
+
+    if tf_change > 0 {
+        recombine = tf_change;
+    }
+
+    let mut _lowband_storage: Option<Vec<OpusVal16>> = None;
+    let copy_lowband =
+        lowband_input.is_some() && (recombine > 0 || ((n_b & 1) == 0 && tf_change < 0) || b0 > 1);
+    let mut lowband_view: Option<&mut [OpusVal16]> = None;
+
+    if let Some(slice) = lowband_input {
+        let len = n.min(slice.len());
+        if copy_lowband {
+            if let Some(scratch) = lowband_scratch.as_mut() {
+                let len = len.min(scratch.len());
+                scratch[..len].copy_from_slice(&slice[..len]);
+                let (head, _) = scratch.split_at_mut(len);
+                lowband_view = Some(head);
+            } else {
+                let owned = slice[..len].to_vec();
+                _lowband_storage = Some(owned);
+                let buffer = _lowband_storage.as_mut().unwrap();
+                let (head, _) = buffer.split_at_mut(len);
+                lowband_view = Some(head);
+            }
+        } else {
+            let (head, _) = slice.split_at_mut(len);
+            lowband_view = Some(head);
+        }
+    }
+
+    for k in 0..recombine {
+        const BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
+        if encode {
+            haar1(x, n >> k, 1usize << k);
+        }
+        if let Some(ref mut lowband_slice) = lowband_view {
+            haar1(lowband_slice, n >> k, 1usize << k);
+        }
+        let low = (fill & 0xF) as usize;
+        let high = ((fill >> 4) & 0xF) as usize;
+        let mapped =
+            u32::from(BIT_INTERLEAVE_TABLE[low]) | (u32::from(BIT_INTERLEAVE_TABLE[high]) << 2);
+        fill = mapped;
+    }
+    b_blocks >>= recombine;
+    n_b <<= recombine;
+
+    while (n_b & 1) == 0 && tf_change < 0 {
+        if encode {
+            haar1(x, n_b, b_blocks.max(1) as usize);
+        }
+        if let Some(ref mut lowband_slice) = lowband_view {
+            haar1(lowband_slice, n_b, b_blocks.max(1) as usize);
+        }
+        let shift = b_blocks.max(1) as u32;
+        fill |= fill << shift;
+        b_blocks <<= 1;
+        n_b >>= 1;
+        time_divide += 1;
+        tf_change += 1;
+    }
+
+    b0 = b_blocks;
+    let n_b0 = n_b;
+
+    if b0 > 1 {
+        if encode {
+            deinterleave_hadamard(x, n_b >> recombine, (b0 << recombine) as usize, long_blocks);
+        }
+        if let Some(ref mut lowband_slice) = lowband_view {
+            deinterleave_hadamard(
+                lowband_slice,
+                n_b >> recombine,
+                (b0 << recombine) as usize,
+                long_blocks,
+            );
+        }
+    }
+
+    let mut cm = quant_partition(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
+
+    if ctx.resynth {
+        if b0 > 1 {
+            interleave_hadamard(x, n_b >> recombine, (b0 << recombine) as usize, long_blocks);
+        }
+
+        n_b = n_b0;
+        b_blocks = b0;
+        for _ in 0..time_divide {
+            b_blocks >>= 1;
+            n_b <<= 1;
+            if b_blocks > 0 {
+                cm |= cm >> (b_blocks as u32);
+            }
+            haar1(x, n_b, b_blocks.max(1) as usize);
+        }
+
+        for k in 0..recombine {
+            const BIT_DEINTERLEAVE_TABLE: [u8; 16] = [
+                0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F, 0xC0, 0xC3, 0xCC, 0xCF, 0xF0, 0xF3,
+                0xFC, 0xFF,
+            ];
+            cm = u32::from(BIT_DEINTERLEAVE_TABLE[cm as usize & 0xF]);
+            haar1(x, n0 >> k, 1usize << k);
+        }
+        b_blocks <<= recombine;
+
+        if let Some(ref mut out) = lowband_out {
+            let scale = celt_sqrt(n0 as OpusVal32);
+            for (dst, src) in out.iter_mut().zip(x.iter()) {
+                *dst = scale * *src;
+            }
+        }
+
+        cm &= mask_from_bits(b_blocks);
+    }
+
+    cm
+}
+
+const MIN_STEREO_ENERGY: OpusVal32 = 1e-10;
+
+#[allow(clippy::too_many_arguments)]
+fn quant_band_stereo<'a, 'b>(
+    ctx: &mut BandCtx<'a>,
+    x: &mut [OpusVal16],
+    y: &mut [OpusVal16],
+    n: usize,
+    mut b: i32,
+    b_blocks: i32,
+    mut lowband_input: Option<&mut [OpusVal16]>,
+    lm: i32,
+    mut lowband_out: Option<&mut [OpusVal16]>,
+    mut lowband_scratch: Option<&mut [OpusVal16]>,
+    fill: u32,
+    coder: &mut BandCodingState<'a, 'b>,
+) -> u32 {
+    debug_assert!(
+        x.len() >= n && y.len() >= n,
+        "stereo bands require at least n samples"
+    );
+
+    let encode = ctx.encode;
+
+    if n == 1 {
+        return quant_band_n1(ctx, x, Some(y), lowband_out, coder) as u32;
+    }
+
+    let mut fill_local = fill;
+    let orig_fill = fill;
+
+    if encode {
+        let band = ctx.band;
+        let mode = ctx.mode;
+        let stride = mode.num_ebands;
+        let left = ctx.band_e[band];
+        let right = ctx.band_e[band + stride];
+        if left < MIN_STEREO_ENERGY || right < MIN_STEREO_ENERGY {
+            if left > right {
+                y[..n].copy_from_slice(&x[..n]);
+            } else {
+                x[..n].copy_from_slice(&y[..n]);
+            }
+        }
+    }
+
+    let mut split = SplitCtx::default();
+    compute_theta(
+        ctx,
+        &mut split,
+        x,
+        y,
+        n,
+        &mut b,
+        b_blocks,
+        b_blocks,
+        lm,
+        true,
+        &mut fill_local,
+        coder,
+    );
+
+    let mut cm;
+    let inv = split.inv;
+    let imid = split.imid;
+    let iside = split.iside;
+    let delta = split.delta;
+    let itheta = split.itheta;
+    let qalloc = split.qalloc;
+    let mid = (imid as OpusVal32) / 32_768.0;
+    let side = (iside as OpusVal32) / 32_768.0;
+
+    if n == 2 {
+        let mut mbits = b;
+        let mut sbits = 0;
+        if itheta != 0 && itheta != 16_384 {
+            sbits = 1 << BITRES;
+        }
+        mbits -= sbits;
+        let use_side = itheta > 8_192;
+        ctx.remaining_bits -= qalloc + sbits;
+
+        let mut sign = 0i32;
+        {
+            let (x2, y2): (&mut [OpusVal16], &mut [OpusVal16]) = if use_side {
+                (&mut y[..n], &mut x[..n])
+            } else {
+                (&mut x[..n], &mut y[..n])
+            };
+
+            if sbits != 0 {
+                if encode {
+                    sign = if x2[0] * y2[1] - x2[1] * y2[0] < 0.0 {
+                        1
+                    } else {
+                        0
+                    };
+                    coder.encode_bits(sign as u32, 1);
+                } else {
+                    sign = coder.decode_bits(1) as i32;
+                }
+            }
+            let sign_val = 1 - 2 * sign;
+
+            cm = quant_band(
+                ctx,
+                x2,
+                n,
+                mbits,
+                b_blocks,
+                lowband_input.take(),
+                lm,
+                lowband_out.take(),
+                1.0,
+                lowband_scratch.as_deref_mut(),
+                orig_fill,
+                coder,
+            );
+
+            y2[0] = -(sign_val as OpusVal16) * x2[1];
+            y2[1] = (sign_val as OpusVal16) * x2[0];
+        }
+
+        if ctx.resynth {
+            x[0] *= mid;
+            x[1] *= mid;
+            y[0] *= side;
+            y[1] *= side;
+            let tmp0 = x[0];
+            x[0] = tmp0 - y[0];
+            y[0] = tmp0 + y[0];
+            let tmp1 = x[1];
+            x[1] = tmp1 - y[1];
+            y[1] = tmp1 + y[1];
+        }
+    } else {
+        let mut mbits = (b - delta) / 2;
+        mbits = mbits.clamp(0, b);
+        let mut sbits = b - mbits;
+
+        ctx.remaining_bits -= qalloc;
+        let mut rebalance = ctx.remaining_bits;
+
+        if mbits >= sbits {
+            cm = quant_band(
+                ctx,
+                x,
+                n,
+                mbits,
+                b_blocks,
+                lowband_input.take(),
+                lm,
+                lowband_out.take(),
+                1.0,
+                lowband_scratch.as_deref_mut(),
+                fill_local,
+                coder,
+            );
+            let used = rebalance - ctx.remaining_bits;
+            rebalance = mbits - used;
+            if rebalance > (3 << BITRES) && itheta != 0 {
+                sbits += rebalance - (3 << BITRES);
+            }
+            cm |= quant_band(
+                ctx,
+                y,
+                n,
+                sbits,
+                b_blocks,
+                None,
+                lm,
+                None,
+                side,
+                None,
+                fill_local >> (b_blocks as u32),
+                coder,
+            );
+        } else {
+            cm = quant_band(
+                ctx,
+                y,
+                n,
+                sbits,
+                b_blocks,
+                None,
+                lm,
+                None,
+                side,
+                None,
+                fill_local >> (b_blocks as u32),
+                coder,
+            );
+            let used = rebalance - ctx.remaining_bits;
+            rebalance = sbits - used;
+            if rebalance > (3 << BITRES) && itheta != 16_384 {
+                mbits += rebalance - (3 << BITRES);
+            }
+            cm |= quant_band(
+                ctx,
+                x,
+                n,
+                mbits,
+                b_blocks,
+                lowband_input,
+                lm,
+                lowband_out,
+                1.0,
+                lowband_scratch.as_deref_mut(),
+                fill_local,
+                coder,
+            );
+        }
+    }
+
+    if ctx.resynth {
+        if n != 2 {
+            stereo_merge(x, y, mid);
+        }
+        if inv {
+            for sample in &mut y[..n] {
+                *sample = -*sample;
+            }
         }
     }
 
@@ -995,12 +1369,7 @@ pub(crate) fn anti_collapse(
     let block_count = 1usize << lm;
     let band_stride = mode.num_ebands;
 
-    for (band, &pulses_for_band) in pulses
-        .iter()
-        .enumerate()
-        .take(end)
-        .skip(start)
-    {
+    for (band, &pulses_for_band) in pulses.iter().enumerate().take(end).skip(start) {
         let band_begin =
             usize::try_from(mode.e_bands[band]).expect("band index must be non-negative");
         let band_end =
@@ -1133,7 +1502,10 @@ pub(crate) fn special_hybrid_folding(
     m: usize,
     dual_stereo: bool,
 ) {
-    debug_assert!(start + 2 < mode.e_bands.len(), "hybrid folding requires two successor bands");
+    debug_assert!(
+        start + 2 < mode.e_bands.len(),
+        "hybrid folding requires two successor bands"
+    );
 
     let e_bands = mode.e_bands;
     let n1 = m * (e_bands[start + 1] - e_bands[start]) as usize;
@@ -1146,15 +1518,27 @@ pub(crate) fn special_hybrid_folding(
     let copy_len = n2 - n1;
     let src_start = 2 * n1 - n2;
 
-    debug_assert!(n1 + copy_len <= norm.len(), "destination slice exceeds bounds");
-    debug_assert!(src_start + copy_len <= norm.len(), "source slice exceeds bounds");
+    debug_assert!(
+        n1 + copy_len <= norm.len(),
+        "destination slice exceeds bounds"
+    );
+    debug_assert!(
+        src_start + copy_len <= norm.len(),
+        "source slice exceeds bounds"
+    );
 
     let temp: Vec<OpusVal16> = norm[src_start..src_start + copy_len].to_vec();
     norm[n1..n1 + copy_len].copy_from_slice(&temp);
 
     if let (true, Some(norm2)) = (dual_stereo, norm2) {
-        debug_assert!(n1 + copy_len <= norm2.len(), "destination slice exceeds bounds");
-        debug_assert!(src_start + copy_len <= norm2.len(), "source slice exceeds bounds");
+        debug_assert!(
+            n1 + copy_len <= norm2.len(),
+            "destination slice exceeds bounds"
+        );
+        debug_assert!(
+            src_start + copy_len <= norm2.len(),
+            "source slice exceeds bounds"
+        );
 
         let temp2: Vec<OpusVal16> = norm2[src_start..src_start + copy_len].to_vec();
         norm2[n1..n1 + copy_len].copy_from_slice(&temp2);
@@ -1577,12 +1961,7 @@ pub(crate) fn denormalise_bands(
     let mut freq_idx = start_edge;
     let mut x_idx = start_edge;
 
-    for (band, &band_gain_log) in band_log_e
-        .iter()
-        .enumerate()
-        .take(end)
-        .skip(start)
-    {
+    for (band, &band_gain_log) in band_log_e.iter().enumerate().take(end).skip(start) {
         let band_end =
             m * usize::try_from(mode.e_bands[band + 1]).expect("band edge must be non-negative");
         assert!(band_end <= n, "band end exceeds MDCT length");
@@ -1605,8 +1984,8 @@ mod tests {
         BandCodingState, BandCtx, EPSILON, NORM_SCALING, SplitCtx, anti_collapse, bitexact_cos,
         bitexact_log2tan, celt_lcg_rand, compute_band_energies, compute_channel_weights,
         compute_qn, compute_theta, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
-        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands,
-        quant_band_n1, special_hybrid_folding, spreading_decision, stereo_merge, stereo_split,
+        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
+        special_hybrid_folding, spreading_decision, stereo_merge, stereo_split,
     };
     use crate::celt::entcode::BITRES;
     use crate::celt::math::celt_exp2;
