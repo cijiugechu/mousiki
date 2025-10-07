@@ -40,6 +40,9 @@ safely.
 - `stereo_merge` &rarr; mirrors the float mid/side reconstruction helper from
   `celt/bands.c`, including the energy guards and normalisation gains used when
   converting encoded mid/side pairs back to left/right channels.
+- `special_hybrid_folding` &rarr; ports the hybrid folding helper from
+  `celt/bands.c` that duplicates the initial PVQ samples so the second hybrid
+  band can reuse the first band's spectrum when folding.
 - `haar1` &rarr; ports the single-level Haar transform from `celt/bands.c` that
   mixes adjacent interleaved coefficients using an orthonormal sum/difference
   stage.

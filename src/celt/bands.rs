@@ -8,6 +8,7 @@
 //! higher-level control flow.
 
 use alloc::vec;
+use alloc::vec::Vec;
 
 use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 
@@ -881,6 +882,49 @@ pub(crate) fn stereo_merge(x: &mut [OpusVal16], y: &mut [OpusVal16], mid: OpusVa
     }
 }
 
+/// Duplicates the initial hybrid folding samples needed by the next band.
+///
+/// Mirrors the `special_hybrid_folding()` helper from `celt/bands.c`. The
+/// function ensures that enough low-frequency PVQ coefficients are available
+/// when the second hybrid band needs to fold spectrum from the first one. The
+/// decoder and the resynthesis-enabled encoder both depend on this behaviour to
+/// match the reference bitstream exactly.
+pub(crate) fn special_hybrid_folding(
+    mode: &OpusCustomMode,
+    norm: &mut [OpusVal16],
+    norm2: Option<&mut [OpusVal16]>,
+    start: usize,
+    m: usize,
+    dual_stereo: bool,
+) {
+    debug_assert!(start + 2 < mode.e_bands.len(), "hybrid folding requires two successor bands");
+
+    let e_bands = mode.e_bands;
+    let n1 = m * (e_bands[start + 1] - e_bands[start]) as usize;
+    let n2 = m * (e_bands[start + 2] - e_bands[start + 1]) as usize;
+
+    if n2 <= n1 {
+        return;
+    }
+
+    let copy_len = n2 - n1;
+    let src_start = 2 * n1 - n2;
+
+    debug_assert!(n1 + copy_len <= norm.len(), "destination slice exceeds bounds");
+    debug_assert!(src_start + copy_len <= norm.len(), "source slice exceeds bounds");
+
+    let temp: Vec<OpusVal16> = norm[src_start..src_start + copy_len].to_vec();
+    norm[n1..n1 + copy_len].copy_from_slice(&temp);
+
+    if let (true, Some(norm2)) = (dual_stereo, norm2) {
+        debug_assert!(n1 + copy_len <= norm2.len(), "destination slice exceeds bounds");
+        debug_assert!(src_start + copy_len <= norm2.len(), "source slice exceeds bounds");
+
+        let temp2: Vec<OpusVal16> = norm2[src_start..src_start + copy_len].to_vec();
+        norm2[n1..n1 + copy_len].copy_from_slice(&temp2);
+    }
+}
+
 /// Decides how aggressively PVQ pulses should be spread in the current frame.
 ///
 /// Mirrors the float configuration of `spreading_decision()` from
@@ -1325,8 +1369,8 @@ mod tests {
         BandCodingState, BandCtx, EPSILON, NORM_SCALING, SplitCtx, anti_collapse, bitexact_cos,
         bitexact_log2tan, celt_lcg_rand, compute_band_energies, compute_channel_weights,
         compute_qn, compute_theta, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
-        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
-        spreading_decision, stereo_merge, stereo_split,
+        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands,
+        quant_band_n1, special_hybrid_folding, spreading_decision, stereo_merge, stereo_split,
     };
     use crate::celt::entcode::BITRES;
     use crate::celt::math::celt_exp2;
@@ -1719,6 +1763,45 @@ mod tests {
         let mut right = [1e-3f32, -1e-3, 2e-3, -2e-3];
         stereo_merge(&mut left, &mut right, 0.0);
         assert_eq!(right, left);
+    }
+
+    #[test]
+    fn special_hybrid_folding_duplicates_primary_when_needed() {
+        let e_bands = [0i16, 1, 3, 6];
+        let mode = dummy_mode(&e_bands, 8);
+        let mut norm = vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
+
+        special_hybrid_folding(&mode, &mut norm, None, 0, 2, false);
+
+        assert_eq!(norm, vec![0.1, 0.2, 0.1, 0.2, 0.5, 0.6]);
+    }
+
+    #[test]
+    fn special_hybrid_folding_updates_secondary_when_dual_stereo() {
+        let e_bands = [0i16, 1, 3, 6];
+        let mode = dummy_mode(&e_bands, 8);
+        let mut norm = vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let mut norm2 = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        special_hybrid_folding(&mode, &mut norm, Some(&mut norm2), 0, 2, true);
+
+        assert_eq!(norm, vec![0.1, 0.2, 0.1, 0.2, 0.5, 0.6]);
+        assert_eq!(norm2, vec![1.0, 2.0, 1.0, 2.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn special_hybrid_folding_noops_when_second_band_not_wider() {
+        let e_bands = [0i16, 2, 3, 5];
+        let mode = dummy_mode(&e_bands, 4);
+        let mut norm = vec![0.0f32, 1.0, 2.0, 3.0];
+        let mut norm2 = vec![4.0f32, 5.0, 6.0, 7.0];
+        let expected_norm = norm.clone();
+        let expected_norm2 = norm2.clone();
+
+        special_hybrid_folding(&mode, &mut norm, Some(&mut norm2), 0, 1, true);
+
+        assert_eq!(norm, expected_norm);
+        assert_eq!(norm2, expected_norm2);
     }
 
     fn reference_ordery(stride: usize) -> &'static [usize] {
