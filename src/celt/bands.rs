@@ -11,13 +11,17 @@ use alloc::vec;
 
 use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
 
+use crate::celt::entcode::ec_tell_frac;
 use crate::celt::{
     BITRES, EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, celt_exp2,
     celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv, celt_udiv,
     dual_inner_prod, ec_ilog,
+    math::isqrt32,
     quant_bands::E_MEANS,
+    rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE},
     renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
+    vq::stereo_itheta,
 };
 use core::convert::TryFrom;
 
@@ -89,6 +93,317 @@ impl<'a, 'b> BandCodingState<'a, 'b> {
             Self::Encoder(_) => unreachable!("decoding requested on an encoder"),
         }
     }
+
+    #[inline]
+    fn tell_frac(&self) -> u32 {
+        match self {
+            Self::Encoder(enc) => ec_tell_frac(enc.ctx()),
+            Self::Decoder(dec) => ec_tell_frac(dec.ctx()),
+        }
+    }
+
+    #[inline]
+    fn encode_range(&mut self, fl: u32, fh: u32, ft: u32) {
+        match self {
+            Self::Encoder(enc) => enc.encode(fl, fh, ft),
+            Self::Decoder(_) => unreachable!("encoding requested on a decoder"),
+        }
+    }
+
+    #[inline]
+    fn decode_range(&mut self, ft: u32) -> u32 {
+        match self {
+            Self::Decoder(dec) => dec.decode(ft),
+            Self::Encoder(_) => unreachable!("decoding requested on an encoder"),
+        }
+    }
+
+    #[inline]
+    fn update_range(&mut self, fl: u32, fh: u32, ft: u32) {
+        match self {
+            Self::Decoder(dec) => dec.update(fl, fh, ft),
+            Self::Encoder(_) => unreachable!("decoder update invoked on an encoder"),
+        }
+    }
+
+    #[inline]
+    fn encode_uint(&mut self, value: u32, total: u32) {
+        match self {
+            Self::Encoder(enc) => enc.enc_uint(value, total),
+            Self::Decoder(_) => unreachable!("encoding requested on a decoder"),
+        }
+    }
+
+    #[inline]
+    fn decode_uint(&mut self, total: u32) -> u32 {
+        match self {
+            Self::Decoder(dec) => dec.dec_uint(total),
+            Self::Encoder(_) => unreachable!("decoding requested on an encoder"),
+        }
+    }
+
+    #[inline]
+    fn encode_bit_logp(&mut self, bit: i32, logp: u32) {
+        match self {
+            Self::Encoder(enc) => enc.enc_bit_logp(bit, logp),
+            Self::Decoder(_) => unreachable!("encoding requested on a decoder"),
+        }
+    }
+
+    #[inline]
+    fn decode_bit_logp(&mut self, logp: u32) -> i32 {
+        match self {
+            Self::Decoder(dec) => dec.dec_bit_logp(logp),
+            Self::Encoder(_) => unreachable!("decoding requested on an encoder"),
+        }
+    }
+}
+
+/// Split context mirroring the temporary state tracked in the C implementation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SplitCtx {
+    pub inv: bool,
+    pub imid: i32,
+    pub iside: i32,
+    pub delta: i32,
+    pub itheta: i32,
+    pub qalloc: i32,
+}
+
+fn mask_from_bits(bits: i32) -> u32 {
+    if bits <= 0 {
+        0
+    } else if bits >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << bits) - 1
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_theta<'a, 'b>(
+    ctx: &mut BandCtx<'a>,
+    sctx: &mut SplitCtx,
+    x: &mut [OpusVal16],
+    y: &mut [OpusVal16],
+    n: usize,
+    b: &mut i32,
+    b_current: i32,
+    b0: i32,
+    lm: i32,
+    stereo: bool,
+    fill: &mut u32,
+    coder: &mut BandCodingState<'a, 'b>,
+) {
+    debug_assert!(n > 0, "band size must be positive");
+    debug_assert!(x.len() >= n, "mid buffer shorter than band length");
+    debug_assert!(y.len() >= n, "side buffer shorter than band length");
+
+    let encode = ctx.encode;
+    let mode = ctx.mode;
+    let band = ctx.band;
+    let intensity = ctx.intensity;
+    let band_e = ctx.band_e;
+
+    let log_n = i32::from(mode.log_n[band]);
+    let pulse_cap = log_n + lm * ((1 << BITRES) as i32);
+    let offset = (pulse_cap >> 1)
+        - if stereo && n == 2 {
+            QTHETA_OFFSET_TWOPHASE
+        } else {
+            QTHETA_OFFSET
+        };
+
+    let mut qn = compute_qn(n as i32, *b, offset, pulse_cap, stereo);
+    if stereo && band >= intensity {
+        qn = 1;
+    }
+
+    let mut itheta = if encode {
+        stereo_itheta(x, y, stereo, n, ctx.arch)
+    } else {
+        0
+    };
+
+    let tell_before = coder.tell_frac() as i32;
+    let mut inv = false;
+    let imid;
+    let iside;
+    let mut delta;
+
+    if qn != 1 {
+        if encode {
+            if !stereo || ctx.theta_round == 0 {
+                itheta = ((itheta * qn) + 8192) >> 14;
+                if !stereo && ctx.avoid_split_noise && itheta > 0 && itheta < qn {
+                    let unquantized = celt_udiv((itheta * 16_384) as u32, qn as u32) as i32;
+                    let mid = bitexact_cos(unquantized as i16) as i32;
+                    let side = bitexact_cos((16_384 - unquantized) as i16) as i32;
+                    let log_ratio = bitexact_log2tan(side, mid);
+                    let scale = ((n as i32 - 1) << 7).max(0);
+                    delta = frac_mul16(scale, log_ratio);
+                    if delta > *b {
+                        itheta = qn;
+                    } else if delta < -*b {
+                        itheta = 0;
+                    }
+                }
+            } else {
+                let bias = if itheta > 8192 {
+                    32_767 / qn
+                } else {
+                    -32_767 / qn
+                };
+                let mut down = ((itheta * qn) + bias + 8_191) >> 14;
+                down = down.clamp(0, qn - 1);
+                itheta = if ctx.theta_round < 0 { down } else { down + 1 };
+            }
+        }
+
+        if stereo && n > 2 {
+            let p0 = 3;
+            let mut x_val = itheta;
+            let x0 = qn / 2;
+            let ft = p0 * (x0 + 1) + x0;
+            if encode {
+                let (fl, fh) = if x_val <= x0 {
+                    (p0 * x_val, p0 * (x_val + 1))
+                } else {
+                    let base = (x0 + 1) * p0;
+                    (base + (x_val - 1 - x0), base + (x_val - x0))
+                };
+                coder.encode_range(fl as u32, fh as u32, ft as u32);
+            } else {
+                let fs = coder.decode_range(ft as u32) as i32;
+                x_val = if fs < (x0 + 1) * p0 {
+                    fs / p0
+                } else {
+                    x0 + 1 + (fs - (x0 + 1) * p0)
+                };
+                let (fl, fh) = if x_val <= x0 {
+                    (p0 * x_val, p0 * (x_val + 1))
+                } else {
+                    let base = (x0 + 1) * p0;
+                    (base + (x_val - 1 - x0), base + (x_val - x0))
+                };
+                coder.update_range(fl as u32, fh as u32, ft as u32);
+                itheta = x_val;
+            }
+        } else if b0 > 1 || stereo {
+            if encode {
+                coder.encode_uint(itheta as u32, (qn + 1) as u32);
+            } else {
+                itheta = coder.decode_uint((qn + 1) as u32) as i32;
+            }
+        } else {
+            let half_qn = qn >> 1;
+            let ft = (half_qn + 1) * (half_qn + 1);
+            if encode {
+                let (fl, fs) = if itheta <= half_qn {
+                    let fl = (itheta * (itheta + 1)) >> 1;
+                    (fl, itheta + 1)
+                } else {
+                    let fs = qn + 1 - itheta;
+                    let fl = ft - (((qn + 1 - itheta) * (qn + 2 - itheta)) >> 1);
+                    (fl, fs)
+                };
+                coder.encode_range(fl as u32, (fl + fs) as u32, ft as u32);
+            } else {
+                let fm = coder.decode_range(ft as u32) as i32;
+                let threshold = (half_qn * (half_qn + 1)) >> 1;
+                let (fl, fs);
+                if fm < threshold {
+                    let root = isqrt32((8 * fm + 1) as u32) as i32;
+                    itheta = (root - 1) >> 1;
+                    fl = (itheta * (itheta + 1)) >> 1;
+                    fs = itheta + 1;
+                } else {
+                    let root = isqrt32((8 * (ft - fm - 1) + 1) as u32) as i32;
+                    itheta = (2 * (qn + 1) - root) >> 1;
+                    fl = ft - (((qn + 1 - itheta) * (qn + 2 - itheta)) >> 1);
+                    fs = qn + 1 - itheta;
+                }
+                coder.update_range(fl as u32, (fl + fs) as u32, ft as u32);
+            }
+        }
+
+        debug_assert!(itheta >= 0);
+        if qn > 0 {
+            itheta = celt_udiv((itheta * 16_384) as u32, qn as u32) as i32;
+        }
+        if encode && stereo {
+            if itheta == 0 {
+                intensity_stereo(mode, x, y, band_e, band, n);
+            } else {
+                let x_band = &mut x[..n];
+                let y_band = &mut y[..n];
+                stereo_split(x_band, y_band);
+            }
+        }
+    } else if stereo {
+        if encode {
+            inv = itheta > 8_192 && !ctx.disable_inv;
+            if inv {
+                for sample in y.iter_mut().take(n) {
+                    *sample = -*sample;
+                }
+            }
+            intensity_stereo(mode, x, y, band_e, band, n);
+        }
+
+        let threshold = 2 << BITRES;
+        if *b > threshold && ctx.remaining_bits > threshold {
+            if encode {
+                coder.encode_bit_logp(if inv { 1 } else { 0 }, 2);
+            } else {
+                inv = coder.decode_bit_logp(2) != 0;
+            }
+        } else {
+            inv = false;
+        }
+
+        if ctx.disable_inv {
+            inv = false;
+        }
+        itheta = 0;
+    }
+
+    let tell_after = coder.tell_frac() as i32;
+    let qalloc = tell_after - tell_before;
+    *b -= qalloc;
+
+    let b_mask = mask_from_bits(b_current);
+    let band_scale = ((n as i32 - 1) << 7).max(0);
+
+    if itheta == 0 {
+        imid = 32_767;
+        iside = 0;
+        *fill &= b_mask;
+        delta = -16_384;
+    } else if itheta == 16_384 {
+        imid = 0;
+        iside = 32_767;
+        let shifted = if b_current <= 0 {
+            0
+        } else if b_current >= 32 {
+            u32::MAX
+        } else {
+            b_mask << (b_current as u32)
+        };
+        *fill &= shifted;
+        delta = 16_384;
+    } else {
+        imid = i32::from(bitexact_cos(itheta as i16));
+        iside = i32::from(bitexact_cos((16_384 - itheta) as i16));
+        delta = frac_mul16(band_scale, bitexact_log2tan(iside, imid));
+    }
+
+    sctx.inv = inv;
+    sctx.imid = imid;
+    sctx.iside = iside;
+    sctx.delta = delta;
+    sctx.itheta = itheta;
+    sctx.qalloc = qalloc;
 }
 
 /// Indexing table for converting natural-order Hadamard coefficients into the
@@ -1001,9 +1316,9 @@ pub(crate) fn denormalise_bands(
 #[cfg(test)]
 mod tests {
     use super::{
-        BandCodingState, BandCtx, EPSILON, NORM_SCALING, anti_collapse, bitexact_cos,
+        BandCodingState, BandCtx, EPSILON, NORM_SCALING, SplitCtx, anti_collapse, bitexact_cos,
         bitexact_log2tan, celt_lcg_rand, compute_band_energies, compute_channel_weights,
-        compute_qn, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
+        compute_qn, compute_theta, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
         hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
         spreading_decision, stereo_merge, stereo_split,
     };
@@ -1600,6 +1915,134 @@ mod tests {
         assert_eq!(ctx.remaining_bits, 0);
         assert!((x_dec[0] + NORM_SCALING).abs() <= f32::EPSILON * 2.0);
         assert!((y_dec[0] - NORM_SCALING).abs() <= f32::EPSILON * 2.0);
+    }
+
+    #[test]
+    fn compute_theta_encode_decode_round_trip() {
+        let e_bands = [0i16, 2, 4];
+        let log_n = [0i16, 0];
+        let mdct = MdctLookup::new(4, 0);
+        let mode = OpusCustomMode {
+            sample_rate: 48_000,
+            overlap: 0,
+            num_ebands: e_bands.len() - 1,
+            effective_ebands: e_bands.len() - 1,
+            pre_emphasis: [0.0; 4],
+            e_bands: &e_bands,
+            max_lm: 0,
+            num_short_mdcts: 1,
+            short_mdct_size: 4,
+            num_alloc_vectors: 0,
+            alloc_vectors: &[],
+            log_n: &log_n,
+            window: &[],
+            mdct,
+            cache: PulseCacheData::default(),
+        };
+        let band_e = vec![0.75_f32, 0.6, 0.65, 0.7];
+        let n = 4;
+        let initial_b = 48 << BITRES;
+        let b_current = 2;
+        let b0 = 2;
+        let lm = 1;
+        let stereo = true;
+        let initial_fill = (1u32 << (b0 as u32)) - 1;
+
+        let mut x_encode = vec![0.45_f32, -0.2, 0.05, -0.35];
+        let mut y_encode = vec![0.15_f32, 0.32, -0.28, 0.4];
+        let x_original = x_encode.clone();
+        let y_original = y_encode.clone();
+
+        let mut ctx_encode = BandCtx {
+            encode: true,
+            resynth: false,
+            mode: &mode,
+            band: 1,
+            intensity: mode.num_ebands + 4,
+            spread: SPREAD_NORMAL,
+            tf_change: 0,
+            remaining_bits: 160 << BITRES,
+            band_e: &band_e,
+            seed: 0x4567_89ab,
+            arch: 0,
+            theta_round: 0,
+            disable_inv: false,
+            avoid_split_noise: false,
+        };
+
+        let mut sctx_encode = SplitCtx::default();
+        let mut b_encode = initial_b;
+        let mut fill_encode = initial_fill;
+
+        let mut storage = vec![0u8; 32];
+        {
+            let mut enc = EcEnc::new(&mut storage);
+            {
+                let mut coder = BandCodingState::Encoder(&mut enc);
+                compute_theta(
+                    &mut ctx_encode,
+                    &mut sctx_encode,
+                    &mut x_encode,
+                    &mut y_encode,
+                    n,
+                    &mut b_encode,
+                    b_current,
+                    b0,
+                    lm,
+                    stereo,
+                    &mut fill_encode,
+                    &mut coder,
+                );
+            }
+            enc.enc_done();
+        }
+
+        let mut x_decode = x_original;
+        let mut y_decode = y_original;
+        let mut ctx_decode = BandCtx {
+            encode: false,
+            resynth: false,
+            mode: &mode,
+            band: 1,
+            intensity: mode.num_ebands + 4,
+            spread: SPREAD_NORMAL,
+            tf_change: 0,
+            remaining_bits: 160 << BITRES,
+            band_e: &band_e,
+            seed: 0x4567_89ab,
+            arch: 0,
+            theta_round: 0,
+            disable_inv: false,
+            avoid_split_noise: false,
+        };
+
+        let mut sctx_decode = SplitCtx::default();
+        let mut b_decode = initial_b;
+        let mut fill_decode = initial_fill;
+
+        let mut decode_buf = storage.clone();
+        {
+            let mut dec = EcDec::new(&mut decode_buf);
+            let mut coder = BandCodingState::Decoder(&mut dec);
+            compute_theta(
+                &mut ctx_decode,
+                &mut sctx_decode,
+                &mut x_decode,
+                &mut y_decode,
+                n,
+                &mut b_decode,
+                b_current,
+                b0,
+                lm,
+                stereo,
+                &mut fill_decode,
+                &mut coder,
+            );
+        }
+
+        assert_eq!(sctx_encode, sctx_decode);
+        assert_eq!(b_encode, b_decode);
+        assert_eq!(fill_encode, fill_decode);
     }
 
     #[test]
