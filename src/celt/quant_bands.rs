@@ -7,11 +7,10 @@
 //! logarithmic band energy buffers shared between the encoder and decoder.
 
 use alloc::vec;
-use alloc::vec::Vec;
 
-use crate::celt::entcode::{EcWindow, ec_tell, ec_tell_frac};
+use crate::celt::entcode::{ec_tell, ec_tell_frac};
 use crate::celt::entdec::EcDec;
-use crate::celt::entenc::EcEnc;
+use crate::celt::entenc::{EcEnc, EcEncSnapshot};
 use crate::celt::rate::MAX_FINE_BITS;
 use crate::celt::types::{CeltGlog, OpusCustomMode};
 use libm::floorf;
@@ -22,59 +21,6 @@ const LAPLACE_MINP: u32 = 1;
 const LAPLACE_NMIN: u32 = 16;
 
 const INV_Q15: f32 = 1.0 / 16_384.0;
-
-#[derive(Clone)]
-struct EcEncSnapshot {
-    storage: u32,
-    end_offs: u32,
-    end_window: EcWindow,
-    nend_bits: i32,
-    nbits_total: i32,
-    offs: u32,
-    rng: u32,
-    val: u32,
-    ext: u32,
-    rem: i32,
-    error: i32,
-    buffer: Vec<u8>,
-}
-
-impl EcEncSnapshot {
-    fn capture(enc: &EcEnc<'_>) -> Self {
-        let ctx = enc.ctx();
-        Self {
-            storage: ctx.storage,
-            end_offs: ctx.end_offs,
-            end_window: ctx.end_window,
-            nend_bits: ctx.nend_bits,
-            nbits_total: ctx.nbits_total,
-            offs: ctx.offs,
-            rng: ctx.rng,
-            val: ctx.val,
-            ext: ctx.ext,
-            rem: ctx.rem,
-            error: ctx.error,
-            buffer: ctx.buffer().to_vec(),
-        }
-    }
-
-    fn restore(&self, enc: &mut EcEnc<'_>) {
-        let ctx = enc.ctx_mut();
-        assert_eq!(self.buffer.len(), ctx.buffer().len());
-        ctx.storage = self.storage;
-        ctx.end_offs = self.end_offs;
-        ctx.end_window = self.end_window;
-        ctx.nend_bits = self.nend_bits;
-        ctx.nbits_total = self.nbits_total;
-        ctx.offs = self.offs;
-        ctx.rng = self.rng;
-        ctx.val = self.val;
-        ctx.ext = self.ext;
-        ctx.rem = self.rem;
-        ctx.error = self.error;
-        ctx.buffer_mut().copy_from_slice(&self.buffer);
-    }
-}
 
 fn laplace_get_freq1(fs0: u32, decay: u32) -> u32 {
     let remaining = TOTAL_FREQ - LAPLACE_MINP * (2 * LAPLACE_NMIN) - fs0;
@@ -701,12 +647,7 @@ pub(crate) fn quant_fine_energy(
 
     let stride = mode.num_ebands;
 
-    for (band, &fine) in fine_quant
-        .iter()
-        .enumerate()
-        .take(end)
-        .skip(start)
-    {
+    for (band, &fine) in fine_quant.iter().enumerate().take(end).skip(start) {
         if fine <= 0 {
             continue;
         }
@@ -828,12 +769,7 @@ pub(crate) fn unquant_fine_energy(
 
     let stride = mode.num_ebands;
 
-    for (band, &fine) in fine_quant
-        .iter()
-        .enumerate()
-        .take(end)
-        .skip(start)
-    {
+    for (band, &fine) in fine_quant.iter().enumerate().take(end).skip(start) {
         if fine <= 0 {
             continue;
         }

@@ -11,6 +11,7 @@ use crate::celt::entcode::{
     EC_WINDOW_SIZE, EcCtx, EcWindow, celt_udiv, ec_ilog,
 };
 use crate::celt::types::{OpusInt32, OpusUint32};
+use alloc::vec::Vec;
 
 /// Range encoder backed by a mutable byte slice.
 #[derive(Debug)]
@@ -318,6 +319,63 @@ impl<'a> EcEnc<'a> {
     #[must_use]
     pub fn range_bytes(&self) -> OpusUint32 {
         self.ctx.range_bytes()
+    }
+}
+
+/// Snapshot of the encoder state used to perform RDO experiments.
+#[derive(Clone)]
+pub struct EcEncSnapshot {
+    storage: OpusUint32,
+    end_offs: OpusUint32,
+    end_window: EcWindow,
+    nend_bits: OpusInt32,
+    nbits_total: OpusInt32,
+    offs: OpusUint32,
+    rng: OpusUint32,
+    val: OpusUint32,
+    ext: OpusUint32,
+    rem: OpusInt32,
+    error: OpusInt32,
+    buffer: Vec<u8>,
+}
+
+impl EcEncSnapshot {
+    /// Captures the current encoder state, including the output buffer.
+    #[must_use]
+    pub fn capture(enc: &EcEnc<'_>) -> Self {
+        let ctx = enc.ctx();
+        Self {
+            storage: ctx.storage,
+            end_offs: ctx.end_offs,
+            end_window: ctx.end_window,
+            nend_bits: ctx.nend_bits,
+            nbits_total: ctx.nbits_total,
+            offs: ctx.offs,
+            rng: ctx.rng,
+            val: ctx.val,
+            ext: ctx.ext,
+            rem: ctx.rem,
+            error: ctx.error,
+            buffer: ctx.buffer().to_vec(),
+        }
+    }
+
+    /// Restores a previously captured encoder state.
+    pub fn restore(&self, enc: &mut EcEnc<'_>) {
+        let ctx = enc.ctx_mut();
+        assert_eq!(self.buffer.len(), ctx.buffer().len());
+        ctx.storage = self.storage;
+        ctx.end_offs = self.end_offs;
+        ctx.end_window = self.end_window;
+        ctx.nend_bits = self.nend_bits;
+        ctx.nbits_total = self.nbits_total;
+        ctx.offs = self.offs;
+        ctx.rng = self.rng;
+        ctx.val = self.val;
+        ctx.ext = self.ext;
+        ctx.rem = self.rem;
+        ctx.error = self.error;
+        ctx.buffer_mut().copy_from_slice(&self.buffer);
     }
 }
 
