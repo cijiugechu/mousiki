@@ -1128,10 +1128,10 @@ fn quant_band_stereo<'a, 'b>(
             y[1] *= side;
             let tmp0 = x[0];
             x[0] = tmp0 - y[0];
-            y[0] = tmp0 + y[0];
+            y[0] += tmp0;
             let tmp1 = x[1];
             x[1] = tmp1 - y[1];
-            y[1] = tmp1 + y[1];
+            y[1] += tmp1;
         }
     } else {
         let mut mbits = (b - delta) / 2;
@@ -1205,7 +1205,7 @@ fn quant_band_stereo<'a, 'b>(
                 lm,
                 lowband_out,
                 1.0,
-                lowband_scratch.as_deref_mut(),
+                lowband_scratch,
                 fill_local,
                 coder,
             );
