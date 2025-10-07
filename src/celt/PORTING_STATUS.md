@@ -73,8 +73,9 @@ safely.
   applying the hysteresis used to stabilise PVQ spreading decisions while
   updating the high-frequency tapset selection heuristics.
  - `quant_all_bands` &rarr; covers the top-level PVQ loop from `celt/bands.c`
-   that allocates per-band bit budgets, tracks folding state, and invokes the
-   mono/stereo band quantisers while updating the collapse masks.
+   that allocates per-band bit budgets, tracks folding state, evaluates the
+   two-pass theta RDO experiment, and invokes the mono/stereo band quantisers
+   while updating the collapse masks.
 
 ### `celt.rs`
 - `resampling_factor` &rarr; mirrors the sampling-rate-to-downsampling-factor
