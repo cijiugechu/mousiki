@@ -16,8 +16,8 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::celt::{TF_SELECT_TABLE, init_caps, resampling_factor};
-use crate::celt::cpu_support::opus_select_arch;
+use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
+use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
@@ -44,6 +44,15 @@ const LPC_ORDER: usize = 24;
 /// Rust keeps the allocation layout compatible with the ported routines that
 /// will eventually consume these buffers.
 const DECODE_BUFFER_SIZE: usize = 2048;
+
+/// Maximum pitch period considered by the PLC pitch search.
+const MAX_PERIOD: i32 = 1024;
+
+/// Upper bound on the pitch lag probed by the PLC search.
+const PLC_PITCH_LAG_MAX: i32 = 720;
+
+/// Lower bound on the pitch lag probed by the PLC search.
+const PLC_PITCH_LAG_MIN: i32 = 100;
 
 /// Maximum number of channels supported by the initial CELT decoder port.
 ///
@@ -105,6 +114,96 @@ impl RangeDecoderState {
     pub(crate) fn decoder(&mut self) -> &mut EcDec<'static> {
         &mut self.decoder
     }
+}
+
+/// Debug-time validation mirroring `validate_celt_decoder()` from the C sources.
+///
+/// The reference implementation relies on this helper to assert that the decoder
+/// state remains internally consistent after initialisation and before decoding
+/// a frame. The Rust translation mirrors the same invariants so regressions are
+/// caught early while the remaining decode path is ported.
+pub(crate) fn validate_celt_decoder(decoder: &OpusCustomDecoder<'_>) {
+    debug_assert_eq!(
+        decoder.overlap, decoder.mode.overlap,
+        "decoder overlap must match the mode configuration",
+    );
+
+    let mode_band_limit = decoder.mode.num_ebands as i32;
+    let standard_limit = 21;
+    let custom_limit = 25;
+    let end_limit = if mode_band_limit <= standard_limit {
+        mode_band_limit
+    } else {
+        mode_band_limit.min(custom_limit)
+    };
+    debug_assert!(
+        decoder.end_band <= end_limit,
+        "end band {} exceeds supported limit {}",
+        decoder.end_band,
+        end_limit
+    );
+
+    debug_assert!(
+        decoder.channels == 1 || decoder.channels == 2,
+        "decoder must be mono or stereo",
+    );
+    debug_assert!(
+        decoder.stream_channels == 1 || decoder.stream_channels == 2,
+        "stream must be mono or stereo",
+    );
+    debug_assert!(
+        decoder.downsample > 0,
+        "downsample factor must be strictly positive",
+    );
+    debug_assert!(
+        decoder.start_band == 0 || decoder.start_band == 17,
+        "decoder start band must be 0 or 17",
+    );
+    debug_assert!(
+        decoder.start_band < decoder.end_band,
+        "start band must precede end band",
+    );
+
+    debug_assert!(
+        decoder.arch >= 0 && decoder.arch <= OPUS_ARCHMASK,
+        "architecture selection out of range",
+    );
+
+    debug_assert!(
+        decoder.last_pitch_index <= PLC_PITCH_LAG_MAX,
+        "last pitch index exceeds maximum lag",
+    );
+    debug_assert!(
+        decoder.last_pitch_index >= PLC_PITCH_LAG_MIN || decoder.last_pitch_index == 0,
+        "last pitch index below minimum lag",
+    );
+
+    debug_assert!(
+        decoder.postfilter_period < MAX_PERIOD,
+        "postfilter period must remain below MAX_PERIOD",
+    );
+    debug_assert!(
+        decoder.postfilter_period >= COMBFILTER_MINPERIOD as i32 || decoder.postfilter_period == 0,
+        "postfilter period must be zero or above the comb-filter minimum",
+    );
+    debug_assert!(
+        decoder.postfilter_period_old < MAX_PERIOD,
+        "previous postfilter period must remain below MAX_PERIOD",
+    );
+    debug_assert!(
+        decoder.postfilter_period_old >= COMBFILTER_MINPERIOD as i32
+            || decoder.postfilter_period_old == 0,
+        "previous postfilter period must be zero or above the comb-filter minimum",
+    );
+
+    debug_assert!(
+        (0..=2).contains(&decoder.postfilter_tapset),
+        "postfilter tapset must be in the inclusive range [0, 2]",
+    );
+    debug_assert!(
+        (0..=2).contains(&decoder.postfilter_tapset_old),
+        "previous postfilter tapset must be in the inclusive range [0, 2]",
+    );
 }
 
 /// Metadata describing the parsed frame header and bit allocation.
@@ -691,7 +790,8 @@ fn validate_channel_layout(
 mod tests {
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderInitError, LPC_ORDER, MAX_CHANNELS,
-        RangeDecoderState, prepare_frame, tf_decode, validate_channel_layout,
+        RangeDecoderState, prepare_frame, tf_decode, validate_celt_decoder,
+        validate_channel_layout,
     };
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
@@ -749,6 +849,58 @@ mod tests {
         assert!(alloc.old_log_e.iter().all(|&v| v == 0.0));
         assert!(alloc.old_log_e2.iter().all(|&v| v == 0.0));
         assert!(alloc.background_log_e.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn validate_celt_decoder_accepts_default_configuration() {
+        let e_bands = [0, 2, 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 2];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let decoder = alloc.as_decoder(&mode, 1, 1);
+
+        validate_celt_decoder(&decoder);
+    }
+
+    #[test]
+    #[should_panic]
+    fn validate_celt_decoder_rejects_invalid_channel_count() {
+        let e_bands = [0, 2, 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 2];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let mut decoder = alloc.as_decoder(&mode, 1, 1);
+        decoder.channels = 3;
+
+        validate_celt_decoder(&decoder);
     }
 
     #[test]

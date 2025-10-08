@@ -120,9 +120,12 @@ safely.
   &rarr; translate the frame-header parsing and bit-allocation bookkeeping that
   feed `celt_decode_with_ec()`, including range-decoder setup, dynamic
   allocation boosts, TF selection, and the post-filter parameter decoding.
+- `validate_celt_decoder` &rarr; mirrors the debug-time sanity checks from
+  `celt/celt_decoder.c`, ensuring the decoder state remains internally
+  consistent before the synthesis path is executed.
 - **Still to port:** the synthesis side is largely unimplemented. The C
-  routines `validate_celt_decoder()`, `celt_decoder_get_size()`,
-  `opus_custom_decoder_get_size()`, `celt_decoder_init()`, and the public
+  routines `celt_decoder_get_size()`, `opus_custom_decoder_get_size()`,
+  `celt_decoder_init()`, and the public
   wrappers such as `opus_custom_decode()`/`opus_custom_decode_float()` remain to
   be mirrored so the allocation matches the reference layout exactly. The
   signal reconstruction helpers (`deemphasis[_stereo]_simple()`,

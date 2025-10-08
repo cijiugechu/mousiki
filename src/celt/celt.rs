@@ -10,7 +10,7 @@
 use crate::celt::types::{CeltCoef, OpusCustomMode, OpusInt32, OpusVal16, OpusVal32};
 
 /// Minimum comb-filter period supported by the scalar implementation.
-const COMBFILTER_MINPERIOD: usize = 15;
+pub(crate) const COMBFILTER_MINPERIOD: usize = 15;
 
 /// Tapset gains mirroring the tables embedded in the reference implementation.
 const TAPSET_GAINS: [[OpusVal16; 3]; 3] = [
