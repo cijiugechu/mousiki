@@ -17,7 +17,7 @@ use crate::celt::bands::compute_band_energies;
 use crate::celt::celt::resampling_factor;
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entenc::EcEnc;
-use crate::celt::math::celt_sqrt;
+use crate::celt::math::{celt_sqrt, frac_div32_q29};
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::amp2_log2;
@@ -939,6 +939,95 @@ fn median_of_5(values: &[CeltGlog]) -> CeltGlog {
     }
 }
 
+/// Solves the two-tap LPC system used by the tone detector.
+///
+/// Mirrors the helper of the same name in `celt/celt_encoder.c`. The function
+/// accumulates the forward and backward autocorrelation terms for a lag of
+/// `delay` samples and applies the covariance method to derive the prediction
+/// coefficients. It returns `true` when the linear system is ill-conditioned,
+/// matching the non-zero failure return of the C implementation.
+pub(crate) fn tone_lpc(x: &[OpusVal16], delay: usize, lpc: &mut [OpusVal32; 2]) -> bool {
+    let len = x.len();
+    assert!(len > 2 * delay, "tone_lpc requires len > 2 * delay");
+
+    let mut r00 = 0.0f32;
+    let mut r01 = 0.0f32;
+    let mut r02 = 0.0f32;
+
+    let limit = len - 2 * delay;
+    for i in 0..limit {
+        let xi = x[i];
+        r00 += xi * xi;
+        r01 += xi * x[i + delay];
+        r02 += xi * x[i + 2 * delay];
+    }
+
+    let mut edges = 0.0f32;
+    let tail2_base = len - 2 * delay;
+    for i in 0..delay {
+        let tail = x[tail2_base + i];
+        let head = x[i];
+        edges += tail * tail - head * head;
+    }
+    let mut r11 = r00 + edges;
+
+    edges = 0.0;
+    let tail1_base = len - delay;
+    for i in 0..delay {
+        let tail = x[tail1_base + i];
+        let head = x[i + delay];
+        edges += tail * tail - head * head;
+    }
+    let r22 = r11 + edges;
+
+    edges = 0.0;
+    for i in 0..delay {
+        let head0 = x[i];
+        let head1 = x[i + delay];
+        let tail0 = x[tail2_base + i];
+        let tail1 = x[tail1_base + i];
+        edges += tail0 * tail1 - head0 * head1;
+    }
+    let mut r12 = r01 + edges;
+
+    let r00_total = r00 + r22;
+    let r01_total = r01 + r12;
+    let r11_total = 2.0 * r11;
+    let r02_total = 2.0 * r02;
+    let r12_total = r12 + r01;
+
+    r00 = r00_total;
+    r01 = r01_total;
+    r11 = r11_total;
+    r02 = r02_total;
+    r12 = r12_total;
+
+    let den = (r00 * r11) - (r01 * r01);
+    if den < 0.001 * (r00 * r11) {
+        return true;
+    }
+
+    let num1 = (r02 * r11) - (r01 * r12);
+    if num1 >= den {
+        lpc[1] = 1.0;
+    } else if num1 <= -den {
+        lpc[1] = -1.0;
+    } else {
+        lpc[1] = frac_div32_q29(num1, den);
+    }
+
+    let num0 = (r00 * r12) - (r02 * r01);
+    if 0.5 * num0 >= den {
+        lpc[0] = 1.999_999;
+    } else if 0.5 * num0 <= -den {
+        lpc[0] = -1.999_999;
+    } else {
+        lpc[0] = frac_div32_q29(num0, den);
+    }
+
+    false
+}
+
 /// Returns the median of three consecutive logarithmic band energies.
 ///
 /// This mirrors the scalar helper `median_of_3()` from `celt/celt_encoder.c`
@@ -971,13 +1060,14 @@ mod tests {
     };
     use super::{
         CeltEncoderCtlError, compute_vbr, median_of_3, median_of_5, opus_custom_encoder_ctl,
-        patch_transient_decision, transient_analysis,
+        patch_transient_decision, tone_lpc, transient_analysis,
     };
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
     use crate::celt::types::AnalysisInfo;
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
+    use core::f32::consts::PI;
 
     fn get_lsb_depth(encoder: &mut OpusCustomEncoder<'_>) -> i32 {
         let mut value = 0;
@@ -1403,5 +1493,27 @@ mod tests {
             let expected = sorted[1];
             assert_eq!(median_of_3(&data), expected);
         }
+    }
+
+    #[test]
+    fn tone_lpc_recovers_sinusoid_predictor() {
+        let len = 240;
+        let delay = 1;
+        let mut samples = vec![0.0f32; len];
+        let omega = 2.0 * PI * 0.1;
+        for (n, slot) in samples.iter_mut().enumerate() {
+            *slot = (omega * n as f32).sin();
+        }
+
+        let mut lpc = [0.0f32; 2];
+        let failed = tone_lpc(&samples, delay, &mut lpc);
+        assert!(
+            !failed,
+            "tone_lpc should succeed for a well-conditioned tone"
+        );
+
+        let expected_cos = 2.0 * omega.cos();
+        assert!((lpc[0] - expected_cos).abs() < 1e-3);
+        assert!((lpc[1] + 1.0).abs() < 1e-3);
     }
 }
