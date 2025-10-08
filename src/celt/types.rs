@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use super::mini_kfft::MiniKissFft;
+use super::vq::SPREAD_NORMAL;
 use libm::cosf;
 
 /// Corresponds to `opus_int16` in the C implementation.
@@ -385,6 +386,42 @@ impl<'a> OpusCustomEncoder<'a> {
             old_log_e2,
             energy_error,
         }
+    }
+
+    /// Mirrors the behaviour of the `OPUS_RESET_STATE` control in the reference
+    /// encoder by clearing the runtime buffers and restoring the adaptive
+    /// heuristics to their defaults.
+    pub fn reset_runtime_state(&mut self) {
+        self.rng = 0;
+        self.spread_decision = SPREAD_NORMAL;
+        self.delayed_intra = 1.0;
+        self.tonal_average = 256;
+        self.last_coded_bands = 0;
+        self.hf_average = 0;
+        self.tapset_decision = 0;
+        self.prefilter_period = 0;
+        self.prefilter_gain = 0.0;
+        self.prefilter_tapset = 0;
+        self.consec_transient = 0;
+        self.analysis = AnalysisInfo::default();
+        self.silk_info = SilkInfo::default();
+        self.preemph_mem_encoder = [0.0; 2];
+        self.preemph_mem_decoder = [0.0; 2];
+        self.vbr_reservoir = 0;
+        self.vbr_drift = 0;
+        self.vbr_offset = 0;
+        self.vbr_count = 0;
+        self.overlap_max = 0.0;
+        self.stereo_saving = 0.0;
+        self.intensity = 0;
+        self.energy_mask = None;
+        self.spec_avg = 0.0;
+        self.in_mem.fill(0.0);
+        self.prefilter_mem.fill(0.0);
+        self.old_band_e.fill(0.0);
+        self.old_log_e.fill(-28.0);
+        self.old_log_e2.fill(-28.0);
+        self.energy_error.fill(0.0);
     }
 }
 
