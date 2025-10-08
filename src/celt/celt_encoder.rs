@@ -14,12 +14,14 @@ use alloc::vec::Vec;
 
 use crate::celt::celt::resampling_factor;
 use crate::celt::cpu_support::opus_select_arch;
+use crate::celt::math::celt_sqrt;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusUint32,
-    SilkInfo,
+    OpusVal16, OpusVal32, SilkInfo,
 };
 use core::cmp::min;
+use libm::floorf;
 
 /// Maximum number of channels supported by the scalar encoder path.
 const MAX_CHANNELS: usize = 2;
@@ -360,6 +362,181 @@ pub(crate) fn opus_custom_encoder_ctl<'enc, 'req>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn transient_analysis(
+    input: &[OpusVal32],
+    len: usize,
+    channels: usize,
+    tf_estimate: &mut OpusVal16,
+    tf_chan: &mut usize,
+    allow_weak_transients: bool,
+    weak_transient: &mut bool,
+    tone_freq: OpusVal16,
+    toneishness: OpusVal32,
+) -> bool {
+    const INV_TABLE: [u8; 128] = [
+        255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18,
+        17, 16, 16, 15, 15, 14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9,
+        8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
+    ];
+
+    debug_assert!(channels * len <= input.len());
+
+    let mut tmp = vec![0.0f32; len];
+    *weak_transient = false;
+
+    let mut forward_decay = 0.0625f32;
+    if allow_weak_transients {
+        forward_decay = 0.03125f32;
+    }
+
+    let len2 = len / 2;
+    let mut mask_metric = 0.0f32;
+    *tf_chan = 0;
+
+    for c in 0..channels {
+        let mut mem0 = 0.0f32;
+        let mut mem1 = 0.0f32;
+        for i in 0..len {
+            let x = input[c * len + i];
+            let y = mem0 + x;
+            let mem00 = mem0;
+            mem0 = mem0 - x + 0.5 * mem1;
+            mem1 = x - mem00;
+            tmp[i] = y;
+        }
+
+        for value in tmp.iter_mut().take(len.min(12)) {
+            *value = 0.0;
+        }
+
+        let mut mean = 0.0f32;
+        mem0 = 0.0;
+        for i in 0..len2 {
+            let x0 = tmp[2 * i];
+            let x1 = tmp[2 * i + 1];
+            let x2 = x0 * x0 + x1 * x1;
+            mean += x2;
+            mem0 = x2 + (1.0 - forward_decay) * mem0;
+            tmp[i] = forward_decay * mem0;
+        }
+
+        mem0 = 0.0;
+        let mut max_e = 0.0f32;
+        for i in (0..len2).rev() {
+            mem0 = tmp[i] + 0.875 * mem0;
+            let value = 0.125 * mem0;
+            tmp[i] = value;
+            if value > max_e {
+                max_e = value;
+            }
+        }
+
+        let frame_energy = celt_sqrt(mean * max_e * 0.5 * len2 as f32);
+        // Equivalent to the floating-point branch of the original `norm` computation.
+        let norm = (len2 as f32) / (frame_energy * 0.5 + 1e-15f32);
+
+        let mut unmask = 0i32;
+        for i in (12..len2.saturating_sub(5)).step_by(4) {
+            debug_assert!(!tmp[i].is_nan());
+            debug_assert!(!norm.is_nan());
+            let scaled = floorf(64.0 * norm * (tmp[i] + 1e-15f32));
+            let clamped = scaled.clamp(0.0, 127.0) as usize;
+            unmask += i32::from(INV_TABLE[clamped]);
+        }
+
+        if len2 > 17 {
+            let denom = 6 * (len2 as i32 - 17);
+            if denom > 0 {
+                let value = (64 * unmask * 4) as f32 / denom as f32;
+                if value > mask_metric {
+                    mask_metric = value;
+                    *tf_chan = c;
+                }
+            }
+        }
+    }
+
+    let mut is_transient = mask_metric > 200.0;
+    if toneishness > 0.98 && tone_freq < 0.026 {
+        is_transient = false;
+    }
+    if allow_weak_transients && is_transient && mask_metric < 600.0 {
+        is_transient = false;
+        *weak_transient = true;
+    }
+
+    let mut tf_max = celt_sqrt(27.0 * mask_metric) - 42.0;
+    if tf_max < 0.0 {
+        tf_max = 0.0;
+    }
+    let tf_max = tf_max.min(163.0);
+    let value = (0.0069 * tf_max - 0.139).max(0.0);
+    *tf_estimate = celt_sqrt(value);
+    is_transient
+}
+
+fn patch_transient_decision(
+    new_e: &[CeltGlog],
+    old_e: &[CeltGlog],
+    nb_ebands: usize,
+    start: usize,
+    end: usize,
+    channels: usize,
+) -> bool {
+    debug_assert!(new_e.len() >= channels * nb_ebands);
+    debug_assert!(old_e.len() >= channels * nb_ebands);
+    debug_assert!(start < end);
+    debug_assert!(end <= nb_ebands);
+
+    let mut spread_old = vec![0.0f32; nb_ebands];
+
+    if channels == 1 {
+        spread_old[start] = old_e[start];
+        for i in (start + 1)..end {
+            let prev = spread_old[i - 1] - 1.0;
+            spread_old[i] = prev.max(old_e[i]);
+        }
+    } else {
+        spread_old[start] = old_e[start].max(old_e[start + nb_ebands]);
+        for i in (start + 1)..end {
+            let prev = spread_old[i - 1] - 1.0;
+            let pair = old_e[i].max(old_e[i + nb_ebands]);
+            spread_old[i] = prev.max(pair);
+        }
+    }
+
+    if end >= 2 {
+        for i in (start..=(end - 2)).rev() {
+            let next = spread_old[i + 1] - 1.0;
+            if next > spread_old[i] {
+                spread_old[i] = next;
+            }
+        }
+    }
+
+    let start_i = start.max(2);
+    let mut mean_diff = 0.0f32;
+    for c in 0..channels {
+        let base = c * nb_ebands;
+        for i in start_i..(end.saturating_sub(1)) {
+            let x1 = new_e[base + i].max(0.0);
+            let x2 = spread_old[i].max(0.0);
+            let diff = (x1 - x2).max(0.0);
+            mean_diff += diff;
+        }
+    }
+
+    let denom = (channels * (end.saturating_sub(1).saturating_sub(start_i))) as f32;
+    if denom > 0.0 {
+        mean_diff /= denom;
+    }
+
+    mean_diff > 1.0
+}
+
 // TODO: Port the remaining encoding routines (transient analysis, VBR control,
 //       and the main `celt_encode_with_ec()` path) once the supporting modules
 //       are available in Rust.
@@ -370,10 +547,13 @@ mod tests {
         COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, EncoderCtlRequest,
         MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
     };
-    use super::{CeltEncoderCtlError, opus_custom_encoder_ctl};
+    use super::{
+        CeltEncoderCtlError, opus_custom_encoder_ctl, patch_transient_decision, transient_analysis,
+    };
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
     use crate::celt::vq::SPREAD_NORMAL;
+    use alloc::vec;
 
     fn get_lsb_depth(encoder: &mut OpusCustomEncoder<'_>) -> i32 {
         let mut value = 0;
@@ -402,6 +582,77 @@ mod tests {
         opus_custom_encoder_ctl(encoder, EncoderCtlRequest::GetMode(&mut slot)).unwrap();
         let mode_ref = slot.expect("mode");
         assert_eq!(mode_ref as *const OpusCustomMode, expected);
+    }
+
+    #[test]
+    fn transient_analysis_outputs_valid_metrics() {
+        let len = 64;
+        let mut input = vec![0.0f32; len];
+        input[0] = 10.0;
+        let mut tf_estimate = 0.0f32;
+        let mut tf_chan = 0usize;
+        let mut weak = false;
+
+        let _detected = transient_analysis(
+            &input,
+            len,
+            1,
+            &mut tf_estimate,
+            &mut tf_chan,
+            false,
+            &mut weak,
+            0.1,
+            0.0,
+        );
+
+        assert!(tf_estimate >= 0.0);
+        assert_eq!(tf_chan, 0);
+        assert!(!weak);
+    }
+
+    #[test]
+    fn transient_analysis_rejects_flat_signal() {
+        let len = 64;
+        let input = vec![0.5f32; len];
+        let mut tf_estimate = 0.0f32;
+        let mut tf_chan = 0usize;
+        let mut weak = false;
+
+        let detected = transient_analysis(
+            &input,
+            len,
+            1,
+            &mut tf_estimate,
+            &mut tf_chan,
+            true,
+            &mut weak,
+            0.0,
+            1.0,
+        );
+
+        assert!(!detected);
+        assert!(!weak);
+        assert_eq!(tf_chan, 0);
+        assert!(tf_estimate >= 0.0);
+    }
+
+    #[test]
+    fn patch_transient_decision_returns_boolean() {
+        let nb_ebands = 5;
+        let start = 0;
+        let end = nb_ebands;
+        let channels = 1;
+        let mut new_e = vec![0.0f32; nb_ebands];
+        let mut old_e = vec![0.0f32; nb_ebands];
+
+        old_e.fill(-2.0);
+        new_e.fill(-2.0);
+        new_e[2] = 2.0;
+
+        let increase = patch_transient_decision(&new_e, &old_e, nb_ebands, start, end, channels);
+        let baseline = patch_transient_decision(&old_e, &old_e, nb_ebands, start, end, channels);
+
+        assert!(u8::from(increase) >= u8::from(baseline));
     }
 
     #[test]
