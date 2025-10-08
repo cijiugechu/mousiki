@@ -8,6 +8,7 @@
 mod bands;
 #[allow(clippy::module_inception)]
 mod celt;
+mod celt_decoder;
 mod cpu_support;
 mod cwrs;
 mod entcode;
@@ -32,6 +33,8 @@ mod vq;
 pub(crate) use bands::*;
 #[allow(unused_imports)]
 pub(crate) use celt::*;
+#[allow(unused_imports)]
+pub(crate) use celt_decoder::*;
 #[allow(unused_imports)]
 pub(crate) use cpu_support::*;
 #[allow(unused_imports)]
