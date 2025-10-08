@@ -269,7 +269,7 @@ mod tests {
         let rem = if offs < storage {
             let b = buf[offs as usize];
             offs += 1;
-            b as OpusInt32
+            OpusInt32::from(b)
         } else {
             0
         };
@@ -283,7 +283,7 @@ mod tests {
             rem = if offs < storage {
                 let b = buf[offs as usize];
                 offs += 1;
-                b as OpusInt32
+                OpusInt32::from(b)
             } else {
                 0
             };

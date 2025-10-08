@@ -8,11 +8,9 @@ pub(crate) fn ilog(x: isize) -> isize {
 }
 
 pub(crate) fn sign(value: i32) -> i32 {
-    if value < 0 {
-        -1
-    } else if value == 0 {
-        0
-    } else {
-        1
+    match value.cmp(&0) {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
     }
 }

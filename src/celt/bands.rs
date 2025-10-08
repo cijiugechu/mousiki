@@ -2843,8 +2843,8 @@ mod tests {
         let end = 2;
         let spread_weight = [1, 1];
         let mut spectrum = vec![1.0f32; channels * m * mode.short_mdct_size];
-        for idx in 0..8 {
-            spectrum[idx] = 0.1;
+        for slot in spectrum.iter_mut().take(8) {
+            *slot = 0.1;
         }
         let mut average = 0;
         let mut hf_average = 0;
@@ -2879,8 +2879,8 @@ mod tests {
         let end = 1;
         let spread_weight = [1];
         let mut spectrum = vec![1.0f32; channels * m * mode.short_mdct_size];
-        for idx in 0..8 {
-            spectrum[idx] = 0.01;
+        for slot in spectrum.iter_mut().take(8) {
+            *slot = 0.01;
         }
         let mut average = 0;
         let mut hf_average = 0;
@@ -3443,11 +3443,11 @@ mod tests {
         let mut norm = vec![0.0f32; freq.len()];
 
         let mut band_e = vec![0.0f32; mode.num_ebands * channels];
-        for b in 0..mode.num_ebands {
+        for (b, value) in band_e.iter_mut().enumerate().take(mode.num_ebands) {
             let start = m * (mode.e_bands[b] as usize);
             let stop = m * (mode.e_bands[b + 1] as usize);
             let sum: f32 = freq[start..stop].iter().map(|v| v * v).sum();
-            band_e[b] = (1e-27_f32 + sum).sqrt();
+            *value = (1e-27_f32 + sum).sqrt();
         }
 
         normalise_bands(
@@ -3460,7 +3460,7 @@ mod tests {
             m,
         );
 
-        for b in 0..mode.num_ebands {
+        for (b, _) in band_e.iter().enumerate().take(mode.num_ebands) {
             let start = m * (mode.e_bands[b] as usize);
             let stop = m * (mode.e_bands[b + 1] as usize);
             let gain = 1.0 / (1e-27_f32 + band_e[b]);

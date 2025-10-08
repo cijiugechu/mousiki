@@ -113,12 +113,10 @@ pub(crate) fn ec_laplace_encode_p0(enc: &mut RangeEncoder, value: i32, p0: u16, 
     sign_icdf[1] = sign_icdf[0] / 2;
     sign_icdf[2] = 0;
 
-    let sign_symbol = if value == 0 {
-        0
-    } else if value > 0 {
-        1
-    } else {
-        2
+    let sign_symbol = match value.cmp(&0) {
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+        core::cmp::Ordering::Less => 2,
     };
     enc.encode_icdf16(sign_symbol as usize, &sign_icdf, 15);
 

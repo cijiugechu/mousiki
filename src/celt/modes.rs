@@ -639,7 +639,7 @@ mod tests {
     #[test]
     fn computes_layout_for_48k_10ms_frame() {
         let frame_size = 480usize;
-        let resolution = ((48_000 + frame_size as i32) / (2 * frame_size as i32)) as i32;
+        let resolution = (48_000 + frame_size as i32) / (2 * frame_size as i32);
         let layout = compute_ebands(48_000, frame_size, resolution);
         let expected: Vec<i16> = vec![
             0, 2, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30, 34, 40, 46, 54, 64, 74, 88, 106, 128, 154,
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn computes_layout_for_16k_frame() {
         let frame_size = 320usize;
-        let resolution = ((16_000 + frame_size as i32) / (2 * frame_size as i32)) as i32;
+        let resolution = (16_000 + frame_size as i32) / (2 * frame_size as i32);
         let layout = compute_ebands(16_000, frame_size, resolution);
         let expected: Vec<i16> = vec![
             0, 4, 8, 12, 16, 20, 26, 32, 38, 44, 52, 60, 70, 80, 92, 108, 126, 148, 176, 212, 256,
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn allocation_table_interpolates_for_custom_mode() {
         let short_mdct_size = 240usize;
-        let resolution = ((48_000 + short_mdct_size as i32) / (2 * short_mdct_size as i32)) as i32;
+        let resolution = (48_000 + short_mdct_size as i32) / (2 * short_mdct_size as i32);
         let layout = compute_ebands(48_000, short_mdct_size, resolution);
         let table = compute_allocation_table(48_000, short_mdct_size, &layout);
         assert_eq!(table.num_vectors(), BITALLOC_SIZE);

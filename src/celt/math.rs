@@ -391,7 +391,7 @@ mod tests {
 
         for (&input_sample, &output_sample) in input.iter().zip(&output) {
             let output_sample = i32::from(output_sample);
-            assert!(output_sample >= -32_768 && output_sample <= 32_767);
+            assert!((-32_768..=32_767).contains(&output_sample));
 
             let scaled = (input_sample * CELT_SIG_SCALE).clamp(-32_768.0, 32_767.0);
             let diff = scaled - output_sample as f32;

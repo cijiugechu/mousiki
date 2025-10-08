@@ -263,7 +263,7 @@ mod tests {
         for n in order..signal.len() {
             let noise = {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let val = (seed >> 1) as f64 / (u32::MAX >> 1) as f64;
+                let val = f64::from(seed >> 1) / f64::from(u32::MAX >> 1);
                 (val - 0.5) * 0.1
             };
 

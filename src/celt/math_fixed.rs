@@ -12,12 +12,10 @@
 use crate::celt::math::celt_ilog2;
 
 fn vshr32(a: i32, shift: i32) -> i32 {
-    if shift > 0 {
-        a >> shift
-    } else if shift < 0 {
-        a.wrapping_shl((-shift) as u32)
-    } else {
-        a
+    match shift.cmp(&0) {
+        core::cmp::Ordering::Greater => a >> shift,
+        core::cmp::Ordering::Less => a.wrapping_shl((-shift) as u32),
+        core::cmp::Ordering::Equal => a,
     }
 }
 
@@ -243,7 +241,7 @@ mod tests {
         assert_eq!(celt_cos_norm(0), 32_767);
 
         for raw in (0..=1 << 16).step_by(1 << 12) {
-            let value = celt_cos_norm(raw as i32) as i32;
+            let value = i32::from(celt_cos_norm(raw));
             assert!((-32_767..=32_767).contains(&value));
         }
     }

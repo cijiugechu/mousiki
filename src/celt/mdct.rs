@@ -257,7 +257,7 @@ mod tests {
 
     fn naive_fft(input: &[KissFftCpx], inverse: bool) -> Vec<KissFftCpx> {
         let n = input.len();
-        let mut out = vec![KissFftCpx::default(); n];
+        let mut out = Vec::with_capacity(n);
         for k in 0..n {
             let mut sum = KissFftCpx::default();
             for (n_idx, sample) in input.iter().enumerate() {
@@ -271,7 +271,7 @@ mod tests {
                 sum.r += sample.r * cos_term - sample.i * sin_term;
                 sum.i += sample.r * sin_term + sample.i * cos_term;
             }
-            out[k] = sum;
+            out.push(sum);
         }
         out
     }

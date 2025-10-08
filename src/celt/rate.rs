@@ -1067,7 +1067,7 @@ mod tests {
         for lm in 0..=1 {
             let row_offset = (lm + 1) * rows;
             for band in 0..rows {
-                let index = mode.cache.index[row_offset + band] as i32;
+                let index = i32::from(mode.cache.index[row_offset + band]);
                 if index < 0 {
                     continue;
                 }

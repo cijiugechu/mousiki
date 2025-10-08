@@ -311,7 +311,7 @@ mod tests {
 
     fn reference_log2_frac(val: u32, frac: i32) -> i32 {
         let scale = 1 << frac;
-        ((val as f64).log2() * f64::from(scale)).ceil() as i32
+        (f64::from(val).log2() * f64::from(scale)).ceil() as i32
     }
 
     #[test]
@@ -384,15 +384,15 @@ mod tests {
         let k_max = 5;
         let reference = reference_u_table(n_max, k_max);
 
-        for n in 2..=n_max {
+        for (n, _) in reference.iter().enumerate().take(n_max + 1).skip(2) {
             for k in 1..=k_max {
                 let mut u = vec![0u32; k + 2];
                 let v = ncwrs_urow(n, k, &mut u);
-                for idx in 0..=k + 1 {
-                    assert_eq!(u[idx] as u64, reference[n][idx], "U({n}, {idx}) mismatch");
+                for (idx, _) in u.iter().enumerate().take(k + 1 + 1) {
+                    assert_eq!(u64::from(u[idx]), reference[n][idx], "U({n}, {idx}) mismatch");
                 }
                 let expected_v = reference[n][k] + reference[n][k + 1];
-                assert_eq!(v as u64, expected_v, "V({n}, {k}) mismatch");
+                assert_eq!(u64::from(v), expected_v, "V({n}, {k}) mismatch");
             }
         }
     }
@@ -494,10 +494,10 @@ mod tests {
         }
 
         let table = reference_u_table(n, max_k);
-        for k in 1..=max_k {
+        for (k, slot) in bits.iter_mut().enumerate().take(max_k + 1).skip(1) {
             let total = table[n][k] + table[n][k + 1];
             let required = reference_log2_frac(total as u32, frac);
-            bits[k] = required as i16;
+            *slot = required as i16;
         }
 
         bits

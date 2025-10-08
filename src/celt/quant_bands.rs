@@ -1148,7 +1148,7 @@ mod tests {
         super::log2_amp(&mode, 1, 4, &mut e, &log_e, channels);
 
         for channel in 0..channels {
-            for band in 1..4 {
+            for (band, _) in E_MEANS.iter().enumerate().take(4).skip(1) {
                 let idx = channel * mode.num_ebands + band;
                 let expected = crate::celt::math::celt_exp2(log_e[idx] + E_MEANS[band]);
                 assert!((e[idx] - expected).abs() <= 1e-6);

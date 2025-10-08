@@ -714,10 +714,9 @@ mod tests {
 
         for channel in x {
             downsampled[0] += 0.25 * channel[1] + 0.5 * channel[0];
-            for i in 1..half_len {
+            for (i, slot) in downsampled.iter_mut().enumerate().take(half_len).skip(1) {
                 let base = 2 * i;
-                downsampled[i] +=
-                    0.25 * channel[base - 1] + 0.5 * channel[base] + 0.25 * channel[base + 1];
+                *slot += 0.25 * channel[base - 1] + 0.5 * channel[base] + 0.25 * channel[base + 1];
             }
         }
 
@@ -725,9 +724,9 @@ mod tests {
         celt_autocorr(&downsampled, &mut ac, None, 0, 4, arch);
 
         ac[0] *= 1.0001;
-        for i in 1..=4 {
+        for (i, value) in ac.iter_mut().enumerate().skip(1) {
             let coeff = 0.008 * i as f32;
-            ac[i] -= ac[i] * coeff * coeff;
+            *value -= *value * coeff * coeff;
         }
 
         let mut lpc = [0.0; 4];
@@ -961,7 +960,7 @@ mod tests {
             let diff = (t1 - prev_period_half).abs();
             let cont = if diff <= 1 {
                 prev_gain
-            } else if diff <= 2 && 5 * ((k * k) as i32) < t0_half {
+        } else if diff <= 2 && 5 * (k * k) < t0_half {
                 0.5 * prev_gain
             } else {
                 0.0

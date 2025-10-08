@@ -449,9 +449,9 @@ mod tests {
         let mut err = 0.0;
         let mut ener = 0.0;
         for (&orig, &proc) in original.iter().zip(processed.iter()) {
-            let diff = (orig - proc) as f64;
+            let diff = f64::from(orig - proc);
             err += diff * diff;
-            ener += (orig as f64) * (orig as f64);
+            ener += f64::from(orig) * f64::from(orig);
         }
         if err == 0.0 {
             return f64::INFINITY;

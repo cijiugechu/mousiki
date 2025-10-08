@@ -49,10 +49,10 @@ pub fn decode_stream(data: &[u8]) -> Result<usize, ()> {
             Err(_) => return Err(()),
         };
 
-        if let Some(first_segment) = segments.get(0) {
-            if first_segment.starts_with(OPUS_TAGS_SIGNATURE) {
-                continue;
-            }
+        if let Some(first_segment) = segments.get(0)
+            && first_segment.starts_with(OPUS_TAGS_SIGNATURE)
+        {
+            continue;
         }
 
         for segment in segments.into_iter() {
