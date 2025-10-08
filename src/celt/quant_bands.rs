@@ -28,7 +28,7 @@ fn laplace_get_freq1(fs0: u32, decay: u32) -> u32 {
         0
     } else {
         let factor = 16_384 - decay;
-        ((remaining as u64 * factor as u64) >> 15) as u32
+        ((u64::from(remaining) * u64::from(factor)) >> 15) as u32
     }
 }
 
@@ -50,7 +50,7 @@ fn laplace_encode(enc: &mut EcEnc<'_>, value: &mut i32, mut fs: u32, decay: u32)
         while fs > 0 && i < val {
             fs *= 2;
             fl += fs + 2 * LAPLACE_MINP;
-            fs = ((fs as u64 * decay as u64) >> 15) as u32;
+            fs = ((u64::from(fs) * u64::from(decay)) >> 15) as u32;
             i += 1;
         }
 
@@ -89,7 +89,7 @@ fn laplace_decode(dec: &mut EcDec<'_>, mut fs: u32, decay: u32) -> i32 {
         while fs > LAPLACE_MINP && fm >= fl + 2 * fs {
             fs *= 2;
             fl += fs;
-            fs = (((fs - 2 * LAPLACE_MINP) as u64 * decay as u64) >> 15) as u32;
+            fs = ((u64::from(fs - 2 * LAPLACE_MINP) * u64::from(decay)) >> 15) as u32;
             fs += LAPLACE_MINP;
             val += 1;
         }
@@ -277,7 +277,7 @@ fn quant_coarse_energy_impl(
     let channels_i32 = channels as i32;
 
     if initial_tell + 3 <= budget {
-        enc.enc_bit_logp(intra as i32, 3);
+        enc.enc_bit_logp(i32::from(intra), 3);
     }
 
     for band in start..end {
@@ -316,8 +316,8 @@ fn quant_coarse_energy_impl(
                 laplace_encode(
                     enc,
                     &mut symbol,
-                    (prob_model[pi] as u32) << 7,
-                    (prob_model[pi + 1] as u32) << 6,
+                    u32::from(prob_model[pi]) << 7,
+                    u32::from(prob_model[pi + 1]) << 6,
                 );
                 qi = symbol;
             } else if budget - tell >= 2 {
@@ -512,8 +512,8 @@ pub(crate) fn unquant_coarse_energy(
                 let pi = 2 * core::cmp::min(band, 20);
                 laplace_decode(
                     dec,
-                    (prob_model[pi] as u32) << 7,
-                    (prob_model[pi + 1] as u32) << 6,
+                    u32::from(prob_model[pi]) << 7,
+                    u32::from(prob_model[pi + 1]) << 6,
                 )
             } else if budget - tell >= 2 {
                 let sym = dec.dec_icdf(&SMALL_ENERGY_ICDF, 2);

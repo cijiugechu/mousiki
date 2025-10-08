@@ -130,7 +130,7 @@ impl<'a> RangeDecoder<'a> {
         loop {
             symbol += 1;
             prev_range = range;
-            let entry = icdf[symbol as usize] as u32;
+            let entry = u32::from(icdf[symbol as usize]);
             range = scale * entry;
             if val >= range {
                 break;
@@ -153,7 +153,7 @@ impl<'a> RangeDecoder<'a> {
         }
 
         self.bits_read += 1;
-        ((self.buf[index] >> (7 - offset)) & 1) as u32
+        u32::from((self.buf[index] >> (7 - offset)) & 1)
     }
 
     fn get_bits(&mut self, n: usize) -> u32 {
@@ -294,11 +294,11 @@ impl RangeEncoder {
         if symbol != EC_SYM_MAX {
             let carry = (symbol >> EC_SYM_BITS) as u8;
             if self.rem >= 0 {
-                let byte = (self.rem as u32 + carry as u32) as u8;
+                let byte = (self.rem as u32 + u32::from(carry)) as u8;
                 self.data.push(byte);
             }
             if self.ext > 0 {
-                let repeated = ((EC_SYM_MAX + carry as u32) & EC_SYM_MAX) as u8;
+                let repeated = ((EC_SYM_MAX + u32::from(carry)) & EC_SYM_MAX) as u8;
                 for _ in 0..self.ext {
                     self.data.push(repeated);
                 }
@@ -324,12 +324,12 @@ impl RangeEncoder {
         let total = 1u32 << bits;
 
         if low > 0 {
-            let offset = (r as u64) * (total - low) as u64;
+            let offset = u64::from(r) * u64::from(total - low);
             self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
-            let width = (r as u64) * (high - low) as u64;
+            let width = u64::from(r) * u64::from(high - low);
             self.range_size = width as u32;
         } else {
-            let offset = (r as u64) * (total - high) as u64;
+            let offset = u64::from(r) * u64::from(total - high);
             self.range_size -= offset as u32;
         }
 
@@ -340,13 +340,13 @@ impl RangeEncoder {
         let r = self.range_size >> ftb;
 
         if symbol > 0 {
-            let prev = icdf[symbol - 1] as u32;
-            let curr = icdf[symbol] as u32;
-            let offset = (r as u64) * prev as u64;
+            let prev = u32::from(icdf[symbol - 1]);
+            let curr = u32::from(icdf[symbol]);
+            let offset = u64::from(r) * u64::from(prev);
             self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
-            self.range_size = ((r as u64) * (prev - curr) as u64) as u32;
+            self.range_size = (u64::from(r) * u64::from(prev - curr)) as u32;
         } else {
-            let offset = (r as u64) * icdf[symbol] as u64;
+            let offset = u64::from(r) * u64::from(icdf[symbol]);
             self.range_size -= offset as u32;
         }
 

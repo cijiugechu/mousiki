@@ -21,7 +21,7 @@ fn laplace_get_freq1(fs0: u32, decay: u32) -> u32 {
         0
     } else {
         let factor = 16384u32 - decay;
-        ((ft as u64 * factor as u64) >> 15) as u32
+        ((u64::from(ft) * u64::from(factor)) >> 15) as u32
     }
 }
 
@@ -43,7 +43,7 @@ pub(crate) fn ec_laplace_encode(enc: &mut RangeEncoder, value: &mut i32, mut fs:
         while fs > 0 && i < val {
             fs *= 2;
             fl += fs + 2 * LAPLACE_MINP;
-            fs = ((fs as u64 * decay as u64) >> 15) as u32;
+            fs = ((u64::from(fs) * u64::from(decay)) >> 15) as u32;
             i += 1;
         }
 
@@ -82,7 +82,7 @@ pub(crate) fn ec_laplace_decode(dec: &mut RangeDecoder, mut fs: u32, decay: u32)
         while fs > LAPLACE_MINP && fm >= fl + 2 * fs {
             fs *= 2;
             fl += fs;
-            fs = (((fs - 2 * LAPLACE_MINP) as u64 * decay as u64) >> 15) as u32;
+            fs = ((u64::from(fs - 2 * LAPLACE_MINP) * u64::from(decay)) >> 15) as u32;
             fs += LAPLACE_MINP;
             val += 1;
         }
@@ -125,10 +125,10 @@ pub(crate) fn ec_laplace_encode_p0(enc: &mut RangeEncoder, value: i32, p0: u16, 
     let magnitude = value.abs();
     if magnitude != 0 {
         let mut icdf = [0u16; 8];
-        icdf[0] = max(7u32, decay as u32) as u16;
+        icdf[0] = max(7u32, u32::from(decay)) as u16;
         for i in 1..7 {
             let baseline = max(0, 7 - i as i32) as u32;
-            let decayed = (icdf[i - 1] as u32 * decay as u32) >> 15;
+            let decayed = (u32::from(icdf[i - 1]) * u32::from(decay)) >> 15;
             icdf[i] = max(baseline, decayed) as u16;
         }
         icdf[7] = 0;
@@ -158,10 +158,10 @@ pub(crate) fn ec_laplace_decode_p0(dec: &mut RangeDecoder, p0: u16, decay: u16) 
 
     if sign != 0 {
         let mut icdf = [0u16; 8];
-        icdf[0] = max(7u32, decay as u32) as u16;
+        icdf[0] = max(7u32, u32::from(decay)) as u16;
         for i in 1..7 {
             let baseline = max(0, 7 - i as i32) as u32;
-            let decayed = (icdf[i - 1] as u32 * decay as u32) >> 15;
+            let decayed = (u32::from(icdf[i - 1]) * u32::from(decay)) >> 15;
             icdf[i] = max(baseline, decayed) as u16;
         }
         icdf[7] = 0;

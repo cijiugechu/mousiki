@@ -294,7 +294,7 @@ pub fn celt_udiv(n: OpusUint32, d: OpusUint32) -> OpusUint32 {
     } else {
         let t = ec_ilog(d & d.wrapping_neg()) as u32;
         debug_assert!(t >= 1);
-        let q = ((SMALL_DIV_TABLE[(d >> t) as usize] as u64) * ((n >> (t - 1)) as u64)) >> 32;
+        let q = (u64::from(SMALL_DIV_TABLE[(d >> t) as usize]) * u64::from(n >> (t - 1))) >> 32;
         let q = q as OpusUint32;
         q + OpusUint32::from(n.wrapping_sub(q * d) >= d)
     }

@@ -586,7 +586,7 @@ impl Decoder {
 
         let mut pitch_lags = [0i16; SUBFRAME_COUNT];
         for (idx, value) in pitch_lags.iter_mut().enumerate() {
-            let offset = lag_cb[contour_index][idx] as i32;
+            let offset = i32::from(lag_cb[contour_index][idx]);
             let candidate = lag as i32 + offset;
             *value = candidate.clamp(lag_min as i32, lag_max as i32) as i16;
         }
@@ -1530,7 +1530,7 @@ impl Decoder {
 
         for (k, &value) in n1_q15.as_slice().iter().enumerate() {
             let i = (value >> 8) as usize;
-            let f = (value & 255) as i32;
+            let f = i32::from(value & 255);
             let cos_val = Q12_COSINE_TABLE_FOR_LSFCONVERION[i];
             let cos_next = Q12_COSINE_TABLE_FOR_LSFCONVERION[i + 1];
 
@@ -1548,8 +1548,8 @@ impl Decoder {
         q_q16[1] = -c_q17[1];
 
         for k in 1..d2 {
-            let coeff_even = c_q17[2 * k] as i64;
-            let coeff_odd = c_q17[2 * k + 1] as i64;
+            let coeff_even = i64::from(c_q17[2 * k]);
+            let coeff_odd = i64::from(c_q17[2 * k + 1]);
 
             p_q16[k + 1] =
                 p_q16[k - 1] * 2 - ((coeff_even * i64::from(p_q16[k]) + 32_768) >> 16) as i32;
@@ -1753,7 +1753,7 @@ fn normalize_lsf_stabilization(nlsf_q15: &mut [i16], d_lpc: isize, bandwidth: Ba
         let center_freq_q15 =
             ((((nlsf_q15[i as usize - 1] as isize) + (nlsf_q15[i as usize] as isize) + 1) >> 1)
                 as i32)
-                .clamp(min_center_q15 as i32, max_center_q15 as i32) as isize;
+                .clamp(i32::from(min_center_q15), i32::from(max_center_q15)) as isize;
 
         //    NLSF_Q15[i-1] = center_freq_Q15 - (NDeltaMin_Q15[i]>>1)
         //    NLSF_Q15[i] = NLSF_Q15[i-1] + NDeltaMin_Q15[i]
@@ -1880,9 +1880,9 @@ fn normalize_line_spectral_frequency_coefficients(
         //               (cb1_Q8[k]<<7) + (res_Q10[k]<<14)/w_Q9[k], 32767)
         //
         // https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.3
-        let cb1_val = (cb1_q8[i1 as usize][k] as i32) << 7;
-        let res_val = (res_q10[k] as i32) << 14;
-        let w_val = w_q9[k] as i32;
+        let cb1_val = i32::from(cb1_q8[i1 as usize][k]) << 7;
+        let res_val = i32::from(res_q10[k]) << 14;
+        let w_val = i32::from(w_q9[k]);
         let result = cb1_val + res_val / w_val;
 
         nlsf_q15[k] = result.clamp(0, 32767) as i16;

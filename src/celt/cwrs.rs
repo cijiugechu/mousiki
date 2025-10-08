@@ -277,7 +277,7 @@ pub(crate) fn get_required_bits(bits: &mut [OpusInt16], n: usize, max_k: usize, 
     bits[0] = 0;
     if n == 1 {
         let value = 1i32 << frac;
-        debug_assert!(value <= OpusInt16::MAX as i32);
+        debug_assert!(value <= i32::from(OpusInt16::MAX));
         for slot in bits.iter_mut().take(max_k + 1).skip(1) {
             *slot = value as OpusInt16;
         }
@@ -293,7 +293,7 @@ pub(crate) fn get_required_bits(bits: &mut [OpusInt16], n: usize, max_k: usize, 
             .expect("V(n, k) exceeded 32 bits");
         let required = log2_frac(total, frac);
         debug_assert!(required >= 0);
-        debug_assert!(required <= OpusInt16::MAX as OpusInt32);
+        debug_assert!(required <= OpusInt32::from(OpusInt16::MAX));
         *slot = required as OpusInt16;
     }
 }

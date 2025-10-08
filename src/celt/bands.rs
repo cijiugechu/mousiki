@@ -270,8 +270,8 @@ pub(crate) fn compute_theta<'a, 'b>(
                 itheta = ((itheta * qn) + 8192) >> 14;
                 if !stereo && ctx.avoid_split_noise && itheta > 0 && itheta < qn {
                     let unquantized = celt_udiv((itheta * 16_384) as u32, qn as u32) as i32;
-                    let mid = bitexact_cos(unquantized as i16) as i32;
-                    let side = bitexact_cos((16_384 - unquantized) as i16) as i32;
+                    let mid = i32::from(bitexact_cos(unquantized as i16));
+                    let side = i32::from(bitexact_cos((16_384 - unquantized) as i16));
                     let log_ratio = bitexact_log2tan(side, mid);
                     let scale = ((n as i32 - 1) << 7).max(0);
                     delta = frac_mul16(scale, log_ratio);
@@ -603,7 +603,7 @@ fn quant_band_n1_channel<'a, 'b>(
     if ctx.remaining_bits >= bit_budget {
         if ctx.encode {
             debug_assert!(coder.is_encoder());
-            sign = (samples[0] < 0.0) as i32;
+            sign = i32::from(samples[0] < 0.0);
             coder.encode_bits(sign as u32, 1);
         } else {
             debug_assert!(!coder.is_encoder());
@@ -675,7 +675,7 @@ fn quant_partition<'a, 'b>(
     let encode = ctx.encode;
     let spread = ctx.spread;
 
-    let cache_index = mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band] as i32;
+    let cache_index = i32::from(mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band]);
     let cache_slice = if cache_index >= 0 {
         &mode.cache.bits[cache_index as usize..]
     } else {
@@ -1426,9 +1426,9 @@ pub(crate) fn quant_all_bands<'a, 'b>(
 
             for fold in fold_start..fold_end {
                 let base = fold * channels;
-                x_cm |= collapse_masks.get(base).copied().unwrap_or(0) as u32;
+                x_cm |= u32::from(collapse_masks.get(base).copied().unwrap_or(0));
                 let right_index = base + channels - 1;
-                y_cm |= collapse_masks.get(right_index).copied().unwrap_or(0) as u32;
+                y_cm |= u32::from(collapse_masks.get(right_index).copied().unwrap_or(0));
             }
         }
 
@@ -2034,7 +2034,7 @@ pub(crate) fn anti_collapse(
         let sqrt_1 = celt_rsqrt((width << lm) as f32);
 
         for channel in 0..channels {
-            let mask = collapse_masks[band * channels + channel] as u32;
+            let mask = u32::from(collapse_masks[band * channels + channel]);
             let channel_base = channel * size;
             let band_base = channel_base + (band_begin << lm);
             let band_len = width << lm;
@@ -2303,7 +2303,7 @@ pub(crate) fn spreading_decision(
         nb_bands > 0,
         "spreading analysis requires at least one band"
     );
-    let scaled = ((sum as i64) << 8) as u32;
+    let scaled = (i64::from(sum) << 8) as u32;
     let denom = nb_bands as u32;
     let mut sum = celt_udiv(scaled, denom) as i32;
     sum = (sum + *average) >> 1;

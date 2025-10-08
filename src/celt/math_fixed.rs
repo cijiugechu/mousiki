@@ -26,7 +26,7 @@ fn pshr32(a: i32, shift: u32) -> i32 {
         a
     } else {
         let bias = 1i64 << (shift - 1);
-        ((a as i64 + bias) >> shift) as i32
+        ((i64::from(a) + bias) >> shift) as i32
     }
 }
 
@@ -35,7 +35,7 @@ fn round16(value: i32, bits: u32) -> i16 {
 }
 
 fn mult16_16(a: i16, b: i16) -> i32 {
-    (a as i32) * (b as i32)
+    i32::from(a) * i32::from(b)
 }
 
 fn mult16_16_q15(a: i16, b: i16) -> i16 {
@@ -47,11 +47,11 @@ fn mult16_16_p15(a: i16, b: i16) -> i16 {
 }
 
 fn mult16_32_q15(a: i16, b: i32) -> i32 {
-    ((a as i64 * b as i64) >> 15) as i32
+    ((i64::from(a) * i64::from(b)) >> 15) as i32
 }
 
 fn mult32_32_q31(a: i32, b: i32) -> i32 {
-    ((a as i64 * b as i64) >> 31) as i32
+    ((i64::from(a) * i64::from(b)) >> 31) as i32
 }
 
 fn shl32(value: i32, shift: u32) -> i32 {
@@ -59,7 +59,7 @@ fn shl32(value: i32, shift: u32) -> i32 {
 }
 
 fn shl16(value: i16, shift: u32) -> i16 {
-    (value as i32).wrapping_shl(shift) as i16
+    i32::from(value).wrapping_shl(shift) as i16
 }
 
 fn add16(a: i16, b: i16) -> i16 {
@@ -123,7 +123,7 @@ pub(crate) fn celt_sqrt(mut x: i32) -> i32 {
     acc = add16(coeffs[3], mult16_16_q15(n, acc));
     acc = add16(coeffs[2], mult16_16_q15(n, acc));
     acc = add16(coeffs[1], mult16_16_q15(n, acc));
-    let result = add32(coeffs[0] as i32, mult16_16_q15(n, acc) as i32);
+    let result = add32(i32::from(coeffs[0]), i32::from(mult16_16_q15(n, acc)));
     vshr32(result, 7 - k)
 }
 
@@ -133,7 +133,7 @@ fn celt_cos_pi_2(x: i16) -> i16 {
     term = add16(8_277, term);
     term = mult16_16_p15(x2, term);
     term = add16(-7_651, term);
-    let acc = add32(sub16(32_767, x2) as i32, term as i32);
+    let acc = add32(i32::from(sub16(32_767, x2)), i32::from(term));
     add16(1, min16(32_766, acc as i16))
 }
 
@@ -172,7 +172,7 @@ pub(crate) fn celt_rcp(x: i32) -> i32 {
     let term = add16(mult16_16_q15(r, n), add16(r, -32_768i16));
     r = sub16(r, add16(1, mult16_16_q15(r, term)));
 
-    vshr32(r as i32, i - 16)
+    vshr32(i32::from(r), i - 16)
 }
 
 /// Divides two Q32 values returning a Q32/Q29 quotient.
@@ -182,7 +182,7 @@ pub(crate) fn frac_div32_q29(a: i32, b: i32) -> i32 {
     let shift = celt_ilog2(b) - 29;
     let a = vshr32(a, shift);
     let b = vshr32(b, shift);
-    let rcp = round16(celt_rcp(round16(b, 16) as i32), 3);
+    let rcp = round16(celt_rcp(i32::from(round16(b, 16))), 3);
     let mut result = mult16_32_q15(rcp, a);
     let rem = pshr32(a, 2) - mult32_32_q31(result, b);
     result = add32(result, shl32(mult16_32_q15(rcp, rem), 2));

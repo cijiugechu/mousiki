@@ -153,17 +153,17 @@ impl<'a> EcEnc<'a> {
     pub fn enc_icdf(&mut self, s: usize, icdf: &[u8], ftb: u32) {
         let r = self.ctx.rng >> ftb;
         if s > 0 {
-            let high = icdf[s - 1] as OpusUint32;
+            let high = OpusUint32::from(icdf[s - 1]);
             self.ctx.val = self
                 .ctx
                 .val
                 .wrapping_add(self.ctx.rng.wrapping_sub(r.wrapping_mul(high)));
-            self.ctx.rng = r.wrapping_mul(high - icdf[s] as OpusUint32);
+            self.ctx.rng = r.wrapping_mul(high - OpusUint32::from(icdf[s]));
         } else {
             self.ctx.rng = self
                 .ctx
                 .rng
-                .wrapping_sub(r.wrapping_mul(icdf[s] as OpusUint32));
+                .wrapping_sub(r.wrapping_mul(OpusUint32::from(icdf[s])));
         }
         self.normalize();
     }
@@ -172,17 +172,17 @@ impl<'a> EcEnc<'a> {
     pub fn enc_icdf16(&mut self, s: usize, icdf: &[u16], ftb: u32) {
         let r = self.ctx.rng >> ftb;
         if s > 0 {
-            let high = icdf[s - 1] as OpusUint32;
+            let high = OpusUint32::from(icdf[s - 1]);
             self.ctx.val = self
                 .ctx
                 .val
                 .wrapping_add(self.ctx.rng.wrapping_sub(r.wrapping_mul(high)));
-            self.ctx.rng = r.wrapping_mul(high - icdf[s] as OpusUint32);
+            self.ctx.rng = r.wrapping_mul(high - OpusUint32::from(icdf[s]));
         } else {
             self.ctx.rng = self
                 .ctx
                 .rng
-                .wrapping_sub(r.wrapping_mul(icdf[s] as OpusUint32));
+                .wrapping_sub(r.wrapping_mul(OpusUint32::from(icdf[s])));
         }
         self.normalize();
     }
@@ -231,7 +231,7 @@ impl<'a> EcEnc<'a> {
         let mask = ((1u32 << nbits) - 1) << shift;
         let val_masked = (val & ((1u32 << nbits) - 1)) << shift;
         if self.ctx.offs > 0 {
-            let byte = self.ctx.buf[0] as OpusUint32;
+            let byte = OpusUint32::from(self.ctx.buf[0]);
             self.ctx.buf[0] = ((byte & !mask) | val_masked) as u8;
         } else if self.ctx.rem >= 0 {
             let rem = self.ctx.rem as OpusUint32;

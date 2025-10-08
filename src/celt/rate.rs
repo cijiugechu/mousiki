@@ -68,7 +68,7 @@ pub(crate) fn bits2pulses(mode: &OpusCustomMode<'_>, band: usize, lm: i32, bits:
 
     let lm_index = (lm + 1) as usize;
     let rows = mode.num_ebands;
-    let cache_index = mode.cache.index[lm_index * rows + band] as i32;
+    let cache_index = i32::from(mode.cache.index[lm_index * rows + band]);
     if cache_index < 0 {
         return 0;
     }
@@ -119,7 +119,7 @@ pub(crate) fn pulses2bits(mode: &OpusCustomMode<'_>, band: usize, lm: i32, pulse
 
     let lm_index = (lm + 1) as usize;
     let rows = mode.num_ebands;
-    let cache_index = mode.cache.index[lm_index * rows + band] as i32;
+    let cache_index = i32::from(mode.cache.index[lm_index * rows + band]);
     if cache_index < 0 {
         return 0;
     }
@@ -151,10 +151,10 @@ pub(crate) fn fits_in32(n: i32, k: i32) -> bool {
         if k >= 14 {
             false
         } else {
-            n <= MAX_N[k as usize] as i32
+            n <= i32::from(MAX_N[k as usize])
         }
     } else {
-        k <= MAX_K[n as usize] as i32
+        k <= i32::from(MAX_K[n as usize])
     }
 }
 
@@ -230,7 +230,7 @@ pub(crate) fn compute_pulse_cache(
         for j in 1..=k {
             let pulses = get_pulses(j as i32) as usize;
             let value = scratch[pulses] - 1;
-            debug_assert!((0..=u8::MAX as OpusInt16).contains(&value));
+            debug_assert!((0..=OpusInt16::from(u8::MAX)).contains(&value));
             bits[offset + j] = value as u8;
         }
     }
@@ -258,7 +258,7 @@ pub(crate) fn compute_pulse_cache(
                     let cache_offset = index[row];
                     debug_assert!(cache_offset >= 0, "pulse cache entry should exist");
                     let cache_offset = cache_offset as usize;
-                    let entry_k = bits[cache_offset] as i32;
+                    let entry_k = i32::from(bits[cache_offset]);
                     let base_idx = cache_offset + entry_k as usize;
                     let mut local_bits = i32::from(bits[base_idx]) + 1;
                     let iterations = (i as i32 - lm0).max(0);
@@ -432,7 +432,7 @@ pub(crate) fn interp_bits2pulses(
                 } else {
                     true
                 };
-                enc.enc_bit_logp(decision as OpusInt32, 1);
+                enc.enc_bit_logp(OpusInt32::from(decision), 1);
                 if decision {
                     skip = true;
                 }

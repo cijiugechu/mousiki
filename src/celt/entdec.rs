@@ -42,7 +42,7 @@ impl<'a> EcDec<'a> {
         ctx.error = 0;
 
         let mut dec = Self { ctx };
-        dec.ctx.rem = dec.read_byte() as OpusInt32;
+        dec.ctx.rem = OpusInt32::from(dec.read_byte());
         dec.ctx.val =
             dec.ctx.rng - 1 - ((dec.ctx.rem as OpusUint32) >> (EC_SYM_BITS - EC_CODE_EXTRA));
         dec.normalize();
@@ -86,7 +86,7 @@ impl<'a> EcDec<'a> {
             self.ctx.nbits_total += EC_SYM_BITS as OpusInt32;
             self.ctx.rng <<= EC_SYM_BITS;
             let mut sym = self.ctx.rem as OpusUint32;
-            self.ctx.rem = self.read_byte() as OpusInt32;
+            self.ctx.rem = OpusInt32::from(self.read_byte());
             sym = ((sym << EC_SYM_BITS) | (self.ctx.rem as OpusUint32))
                 >> (EC_SYM_BITS - EC_CODE_EXTRA);
             let sub = EC_SYM_MAX & !sym;
@@ -129,7 +129,7 @@ impl<'a> EcDec<'a> {
         let r = self.ctx.rng;
         let d = self.ctx.val;
         let s = r >> logp;
-        let ret = (d < s) as OpusInt32;
+        let ret = OpusInt32::from(d < s);
         if ret == 0 {
             self.ctx.val = d - s;
         }
@@ -150,7 +150,7 @@ impl<'a> EcDec<'a> {
             let t = s;
             let idx = ret as usize;
             debug_assert!(idx < icdf.len());
-            s = r.wrapping_mul(icdf[idx] as OpusUint32);
+            s = r.wrapping_mul(OpusUint32::from(icdf[idx]));
             if d < s {
                 self.ctx.val = d.wrapping_sub(s);
                 self.ctx.rng = t.wrapping_sub(s);
@@ -172,7 +172,7 @@ impl<'a> EcDec<'a> {
             let t = s;
             let idx = ret as usize;
             debug_assert!(idx < icdf.len());
-            s = r.wrapping_mul(icdf[idx] as OpusUint32);
+            s = r.wrapping_mul(OpusUint32::from(icdf[idx]));
             if d < s {
                 self.ctx.val = d.wrapping_sub(s);
                 self.ctx.rng = t.wrapping_sub(s);
@@ -214,7 +214,7 @@ impl<'a> EcDec<'a> {
         let mut available: OpusInt32 = self.ctx.nend_bits;
         if (available as u32) < bits {
             while available <= (EC_WINDOW_SIZE as OpusInt32) - EC_SYM_BITS as OpusInt32 {
-                window |= (self.read_byte_from_end() as EcWindow) << (available as u32);
+                window |= EcWindow::from(self.read_byte_from_end()) << (available as u32);
                 available += EC_SYM_BITS as OpusInt32;
             }
         }
