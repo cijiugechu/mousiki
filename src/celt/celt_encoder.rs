@@ -19,7 +19,7 @@ use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusUint32,
     SilkInfo,
 };
-use crate::celt::vq::SPREAD_NORMAL;
+use core::cmp::min;
 
 /// Maximum number of channels supported by the scalar encoder path.
 const MAX_CHANNELS: usize = 2;
@@ -39,6 +39,42 @@ pub(crate) enum CeltEncoderInitError {
     InvalidStreamChannels,
     /// The chosen sampling rate cannot be derived from the 48 kHz reference.
     UnsupportedSampleRate,
+}
+
+/// Errors that can be emitted by [`opus_custom_encoder_ctl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CeltEncoderCtlError {
+    /// The provided argument is outside the range accepted by the request.
+    InvalidArgument,
+    /// The request has not been implemented by the Rust port yet.
+    Unimplemented,
+}
+
+/// Strongly-typed replacement for the varargs CTL dispatcher used by the C implementation.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum EncoderCtlRequest<'enc, 'req> {
+    SetComplexity(i32),
+    SetStartBand(i32),
+    SetEndBand(i32),
+    SetPrediction(i32),
+    SetPacketLossPerc(i32),
+    SetVbrConstraint(bool),
+    SetVbr(bool),
+    SetBitrate(OpusInt32),
+    SetChannels(usize),
+    SetLsbDepth(i32),
+    GetLsbDepth(&'req mut i32),
+    SetPhaseInversionDisabled(bool),
+    GetPhaseInversionDisabled(&'req mut bool),
+    ResetState,
+    SetInputClipping(bool),
+    SetSignalling(i32),
+    SetAnalysis(&'enc AnalysisInfo),
+    SetSilkInfo(&'enc SilkInfo),
+    GetMode(&'req mut Option<&'enc OpusCustomMode<'enc>>),
+    GetFinalRange(&'req mut OpusUint32),
+    SetLfe(bool),
+    SetEnergyMask(Option<&'enc [CeltGlog]>),
 }
 
 /// Returns the number of bytes required to allocate an encoder for `mode`.
@@ -155,6 +191,7 @@ impl CeltEncoderAlloc {
 
         self.reset();
         let mut encoder = self.as_encoder(mode, channels, stream_channels, None);
+        encoder.reset_runtime_state();
         encoder.upsample = upsample as i32;
         encoder.start_band = 0;
         encoder.end_band = mode.effective_ebands as i32;
@@ -172,29 +209,6 @@ impl CeltEncoderAlloc {
         encoder.disable_prefilter = false;
         encoder.disable_inv = false;
         encoder.rng = rng_seed;
-        encoder.spread_decision = SPREAD_NORMAL;
-        encoder.delayed_intra = 1.0;
-        encoder.tonal_average = 256;
-        encoder.last_coded_bands = 0;
-        encoder.hf_average = 0;
-        encoder.tapset_decision = 0;
-        encoder.prefilter_period = 0;
-        encoder.prefilter_gain = 0.0;
-        encoder.prefilter_tapset = 0;
-        encoder.consec_transient = 0;
-        encoder.analysis = AnalysisInfo::default();
-        encoder.silk_info = SilkInfo::default();
-        encoder.preemph_mem_encoder = [0.0; 2];
-        encoder.preemph_mem_decoder = [0.0; 2];
-        encoder.vbr_reservoir = 0;
-        encoder.vbr_drift = 0;
-        encoder.vbr_offset = 0;
-        encoder.vbr_count = 0;
-        encoder.overlap_max = 0.0;
-        encoder.stereo_saving = 0.0;
-        encoder.intensity = 0;
-        encoder.energy_mask = None;
-        encoder.spec_avg = 0.0;
 
         Ok(encoder)
     }
@@ -241,6 +255,111 @@ impl CeltEncoderAlloc {
     }
 }
 
+/// Applies a control request to the provided encoder state.
+pub(crate) fn opus_custom_encoder_ctl<'enc, 'req>(
+    encoder: &mut OpusCustomEncoder<'enc>,
+    request: EncoderCtlRequest<'enc, 'req>,
+) -> Result<(), CeltEncoderCtlError> {
+    match request {
+        EncoderCtlRequest::SetComplexity(value) => {
+            if !(0..=10).contains(&value) {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.complexity = value;
+        }
+        EncoderCtlRequest::SetStartBand(value) => {
+            let max = encoder.mode.num_ebands as i32;
+            if value < 0 || value >= max {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.start_band = value;
+        }
+        EncoderCtlRequest::SetEndBand(value) => {
+            let max = encoder.mode.num_ebands as i32;
+            if value < 1 || value > max {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.end_band = value;
+        }
+        EncoderCtlRequest::SetPrediction(value) => {
+            if !(0..=2).contains(&value) {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.disable_prefilter = value <= 1;
+            encoder.force_intra = value == 0;
+        }
+        EncoderCtlRequest::SetPacketLossPerc(value) => {
+            if !(0..=100).contains(&value) {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.loss_rate = value;
+        }
+        EncoderCtlRequest::SetVbrConstraint(value) => {
+            encoder.constrained_vbr = value;
+        }
+        EncoderCtlRequest::SetVbr(value) => {
+            encoder.use_vbr = value;
+        }
+        EncoderCtlRequest::SetBitrate(value) => {
+            if value <= 500 && value != OPUS_BITRATE_MAX {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            let capped = min(value, 260_000 * encoder.channels as OpusInt32);
+            encoder.bitrate = capped;
+        }
+        EncoderCtlRequest::SetChannels(value) => {
+            if value == 0 || value > encoder.channels {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.stream_channels = value;
+        }
+        EncoderCtlRequest::SetLsbDepth(value) => {
+            if !(8..=24).contains(&value) {
+                return Err(CeltEncoderCtlError::InvalidArgument);
+            }
+            encoder.lsb_depth = value;
+        }
+        EncoderCtlRequest::GetLsbDepth(out) => {
+            *out = encoder.lsb_depth;
+        }
+        EncoderCtlRequest::SetPhaseInversionDisabled(value) => {
+            encoder.disable_inv = value;
+        }
+        EncoderCtlRequest::GetPhaseInversionDisabled(out) => {
+            *out = encoder.disable_inv;
+        }
+        EncoderCtlRequest::ResetState => {
+            encoder.reset_runtime_state();
+        }
+        EncoderCtlRequest::SetInputClipping(value) => {
+            encoder.clip = value;
+        }
+        EncoderCtlRequest::SetSignalling(value) => {
+            encoder.signalling = value;
+        }
+        EncoderCtlRequest::SetAnalysis(info) => {
+            encoder.analysis = info.clone();
+        }
+        EncoderCtlRequest::SetSilkInfo(info) => {
+            encoder.silk_info = info.clone();
+        }
+        EncoderCtlRequest::GetMode(slot) => {
+            *slot = Some(encoder.mode);
+        }
+        EncoderCtlRequest::GetFinalRange(slot) => {
+            *slot = encoder.rng;
+        }
+        EncoderCtlRequest::SetLfe(value) => {
+            encoder.lfe = value;
+        }
+        EncoderCtlRequest::SetEnergyMask(mask) => {
+            encoder.energy_mask = mask;
+        }
+    }
+
+    Ok(())
+}
+
 // TODO: Port the remaining encoding routines (transient analysis, VBR control,
 //       and the main `celt_encode_with_ec()` path) once the supporting modules
 //       are available in Rust.
@@ -248,11 +367,42 @@ impl CeltEncoderAlloc {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, MAX_CHANNELS,
-        OPUS_BITRATE_MAX, SPREAD_NORMAL,
+        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, EncoderCtlRequest,
+        MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
     };
+    use super::{CeltEncoderCtlError, opus_custom_encoder_ctl};
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
+    use crate::celt::vq::SPREAD_NORMAL;
+
+    fn get_lsb_depth(encoder: &mut OpusCustomEncoder<'_>) -> i32 {
+        let mut value = 0;
+        opus_custom_encoder_ctl(encoder, EncoderCtlRequest::GetLsbDepth(&mut value)).unwrap();
+        value
+    }
+
+    fn get_phase_disabled(encoder: &mut OpusCustomEncoder<'_>) -> bool {
+        let mut value = false;
+        opus_custom_encoder_ctl(
+            encoder,
+            EncoderCtlRequest::GetPhaseInversionDisabled(&mut value),
+        )
+        .unwrap();
+        value
+    }
+
+    fn get_final_range(encoder: &mut OpusCustomEncoder<'_>) -> OpusUint32 {
+        let mut value = 0;
+        opus_custom_encoder_ctl(encoder, EncoderCtlRequest::GetFinalRange(&mut value)).unwrap();
+        value
+    }
+
+    fn assert_mode_matches(encoder: &mut OpusCustomEncoder<'_>, expected: *const OpusCustomMode) {
+        let mut slot = None;
+        opus_custom_encoder_ctl(encoder, EncoderCtlRequest::GetMode(&mut slot)).unwrap();
+        let mode_ref = slot.expect("mode");
+        assert_eq!(mode_ref as *const OpusCustomMode, expected);
+    }
 
     #[test]
     fn allocation_matches_reference_layout() {
@@ -358,5 +508,130 @@ mod tests {
 
         let err = alloc.init_custom_encoder(&mode, 2, 3, 0).unwrap_err();
         assert_eq!(err, CeltEncoderInitError::InvalidStreamChannels);
+    }
+
+    #[test]
+    fn ctl_updates_encoder_state() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 2);
+        let mut encoder = alloc
+            .init_custom_encoder(&mode, 2, 2, 1234)
+            .expect("encoder");
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(7)).unwrap();
+        assert_eq!(encoder.complexity, 7);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetStartBand(1)).unwrap();
+        assert_eq!(encoder.start_band, 1);
+
+        opus_custom_encoder_ctl(
+            &mut encoder,
+            EncoderCtlRequest::SetEndBand(mode.num_ebands as i32),
+        )
+        .unwrap();
+        assert_eq!(encoder.end_band, mode.num_ebands as i32);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetPrediction(2)).unwrap();
+        assert!(!encoder.disable_prefilter);
+        assert!(!encoder.force_intra);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetPacketLossPerc(25)).unwrap();
+        assert_eq!(encoder.loss_rate, 25);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetVbrConstraint(false)).unwrap();
+        assert!(!encoder.constrained_vbr);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetVbr(true)).unwrap();
+        assert!(encoder.use_vbr);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(700_000)).unwrap();
+        assert_eq!(encoder.bitrate, 260_000 * 2);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetChannels(1)).unwrap();
+        assert_eq!(encoder.stream_channels, 1);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(16)).unwrap();
+        assert_eq!(encoder.lsb_depth, 16);
+
+        opus_custom_encoder_ctl(
+            &mut encoder,
+            EncoderCtlRequest::SetPhaseInversionDisabled(true),
+        )
+        .unwrap();
+        assert!(encoder.disable_inv);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetInputClipping(false)).unwrap();
+        assert!(!encoder.clip);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetSignalling(0)).unwrap();
+        assert_eq!(encoder.signalling, 0);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLfe(true)).unwrap();
+        assert!(encoder.lfe);
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetEnergyMask(None)).unwrap();
+        assert!(encoder.energy_mask.is_none());
+
+        let lsb_depth = get_lsb_depth(&mut encoder);
+        assert_eq!(lsb_depth, encoder.lsb_depth);
+
+        let phase_disabled = get_phase_disabled(&mut encoder);
+        assert!(phase_disabled);
+
+        let final_range = get_final_range(&mut encoder);
+        assert_eq!(final_range, encoder.rng);
+
+        encoder.rng = 42;
+        encoder.old_log_e.fill(0.0);
+        encoder.energy_mask = Some(&[]);
+        let expected_mode_ptr = encoder.mode as *const OpusCustomMode;
+        assert_mode_matches(&mut encoder, expected_mode_ptr);
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::ResetState).unwrap();
+        assert_eq!(encoder.rng, 0);
+        assert!(encoder.old_log_e.iter().all(|&v| (v + 28.0).abs() < 1e-6));
+        assert!(encoder.energy_mask.is_none());
+    }
+
+    #[test]
+    fn ctl_validates_arguments() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+        let mut encoder = alloc
+            .init_custom_encoder(&mode, 1, 1, 9876)
+            .expect("encoder");
+
+        let err = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(11))
+            .unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetStartBand(-1)).unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetEndBand(0)).unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetPrediction(3)).unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetPacketLossPerc(101))
+            .unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(400)).unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetChannels(2)).unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(6)).unwrap_err();
+        assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
     }
 }

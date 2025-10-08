@@ -128,7 +128,11 @@ safely.
   `init_encoder_for_rate` &rarr; translate the encoder initialisation logic,
   including the reset defaults applied by `OPUS_RESET_STATE` and the
   resampling-factor validation used by `celt_encoder_init()`.
-- TODO: Port the transient analysis, VBR control, CTL dispatcher, and
+- `EncoderCtlRequest` and `opus_custom_encoder_ctl` &rarr; port the encoder CTL
+  dispatcher from `celt/celt_encoder.c`, replacing the varargs interface with a
+  strongly typed request enum that preserves the validation and reset
+  semantics of the C implementation.
+- TODO: Port the transient analysis, VBR control, and
   `celt_encode_with_ec()` encoding loop once the supporting pieces are
   available in Rust.
 
