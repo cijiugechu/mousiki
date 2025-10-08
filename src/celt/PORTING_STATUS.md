@@ -132,8 +132,14 @@ safely.
   dispatcher from `celt/celt_encoder.c`, replacing the varargs interface with a
   strongly typed request enum that preserves the validation and reset
   semantics of the C implementation.
-- TODO: Port the transient analysis, VBR control, and
-  `celt_encode_with_ec()` encoding loop once the supporting pieces are
+- `transient_analysis` &rarr; ports the temporal masking detector from
+  `celt/celt_encoder.c`, producing the per-channel transient estimate used by
+  the TF resolution heuristics.
+- `patch_transient_decision` &rarr; mirrors the energy-spread comparison helper
+  from `celt/celt_encoder.c` that patches the transient detector when sudden
+  band energy increases are observed across frames.
+- TODO: Port the VBR control and the main `celt_encode_with_ec()` encoding loop
+  once the supporting pieces are
   available in Rust.
 
 ### `math.rs`
