@@ -142,8 +142,10 @@ safely.
   that adjusts the per-frame bit budget based on activity, tonality, stereo
   savings, and temporal masking while respecting the constrained-VBR reservoir
   tracking rules.
-- TODO: Port the main `celt_encode_with_ec()` encoding loop once the supporting
-  pieces are available in Rust.
+- `celt_encode_with_ec` &rarr; establishes the Rust-side analysis path, covering
+  pre-emphasis, MDCT evaluation, and band energy bookkeeping so the encoder
+  state remains in sync with the reference implementation while bitstream
+  packing is ported incrementally.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in

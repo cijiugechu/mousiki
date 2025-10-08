@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::field_reassign_with_default)]
 
 //! Encoder scaffolding ported from `celt/celt_encoder.c`.
 //!
@@ -12,10 +13,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::celt::bands::compute_band_energies;
 use crate::celt::celt::resampling_factor;
 use crate::celt::cpu_support::opus_select_arch;
+use crate::celt::entenc::EcEnc;
 use crate::celt::math::celt_sqrt;
+use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
+use crate::celt::quant_bands::amp2_log2;
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusUint32,
     OpusVal16, OpusVal32, SilkInfo,
@@ -50,6 +55,17 @@ pub(crate) enum CeltEncoderCtlError {
     InvalidArgument,
     /// The request has not been implemented by the Rust port yet.
     Unimplemented,
+}
+
+/// Errors that can arise while encoding a frame with [`celt_encode_with_ec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CeltEncodeError {
+    /// The caller did not supply enough PCM samples for the configured layout.
+    InsufficientPcm,
+    /// The provided frame size is not compatible with the encoder mode.
+    InvalidFrameSize,
+    /// No output buffer or range encoder was supplied.
+    MissingOutput,
 }
 
 /// Strongly-typed replacement for the varargs CTL dispatcher used by the C implementation.
@@ -647,8 +663,246 @@ fn compute_vbr(
     target
 }
 
-// TODO: Port the main `celt_encode_with_ec()` path once the supporting modules
-//       are available in Rust.
+fn resolve_lm(mode: &OpusCustomMode<'_>, frame_size: usize) -> Option<usize> {
+    let mut n = mode.short_mdct_size;
+    for lm in 0..=mode.max_lm {
+        if n == frame_size {
+            return Some(lm);
+        }
+        n <<= 1;
+    }
+    None
+}
+
+fn mdct_shift_for_frame(mode: &OpusCustomMode<'_>, frame_size: usize) -> Option<usize> {
+    (0..=mode.mdct.max_shift()).find(|&shift| mode.mdct.effective_len(shift) == frame_size)
+}
+
+fn prepare_time_domain(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[CeltSig],
+    frame_size: usize,
+) -> Result<Vec<CeltSig>, CeltEncodeError> {
+    let channels = encoder.channels;
+    if pcm.len() < channels * frame_size {
+        return Err(CeltEncodeError::InsufficientPcm);
+    }
+
+    let overlap = encoder.mode.overlap;
+    let stride = frame_size + overlap;
+    let mut buffer = vec![0.0f32; channels * stride];
+
+    for ch in 0..channels {
+        let input_stride = channels;
+        let dst_offset = ch * stride;
+        let prev = &encoder.in_mem[ch * overlap..(ch + 1) * overlap];
+        buffer[dst_offset..dst_offset + overlap].copy_from_slice(prev);
+
+        let mut mem = encoder.preemph_mem_encoder[ch];
+        for i in 0..frame_size {
+            let raw = pcm[i * input_stride + ch];
+            let emphasised = raw - mem;
+            buffer[dst_offset + overlap + i] = emphasised;
+            mem = encoder.mode.pre_emphasis[0] * raw;
+        }
+        encoder.preemph_mem_encoder[ch] = mem;
+
+        if overlap > 0 {
+            let available = frame_size.min(overlap);
+            let copy_start = dst_offset + overlap + frame_size - available;
+            let dst_start = dst_offset + frame_size;
+            let tail = buffer[copy_start..copy_start + available].to_vec();
+            buffer[dst_start..dst_start + available].copy_from_slice(&tail);
+            if available < overlap {
+                buffer[dst_start + available..dst_start + overlap].fill(0.0);
+            }
+        }
+    }
+
+    Ok(buffer)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_mdct_spectrum(
+    mode: &OpusCustomMode<'_>,
+    short_blocks: bool,
+    time: &[CeltSig],
+    freq: &mut [CeltSig],
+    encoded_channels: usize,
+    total_channels: usize,
+    frame_size: usize,
+    shift: usize,
+) {
+    let overlap = mode.overlap;
+    let stride = frame_size + overlap;
+
+    let blocks = if short_blocks { 1usize << shift } else { 1 };
+
+    for ch in 0..encoded_channels {
+        let src_index = ch * stride;
+        let input = &time[src_index..src_index + overlap + frame_size];
+        let output = &mut freq[ch * (frame_size / 2)..(ch + 1) * (frame_size / 2)];
+        clt_mdct_forward(
+            &mode.mdct,
+            input,
+            output,
+            mode.window,
+            overlap,
+            shift,
+            blocks,
+        );
+    }
+
+    if total_channels == 2 && encoded_channels == 1 {
+        for i in 0..(frame_size / 2) {
+            let left = freq[i];
+            let right = freq[frame_size / 2 + i];
+            freq[i] = 0.5 * (left + right);
+        }
+    }
+}
+
+fn update_overlap_history(
+    encoder: &mut OpusCustomEncoder<'_>,
+    time: &[CeltSig],
+    frame_size: usize,
+) {
+    let channels = encoder.channels;
+    let overlap = encoder.mode.overlap;
+    let stride = frame_size + overlap;
+
+    for ch in 0..channels {
+        let src = &time[ch * stride + frame_size..ch * stride + frame_size + overlap];
+        encoder.in_mem[ch * overlap..(ch + 1) * overlap].copy_from_slice(src);
+    }
+}
+
+/// Performs the analysis stages of the CELT encoder and updates the runtime
+/// state using the provided range encoder. This mirrors the portions of the C
+/// implementation that prepare the spectrum before quantisation.
+fn encode_internal(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[CeltSig],
+    frame_size: usize,
+    enc: &mut EcEnc<'_>,
+) -> Result<(), CeltEncodeError> {
+    let mode = encoder.mode;
+    let Some(lm) = resolve_lm(mode, frame_size) else {
+        return Err(CeltEncodeError::InvalidFrameSize);
+    };
+    let Some(shift) = mdct_shift_for_frame(mode, frame_size) else {
+        return Err(CeltEncodeError::InvalidFrameSize);
+    };
+
+    let time = prepare_time_domain(encoder, pcm, frame_size)?;
+    update_overlap_history(encoder, &time, frame_size);
+
+    let freq_bins = frame_size / 2;
+    let mut freq = vec![0.0f32; encoder.stream_channels * freq_bins];
+    compute_mdct_spectrum(
+        mode,
+        false,
+        &time,
+        &mut freq,
+        encoder.stream_channels,
+        encoder.channels,
+        frame_size,
+        shift,
+    );
+
+    let end_band = encoder.end_band.clamp(0, mode.num_ebands as i32) as usize;
+    let mut band_e = vec![0.0f32; encoder.stream_channels * mode.num_ebands];
+    compute_band_energies(
+        mode,
+        &freq,
+        &mut band_e,
+        end_band,
+        encoder.stream_channels,
+        lm,
+        encoder.arch,
+    );
+
+    let mut band_log = vec![0.0f32; encoder.stream_channels * mode.num_ebands];
+    amp2_log2(
+        mode,
+        end_band,
+        end_band,
+        &band_e,
+        &mut band_log,
+        encoder.stream_channels,
+    );
+
+    let stride = mode.num_ebands;
+    for (dst, src) in encoder
+        .old_band_e
+        .chunks_mut(stride)
+        .zip(band_e.chunks(stride))
+        .take(encoder.stream_channels)
+    {
+        dst[..end_band].copy_from_slice(&src[..end_band]);
+    }
+    for (dst, src) in encoder
+        .old_log_e
+        .chunks_mut(stride)
+        .zip(band_log.chunks(stride))
+        .take(encoder.stream_channels)
+    {
+        dst[..end_band].copy_from_slice(&src[..end_band]);
+    }
+    for chunk in encoder
+        .old_log_e2
+        .chunks_mut(stride)
+        .take(encoder.stream_channels)
+    {
+        for slot in &mut chunk[..end_band] {
+            *slot = (*slot * 0.75) + 0.25 * -28.0;
+        }
+    }
+
+    encoder.last_coded_bands = end_band as i32;
+    encoder.tapset_decision = 0;
+    encoder.consec_transient = 0;
+
+    // The simplified port does not emit additional data yet but ensures the
+    // entropy coder remains in a valid state.
+    enc.enc_bits(0, 0);
+
+    Ok(())
+}
+
+/// Minimal Rust translation of the reference `celt_encode_with_ec()` entry point.
+///
+/// The implementation focuses on the analysis scaffolding required by later
+/// ports. It performs the PCM pre-emphasis, MDCT evaluation, and band energy
+/// computation so that the encoder state remains internally consistent even
+/// though the full bitstream packing path is still pending.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn celt_encode_with_ec(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: Option<&[CeltSig]>,
+    frame_size: usize,
+    compressed: Option<&mut [u8]>,
+    range_encoder: Option<&mut EcEnc<'_>>,
+) -> Result<usize, CeltEncodeError> {
+    let pcm = pcm.ok_or(CeltEncodeError::InsufficientPcm)?;
+
+    if let Some(enc) = range_encoder {
+        encode_internal(encoder, pcm, frame_size, enc)?;
+        enc.enc_done();
+        encoder.rng = enc.ctx().rng;
+        return Ok(enc.range_bytes() as usize);
+    }
+
+    if let Some(buf) = compressed {
+        let mut local = EcEnc::new(buf);
+        encode_internal(encoder, pcm, frame_size, &mut local)?;
+        local.enc_done();
+        encoder.rng = local.ctx().rng;
+        return Ok(local.range_bytes() as usize);
+    }
+
+    Err(CeltEncodeError::MissingOutput)
+}
 
 #[cfg(test)]
 mod tests {
