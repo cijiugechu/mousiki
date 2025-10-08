@@ -110,9 +110,10 @@ safely.
 - `init_decoder` &rarr; validates the channel layout, configures architecture
   selection, and initialises the runtime fields exposed by `OpusCustomDecoder`
   while mirroring the zeroing behaviour of `opus_custom_decoder_init()`.
-- TODO: Port the frame header parsing and allocation logic that feed
-  `celt_decode_with_ec()`, including the range decoder setup and bit allocation
-  bookkeeping.
+- `RangeDecoderState`, `FramePreparation`, `tf_decode`, and `prepare_frame`
+  &rarr; translate the frame-header parsing and bit-allocation bookkeeping that
+  feed `celt_decode_with_ec()`, including range-decoder setup, dynamic
+  allocation boosts, TF selection, and the post-filter parameter decoding.
 - TODO: Translate the remaining frame synthesis path, PLC, and post-filter
   helpers once the header parsing scaffolding is in place.
 
