@@ -55,7 +55,10 @@ impl MdctLookup {
         let mut inverse = Vec::with_capacity(max_shift + 1);
         for shift in 0..=max_shift {
             let n = len >> shift;
-            assert!(n.is_multiple_of(4), "MDCT length must be a multiple of four");
+            assert!(
+                n.is_multiple_of(4),
+                "MDCT length must be a multiple of four"
+            );
             forward.push(MiniKissFft::new(n >> 2, false));
             inverse.push(MiniKissFft::new(n >> 2, true));
         }

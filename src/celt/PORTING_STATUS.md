@@ -93,6 +93,21 @@ safely.
   exposing the library identifier used by applications to detect build
   variants.
 
+### `celt_decoder.rs`
+- `CeltDecoderAlloc` &rarr; owns the trailing decoder buffers (`decode_mem`, LPC
+  history, and band energy arrays) that follow `CELTDecoder` in the C layout,
+  allocating them with Rust `Vec`s and exposing a safe `as_decoder()` helper to
+  obtain an `OpusCustomDecoder` view.
+- `LPC_ORDER` &rarr; surfaces the decoder-side LPC history length so future
+  ports of the PLC and post-filter routines share the same constant as the
+  reference implementation.
+- `size_in_bytes`/`reset` &rarr; utility helpers mirroring the allocation sizing
+  and zeroing performed by the reference implementation when creating and
+  reinitialising decoder states.
+- TODO: Port the frame decode path (`celt_decode_with_ec()`), packet-loss
+  concealment, and post-filter helpers while reusing the allocation scaffolding
+  introduced here.
+
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
   `celt/mathops.h`.

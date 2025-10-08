@@ -437,9 +437,10 @@ pub(crate) fn interp_bits2pulses(
                     skip = true;
                 }
             } else if let Some(dec) = decoder.as_deref_mut()
-                && dec.dec_bit_logp(1) != 0 {
-                    skip = true;
-                }
+                && dec.dec_bit_logp(1) != 0
+            {
+                skip = true;
+            }
 
             if skip {
                 break;
@@ -568,8 +569,10 @@ pub(crate) fn interp_bits2pulses(
             ebits[band] = eb;
 
             if excess > 0 {
-                let extra_fine =
-                    min(excess >> (stereo_shift + BITRES), MAX_FINE_BITS - ebits[band]);
+                let extra_fine = min(
+                    excess >> (stereo_shift + BITRES),
+                    MAX_FINE_BITS - ebits[band],
+                );
                 ebits[band] += extra_fine;
                 let extra_bits = (extra_fine * channels) << BITRES;
                 if extra_bits >= excess - local_balance {
@@ -663,7 +666,8 @@ pub(crate) fn clt_compute_allocation(
             * n
             * (alloc_trim - 5 - lm)
             * OpusInt32::try_from(end - j - 1).unwrap()
-            * (1 << split_shift)) >> 6;
+            * (1 << split_shift))
+            >> 6;
         if (n << lm) == 1 {
             trim_offset[j] -= channels << BITRES;
         }

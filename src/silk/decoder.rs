@@ -887,11 +887,7 @@ impl Decoder {
         let mut res_lag = [0.0f32; MAX_RES_LAG];
 
         let res_len = excitation.len.min(res.len());
-        for (dst, &value) in res
-            .iter_mut()
-            .zip(excitation.values.iter())
-            .take(res_len)
-        {
+        for (dst, &value) in res.iter_mut().zip(excitation.values.iter()).take(res_len) {
             *dst = (value as f32) * INV_Q23;
         }
 
