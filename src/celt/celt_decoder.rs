@@ -15,7 +15,11 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::types::{CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusVal16};
+use crate::celt::celt::resampling_factor;
+use crate::celt::cpu_support::opus_select_arch;
+use crate::celt::types::{
+    CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusUint32, OpusVal16,
+};
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -23,6 +27,26 @@ use crate::celt::types::{CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, O
 /// value is surfaced here so future ports that rely on the LPC history length
 /// can share the same constant.
 const LPC_ORDER: usize = 24;
+
+/// Maximum number of channels supported by the initial CELT decoder port.
+///
+/// The reference implementation restricts the custom decoder to mono or stereo
+/// streams.  The helper routines below mirror the same validation so the
+/// call-sites can rely on early argument checking just like the C helpers.
+const MAX_CHANNELS: usize = 2;
+
+/// Errors that can be reported when initialising a CELT decoder instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CeltDecoderInitError {
+    /// Channel count was zero or larger than the supported maximum.
+    InvalidChannelCount,
+    /// Requested stream channel layout is not compatible with the physical
+    /// channels configured for the decoder.
+    InvalidStreamChannels,
+    /// The provided mode uses a sampling rate that cannot be resampled from the
+    /// 48 kHz CELT reference clock.
+    UnsupportedSampleRate,
+}
 
 /// Helper owning the trailing buffers that back [`OpusCustomDecoder`].
 ///
@@ -131,11 +155,68 @@ impl CeltDecoderAlloc {
             *history = 0.0;
         }
     }
+
+    /// Returns a freshly initialised decoder state.
+    ///
+    /// The helper mirrors `opus_custom_decoder_init()` by validating the
+    /// channel configuration, clearing the trailing buffers, and populating the
+    /// fields that depend on the current mode.  Callers receive a fully formed
+    /// [`OpusCustomDecoder`] that borrows the allocation's backing storage.
+    pub(crate) fn init_decoder<'a>(
+        &'a mut self,
+        mode: &'a OpusCustomMode<'a>,
+        channels: usize,
+        stream_channels: usize,
+        rng_seed: OpusUint32,
+    ) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+        validate_channel_layout(channels, stream_channels)?;
+
+        let downsample = resampling_factor(mode.sample_rate);
+        if downsample == 0 {
+            return Err(CeltDecoderInitError::UnsupportedSampleRate);
+        }
+
+        self.reset();
+        let mut decoder = self.as_decoder(mode, channels, stream_channels);
+        decoder.downsample = downsample as i32;
+        decoder.end_band = mode.effective_ebands as i32;
+        decoder.arch = opus_select_arch();
+        decoder.rng = rng_seed;
+        decoder.error = 0;
+        decoder.loss_duration = 0;
+        decoder.skip_plc = false;
+        decoder.postfilter_period = 0;
+        decoder.postfilter_period_old = 0;
+        decoder.postfilter_gain = 0.0;
+        decoder.postfilter_gain_old = 0.0;
+        decoder.postfilter_tapset = 0;
+        decoder.postfilter_tapset_old = 0;
+        decoder.prefilter_and_fold = false;
+        decoder.preemph_mem_decoder = [0.0; 2];
+        decoder.last_pitch_index = 0;
+
+        Ok(decoder)
+    }
+}
+
+fn validate_channel_layout(
+    channels: usize,
+    stream_channels: usize,
+) -> Result<(), CeltDecoderInitError> {
+    if channels == 0 || channels > MAX_CHANNELS {
+        return Err(CeltDecoderInitError::InvalidChannelCount);
+    }
+    if stream_channels == 0 || stream_channels > channels {
+        return Err(CeltDecoderInitError::InvalidStreamChannels);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CeltDecoderAlloc, LPC_ORDER};
+    use super::{
+        CeltDecoderAlloc, CeltDecoderInitError, LPC_ORDER, MAX_CHANNELS, validate_channel_layout,
+    };
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
 
@@ -181,5 +262,60 @@ mod tests {
         assert!(alloc.old_log_e.iter().all(|&v| v == 0.0));
         assert!(alloc.old_log_e2.iter().all(|&v| v == 0.0));
         assert!(alloc.background_log_e.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn validate_channel_layout_rejects_invalid_configurations() {
+        assert_eq!(
+            validate_channel_layout(0, 0),
+            Err(CeltDecoderInitError::InvalidChannelCount)
+        );
+        assert_eq!(
+            validate_channel_layout(MAX_CHANNELS + 1, 1),
+            Err(CeltDecoderInitError::InvalidChannelCount)
+        );
+        assert_eq!(
+            validate_channel_layout(1, 0),
+            Err(CeltDecoderInitError::InvalidStreamChannels)
+        );
+        assert_eq!(
+            validate_channel_layout(1, 2),
+            Err(CeltDecoderInitError::InvalidStreamChannels)
+        );
+    }
+
+    #[test]
+    fn init_decoder_populates_expected_defaults() {
+        let e_bands = [0, 2, 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 2];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let decoder = alloc
+            .init_decoder(&mode, 1, 1, 1234)
+            .expect("initialisation should succeed");
+
+        assert_eq!(decoder.downsample, 1);
+        assert_eq!(decoder.end_band, mode.effective_ebands as i32);
+        assert_eq!(decoder.arch, 0);
+        assert_eq!(decoder.rng, 1234);
+        assert_eq!(decoder.loss_duration, 0);
+        assert_eq!(decoder.postfilter_period, 0);
+        assert_eq!(decoder.postfilter_gain, 0.0);
+        assert_eq!(decoder.postfilter_tapset, 0);
+        assert!(!decoder.skip_plc);
     }
 }

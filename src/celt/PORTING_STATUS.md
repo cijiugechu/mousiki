@@ -104,6 +104,9 @@ safely.
 - `size_in_bytes`/`reset` &rarr; utility helpers mirroring the allocation sizing
   and zeroing performed by the reference implementation when creating and
   reinitialising decoder states.
+- `init_decoder` &rarr; validates the channel layout, configures architecture
+  selection, and initialises the runtime fields exposed by `OpusCustomDecoder`
+  while mirroring the zeroing behaviour of `opus_custom_decoder_init()`.
 - TODO: Port the frame decode path (`celt_decode_with_ec()`), packet-loss
   concealment, and post-filter helpers while reusing the allocation scaffolding
   introduced here.
