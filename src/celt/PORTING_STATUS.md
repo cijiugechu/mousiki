@@ -156,6 +156,12 @@ safely.
   that adjusts the per-frame bit budget based on activity, tonality, stereo
   savings, and temporal masking while respecting the constrained-VBR reservoir
   tracking rules.
+- `median_of_5` &rarr; mirrors the five-sample median helper from
+  `celt/celt_encoder.c` that smooths coarse band energy estimates during the
+  dynamic allocation analysis.
+- `median_of_3` &rarr; ports the three-sample median helper from
+  `celt/celt_encoder.c`, preserving the tie-breaking behaviour relied upon by
+  the energy follower bootstrap in the allocation heuristics.
 - `celt_encode_with_ec` &rarr; establishes the Rust-side analysis path, covering
   pre-emphasis, MDCT evaluation, and band energy bookkeeping so the encoder
   state remains in sync with the reference implementation while bitstream
@@ -437,7 +443,7 @@ that still gate a full end-to-end encoder/decoder.
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
 | `celt/celt_decoder.c` | `validate_celt_decoder()`, `celt_decoder_get_size()`, `opus_custom_decoder_get_size()`, `celt_decoder_init()`, `deemphasis[_stereo]_simple()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
-| `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `median_of_5()`, `median_of_3()`, `dynalloc_analysis()`, `normalize_tone_input()`, `acos_approx()`, `tone_lpc()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
+| `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `normalize_tone_input()`, `acos_approx()`, `tone_lpc()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be

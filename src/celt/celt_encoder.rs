@@ -904,6 +904,65 @@ pub(crate) fn celt_encode_with_ec(
     Err(CeltEncodeError::MissingOutput)
 }
 
+/// Returns the median of five consecutive logarithmic band energies.
+///
+/// The helper mirrors `median_of_5()` from `celt/celt_encoder.c` and keeps the
+/// branching structure used by the C implementation so future ports that rely
+/// on its exact behaviour (such as `dynalloc_analysis()`) observe the same
+/// decisions when fed identical inputs.
+fn median_of_5(values: &[CeltGlog]) -> CeltGlog {
+    debug_assert!(values.len() >= 5);
+
+    let (mut t0, mut t1) = if values[0] > values[1] {
+        (values[1], values[0])
+    } else {
+        (values[0], values[1])
+    };
+    let t2 = values[2];
+    let (mut t3, mut t4) = if values[3] > values[4] {
+        (values[4], values[3])
+    } else {
+        (values[3], values[4])
+    };
+
+    if t0 > t3 {
+        core::mem::swap(&mut t0, &mut t3);
+        core::mem::swap(&mut t1, &mut t4);
+    }
+
+    if t2 > t1 {
+        if t1 < t3 { t2.min(t3) } else { t4.min(t1) }
+    } else if t2 < t3 {
+        t1.min(t3)
+    } else {
+        t2.min(t4)
+    }
+}
+
+/// Returns the median of three consecutive logarithmic band energies.
+///
+/// This mirrors the scalar helper `median_of_3()` from `celt/celt_encoder.c`
+/// and provides the same branching behaviour for compatibility with the
+/// dynamic allocation heuristics that will be ported later.
+fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
+    debug_assert!(values.len() >= 3);
+
+    let (t0, t1) = if values[0] > values[1] {
+        (values[1], values[0])
+    } else {
+        (values[0], values[1])
+    };
+    let t2 = values[2];
+
+    if t1 < t2 {
+        t1
+    } else if t0 < t2 {
+        t2
+    } else {
+        t0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -911,8 +970,8 @@ mod tests {
         MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
     };
     use super::{
-        CeltEncoderCtlError, compute_vbr, opus_custom_encoder_ctl, patch_transient_decision,
-        transient_analysis,
+        CeltEncoderCtlError, compute_vbr, median_of_3, median_of_5, opus_custom_encoder_ctl,
+        patch_transient_decision, transient_analysis,
     };
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
@@ -1316,5 +1375,33 @@ mod tests {
         let err =
             opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(6)).unwrap_err();
         assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+    }
+
+    #[test]
+    fn median_of_5_matches_sorted_middle() {
+        let samples = [
+            [1.0f32, 5.0, 3.0, 2.0, 4.0],
+            [9.0, -1.0, 2.0, 2.0, 8.0],
+            [12.0, 12.0, 11.0, 13.0, 12.5],
+        ];
+
+        for data in samples {
+            let mut sorted = data;
+            sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+            let expected = sorted[2];
+            assert_eq!(median_of_5(&data), expected);
+        }
+    }
+
+    #[test]
+    fn median_of_3_selects_middle_value() {
+        let samples = [[1.0f32, 3.0, 2.0], [5.0, -2.0, 4.0], [7.5, 7.5, 7.0]];
+
+        for data in samples {
+            let mut sorted = data;
+            sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+            let expected = sorted[1];
+            assert_eq!(median_of_3(&data), expected);
+        }
     }
 }
