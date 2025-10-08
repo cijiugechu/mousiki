@@ -92,6 +92,10 @@ safely.
 - `opus_get_version_string` &rarr; mirrors the version helper from `celt/celt.c`,
   exposing the library identifier used by applications to detect build
   variants.
+- **Still to port:** the shared comb-filter kernels `comb_filter_const_c()` and
+  `comb_filter()` that drive the encoder prefilter and decoder post-filter
+  remain in the C sources. The Rust port will need them once the time-domain
+  enhancement paths are translated.
 
 ### `celt_decoder.rs`
 - `CeltDecoderAlloc` &rarr; owns the trailing decoder buffers (`decode_mem`, LPC
@@ -114,8 +118,16 @@ safely.
   &rarr; translate the frame-header parsing and bit-allocation bookkeeping that
   feed `celt_decode_with_ec()`, including range-decoder setup, dynamic
   allocation boosts, TF selection, and the post-filter parameter decoding.
-- TODO: Translate the remaining frame synthesis path, PLC, and post-filter
-  helpers once the header parsing scaffolding is in place.
+- **Still to port:** the synthesis side is largely unimplemented. The C
+  routines `validate_celt_decoder()`, `celt_decoder_get_size()`,
+  `opus_custom_decoder_get_size()`, `celt_decoder_init()`, and the public
+  wrappers such as `opus_custom_decode()`/`opus_custom_decode_float()` remain to
+  be mirrored so the allocation matches the reference layout exactly. The
+  signal reconstruction helpers (`deemphasis[_stereo]_simple()`,
+  `celt_synthesis()`), PLC pipeline (`celt_plc_pitch_search()`,
+  `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`), and the
+  main `celt_decode_with_ec()` entry point with its `*_dred` variant are still
+  pending as well as the CTL dispatcher `opus_custom_decoder_ctl()`.
 
 ### `celt_encoder.rs`
 - `CeltEncoderAlloc` &rarr; mirrors the encoder-side trailing buffers (`in_mem`,
@@ -146,6 +158,16 @@ safely.
   pre-emphasis, MDCT evaluation, and band energy bookkeeping so the encoder
   state remains in sync with the reference implementation while bitstream
   packing is ported incrementally.
+- **Still to port:** key analysis and bitstream routines continue to live in
+  C. The MDCT staging and comb-filter driver (`compute_mdcts()`,
+  `celt_preemphasis()`, `run_prefilter()`), time/frequency allocation helpers
+  (`l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`,
+  `dynalloc_analysis()`), stereo/tone detectors (`stereo_analysis()`,
+  `normalize_tone_input()`, `acos_approx()`, `tone_lpc()`, `tone_detect()`), the
+  median filters used by the tonality estimator, and the public packet writers
+  (`opus_custom_encode{,_float,_24}()` along with `opus_custom_encoder_init()`/
+  `opus_custom_encoder_init_arch()` and the destroy wrapper) still need Rust
+  translations before the encoder can emit full CELT frames.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
@@ -404,19 +426,17 @@ safely.
   from `celt/mdct.c`, including the twiddle symmetry, inverse FFT, and final
   window mixing used to reconstruct the time-domain signal.
 
-## Remaining C modules and their dependencies
+## Outstanding pieces of the reference sources
 
-The table below lists the major `.c` files under `celt/` in the reference tree
-that have not yet been ported. Dependencies are derived from the files they
-`#include`, focusing on CELT-specific modules rather than generic platform
-support headers.
+Only a handful of routines in the C tree remain untranslated after the work
+listed above. Tracking them explicitly helps future ports focus on the pieces
+that still gate a full end-to-end encoder/decoder.
 
-| C module | Responsibilities | Depends on |
+| Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `bands.c` | Band energy analysis, spreading, quantisation. | `modes`, `vq`, `cwrs`, `rate`, `quant_bands`, `pitch`, `mathops` |
-| `celt.c` | Top-level encoder/decoder glue (frame dispatch, overlap-add). | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
-| `celt_decoder.c` | Decoder main loop, PLC, postfilter. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq`, `lpcnet` |
-| `celt_encoder.c` | Encoder analysis, bit allocation, transient detection. | `mdct`, `pitch`, `bands`, `modes`, `entcode`, `quant_bands`, `rate`, `mathops`, `celt_lpc`, `vq` |
+| `celt/celt.c` | `comb_filter_const_c()`, `comb_filter()` | Provide the shared comb-filter used by the encoder prefilter and decoder post-filter. Porting them depends on the remaining time-domain synthesis work. |
+| `celt/celt_decoder.c` | `validate_celt_decoder()`, `celt_decoder_get_size()`, `opus_custom_decoder_get_size()`, `celt_decoder_init()`, `deemphasis[_stereo]_simple()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
+| `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `median_of_5()`, `median_of_3()`, `dynalloc_analysis()`, `normalize_tone_input()`, `acos_approx()`, `tone_lpc()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
