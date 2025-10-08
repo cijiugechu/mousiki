@@ -1,6 +1,6 @@
 # Rust port of the C opus library
 
-The directory where the C version is located is `/opus-c`(Which is a git submodule).
+The directory where the C version is located is `/opus-c`(Which is a git submodule, If you encounter a 403 error when pulling this submodule, you can download the code and unzip it from [this link](https://github.com/xiph/opus/archive/refs/heads/main.zip)).
 
 # Porting strategy
 
