@@ -291,7 +291,9 @@ impl RangeEncoder {
     }
 
     fn carry_out(&mut self, symbol: u32) {
-        if symbol != EC_SYM_MAX {
+        if symbol == EC_SYM_MAX {
+            self.ext = self.ext.saturating_add(1);
+        } else {
             let carry = (symbol >> EC_SYM_BITS) as u8;
             if self.rem >= 0 {
                 let byte = (self.rem as u32 + u32::from(carry)) as u8;
@@ -305,8 +307,6 @@ impl RangeEncoder {
                 self.ext = 0;
             }
             self.rem = (symbol & EC_SYM_MAX) as i32;
-        } else {
-            self.ext = self.ext.saturating_add(1);
         }
     }
 

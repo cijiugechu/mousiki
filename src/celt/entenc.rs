@@ -74,7 +74,9 @@ impl<'a> EcEnc<'a> {
     }
 
     fn carry_out(&mut self, c: OpusInt32) {
-        if c != EC_SYM_MAX as OpusInt32 {
+        if c == EC_SYM_MAX as OpusInt32 {
+            self.ctx.ext = self.ctx.ext.wrapping_add(1);
+        } else {
             let carry = c >> EC_SYM_BITS;
             if self.ctx.rem >= 0 {
                 let value = (self.ctx.rem + carry) as OpusUint32;
@@ -88,8 +90,6 @@ impl<'a> EcEnc<'a> {
                 }
             }
             self.ctx.rem = c & EC_SYM_MAX as OpusInt32;
-        } else {
-            self.ctx.ext = self.ctx.ext.wrapping_add(1);
         }
     }
 

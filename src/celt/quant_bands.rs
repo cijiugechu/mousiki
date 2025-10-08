@@ -434,7 +434,13 @@ pub(crate) fn quant_coarse_energy(
         tell_intra = ec_tell_frac(enc.ctx());
     }
 
-    if !intra {
+    if intra {
+        if let Some(snapshot) = &intra_snapshot {
+            snapshot.restore(enc);
+        }
+        old_e_bands.copy_from_slice(&old_intra);
+        error.copy_from_slice(&error_intra);
+    } else {
         start_snapshot.restore(enc);
         let badness_inter = quant_coarse_energy_impl(
             mode,
@@ -466,12 +472,6 @@ pub(crate) fn quant_coarse_energy(
             error.copy_from_slice(&error_intra);
             intra = true;
         }
-    } else {
-        if let Some(snapshot) = &intra_snapshot {
-            snapshot.restore(enc);
-        }
-        old_e_bands.copy_from_slice(&old_intra);
-        error.copy_from_slice(&error_intra);
     }
 
     if intra {

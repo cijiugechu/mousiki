@@ -1685,10 +1685,10 @@ fn normalize_lsf_stabilization(nlsf_q15: &mut [i16], d_lpc: isize, bandwidth: Ba
             } else {
                 0
             };
-            let current_nlsf = if nlsf_index != nlsf_q15.len() {
-                nlsf_q15[nlsf_index] as isize
-            } else {
+            let current_nlsf = if nlsf_index == nlsf_q15.len() {
                 32768
+            } else {
+                nlsf_q15[nlsf_index] as isize
             };
 
             let spacing_value: isize =
@@ -1794,10 +1794,10 @@ fn normalize_lsf_stabilization(nlsf_q15: &mut [i16], d_lpc: isize, bandwidth: Ba
     //
     //   min(NLSF_Q15[k], NLSF_Q15[k+1] - NDeltaMin_Q15[k+1])
     for k in (0..=(d_lpc as usize - 1)).rev() {
-        let next_nlsf = if k != (d_lpc as usize) - 1 {
-            nlsf_q15[k + 1] as isize
-        } else {
+        let next_nlsf = if k == (d_lpc as usize) - 1 {
             32768
+        } else {
+            nlsf_q15[k + 1] as isize
         };
 
         nlsf_q15[k] = nlsf_q15[k].min((next_nlsf - (ndelta_min_q15[k + 1] as isize)) as i16);

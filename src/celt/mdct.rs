@@ -146,7 +146,9 @@ fn post_rotate_backward(
         let yi_front = f_front.r * t1_front - f_front.i * t0_front;
 
         let back_index = n4 - i - 1;
-        let (yr_back, yi_back) = if back_index != i {
+        let (yr_back, yi_back) = if back_index == i {
+            (yr_front, yi_front)
+        } else {
             let f_back = freq[back_index];
             let t0_back = cos_part[back_index];
             let t1_back = sin_part[back_index];
@@ -154,8 +156,6 @@ fn post_rotate_backward(
                 f_back.r * t0_back + f_back.i * t1_back,
                 f_back.r * t1_back - f_back.i * t0_back,
             )
-        } else {
-            (yr_front, yi_front)
         };
 
         let front_even = 2 * i;
