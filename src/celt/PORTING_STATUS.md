@@ -138,9 +138,12 @@ safely.
 - `patch_transient_decision` &rarr; mirrors the energy-spread comparison helper
   from `celt/celt_encoder.c` that patches the transient detector when sudden
   band energy increases are observed across frames.
-- TODO: Port the VBR control and the main `celt_encode_with_ec()` encoding loop
-  once the supporting pieces are
-  available in Rust.
+- `compute_vbr` &rarr; ports the VBR target calculator from `celt/celt_encoder.c`
+  that adjusts the per-frame bit budget based on activity, tonality, stereo
+  savings, and temporal masking while respecting the constrained-VBR reservoir
+  tracking rules.
+- TODO: Port the main `celt_encode_with_ec()` encoding loop once the supporting
+  pieces are available in Rust.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in

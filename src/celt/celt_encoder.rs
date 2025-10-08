@@ -20,7 +20,7 @@ use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusUint32,
     OpusVal16, OpusVal32, SilkInfo,
 };
-use core::cmp::min;
+use core::cmp::{max, min};
 use libm::floorf;
 
 /// Maximum number of channels supported by the scalar encoder path.
@@ -537,8 +537,117 @@ fn patch_transient_decision(
     mean_diff > 1.0
 }
 
-// TODO: Port the remaining encoding routines (transient analysis, VBR control,
-//       and the main `celt_encode_with_ec()` path) once the supporting modules
+#[allow(clippy::too_many_arguments)]
+fn compute_vbr(
+    mode: &OpusCustomMode<'_>,
+    analysis: &AnalysisInfo,
+    base_target: OpusInt32,
+    lm: i32,
+    bitrate: OpusInt32,
+    last_coded_bands: i32,
+    channels: usize,
+    intensity: i32,
+    constrained_vbr: bool,
+    stereo_saving: OpusVal16,
+    tot_boost: OpusInt32,
+    tf_estimate: OpusVal16,
+    pitch_change: bool,
+    max_depth: CeltGlog,
+    lfe: bool,
+    has_surround_mask: bool,
+    surround_masking: CeltGlog,
+    temporal_vbr: CeltGlog,
+) -> OpusInt32 {
+    use crate::celt::entcode::BITRES;
+
+    let bitres = BITRES as i32;
+    let nb_ebands = mode.num_ebands;
+    let e_bands = mode.e_bands;
+
+    let mut coded_bands = if last_coded_bands > 0 {
+        last_coded_bands as usize
+    } else {
+        nb_ebands
+    };
+    coded_bands = coded_bands.min(nb_ebands);
+
+    let mut coded_bins = i32::from(e_bands[coded_bands]) << lm;
+    if channels == 2 {
+        let stereo_index = intensity.clamp(0, coded_bands as i32) as usize;
+        coded_bins += i32::from(e_bands[stereo_index]) << lm;
+    }
+
+    let mut target = base_target;
+
+    if analysis.valid && analysis.activity < 0.4 {
+        let coded = (i64::from(coded_bins) << bitres) as f32;
+        let reduction = (coded * (0.4 - analysis.activity)) as i32;
+        target -= reduction;
+    }
+
+    if channels == 2 && coded_bins > 0 {
+        let stereo_bands = intensity.clamp(0, coded_bands as i32) as usize;
+        let stereo_dof = (i32::from(e_bands[stereo_bands]) << lm) - stereo_bands as i32;
+        if stereo_dof > 0 {
+            let max_frac = 0.8f32 * stereo_dof as f32 / coded_bins as f32;
+            let capped_saving = stereo_saving.min(1.0);
+            let term1 = (max_frac * target as f32) as i32;
+            let raw = capped_saving - 0.1f32;
+            let term2 = (raw * (i64::from(stereo_dof) << bitres) as f32) as i32;
+            target -= term1.min(term2);
+        }
+    }
+
+    target += tot_boost - (19 << lm);
+
+    let tf_calibration = 0.044f32;
+    let tf_adjust = 2.0f32 * (tf_estimate - tf_calibration) * target as f32;
+    target += tf_adjust as i32;
+
+    if analysis.valid && !lfe {
+        let tonal = (analysis.tonality - 0.15f32).max(0.0) - 0.12f32;
+        if tonal != 0.0 {
+            let coded = (i64::from(coded_bins) << bitres) as f32;
+            let mut tonal_target = target as f32 + 1.2f32 * coded * tonal;
+            if pitch_change {
+                tonal_target += 0.8f32 * coded;
+            }
+            target = tonal_target as i32;
+        }
+    }
+
+    if has_surround_mask && !lfe {
+        let surround_delta = (surround_masking * (i64::from(coded_bins) << bitres) as f32) as i32;
+        let surround_target = target + surround_delta;
+        target = max(target / 4, surround_target);
+    }
+
+    if nb_ebands >= 2 {
+        let bins = i32::from(e_bands[nb_ebands - 2]) << lm;
+        let floor_depth = ((i64::from(channels as i32 * bins) << bitres) as f32 * max_depth) as i32;
+        let floor_depth = max(floor_depth, target >> 2);
+        target = min(target, floor_depth);
+    }
+
+    if (!has_surround_mask || lfe) && constrained_vbr {
+        let delta = (target - base_target) as f32;
+        target = base_target + (0.67f32 * delta) as i32;
+    }
+
+    if !has_surround_mask && tf_estimate < 0.2f32 {
+        let clamp = (96_000 - bitrate).clamp(0, 32_000);
+        let amount = 0.0000031f32 * clamp as f32;
+        let tvbr_factor = temporal_vbr * amount;
+        target += (tvbr_factor * target as f32) as i32;
+    }
+
+    let doubled = base_target.saturating_mul(2);
+    target = min(doubled, target);
+
+    target
+}
+
+// TODO: Port the main `celt_encode_with_ec()` path once the supporting modules
 //       are available in Rust.
 
 #[cfg(test)]
@@ -548,10 +657,12 @@ mod tests {
         MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
     };
     use super::{
-        CeltEncoderCtlError, opus_custom_encoder_ctl, patch_transient_decision, transient_analysis,
+        CeltEncoderCtlError, compute_vbr, opus_custom_encoder_ctl, patch_transient_decision,
+        transient_analysis,
     };
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
+    use crate::celt::types::AnalysisInfo;
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
 
@@ -653,6 +764,73 @@ mod tests {
         let baseline = patch_transient_decision(&old_e, &old_e, nb_ebands, start, end, channels);
 
         assert!(u8::from(increase) >= u8::from(baseline));
+    }
+
+    #[test]
+    fn compute_vbr_penalises_quiet_analysis() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut analysis = AnalysisInfo::default();
+        analysis.valid = true;
+        analysis.activity = 0.0;
+
+        let base_target = 12_000;
+        let target = compute_vbr(
+            &mode,
+            &analysis,
+            base_target,
+            0,
+            64_000,
+            0,
+            1,
+            mode.effective_ebands as i32,
+            false,
+            0.0,
+            0,
+            0.0,
+            false,
+            10.0,
+            false,
+            false,
+            0.0,
+            0.0,
+        );
+
+        assert!(target < base_target);
+    }
+
+    #[test]
+    fn compute_vbr_caps_to_twice_base() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut analysis = AnalysisInfo::default();
+        analysis.valid = true;
+        analysis.tonality = 1.0;
+        analysis.activity = 0.5;
+
+        let base_target = 10_000;
+        let target = compute_vbr(
+            &mode,
+            &analysis,
+            base_target,
+            0,
+            64_000,
+            0,
+            2,
+            mode.effective_ebands as i32,
+            false,
+            1.0,
+            2_000,
+            1.0,
+            true,
+            10.0,
+            false,
+            false,
+            0.0,
+            0.5,
+        );
+
+        assert!(target <= base_target * 2);
     }
 
     #[test]
