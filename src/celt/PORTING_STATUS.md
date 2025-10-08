@@ -98,6 +98,9 @@ safely.
   history, and band energy arrays) that follow `CELTDecoder` in the C layout,
   allocating them with Rust `Vec`s and exposing a safe `as_decoder()` helper to
   obtain an `OpusCustomDecoder` view.
+- `DECODE_BUFFER_SIZE` &rarr; mirrors the two-kilobyte circular history kept per
+  channel by `celt_decoder.c`, allowing future PLC and post-filter ports to rely
+  on an accurate backing buffer size.
 - `LPC_ORDER` &rarr; surfaces the decoder-side LPC history length so future
   ports of the PLC and post-filter routines share the same constant as the
   reference implementation.
@@ -107,9 +110,11 @@ safely.
 - `init_decoder` &rarr; validates the channel layout, configures architecture
   selection, and initialises the runtime fields exposed by `OpusCustomDecoder`
   while mirroring the zeroing behaviour of `opus_custom_decoder_init()`.
-- TODO: Port the frame decode path (`celt_decode_with_ec()`), packet-loss
-  concealment, and post-filter helpers while reusing the allocation scaffolding
-  introduced here.
+- TODO: Port the frame header parsing and allocation logic that feed
+  `celt_decode_with_ec()`, including the range decoder setup and bit allocation
+  bookkeeping.
+- TODO: Translate the remaining frame synthesis path, PLC, and post-filter
+  helpers once the header parsing scaffolding is in place.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in

@@ -28,6 +28,16 @@ use crate::celt::types::{
 /// can share the same constant.
 const LPC_ORDER: usize = 24;
 
+/// Size of the rolling decode buffer maintained per channel.
+///
+/// Matches the `DECODE_BUFFER_SIZE` constant from the C implementation.  The
+/// reference decoder keeps a two kilobyte circular history in front of the
+/// overlap region so packet loss concealment and the post-filter can operate on
+/// previously synthesised samples.  Mirroring the same storage requirements in
+/// Rust keeps the allocation layout compatible with the ported routines that
+/// will eventually consume these buffers.
+const DECODE_BUFFER_SIZE: usize = 2048;
+
 /// Maximum number of channels supported by the initial CELT decoder port.
 ///
 /// The reference implementation restricts the custom decoder to mono or stereo
@@ -75,12 +85,13 @@ impl CeltDecoderAlloc {
     pub(crate) fn new(mode: &OpusCustomMode<'_>, channels: usize) -> Self {
         assert!(channels > 0, "decoder must contain at least one channel");
 
-        let overlap = mode.overlap * channels;
+        let overlap = mode.overlap;
+        let decode_mem = channels * (DECODE_BUFFER_SIZE + overlap);
         let lpc = LPC_ORDER * channels;
         let band_count = 2 * mode.num_ebands;
 
         Self {
-            decode_mem: vec![0.0; overlap],
+            decode_mem: vec![0.0; decode_mem],
             lpc: vec![0.0; lpc],
             old_ebands: vec![0.0; band_count],
             old_log_e: vec![0.0; band_count],
@@ -240,7 +251,10 @@ mod tests {
         );
 
         let mut alloc = CeltDecoderAlloc::new(&mode, 2);
-        assert_eq!(alloc.decode_mem.len(), mode.overlap * 2);
+        assert_eq!(
+            alloc.decode_mem.len(),
+            2 * (super::DECODE_BUFFER_SIZE + mode.overlap)
+        );
         assert_eq!(alloc.lpc.len(), LPC_ORDER * 2);
         assert_eq!(alloc.old_ebands.len(), 2 * mode.num_ebands);
         assert_eq!(alloc.old_log_e.len(), 2 * mode.num_ebands);
@@ -308,6 +322,7 @@ mod tests {
             .init_decoder(&mode, 1, 1, 1234)
             .expect("initialisation should succeed");
 
+        assert_eq!(decoder.overlap, mode.overlap);
         assert_eq!(decoder.downsample, 1);
         assert_eq!(decoder.end_band, mode.effective_ebands as i32);
         assert_eq!(decoder.arch, 0);
