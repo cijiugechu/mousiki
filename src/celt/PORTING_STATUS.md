@@ -92,10 +92,12 @@ safely.
 - `opus_get_version_string` &rarr; mirrors the version helper from `celt/celt.c`,
   exposing the library identifier used by applications to detect build
   variants.
-- **Still to port:** the shared comb-filter kernels `comb_filter_const_c()` and
-  `comb_filter()` that drive the encoder prefilter and decoder post-filter
-  remain in the C sources. The Rust port will need them once the time-domain
-  enhancement paths are translated.
+- `comb_filter_const` &rarr; ports the scalar `comb_filter_const_c()` helper from
+  `celt/celt.c`, reusing the constant tapset during the post-filter overlap
+  phase while validating the slice history requirements in Rust.
+- `comb_filter` &rarr; mirrors the main comb filter from `celt/celt.c`,
+  including the overlap ramp, tapset interpolation, and the optimisation that
+  collapses to `comb_filter_const` once the overlap region completes.
 
 ### `celt_decoder.rs`
 - `CeltDecoderAlloc` &rarr; owns the trailing decoder buffers (`decode_mem`, LPC
@@ -434,7 +436,6 @@ that still gate a full end-to-end encoder/decoder.
 
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `celt/celt.c` | `comb_filter_const_c()`, `comb_filter()` | Provide the shared comb-filter used by the encoder prefilter and decoder post-filter. Porting them depends on the remaining time-domain synthesis work. |
 | `celt/celt_decoder.c` | `validate_celt_decoder()`, `celt_decoder_get_size()`, `opus_custom_decoder_get_size()`, `celt_decoder_init()`, `deemphasis[_stereo]_simple()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
 | `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `median_of_5()`, `median_of_3()`, `dynalloc_analysis()`, `normalize_tone_input()`, `acos_approx()`, `tone_lpc()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
