@@ -117,6 +117,21 @@ safely.
 - TODO: Translate the remaining frame synthesis path, PLC, and post-filter
   helpers once the header parsing scaffolding is in place.
 
+### `celt_encoder.rs`
+- `CeltEncoderAlloc` &rarr; mirrors the encoder-side trailing buffers (`in_mem`,
+  prefilter history, and band energy tracking) so the Rust port can borrow the
+  same storage layout as `celt/celt_encoder.c`.
+- `opus_custom_encoder_get_size`/`celt_encoder_get_size` &rarr; reproduce the
+  allocation sizing helpers from the C implementation for custom and canonical
+  modes.
+- `CeltEncoderInitError`, `init_custom_encoder`, and
+  `init_encoder_for_rate` &rarr; translate the encoder initialisation logic,
+  including the reset defaults applied by `OPUS_RESET_STATE` and the
+  resampling-factor validation used by `celt_encoder_init()`.
+- TODO: Port the transient analysis, VBR control, CTL dispatcher, and
+  `celt_encode_with_ec()` encoding loop once the supporting pieces are
+  available in Rust.
+
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
   `celt/mathops.h`.
