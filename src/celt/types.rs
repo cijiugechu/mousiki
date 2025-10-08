@@ -436,8 +436,14 @@ impl<'a> OpusCustomDecoder<'a> {
         old_log_e2: &'a mut [CeltGlog],
         background_log_e: &'a mut [CeltGlog],
     ) -> Self {
-        let overlap = mode.overlap * channels;
-        debug_assert!(decode_mem.len() >= overlap);
+        let overlap = mode.overlap;
+        let decode_stride = if channels > 0 {
+            decode_mem.len() / channels
+        } else {
+            0
+        };
+        debug_assert!(channels == 0 || decode_stride * channels == decode_mem.len());
+        debug_assert!(decode_stride >= overlap);
         let band_count = 2 * mode.num_ebands;
         debug_assert_eq!(old_ebands.len(), band_count);
         debug_assert_eq!(old_log_e.len(), band_count);
