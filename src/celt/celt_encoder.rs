@@ -1077,18 +1077,28 @@ pub(crate) fn normalize_tone_input(_x: &mut [OpusVal16]) {}
 /// and the square-root refinement of the polynomial.
 #[cfg(feature = "fixed_point")]
 pub(crate) fn acos_approx(mut x: OpusVal32) -> OpusVal32 {
-    let flip = x < 0;
+    // Emulate the CELT fixed-point acos approximation using integer math.
+    // Input `x` is a real value in [-1, 1]. We convert it to Q29, run the
+    // original integer polynomial, which produces an angle in Q14 radians,
+    // then convert back to `f32`.
+    let flip = x < 0.0;
     if flip {
         x = -x;
     }
 
-    let x14 = x >> 15;
-    let mut tmp = ((762 * x14) >> 14) - 3_308;
-    tmp = ((tmp * x14) >> 14) + 25_726;
-    let radicand = max(0, (1 << 30) - (x << 1));
-    tmp = (tmp * celt_sqrt_fixed(radicand)) >> 16;
+    // Clamp to [0, 1] and convert to Q29.
+    let x_q29: i32 = (x.clamp(0.0, 1.0) * (1u32 << 29) as f32) as i32;
 
-    if flip { 25_736 - tmp } else { tmp }
+    // Polynomial and refinement in the fixed-point domain.
+    let x14: i32 = x_q29 >> 15; // Q14
+    let mut tmp: i32 = ((762 * x14) >> 14) - 3_308;
+    tmp = ((tmp * x14) >> 14) + 25_726;
+    let radicand: i32 = max(0, (1 << 30) - (x_q29 << 1)); // Q30
+    tmp = (tmp * celt_sqrt_fixed(radicand)) >> 16; // Q14
+
+    // Mirror negative inputs and convert Q14 -> f32 radians.
+    let tmp_q14 = if flip { 25_736 - tmp } else { tmp };
+    tmp_q14 as f32 / 16_384.0
 }
 
 /// Float variant that falls back to the standard library implementation.
