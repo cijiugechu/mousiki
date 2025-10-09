@@ -20,6 +20,7 @@ use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resamp
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
+use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
@@ -72,6 +73,75 @@ const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 
 /// Scalar used to decode the post-filter gain from the coarse index.
 const POSTFILTER_GAIN_SCALE: OpusVal16 = 0.09375;
+
+/// Layout stub mirroring the portion of the C decoder that precedes the
+/// variable-length trailing buffers.
+///
+/// The reference implementation stores the primary decoder fields followed by
+/// a single-sample `_decode_mem` placeholder. Additional per-channel history,
+/// LPC coefficients, and energy memories are allocated immediately afterwards.
+/// Recreating the fixed prefix here lets the Rust port reproduce the sizing
+/// calculations performed by `opus_custom_decoder_get_size()` without relying
+/// on raw pointer arithmetic.
+#[repr(C)]
+struct DecoderLayoutStub {
+    mode: *const (),
+    overlap: i32,
+    channels: i32,
+    stream_channels: i32,
+    downsample: i32,
+    start_band: i32,
+    end_band: i32,
+    signalling: i32,
+    disable_inv: i32,
+    complexity: i32,
+    arch: i32,
+    rng: OpusUint32,
+    error: i32,
+    last_pitch_index: i32,
+    loss_duration: i32,
+    skip_plc: i32,
+    postfilter_period: i32,
+    postfilter_period_old: i32,
+    postfilter_gain: OpusVal16,
+    postfilter_gain_old: OpusVal16,
+    postfilter_tapset: i32,
+    postfilter_tapset_old: i32,
+    prefilter_and_fold: i32,
+    preemph_mem_decoder: [CeltSig; 2],
+    decode_mem_head: [CeltSig; 1],
+}
+
+/// Size of the fixed decoder prefix in bytes.
+const DECODER_PREFIX_SIZE: usize = core::mem::size_of::<DecoderLayoutStub>();
+
+/// Returns the number of bytes required to allocate a decoder for `mode`.
+#[must_use]
+pub(crate) fn opus_custom_decoder_get_size(
+    mode: &OpusCustomMode<'_>,
+    channels: usize,
+) -> Option<usize> {
+    if channels == 0 || channels > MAX_CHANNELS {
+        return None;
+    }
+
+    let decode_mem = channels * (DECODE_BUFFER_SIZE + mode.overlap);
+    let lpc = channels * LPC_ORDER;
+    let band_history = 2 * mode.num_ebands;
+
+    let size = DECODER_PREFIX_SIZE
+        + (decode_mem - 1) * core::mem::size_of::<CeltSig>()
+        + lpc * core::mem::size_of::<OpusVal16>()
+        + 4 * band_history * core::mem::size_of::<CeltGlog>();
+    Some(size)
+}
+
+/// Returns the size of the canonical CELT decoder operating at 48 kHz/960.
+#[must_use]
+pub(crate) fn celt_decoder_get_size(channels: usize) -> Option<usize> {
+    opus_custom_mode_find_static(48_000, 960)
+        .and_then(|mode| opus_custom_decoder_get_size(&mode, channels))
+}
 
 /// Errors that can be reported while preparing to decode a CELT frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,13 +743,21 @@ impl CeltDecoderAlloc {
     /// implementation will replace this helper with a fully bit-exact
     /// translation.
     pub(crate) fn size_in_bytes(&self) -> usize {
-        self.decode_mem.len() * core::mem::size_of::<CeltSig>()
+        let channels = self.lpc.len() / LPC_ORDER;
+        debug_assert!(channels > 0 && channels <= MAX_CHANNELS);
+
+        let decode_mem = self.decode_mem.len();
+        debug_assert!(decode_mem >= 1);
+
+        let band_history = self.old_ebands.len();
+        debug_assert_eq!(self.old_log_e.len(), band_history);
+        debug_assert_eq!(self.old_log_e2.len(), band_history);
+        debug_assert_eq!(self.background_log_e.len(), band_history);
+
+        DECODER_PREFIX_SIZE
+            + (decode_mem - 1) * core::mem::size_of::<CeltSig>()
             + self.lpc.len() * core::mem::size_of::<OpusVal16>()
-            + (self.old_ebands.len()
-                + self.old_log_e.len()
-                + self.old_log_e2.len()
-                + self.background_log_e.len())
-                * core::mem::size_of::<CeltGlog>()
+            + 4 * band_history * core::mem::size_of::<CeltGlog>()
     }
 
     /// Borrows the allocation as an [`OpusCustomDecoder`] tied to the provided
@@ -790,8 +868,8 @@ fn validate_channel_layout(
 mod tests {
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderInitError, LPC_ORDER, MAX_CHANNELS,
-        RangeDecoderState, prepare_frame, tf_decode, validate_celt_decoder,
-        validate_channel_layout,
+        RangeDecoderState, celt_decoder_get_size, opus_custom_decoder_get_size, prepare_frame,
+        tf_decode, validate_celt_decoder, validate_channel_layout,
     };
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
@@ -849,6 +927,17 @@ mod tests {
         assert!(alloc.old_log_e.iter().all(|&v| v == 0.0));
         assert!(alloc.old_log_e2.iter().all(|&v| v == 0.0));
         assert!(alloc.background_log_e.iter().all(|&v| v == 0.0));
+
+        let expected_size = opus_custom_decoder_get_size(&mode, 2).expect("decoder size");
+        assert_eq!(alloc.size_in_bytes(), expected_size);
+    }
+
+    #[test]
+    fn celt_decoder_get_size_honours_channel_limits() {
+        assert!(celt_decoder_get_size(0).is_none());
+        assert!(celt_decoder_get_size(3).is_none());
+        assert!(celt_decoder_get_size(1).is_some());
+        assert!(celt_decoder_get_size(2).is_some());
     }
 
     #[test]

@@ -113,6 +113,10 @@ safely.
 - `size_in_bytes`/`reset` &rarr; utility helpers mirroring the allocation sizing
   and zeroing performed by the reference implementation when creating and
   reinitialising decoder states.
+- `opus_custom_decoder_get_size`/`celt_decoder_get_size` &rarr; reproduce the
+  allocation sizing helpers from `celt/celt_decoder.c`, accounting for the
+  embedded `_decode_mem` sample so Rust calculations stay byte-for-byte with the
+  flexible array layout.
 - `init_decoder` &rarr; validates the channel layout, configures architecture
   selection, and initialises the runtime fields exposed by `OpusCustomDecoder`
   while mirroring the zeroing behaviour of `opus_custom_decoder_init()`.
@@ -124,11 +128,10 @@ safely.
   `celt/celt_decoder.c`, ensuring the decoder state remains internally
   consistent before the synthesis path is executed.
 - **Still to port:** the synthesis side is largely unimplemented. The C
-  routines `celt_decoder_get_size()`, `opus_custom_decoder_get_size()`,
-  `celt_decoder_init()`, and the public
-  wrappers such as `opus_custom_decode()`/`opus_custom_decode_float()` remain to
-  be mirrored so the allocation matches the reference layout exactly. The
-  signal reconstruction helpers (`deemphasis[_stereo]_simple()`,
+  routines `celt_decoder_init()` and the public wrappers such as
+  `opus_custom_decode()`/`opus_custom_decode_float()` remain to be mirrored so
+  the allocation matches the reference layout exactly. The signal reconstruction
+  helpers (`deemphasis[_stereo]_simple()`,
   `celt_synthesis()`), PLC pipeline (`celt_plc_pitch_search()`,
   `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`), and the
   main `celt_decode_with_ec()` entry point with its `*_dred` variant are still
@@ -454,7 +457,7 @@ that still gate a full end-to-end encoder/decoder.
 
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `celt/celt_decoder.c` | `validate_celt_decoder()`, `celt_decoder_get_size()`, `opus_custom_decoder_get_size()`, `celt_decoder_init()`, `deemphasis[_stereo]_simple()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
+| `celt/celt_decoder.c` | `celt_decoder_init()`, `deemphasis[_stereo]_simple()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
 | `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
