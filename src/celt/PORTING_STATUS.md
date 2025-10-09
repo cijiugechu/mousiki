@@ -127,6 +127,10 @@ safely.
 - `validate_celt_decoder` &rarr; mirrors the debug-time sanity checks from
   `celt/celt_decoder.c`, ensuring the decoder state remains internally
   consistent before the synthesis path is executed.
+- `deemphasis` and `deemphasis_stereo_simple` &rarr; port the post-filter output
+  stage from `celt/celt_decoder.c`, providing the stereo fast path, optional
+  downsampling, and accumulation into existing PCM buffers while updating the
+  per-channel pre-emphasis history.
 - **Still to port:** the synthesis side is largely unimplemented. The C
   routines `celt_decoder_init()` and the public wrappers such as
   `opus_custom_decode()`/`opus_custom_decode_float()` remain to be mirrored so
@@ -457,7 +461,7 @@ that still gate a full end-to-end encoder/decoder.
 
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `celt/celt_decoder.c` | `celt_decoder_init()`, `deemphasis[_stereo]_simple()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
+| `celt/celt_decoder.c` | `celt_decoder_init()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
 | `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific

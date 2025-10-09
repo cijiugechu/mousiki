@@ -20,11 +20,12 @@ use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resamp
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
+use crate::celt::float_cast::CELT_SIG_SCALE;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
-    CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusUint32, OpusVal16,
+    CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32, OpusVal16,
 };
 use crate::celt::vq::SPREAD_NORMAL;
 use core::cmp::{max, min};
@@ -73,6 +74,183 @@ const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 
 /// Scalar used to decode the post-filter gain from the coarse index.
 const POSTFILTER_GAIN_SCALE: OpusVal16 = 0.09375;
+
+const VERY_SMALL: CeltSig = 1.0e-30;
+const INV_CELT_SIG_SCALE: f32 = 1.0 / CELT_SIG_SCALE;
+
+#[inline]
+fn multiply_coef(coef: OpusVal16, value: CeltSig) -> CeltSig {
+    coef * value
+}
+
+#[inline]
+fn sig_to_res(value: CeltSig) -> OpusRes {
+    value * INV_CELT_SIG_SCALE
+}
+
+#[inline]
+fn add_res(lhs: OpusRes, rhs: OpusRes) -> OpusRes {
+    lhs + rhs
+}
+
+#[inline]
+fn preprocess_sample(sample: CeltSig, mem: CeltSig) -> CeltSig {
+    sample + mem + VERY_SMALL
+}
+
+#[inline]
+fn shl32(value: CeltSig, _shift: i32) -> CeltSig {
+    value
+}
+
+#[inline]
+fn sub_celt(lhs: CeltSig, rhs: CeltSig) -> CeltSig {
+    lhs - rhs
+}
+
+fn deemphasis_stereo_simple(
+    input: &[&[CeltSig]],
+    pcm: &mut [OpusRes],
+    n: usize,
+    coef0: OpusVal16,
+    mem: &mut [CeltSig],
+) {
+    debug_assert!(input.len() >= 2, "stereo deemphasis requires two channels");
+    debug_assert!(
+        pcm.len() >= 2 * n,
+        "PCM buffer must hold interleaved stereo samples"
+    );
+    debug_assert!(
+        mem.len() >= 2,
+        "pre-emphasis memory must expose two channels"
+    );
+
+    let left = input[0];
+    let right = input[1];
+    debug_assert!(left.len() >= n, "left channel does not expose N samples");
+    debug_assert!(right.len() >= n, "right channel does not expose N samples");
+
+    let mut mem_left = mem[0];
+    let mut mem_right = mem[1];
+
+    for (j, (&left_sample, &right_sample)) in left.iter().zip(right.iter()).take(n).enumerate() {
+        let tmp_left = preprocess_sample(left_sample, mem_left);
+        let tmp_right = preprocess_sample(right_sample, mem_right);
+
+        mem_left = multiply_coef(coef0, tmp_left);
+        mem_right = multiply_coef(coef0, tmp_right);
+
+        pcm[2 * j] = sig_to_res(tmp_left);
+        pcm[2 * j + 1] = sig_to_res(tmp_right);
+    }
+
+    mem[0] = mem_left;
+    mem[1] = mem_right;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn deemphasis(
+    input: &[&[CeltSig]],
+    pcm: &mut [OpusRes],
+    n: usize,
+    channels: usize,
+    downsample: usize,
+    coef: &[OpusVal16],
+    mem: &mut [CeltSig],
+    accum: bool,
+) {
+    if n == 0 || channels == 0 {
+        return;
+    }
+
+    debug_assert!(downsample > 0, "downsample factor must be non-zero");
+    debug_assert!(
+        input.len() >= channels,
+        "input must expose one slice per channel"
+    );
+    debug_assert!(
+        mem.len() >= channels,
+        "memory buffer must expose one value per channel"
+    );
+    debug_assert!(
+        !coef.is_empty(),
+        "pre-emphasis coefficients must not be empty"
+    );
+
+    let expected_samples = if downsample > 1 { n / downsample } else { n };
+    debug_assert!(
+        pcm.len() >= expected_samples * channels,
+        "PCM buffer too small for deemphasis output",
+    );
+
+    if downsample == 1 && channels == 2 && !accum {
+        deemphasis_stereo_simple(input, pcm, n, coef[0], mem);
+        return;
+    }
+
+    let mut scratch = vec![CeltSig::default(); n];
+    let coef0 = coef[0];
+    let nd = n / downsample;
+
+    for channel in 0..channels {
+        let samples = input[channel];
+        debug_assert!(
+            samples.len() >= n,
+            "channel {} does not expose N samples",
+            channel
+        );
+
+        let mut m = mem[channel];
+        let mut apply_downsampling = false;
+
+        if coef.len() > 3 && coef[1] != 0.0 {
+            let coef1 = coef[1];
+            let coef3 = coef[3];
+            for (j, &sample) in samples.iter().take(n).enumerate() {
+                let tmp = preprocess_sample(sample, m);
+                m = sub_celt(multiply_coef(coef0, tmp), multiply_coef(coef1, sample));
+                scratch[j] = shl32(multiply_coef(coef3, tmp), 2);
+            }
+            apply_downsampling = true;
+        } else if downsample > 1 {
+            for (j, &sample) in samples.iter().take(n).enumerate() {
+                let tmp = preprocess_sample(sample, m);
+                m = multiply_coef(coef0, tmp);
+                scratch[j] = tmp;
+            }
+            apply_downsampling = true;
+        } else if accum {
+            for (j, &sample) in samples.iter().take(n).enumerate() {
+                let tmp = preprocess_sample(sample, m);
+                m = multiply_coef(coef0, tmp);
+                let idx = j * channels + channel;
+                let converted = sig_to_res(tmp);
+                pcm[idx] = add_res(pcm[idx], converted);
+            }
+        } else {
+            for (j, &sample) in samples.iter().take(n).enumerate() {
+                let tmp = preprocess_sample(sample, m);
+                m = multiply_coef(coef0, tmp);
+                let idx = j * channels + channel;
+                pcm[idx] = sig_to_res(tmp);
+            }
+        }
+
+        mem[channel] = m;
+
+        if apply_downsampling {
+            for j in 0..nd {
+                let idx = j * channels + channel;
+                let converted = sig_to_res(scratch[j * downsample]);
+                if accum {
+                    pcm[idx] = add_res(pcm[idx], converted);
+                } else {
+                    pcm[idx] = converted;
+                }
+            }
+        }
+    }
+}
 
 /// Layout stub mirroring the portion of the C decoder that precedes the
 /// variable-length trailing buffers.
@@ -866,13 +1044,19 @@ fn validate_channel_layout(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "fixed_point"))]
+    use super::deemphasis;
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderInitError, LPC_ORDER, MAX_CHANNELS,
         RangeDecoderState, celt_decoder_get_size, opus_custom_decoder_get_size, prepare_frame,
         tf_decode, validate_celt_decoder, validate_channel_layout,
     };
+    #[cfg(not(feature = "fixed_point"))]
+    use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
+    #[cfg(not(feature = "fixed_point"))]
+    use alloc::vec::Vec;
 
     #[test]
     fn tf_decode_returns_default_table_entries() {
@@ -1108,5 +1292,72 @@ mod tests {
         let err = prepare_frame(&mut decoder, &[0u8; 2], mode.short_mdct_size + 1)
             .expect_err("invalid frame size must be rejected");
         assert_eq!(err, CeltDecodeError::BadArgument);
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    #[test]
+    fn deemphasis_stereo_simple_matches_reference() {
+        let left = [0.25_f32, -0.5, 0.75];
+        let right = [-0.125_f32, 0.5, -0.25];
+        let input: [&[f32]; 2] = [&left, &right];
+        let mut pcm = vec![0.0_f32; left.len() * 2];
+        let mut mem = [0.1_f32, -0.2_f32];
+        let coef = [0.5_f32];
+
+        deemphasis(&input, &mut pcm, left.len(), 2, 1, &coef, &mut mem, false);
+
+        const VERY_SMALL: f32 = 1.0e-30;
+        let mut expected_mem = [0.1_f32, -0.2_f32];
+        let mut expected = [Vec::new(), Vec::new()];
+
+        for (channel, samples) in [left.as_slice(), right.as_slice()].iter().enumerate() {
+            let mut m = expected_mem[channel];
+            for &sample in *samples {
+                let tmp = sample + m + VERY_SMALL;
+                expected[channel].push(tmp);
+                m = coef[0] * tmp;
+            }
+            expected_mem[channel] = m;
+        }
+
+        for j in 0..left.len() {
+            assert!((pcm[2 * j] - expected[0][j] / CELT_SIG_SCALE).abs() < 1e-6);
+            assert!((pcm[2 * j + 1] - expected[1][j] / CELT_SIG_SCALE).abs() < 1e-6);
+        }
+
+        assert!((mem[0] - expected_mem[0]).abs() < 1e-6);
+        assert!((mem[1] - expected_mem[1]).abs() < 1e-6);
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    #[test]
+    fn deemphasis_downsamples_with_accumulation() {
+        let samples = [0.5_f32, -0.25, 0.75, -0.5];
+        let input: [&[f32]; 1] = [&samples];
+        let mut pcm = vec![0.1_f32, -0.2_f32];
+        let mut mem = [0.0_f32];
+        let coef = [0.25_f32];
+
+        deemphasis(&input, &mut pcm, samples.len(), 1, 2, &coef, &mut mem, true);
+
+        const VERY_SMALL: f32 = 1.0e-30;
+        let mut m = 0.0_f32;
+        let mut scratch = Vec::new();
+        for &sample in &samples {
+            let tmp = sample + m + VERY_SMALL;
+            scratch.push(tmp);
+            m = coef[0] * tmp;
+        }
+
+        let expected = [
+            0.1_f32 + scratch[0] / CELT_SIG_SCALE,
+            -0.2_f32 + scratch[2] / CELT_SIG_SCALE,
+        ];
+
+        for (actual, expected) in pcm.iter().zip(expected.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+
+        assert!((mem[0] - m).abs() < 1e-6);
     }
 }

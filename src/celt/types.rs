@@ -23,6 +23,14 @@ pub type CeltGlog = OpusVal32;
 /// Coefficients used by the MDCT windows.
 pub type CeltCoef = OpusVal16;
 
+/// Representation used when emitting or consuming PCM samples.
+#[cfg(feature = "fixed_point")]
+pub type OpusRes = OpusVal16;
+
+/// Representation used when emitting or consuming PCM samples.
+#[cfg(not(feature = "fixed_point"))]
+pub type OpusRes = OpusVal16;
+
 /// Scalar type used by the KISS FFT tables.
 pub type KissTwiddleScalar = f32;
 
