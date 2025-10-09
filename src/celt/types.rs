@@ -24,11 +24,6 @@ pub type CeltGlog = OpusVal32;
 pub type CeltCoef = OpusVal16;
 
 /// Representation used when emitting or consuming PCM samples.
-#[cfg(feature = "fixed_point")]
-pub type OpusRes = OpusVal16;
-
-/// Representation used when emitting or consuming PCM samples.
-#[cfg(not(feature = "fixed_point"))]
 pub type OpusRes = OpusVal16;
 
 /// Scalar type used by the KISS FFT tables.
