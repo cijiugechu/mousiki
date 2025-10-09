@@ -17,7 +17,11 @@ use crate::celt::bands::compute_band_energies;
 use crate::celt::celt::resampling_factor;
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entenc::EcEnc;
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::celt_ilog2;
 use crate::celt::math::{celt_sqrt, frac_div32_q29};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::amp2_log2;
@@ -26,6 +30,8 @@ use crate::celt::types::{
     OpusVal16, OpusVal32, SilkInfo,
 };
 use core::cmp::{max, min};
+#[cfg(not(feature = "fixed_point"))]
+use libm::acosf;
 use libm::floorf;
 
 /// Maximum number of channels supported by the scalar encoder path.
@@ -1028,6 +1034,69 @@ pub(crate) fn tone_lpc(x: &[OpusVal16], delay: usize, lpc: &mut [OpusVal32; 2]) 
     false
 }
 
+/// Normalises the tone detector input to avoid overflow in the fixed-point build.
+///
+/// The C implementation rescales the temporary tone buffer so that the
+/// subsequent LPC analysis can square the samples without exceeding the Q15
+/// dynamic range. The float variant of CELT performs all computations in
+/// `f32`, so no scaling is necessary; the helper only performs work when the
+/// crate is compiled with the `fixed_point` feature enabled.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn normalize_tone_input(x: &mut [OpusVal16]) {
+    if x.is_empty() {
+        return;
+    }
+
+    let mut ac0: OpusInt32 = x.len() as OpusInt32;
+    for &sample in x.iter() {
+        let sample32: OpusInt32 = sample as OpusInt32;
+        ac0 = ac0.wrapping_add((sample32 * sample32) >> 10);
+    }
+
+    let shift = 5 - ((28 - celt_ilog2(ac0)) >> 1);
+    if shift > 0 {
+        let bias = 1 << (shift - 1);
+        for sample in x.iter_mut() {
+            let value: OpusInt32 = (*sample) as OpusInt32;
+            let scaled = (value + bias) >> shift;
+            *sample = scaled as OpusVal16;
+        }
+    }
+}
+
+/// Float build stub matching the no-op behaviour of the reference
+/// implementation.
+#[cfg(not(feature = "fixed_point"))]
+pub(crate) fn normalize_tone_input(_x: &mut [OpusVal16]) {}
+
+/// Approximates `acos(x)` using the fixed-point polynomial used by CELT.
+///
+/// The reference implementation exposes this helper only when operating in
+/// fixed-point mode.  Replicating it in Rust keeps the tone detector logic
+/// numerically equivalent, including the mirrored handling of negative inputs
+/// and the square-root refinement of the polynomial.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn acos_approx(mut x: OpusVal32) -> OpusVal32 {
+    let flip = x < 0;
+    if flip {
+        x = -x;
+    }
+
+    let x14 = x >> 15;
+    let mut tmp = ((762 * x14) >> 14) - 3_308;
+    tmp = ((tmp * x14) >> 14) + 25_726;
+    let radicand = max(0, (1 << 30) - (x << 1));
+    tmp = (tmp * celt_sqrt_fixed(radicand)) >> 16;
+
+    if flip { 25_736 - tmp } else { tmp }
+}
+
+/// Float variant that falls back to the standard library implementation.
+#[cfg(not(feature = "fixed_point"))]
+pub(crate) fn acos_approx(x: OpusVal32) -> OpusVal32 {
+    acosf(x.clamp(-1.0, 1.0))
+}
+
 /// Returns the median of three consecutive logarithmic band energies.
 ///
 /// This mirrors the scalar helper `median_of_3()` from `celt/celt_encoder.c`
@@ -1059,8 +1128,9 @@ mod tests {
         MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
     };
     use super::{
-        CeltEncoderCtlError, compute_vbr, median_of_3, median_of_5, opus_custom_encoder_ctl,
-        patch_transient_decision, tone_lpc, transient_analysis,
+        CeltEncoderCtlError, acos_approx, compute_vbr, median_of_3, median_of_5,
+        normalize_tone_input, opus_custom_encoder_ctl, patch_transient_decision, tone_lpc,
+        transient_analysis,
     };
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
@@ -1515,5 +1585,29 @@ mod tests {
         let expected_cos = 2.0 * omega.cos();
         assert!((lpc[0] - expected_cos).abs() < 1e-3);
         assert!((lpc[1] + 1.0).abs() < 1e-3);
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    #[test]
+    fn normalize_tone_input_is_noop_for_float_build() {
+        let mut data = [0.125f32, -0.5, 1.25, -1.75];
+        let original = data;
+        normalize_tone_input(&mut data);
+        assert_eq!(data, original);
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    #[test]
+    fn acos_approx_matches_libm_for_float_build() {
+        let samples = [-1.0f32, -0.5, 0.0, 0.3, 0.75, 1.0];
+
+        for &value in &samples {
+            let expected = libm::acosf(value);
+            let approx = acos_approx(value);
+            assert!(
+                (approx - expected).abs() < 1e-6,
+                "approximation should match libm for value {value}"
+            );
+        }
     }
 }
