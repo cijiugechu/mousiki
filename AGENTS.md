@@ -14,4 +14,4 @@ The directory where the C version is located is `/opus-c`(Which is a git submodu
 
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
-- Run `cargo check`, `cargo test` and `cargo clippy` automatically after making code changes.
+- Run `cargo check`, `cargo test --all-features` and `cargo clippy` automatically after making code changes.
