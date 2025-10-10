@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::f32::consts::PI;
-use libm::{cosf, floor, sinf, sqrt};
+use libm::{cosf, sinf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct KissFftCpx {
@@ -332,7 +332,7 @@ impl MiniKissFftr {
 fn kf_factor(mut n: usize) -> Vec<i32> {
     let mut factors = Vec::with_capacity(2 * MAXFACTORS);
     let mut p = 4usize;
-    let floor_sqrt = floor(sqrt(n as f64)) as usize;
+    let floor_sqrt = floor_sqrt_usize(n);
     while n > 1 {
         while !n.is_multiple_of(p) {
             p = match p {
@@ -349,6 +349,35 @@ fn kf_factor(mut n: usize) -> Vec<i32> {
         factors.push(n as i32);
     }
     factors
+}
+
+fn floor_sqrt_usize(n: usize) -> usize {
+    if n <= 1 {
+        return n;
+    }
+
+    let mut low = 1usize;
+    let mut high = n;
+    let mut best = 1usize;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        match mid.checked_mul(mid) {
+            Some(prod) if prod == n => return mid,
+            Some(prod) if prod < n => {
+                best = mid;
+                low = mid + 1;
+            }
+            _ => {
+                if mid == 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
+        }
+    }
+
+    best
 }
 
 #[cfg(test)]

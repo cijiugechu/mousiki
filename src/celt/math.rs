@@ -13,7 +13,9 @@ use core::f32::consts::{LOG2_E, PI};
 use crate::celt::entcode::ec_ilog;
 use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
-use libm::{cosf, expf, logf, sqrtf};
+use libm::{cosf, expf, logf};
+#[cfg(not(miri))]
+use libm::sqrtf;
 
 /// Integer square root mirroring `isqrt32()` from `celt/mathops.c`.
 ///
@@ -128,7 +130,35 @@ pub(crate) fn celt_cos_norm(x: f32) -> f32 {
 /// Square-root helper mirroring the `celt_sqrt()` macro from `mathops.h`.
 #[inline]
 pub(crate) fn celt_sqrt(x: f32) -> f32 {
-    sqrtf(x)
+    #[cfg(miri)]
+    {
+        return sqrtf_fallback(x);
+    }
+
+    #[cfg(not(miri))]
+    {
+        sqrtf(x)
+    }
+}
+
+#[cfg(miri)]
+#[inline]
+fn sqrtf_fallback(x: f32) -> f32 {
+    if !(x > 0.0) {
+        if x == 0.0 {
+            return 0.0;
+        }
+        if x.is_sign_negative() {
+            return f32::NAN;
+        }
+        return x;
+    }
+
+    let mut guess = f32::from_bits((x.to_bits() >> 1) + 0x1fc0_0000);
+    for _ in 0..4 {
+        guess = 0.5 * (guess + x / guess);
+    }
+    guess
 }
 
 /// Reciprocal square-root helper that matches `celt_rsqrt()`.
@@ -278,7 +308,8 @@ mod tests {
         let values = [-5.0_f32, -1.0, 0.0, 0.25, 1.5, 4.0];
         for &value in &values {
             let diff = (celt_exp2(value) - value.exp2()).abs();
-            assert!(diff <= 1e-6, "diff {} for value {}", diff, value);
+            let eps = if cfg!(miri) { 1e-5 } else { 1e-6 };
+            assert!(diff <= eps, "diff {} for value {}", diff, value);
         }
     }
 

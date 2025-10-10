@@ -26,11 +26,13 @@ use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::amp2_log2;
+use alloc::boxed::Box;
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusRes,
     OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
 use core::cmp::{max, min};
+use core::ptr::NonNull;
 #[cfg(not(feature = "fixed_point"))]
 use libm::acosf;
 use libm::floorf;
@@ -157,16 +159,22 @@ pub(crate) fn celt_encoder_init<'a>(
     if upsample == 0 {
         return Err(CeltEncoderInitError::UnsupportedSampleRate);
     }
-    let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
-    alloc.static_mode = Some(mode);
-    let mode_ptr = alloc
-        .static_mode
-        .as_ref()
-        .map(|mode| mode as *const OpusCustomMode<'static>)
-        .expect("static mode is stored for canonical init");
-    // SAFETY: `static_mode` retains the canonical mode for the lifetime of `alloc`,
-    // so the raw pointer remains valid for the duration of this call.
-    let mode_ref = unsafe { &*mode_ptr };
+    if alloc.static_mode.is_none() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let boxed = Box::new(mode);
+        let ptr = Box::into_raw(boxed);
+        // SAFETY: `Box::into_raw` never returns null.
+        alloc.static_mode = Some(unsafe { NonNull::new_unchecked(ptr) });
+    }
+    // SAFETY: `static_mode` stores a pointer obtained from `Box::into_raw` and remains
+    // valid for the lifetime of `alloc`. The reference is coerced to match the borrow
+    // used by the encoder initialisation.
+    let mode_ref: &OpusCustomMode<'static> = unsafe {
+        alloc
+            .static_mode
+            .expect("static mode is stored for canonical init")
+            .as_ref()
+    };
     let mut encoder =
         alloc.init_custom_encoder_with_arch(mode_ref, channels, channels, arch, rng_seed)?;
     encoder.upsample = upsample as i32;
@@ -175,6 +183,18 @@ pub(crate) fn celt_encoder_init<'a>(
 
 /// Mirrors `opus_custom_encoder_destroy()` which simply releases the encoder allocation.
 pub(crate) fn opus_custom_encoder_destroy(_alloc: CeltEncoderAlloc) {}
+
+impl Drop for CeltEncoderAlloc {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.static_mode.take() {
+            // SAFETY: `static_mode` was initialised from `Box::into_raw` and is only
+            // reconstructed here when the allocation is dropped.
+            unsafe {
+                let _ = Box::from_raw(ptr.as_ptr());
+            }
+        }
+    }
+}
 
 fn ensure_pcm_capacity(pcmp: &[OpusRes], channels: usize, samples: usize) {
     if samples == 0 {
@@ -284,7 +304,7 @@ pub(crate) struct CeltEncoderAlloc {
     old_log_e: Vec<CeltGlog>,
     old_log_e2: Vec<CeltGlog>,
     energy_error: Vec<CeltGlog>,
-    static_mode: Option<OpusCustomMode<'static>>,
+    static_mode: Option<NonNull<OpusCustomMode<'static>>>,
 }
 
 impl CeltEncoderAlloc {
@@ -1943,6 +1963,7 @@ mod tests {
 
     #[cfg(not(feature = "fixed_point"))]
     #[test]
+    #[cfg_attr(miri, ignore = "libm relies on inline assembly under Miri")]
     fn acos_approx_matches_libm_for_float_build() {
         let samples = [-1.0f32, -0.5, 0.0, 0.3, 0.75, 1.0];
 

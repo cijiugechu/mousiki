@@ -315,6 +315,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "float reference comparisons rely on libm operations unsupported by Miri")]
     fn matches_reference_estimate_for_small_values() {
         for val in 1..=256u32 {
             for frac in 0..=6 {
@@ -341,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "float reference comparisons rely on libm operations unsupported by Miri")]
     fn matches_reference_estimate_for_large_values() {
         let samples = [
             0x0001_FFEE,
@@ -504,6 +506,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "float reference comparisons rely on libm operations unsupported by Miri")]
     fn get_required_bits_matches_reference() {
         let max_n = 5;
         let max_k = 5;
