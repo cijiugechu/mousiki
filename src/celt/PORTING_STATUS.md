@@ -152,6 +152,11 @@ safely.
   `init_encoder_for_rate` &rarr; translate the encoder initialisation logic,
   including the reset defaults applied by `OPUS_RESET_STATE` and the
   resampling-factor validation used by `celt_encoder_init()`.
+- `opus_custom_encoder_init_arch`, `opus_custom_encoder_init`,
+  `celt_encoder_init`, and `opus_custom_encoder_destroy` &rarr; mirror the
+  public initialisation and teardown wrappers from `celt/celt_encoder.c`,
+  providing architecture selection, static-mode setup, and explicit
+  deallocation hooks for callers that follow the C API layout.
 - `EncoderCtlRequest` and `opus_custom_encoder_ctl` &rarr; port the encoder CTL
   dispatcher from `celt/celt_encoder.c`, replacing the varargs interface with a
   strongly typed request enum that preserves the validation and reset
@@ -191,10 +196,9 @@ safely.
   (`l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`,
   `dynalloc_analysis()`), stereo/tone detectors (`stereo_analysis()`,
   `tone_detect()`), the median filters used by the tonality estimator, and the
-  public packet writers (`opus_custom_encode{,_float,_24}()` along with
-  `opus_custom_encoder_init()`/`opus_custom_encoder_init_arch()` and the destroy
-  wrapper) still need Rust translations before the encoder can emit full CELT
-  frames.
+  public packet writers (`opus_custom_encode{,_float,_24}()` along with the
+  canonical initialisation wrappers) still need Rust translations before the
+  encoder can emit full CELT frames.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
@@ -462,7 +466,7 @@ that still gate a full end-to-end encoder/decoder.
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
 | `celt/celt_decoder.c` | `celt_decoder_init()`, `celt_synthesis()`, `celt_plc_pitch_search()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()`, `opus_custom_decoder_ctl()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
-| `celt/celt_encoder.c` | `opus_custom_encoder_init_arch()`, `opus_custom_encoder_init()`, `celt_encoder_init()`, `opus_custom_encoder_destroy()`, `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
+| `celt/celt_encoder.c` | `compute_mdcts()`, `celt_preemphasis()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be

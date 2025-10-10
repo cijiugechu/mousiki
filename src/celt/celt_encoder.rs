@@ -120,6 +120,63 @@ pub(crate) fn celt_encoder_get_size(channels: usize) -> Option<usize> {
         .map(|mode| opus_custom_encoder_get_size(&mode, channels))
 }
 
+/// Mirrors `opus_custom_encoder_init_arch()` from the reference encoder.
+pub(crate) fn opus_custom_encoder_init_arch<'a>(
+    alloc: &'a mut CeltEncoderAlloc,
+    mode: &'a OpusCustomMode<'a>,
+    channels: usize,
+    arch: i32,
+    rng_seed: OpusUint32,
+) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    alloc.init_custom_encoder_with_arch(mode, channels, channels, arch, rng_seed)
+}
+
+/// Mirrors `opus_custom_encoder_init()` by selecting the runtime architecture automatically.
+pub(crate) fn opus_custom_encoder_init<'a>(
+    alloc: &'a mut CeltEncoderAlloc,
+    mode: &'a OpusCustomMode<'a>,
+    channels: usize,
+    rng_seed: OpusUint32,
+) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    alloc.init_custom_encoder(mode, channels, channels, rng_seed)
+}
+
+/// Mirrors `celt_encoder_init()` by initialising the canonical Opus encoder mode.
+pub(crate) fn celt_encoder_init<'a>(
+    alloc: &'a mut CeltEncoderAlloc,
+    sampling_rate: OpusInt32,
+    channels: usize,
+    arch: i32,
+    rng_seed: OpusUint32,
+) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    let upsample = resampling_factor(sampling_rate);
+    if upsample == 0 {
+        return Err(CeltEncoderInitError::UnsupportedSampleRate);
+    }
+    let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+    alloc.static_mode = Some(mode);
+    let mode_ptr = alloc
+        .static_mode
+        .as_ref()
+        .map(|mode| mode as *const OpusCustomMode<'static>)
+        .expect("static mode is stored for canonical init");
+    // SAFETY: `static_mode` retains the canonical mode for the lifetime of `alloc`,
+    // so the raw pointer remains valid for the duration of this call.
+    let mode_ref = unsafe { &*mode_ptr };
+    let mut encoder = alloc.init_custom_encoder_with_arch(
+        mode_ref,
+        channels,
+        channels,
+        arch,
+        rng_seed,
+    )?;
+    encoder.upsample = upsample as i32;
+    Ok(encoder)
+}
+
+/// Mirrors `opus_custom_encoder_destroy()` which simply releases the encoder allocation.
+pub(crate) fn opus_custom_encoder_destroy(_alloc: CeltEncoderAlloc) {}
+
 /// Helper owning the trailing buffers that back [`OpusCustomEncoder`].
 #[derive(Debug, Default)]
 pub(crate) struct CeltEncoderAlloc {
@@ -129,6 +186,7 @@ pub(crate) struct CeltEncoderAlloc {
     old_log_e: Vec<CeltGlog>,
     old_log_e2: Vec<CeltGlog>,
     energy_error: Vec<CeltGlog>,
+    static_mode: Option<OpusCustomMode<'static>>,
 }
 
 impl CeltEncoderAlloc {
@@ -149,6 +207,7 @@ impl CeltEncoderAlloc {
             old_log_e: vec![0.0; band_count],
             old_log_e2: vec![0.0; band_count],
             energy_error: vec![0.0; band_count],
+            static_mode: None,
         }
     }
 
@@ -237,6 +296,19 @@ impl CeltEncoderAlloc {
         Ok(encoder)
     }
 
+    /// Mirrors `opus_custom_encoder_init_arch()` by allowing the caller to
+    /// specify the architecture hint used by the encoder heuristics.
+    pub(crate) fn init_custom_encoder_with_arch<'a>(
+        &'a mut self,
+        mode: &'a OpusCustomMode<'a>,
+        channels: usize,
+        stream_channels: usize,
+        arch: i32,
+        rng_seed: OpusUint32,
+    ) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+        self.init_internal(mode, channels, stream_channels, 1, arch, rng_seed)
+    }
+
     /// Mirrors `opus_custom_encoder_init()` by configuring the encoder for a custom mode.
     pub(crate) fn init_custom_encoder<'a>(
         &'a mut self,
@@ -245,11 +317,10 @@ impl CeltEncoderAlloc {
         stream_channels: usize,
         rng_seed: OpusUint32,
     ) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
-        self.init_internal(
+        self.init_custom_encoder_with_arch(
             mode,
             channels,
             stream_channels,
-            1,
             opus_select_arch(),
             rng_seed,
         )
@@ -1136,12 +1207,15 @@ mod tests {
     use super::{
         COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, EncoderCtlRequest,
         MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
+        celt_encoder_init, opus_custom_encoder_destroy, opus_custom_encoder_init,
+        opus_custom_encoder_init_arch,
     };
     use super::{
-        CeltEncoderCtlError, acos_approx, compute_vbr, median_of_3, median_of_5,
-        normalize_tone_input, opus_custom_encoder_ctl, patch_transient_decision, tone_lpc,
-        transient_analysis,
+        CeltEncoderCtlError, compute_vbr, median_of_3, median_of_5, opus_custom_encoder_ctl,
+        patch_transient_decision, tone_lpc, transient_analysis,
     };
+    #[cfg(not(feature = "fixed_point"))]
+    use super::{acos_approx, normalize_tone_input};
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::modes::opus_custom_mode_create;
     use crate::celt::types::AnalysisInfo;
@@ -1387,6 +1461,63 @@ mod tests {
         assert_eq!(encoder.rng, 0xDEADBEEF);
         assert!(encoder.old_log_e.iter().all(|&v| (v + 28.0).abs() < 1e-6));
         assert!(encoder.old_log_e2.iter().all(|&v| (v + 28.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn opus_custom_encoder_init_arch_honours_requested_architecture() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+
+        let encoder = opus_custom_encoder_init_arch(&mut alloc, &mode, 1, 11, 1234)
+            .expect("encoder");
+
+        assert_eq!(encoder.arch, 11);
+        assert_eq!(encoder.stream_channels, 1);
+    }
+
+    #[test]
+    fn opus_custom_encoder_init_defaults_stream_channels() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 2);
+
+        let encoder = opus_custom_encoder_init(&mut alloc, &mode, 2, 77).expect("encoder");
+
+        assert_eq!(encoder.channels, 2);
+        assert_eq!(encoder.stream_channels, 2);
+        assert_eq!(encoder.arch, opus_select_arch());
+    }
+
+    #[test]
+    fn celt_encoder_init_sets_resampling_factor() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+
+        let encoder = celt_encoder_init(&mut alloc, 24_000, 1, 3, 0).expect("encoder");
+
+        assert_eq!(encoder.upsample, 2);
+        assert_eq!(encoder.arch, 3);
+    }
+
+    #[test]
+    fn celt_encoder_init_rejects_invalid_rate() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+
+        let err = celt_encoder_init(&mut alloc, 44_100, 1, 0, 0).unwrap_err();
+        assert_eq!(err, CeltEncoderInitError::UnsupportedSampleRate);
+    }
+
+    #[test]
+    fn opus_custom_encoder_destroy_drops_allocation() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let alloc = CeltEncoderAlloc::new(&mode, 1);
+
+        opus_custom_encoder_destroy(alloc);
     }
 
     #[test]
