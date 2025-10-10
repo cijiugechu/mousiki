@@ -17,6 +17,7 @@ use crate::celt::bands::compute_band_energies;
 use crate::celt::celt::resampling_factor;
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entenc::EcEnc;
+use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 use crate::celt::math::{celt_sqrt, frac_div32_q29};
@@ -26,8 +27,8 @@ use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::amp2_log2;
 use crate::celt::types::{
-    AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusUint32,
-    OpusVal16, OpusVal32, SilkInfo,
+    AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusRes,
+    OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
 use core::cmp::{max, min};
 #[cfg(not(feature = "fixed_point"))]
@@ -39,6 +40,9 @@ const MAX_CHANNELS: usize = 2;
 
 /// Size of the comb-filter history kept per channel by the encoder prefilter.
 const COMBFILTER_MAXPERIOD: usize = 1024;
+
+/// Maximum amplitude allowed when clipping the pre-emphasised input.
+const PREEMPHASIS_CLIP_LIMIT: CeltSig = 65_536.0;
 
 /// Special bitrate value used by Opus to request the maximum possible rate.
 const OPUS_BITRATE_MAX: OpusInt32 = -1;
@@ -163,19 +167,113 @@ pub(crate) fn celt_encoder_init<'a>(
     // SAFETY: `static_mode` retains the canonical mode for the lifetime of `alloc`,
     // so the raw pointer remains valid for the duration of this call.
     let mode_ref = unsafe { &*mode_ptr };
-    let mut encoder = alloc.init_custom_encoder_with_arch(
-        mode_ref,
-        channels,
-        channels,
-        arch,
-        rng_seed,
-    )?;
+    let mut encoder =
+        alloc.init_custom_encoder_with_arch(mode_ref, channels, channels, arch, rng_seed)?;
     encoder.upsample = upsample as i32;
     Ok(encoder)
 }
 
 /// Mirrors `opus_custom_encoder_destroy()` which simply releases the encoder allocation.
 pub(crate) fn opus_custom_encoder_destroy(_alloc: CeltEncoderAlloc) {}
+
+fn ensure_pcm_capacity(pcmp: &[OpusRes], channels: usize, samples: usize) {
+    if samples == 0 {
+        return;
+    }
+
+    let Some(last_frame_index) = samples.checked_sub(1) else {
+        return;
+    };
+    let required = channels
+        .checked_mul(last_frame_index)
+        .and_then(|value| value.checked_add(1))
+        .expect("pcm length calculation overflowed");
+
+    assert!(
+        pcmp.len() >= required,
+        "PCM slice is shorter than the requested frame"
+    );
+}
+
+/// Mirrors `celt_preemphasis()` from `celt/celt_encoder.c` for the float build.
+///
+/// The helper converts the interleaved PCM input to the internal signal
+/// representation, applies the high-pass pre-emphasis filter, and updates the
+/// running filter memory. Only the first `n` samples of `inp` are modified; the
+/// caller is responsible for providing sufficient capacity in the destination
+/// buffer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn celt_preemphasis(
+    pcmp: &[OpusRes],
+    inp: &mut [CeltSig],
+    n: usize,
+    channels: usize,
+    upsample: usize,
+    coef: &[OpusVal16; 4],
+    mem: &mut CeltSig,
+    clip: bool,
+) {
+    assert!(channels > 0, "channel count must be positive");
+    assert!(upsample > 0, "upsample factor must be positive");
+    assert!(
+        inp.len() >= n,
+        "output buffer too small for requested frame"
+    );
+
+    let coef0 = coef[0];
+    let mut m = *mem;
+
+    if coef[1] == 0.0 && upsample == 1 && !clip {
+        ensure_pcm_capacity(pcmp, channels, n);
+
+        for i in 0..n {
+            let x = pcmp[channels * i] * CELT_SIG_SCALE;
+            inp[i] = x - m;
+            m = coef0 * x;
+        }
+
+        *mem = m;
+        return;
+    }
+
+    let nu = n / upsample;
+    if upsample != 1 {
+        inp[..n].fill(0.0);
+    }
+
+    ensure_pcm_capacity(pcmp, channels, nu);
+
+    for i in 0..nu {
+        inp[i * upsample] = pcmp[channels * i] * CELT_SIG_SCALE;
+    }
+
+    if clip {
+        for i in 0..nu {
+            let index = i * upsample;
+            inp[index] = inp[index].clamp(-PREEMPHASIS_CLIP_LIMIT, PREEMPHASIS_CLIP_LIMIT);
+        }
+    }
+
+    if coef[1] == 0.0 {
+        for value in &mut inp[..n] {
+            let x = *value;
+            *value = x - m;
+            m = coef0 * x;
+        }
+    } else {
+        let coef1 = coef[1];
+        let coef2 = coef[2];
+
+        for value in &mut inp[..n] {
+            let x = *value;
+            let tmp = coef2 * x;
+            *value = tmp + m;
+            m = coef1 * *value - coef0 * tmp;
+        }
+    }
+
+    *mem = m;
+}
 
 /// Helper owning the trailing buffers that back [`OpusCustomEncoder`].
 #[derive(Debug, Default)]
@@ -1205,10 +1303,10 @@ fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, EncoderCtlRequest,
+        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, CeltSig, EncoderCtlRequest,
         MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
-        celt_encoder_init, opus_custom_encoder_destroy, opus_custom_encoder_init,
-        opus_custom_encoder_init_arch,
+        PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy,
+        opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
     use super::{
         CeltEncoderCtlError, compute_vbr, median_of_3, median_of_5, opus_custom_encoder_ctl,
@@ -1217,11 +1315,117 @@ mod tests {
     #[cfg(not(feature = "fixed_point"))]
     use super::{acos_approx, normalize_tone_input};
     use crate::celt::cpu_support::opus_select_arch;
-    use crate::celt::modes::opus_custom_mode_create;
-    use crate::celt::types::AnalysisInfo;
+    use crate::celt::float_cast::CELT_SIG_SCALE;
+    use crate::celt::modes::{compute_preemphasis, opus_custom_mode_create};
+    use crate::celt::types::{AnalysisInfo, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
     use core::f32::consts::PI;
+
+    const EPSILON: f32 = 1e-6;
+
+    fn assert_slice_close(actual: &[CeltSig], expected: &[CeltSig]) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (a, b)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (a - b).abs() < EPSILON,
+                "mismatch at index {index}: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn celt_preemphasis_fast_path_matches_reference() {
+        let coef = compute_preemphasis(48_000);
+        let pcm: [OpusRes; 4] = [0.0, 0.25, -0.5, 1.0];
+        let n = pcm.len();
+        let mut output = vec![0.0; n];
+        let mut expected = vec![0.0; n];
+        let mut state = 0.0;
+        let mut expected_state = state;
+
+        for i in 0..n {
+            let x = pcm[i] * CELT_SIG_SCALE;
+            expected[i] = x - expected_state;
+            expected_state = coef[0] * x;
+        }
+
+        celt_preemphasis(&pcm, &mut output, n, 1, 1, &coef, &mut state, false);
+
+        assert_slice_close(&output, &expected);
+        assert!((state - expected_state).abs() < EPSILON);
+    }
+
+    #[test]
+    fn celt_preemphasis_handles_upsampling_and_clipping() {
+        let coef = compute_preemphasis(48_000);
+        let n = 6;
+        let upsample = 2;
+        let channels = 2;
+        let pcm: [OpusRes; 6] = [1.0, 3.5, -2.0, -4.0, 0.25, -0.75];
+        let pcmp = &pcm[1..];
+        let mut output = vec![42.0; n];
+        let mut expected = vec![0.0; n];
+        let mut state = 123.0;
+        let mut expected_state = state;
+
+        let nu = n / upsample;
+        expected.fill(0.0);
+        for i in 0..nu {
+            let sample = pcmp[channels * i];
+            expected[i * upsample] = sample * CELT_SIG_SCALE;
+        }
+        for i in 0..nu {
+            let index = i * upsample;
+            expected[index] =
+                expected[index].clamp(-PREEMPHASIS_CLIP_LIMIT, PREEMPHASIS_CLIP_LIMIT);
+        }
+        for value in &mut expected[..n] {
+            let x = *value;
+            *value = x - expected_state;
+            expected_state = coef[0] * x;
+        }
+
+        celt_preemphasis(
+            pcmp,
+            &mut output,
+            n,
+            channels,
+            upsample,
+            &coef,
+            &mut state,
+            true,
+        );
+
+        assert_slice_close(&output, &expected);
+        assert!((state - expected_state).abs() < EPSILON);
+    }
+
+    #[test]
+    fn celt_preemphasis_three_tap_path_matches_reference() {
+        let coef = compute_preemphasis(16_000);
+        let pcm: [OpusRes; 5] = [0.5, -0.25, 0.75, -0.5, 0.0];
+        let n = pcm.len();
+        let mut output = vec![0.0; n];
+        let mut expected = vec![0.0; n];
+        let mut state = -321.0;
+        let mut expected_state = state;
+
+        for i in 0..n {
+            expected[i] = pcm[i] * CELT_SIG_SCALE;
+        }
+        for value in &mut expected {
+            let x = *value;
+            let tmp = coef[2] * x;
+            *value = tmp + expected_state;
+            expected_state = coef[1] * *value - coef[0] * tmp;
+        }
+
+        celt_preemphasis(&pcm, &mut output, n, 1, 1, &coef, &mut state, false);
+
+        assert_slice_close(&output, &expected);
+        assert!((state - expected_state).abs() < EPSILON);
+    }
 
     fn get_lsb_depth(encoder: &mut OpusCustomEncoder<'_>) -> i32 {
         let mut value = 0;
@@ -1469,8 +1673,8 @@ mod tests {
         let mode = owned.mode();
         let mut alloc = CeltEncoderAlloc::new(&mode, 1);
 
-        let encoder = opus_custom_encoder_init_arch(&mut alloc, &mode, 1, 11, 1234)
-            .expect("encoder");
+        let encoder =
+            opus_custom_encoder_init_arch(&mut alloc, &mode, 1, 11, 1234).expect("encoder");
 
         assert_eq!(encoder.arch, 11);
         assert_eq!(encoder.stream_channels, 1);
