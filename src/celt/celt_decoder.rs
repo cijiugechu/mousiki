@@ -20,6 +20,7 @@ use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resamp
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
+use core::ptr::NonNull;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
@@ -336,23 +337,19 @@ pub(crate) enum CeltDecodeError {
 #[derive(Debug)]
 pub(crate) struct RangeDecoderState {
     decoder: EcDec<'static>,
-    storage: Box<[u8]>,
+    storage: NonNull<[u8]>,
 }
 
 impl RangeDecoderState {
     /// Creates a new range decoder backed by an owned copy of the packet payload.
     pub(crate) fn new(data: &[u8]) -> Self {
-        let mut storage = data.to_vec().into_boxed_slice();
-        // SAFETY: `EcDec` only requires that the backing slice outlives the decoder
-        // instance. The boxed slice is moved into the struct alongside the decoder,
-        // ensuring the borrow remains valid for the lifetime of `Self`.
+        let boxed = data.to_vec().into_boxed_slice();
+        let storage = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        // SAFETY: The raw pointer originates from a boxed slice that is retained and
+        // later reconstructed in `Drop`. The lifetime extension is therefore sound
+        // because the memory outlives the decoder instance.
         let decoder = {
-            // Borrow explicitly to keep the compiler aware of the lifetimes.
-            let slice: &mut [u8] = &mut storage;
-            // Extend the borrow to 'static to satisfy the generic parameter. This is
-            // safe because `storage` is moved into the struct and dropped after
-            // `decoder`, preserving the required lifetime ordering.
-            let slice: &'static mut [u8] = unsafe { core::mem::transmute(slice) };
+            let slice: &'static mut [u8] = unsafe { &mut *storage.as_ptr() };
             EcDec::new(slice)
         };
         Self { decoder, storage }
@@ -361,6 +358,17 @@ impl RangeDecoderState {
     /// Borrows the underlying range decoder with the appropriate lifetime.
     pub(crate) fn decoder(&mut self) -> &mut EcDec<'static> {
         &mut self.decoder
+    }
+}
+
+impl Drop for RangeDecoderState {
+    fn drop(&mut self) {
+        // SAFETY: `storage` was created from a `Box<[u8]>` via `Box::into_raw` and is
+        // only reconstructed once the decoder (which holds the unique borrow) has
+        // been dropped.
+        unsafe {
+            let _ = Box::from_raw(self.storage.as_ptr());
+        }
     }
 }
 
