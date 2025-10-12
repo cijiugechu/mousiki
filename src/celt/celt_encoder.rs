@@ -196,6 +196,24 @@ impl Drop for CeltEncoderAlloc {
     }
 }
 
+/// Computes the L1 norm used by the time/frequency resolution heuristics.
+///
+/// Mirrors the helper of the same name in `celt/celt_encoder.c`. The function
+/// sums the absolute values in `tmp[..n]` and applies the bias term that favors
+/// finer frequency resolution when the MDCT has been split into shorter
+/// windows.
+fn l1_metric(tmp: &[OpusVal16], n: usize, lm: i32, bias: OpusVal16) -> OpusVal32 {
+    assert!(n <= tmp.len());
+
+    let mut l1: OpusVal32 = 0.0;
+    for &value in &tmp[..n] {
+        l1 += value.abs() as OpusVal32;
+    }
+
+    let freq_bias = (lm as OpusVal32) * bias as OpusVal32;
+    l1 + freq_bias * l1
+}
+
 fn ensure_pcm_capacity(pcmp: &[OpusRes], channels: usize, samples: usize) {
     if samples == 0 {
         return;
@@ -1329,7 +1347,7 @@ mod tests {
         opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
     use super::{
-        CeltEncoderCtlError, compute_vbr, median_of_3, median_of_5, opus_custom_encoder_ctl,
+        CeltEncoderCtlError, compute_vbr, l1_metric, median_of_3, median_of_5, opus_custom_encoder_ctl,
         patch_transient_decision, tone_lpc, transient_analysis,
     };
     #[cfg(not(feature = "fixed_point"))]
@@ -1338,6 +1356,7 @@ mod tests {
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::modes::{compute_preemphasis, opus_custom_mode_create};
     use crate::celt::types::{AnalysisInfo, OpusRes};
+    use crate::celt::OpusVal16;
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
     use core::f32::consts::PI;
@@ -1352,6 +1371,17 @@ mod tests {
                 "mismatch at index {index}: {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn l1_metric_matches_reference_bias() {
+        let tmp: [OpusVal16; 4] = [1.0, -2.0, 0.5, -0.25];
+
+        let unbiased = l1_metric(&tmp, tmp.len(), 0, 0.125);
+        assert!((unbiased - 3.75).abs() < EPSILON);
+
+        let biased = l1_metric(&tmp, tmp.len(), 2, 0.5);
+        assert!((biased - 7.5).abs() < EPSILON);
     }
 
     #[test]

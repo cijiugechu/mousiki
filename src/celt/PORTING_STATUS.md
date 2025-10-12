@@ -170,6 +170,9 @@ safely.
 - `normalize_tone_input` &rarr; ports the fixed-point tone-detector scaler from
   `celt/celt_encoder.c`, rescaling the scratch buffer under the `fixed_point`
   feature while remaining a no-op for the float build.
+- `l1_metric` &rarr; mirrors the time/frequency resolution heuristic from
+  `celt/celt_encoder.c` that accumulates the absolute PVQ coefficients and
+  biases toward additional MDCT splits when the bit budget allows.
 - `compute_vbr` &rarr; ports the VBR target calculator from `celt/celt_encoder.c`
   that adjusts the per-frame bit budget based on activity, tonality, stereo
   savings, and temporal masking while respecting the constrained-VBR reservoir
@@ -197,7 +200,7 @@ safely.
 - **Still to port:** key analysis and bitstream routines continue to live in
   C. The MDCT staging and comb-filter driver (`compute_mdcts()`,
   `run_prefilter()`), time/frequency allocation helpers
-  (`l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`,
+  (`tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`,
   `dynalloc_analysis()`), stereo/tone detectors (`stereo_analysis()`,
   `tone_detect()`), the median filters used by the tonality estimator, and the
   public packet writers (`opus_custom_encode{,_float,_24}()` along with the
