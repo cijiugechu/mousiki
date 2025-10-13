@@ -20,7 +20,6 @@ use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resamp
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
-use core::ptr::NonNull;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
@@ -30,6 +29,7 @@ use crate::celt::types::{
 };
 use crate::celt::vq::SPREAD_NORMAL;
 use core::cmp::{max, min};
+use core::ptr::NonNull;
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -877,6 +877,33 @@ pub(crate) enum CeltDecoderInitError {
     UnsupportedSampleRate,
 }
 
+/// Errors that can be emitted by [`opus_custom_decoder_ctl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CeltDecoderCtlError {
+    /// The provided argument is outside the range accepted by the request.
+    InvalidArgument,
+    /// The request has not been implemented by the Rust port yet.
+    Unimplemented,
+}
+
+/// Strongly-typed replacement for the decoder-side varargs CTL dispatcher.
+pub(crate) enum DecoderCtlRequest<'dec, 'req> {
+    SetComplexity(i32),
+    GetComplexity(&'req mut i32),
+    SetStartBand(i32),
+    SetEndBand(i32),
+    SetChannels(usize),
+    GetAndClearError(&'req mut i32),
+    GetLookahead(&'req mut i32),
+    ResetState,
+    GetPitch(&'req mut i32),
+    GetMode(&'req mut Option<&'dec OpusCustomMode<'dec>>),
+    SetSignalling(i32),
+    GetFinalRange(&'req mut OpusUint32),
+    SetPhaseInversionDisabled(bool),
+    GetPhaseInversionDisabled(&'req mut bool),
+}
+
 /// Helper owning the trailing buffers that back [`OpusCustomDecoder`].
 ///
 /// The C implementation allocates the decoder struct followed by a number of
@@ -1050,14 +1077,87 @@ fn validate_channel_layout(
     Ok(())
 }
 
+/// Applies a control request to the provided decoder state.
+pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
+    decoder: &mut OpusCustomDecoder<'dec>,
+    request: DecoderCtlRequest<'dec, 'req>,
+) -> Result<(), CeltDecoderCtlError> {
+    match request {
+        DecoderCtlRequest::SetComplexity(value) => {
+            if !(0..=10).contains(&value) {
+                return Err(CeltDecoderCtlError::InvalidArgument);
+            }
+            decoder.complexity = value;
+        }
+        DecoderCtlRequest::GetComplexity(slot) => {
+            *slot = decoder.complexity;
+        }
+        DecoderCtlRequest::SetStartBand(value) => {
+            let max = decoder.mode.num_ebands as i32;
+            if value < 0 || value >= max {
+                return Err(CeltDecoderCtlError::InvalidArgument);
+            }
+            decoder.start_band = value;
+        }
+        DecoderCtlRequest::SetEndBand(value) => {
+            let max = decoder.mode.num_ebands as i32;
+            if value < 1 || value > max {
+                return Err(CeltDecoderCtlError::InvalidArgument);
+            }
+            decoder.end_band = value;
+        }
+        DecoderCtlRequest::SetChannels(value) => {
+            if value == 0 || value > decoder.channels {
+                return Err(CeltDecoderCtlError::InvalidArgument);
+            }
+            decoder.stream_channels = value;
+        }
+        DecoderCtlRequest::GetAndClearError(slot) => {
+            *slot = decoder.error;
+            decoder.error = 0;
+        }
+        DecoderCtlRequest::GetLookahead(slot) => {
+            let downsample = decoder.downsample;
+            if downsample <= 0 {
+                return Err(CeltDecoderCtlError::InvalidArgument);
+            }
+            *slot = (decoder.overlap as i32) / downsample;
+        }
+        DecoderCtlRequest::ResetState => {
+            decoder.reset_runtime_state();
+        }
+        DecoderCtlRequest::GetPitch(slot) => {
+            *slot = decoder.postfilter_period;
+        }
+        DecoderCtlRequest::GetMode(slot) => {
+            *slot = Some(decoder.mode);
+        }
+        DecoderCtlRequest::SetSignalling(value) => {
+            decoder.signalling = value;
+        }
+        DecoderCtlRequest::GetFinalRange(slot) => {
+            *slot = decoder.rng;
+        }
+        DecoderCtlRequest::SetPhaseInversionDisabled(value) => {
+            decoder.disable_inv = value;
+        }
+        DecoderCtlRequest::GetPhaseInversionDisabled(slot) => {
+            *slot = decoder.disable_inv;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(feature = "fixed_point"))]
     use super::deemphasis;
     use super::{
-        CeltDecodeError, CeltDecoderAlloc, CeltDecoderInitError, LPC_ORDER, MAX_CHANNELS,
-        RangeDecoderState, celt_decoder_get_size, opus_custom_decoder_get_size, prepare_frame,
-        tf_decode, validate_celt_decoder, validate_channel_layout,
+        CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
+        DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState, celt_decoder_get_size,
+        opus_custom_decoder_ctl, opus_custom_decoder_get_size, prepare_frame, tf_decode,
+        validate_celt_decoder, validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -1065,6 +1165,7 @@ mod tests {
     use alloc::vec;
     #[cfg(not(feature = "fixed_point"))]
     use alloc::vec::Vec;
+    use core::ptr;
 
     #[test]
     fn tf_decode_returns_default_table_entries() {
@@ -1238,6 +1339,183 @@ mod tests {
         assert_eq!(decoder.postfilter_gain, 0.0);
         assert_eq!(decoder.postfilter_tapset, 0);
         assert!(!decoder.skip_plc);
+    }
+
+    #[test]
+    fn decoder_ctl_handles_configuration_requests() {
+        let e_bands = [0, 2, 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 2];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 2);
+        let mut decoder = alloc
+            .init_decoder(&mode, 2, 2, 0)
+            .expect("decoder initialisation should succeed");
+
+        let err = opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetComplexity(11))
+            .unwrap_err();
+        assert_eq!(err, CeltDecoderCtlError::InvalidArgument);
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetComplexity(7)).unwrap();
+        let mut complexity = 0;
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::GetComplexity(&mut complexity),
+        )
+        .unwrap();
+        assert_eq!(complexity, 7);
+
+        let max = mode.num_ebands as i32;
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(1)).unwrap();
+        assert_eq!(decoder.start_band, 1);
+        let err = opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(max))
+            .unwrap_err();
+        assert_eq!(err, CeltDecoderCtlError::InvalidArgument);
+
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetEndBand(max)).unwrap();
+        assert_eq!(decoder.end_band, max);
+        let err =
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetEndBand(0)).unwrap_err();
+        assert_eq!(err, CeltDecoderCtlError::InvalidArgument);
+
+        let err =
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(3)).unwrap_err();
+        assert_eq!(err, CeltDecoderCtlError::InvalidArgument);
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(1)).unwrap();
+        assert_eq!(decoder.stream_channels, 1);
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(2)).unwrap();
+        assert_eq!(decoder.stream_channels, 2);
+
+        decoder.error = -57;
+        let mut reported_error = 0;
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::GetAndClearError(&mut reported_error),
+        )
+        .unwrap();
+        assert_eq!(reported_error, -57);
+        assert_eq!(decoder.error, 0);
+
+        decoder.overlap = 6;
+        decoder.downsample = 2;
+        let mut lookahead = 0;
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::GetLookahead(&mut lookahead),
+        )
+        .unwrap();
+        assert_eq!(lookahead, 3);
+
+        decoder.postfilter_period = 321;
+        let mut pitch = 0;
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::GetPitch(&mut pitch)).unwrap();
+        assert_eq!(pitch, 321);
+
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetSignalling(5)).unwrap();
+        assert_eq!(decoder.signalling, 5);
+
+        decoder.rng = 0xDEADBEEF;
+        let mut rng = 0;
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::GetFinalRange(&mut rng)).unwrap();
+        assert_eq!(rng, 0xDEADBEEF);
+
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::SetPhaseInversionDisabled(true),
+        )
+        .unwrap();
+        assert!(decoder.disable_inv);
+        let mut disabled = false;
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::GetPhaseInversionDisabled(&mut disabled),
+        )
+        .unwrap();
+        assert!(disabled);
+
+        let mut mode_slot = None;
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::GetMode(&mut mode_slot)).unwrap();
+        let mode_ref = mode_slot.expect("mode reference");
+        assert!(ptr::eq(mode_ref, &mode));
+    }
+
+    #[test]
+    fn decoder_ctl_reset_state_matches_reference() {
+        let e_bands = [0, 2, 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 2];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let mut decoder = alloc
+            .init_decoder(&mode, 1, 1, 42)
+            .expect("decoder initialisation should succeed");
+
+        decoder.rng = 1234;
+        decoder.error = -1;
+        decoder.last_pitch_index = 77;
+        decoder.loss_duration = 99;
+        decoder.skip_plc = false;
+        decoder.postfilter_period = 12;
+        decoder.postfilter_period_old = 34;
+        decoder.postfilter_gain = 0.5;
+        decoder.postfilter_gain_old = 0.25;
+        decoder.postfilter_tapset = 2;
+        decoder.postfilter_tapset_old = 1;
+        decoder.prefilter_and_fold = true;
+        decoder.preemph_mem_decoder = [0.1, -0.2];
+        decoder.decode_mem.fill(1.0);
+        decoder.lpc.fill(0.5);
+        decoder.old_ebands.fill(0.75);
+        decoder.old_log_e.fill(1.0);
+        decoder.old_log_e2.fill(1.5);
+        decoder.background_log_e.fill(0.125);
+
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::ResetState).unwrap();
+
+        assert_eq!(decoder.rng, 0);
+        assert_eq!(decoder.error, 0);
+        assert_eq!(decoder.last_pitch_index, 0);
+        assert_eq!(decoder.loss_duration, 0);
+        assert!(decoder.skip_plc);
+        assert_eq!(decoder.postfilter_period, 0);
+        assert_eq!(decoder.postfilter_period_old, 0);
+        assert_eq!(decoder.postfilter_gain, 0.0);
+        assert_eq!(decoder.postfilter_gain_old, 0.0);
+        assert_eq!(decoder.postfilter_tapset, 0);
+        assert_eq!(decoder.postfilter_tapset_old, 0);
+        assert!(!decoder.prefilter_and_fold);
+        assert_eq!(decoder.preemph_mem_decoder, [0.0, 0.0]);
+        assert!(decoder.decode_mem.iter().all(|&v| v == 0.0));
+        assert!(decoder.lpc.iter().all(|&v| v == 0.0));
+        assert!(decoder.old_ebands.iter().all(|&v| v == 0.0));
+        assert!(decoder.old_log_e.iter().all(|&v| v == -28.0));
+        assert!(decoder.old_log_e2.iter().all(|&v| v == -28.0));
+        assert!(decoder.background_log_e.iter().all(|&v| v == 0.0));
     }
 
     #[test]

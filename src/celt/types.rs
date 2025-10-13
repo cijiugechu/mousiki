@@ -522,4 +522,37 @@ impl<'a> OpusCustomDecoder<'a> {
             background_log_e,
         }
     }
+
+    /// Mirrors the zeroing performed by `opus_custom_decoder_ctl(OPUS_RESET_STATE)`.
+    ///
+    /// The helper clears all runtime state that the reference implementation
+    /// resets when the decoder is reinitialised, including the trailing
+    /// buffers.  Fields that live in front of `DECODER_RESET_START` (such as the
+    /// mode pointer, channel layout, and configuration knobs) are left
+    /// untouched so callers can preserve their configuration while wiping the
+    /// synthesis history.
+    pub fn reset_runtime_state(&mut self) {
+        const RESET_LOG_ENERGY: CeltGlog = -28.0;
+
+        self.rng = 0;
+        self.error = 0;
+        self.last_pitch_index = 0;
+        self.loss_duration = 0;
+        self.skip_plc = true;
+        self.postfilter_period = 0;
+        self.postfilter_period_old = 0;
+        self.postfilter_gain = 0.0;
+        self.postfilter_gain_old = 0.0;
+        self.postfilter_tapset = 0;
+        self.postfilter_tapset_old = 0;
+        self.prefilter_and_fold = false;
+        self.preemph_mem_decoder = [0.0; 2];
+
+        self.decode_mem.fill(0.0);
+        self.lpc.fill(0.0);
+        self.old_ebands.fill(0.0);
+        self.old_log_e.fill(RESET_LOG_ENERGY);
+        self.old_log_e2.fill(RESET_LOG_ENERGY);
+        self.background_log_e.fill(0.0);
+    }
 }
