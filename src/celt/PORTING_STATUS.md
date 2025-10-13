@@ -117,9 +117,13 @@ safely.
   allocation sizing helpers from `celt/celt_decoder.c`, accounting for the
   embedded `_decode_mem` sample so Rust calculations stay byte-for-byte with the
   flexible array layout.
-- `init_decoder` &rarr; validates the channel layout, configures architecture
-  selection, and initialises the runtime fields exposed by `OpusCustomDecoder`
-  while mirroring the zeroing behaviour of `opus_custom_decoder_init()`.
+- `opus_custom_decoder_init` &rarr; ports the custom-mode initialiser from
+  `celt/celt_decoder.c`, validating the channel layout, clearing the trailing
+  buffers, enabling band signalling, and leaving the downsampling factor at
+  unity so callers can apply rate-specific scaling.
+- `init_decoder` &rarr; builds on the custom initialiser to configure the
+  architecture flags and apply the sampling-rate-dependent downsampling factor
+  while returning a fully reset [`OpusCustomDecoder`].
 - `RangeDecoderState`, `FramePreparation`, `tf_decode`, and `prepare_frame`
   &rarr; translate the frame-header parsing and bit-allocation bookkeeping that
   feed `celt_decode_with_ec()`, including range-decoder setup, dynamic
