@@ -1021,47 +1021,70 @@ impl CeltDecoderAlloc {
         }
     }
 
+    /// Prepares a decoder view that mirrors the default initialisation state.
+    ///
+    /// The helper ports the zeroing performed by `opus_custom_decoder_init()`
+    /// and the follow-up `OPUS_RESET_STATE` call by validating the channel
+    /// layout, borrowing the trailing buffers, and clearing the runtime state.
+    fn prepare_decoder<'a>(
+        &'a mut self,
+        mode: &'a OpusCustomMode<'a>,
+        channels: usize,
+        stream_channels: usize,
+    ) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+        validate_channel_layout(channels, stream_channels)?;
+
+        let mut decoder = self.as_decoder(mode, channels, stream_channels);
+        decoder.reset_runtime_state();
+        decoder.downsample = 1;
+        decoder.start_band = 0;
+        decoder.end_band = mode.effective_ebands as i32;
+        decoder.signalling = 1;
+        decoder.disable_inv = channels == 1;
+        decoder.arch = opus_select_arch();
+
+        Ok(decoder)
+    }
+
     /// Returns a freshly initialised decoder state.
     ///
-    /// The helper mirrors `opus_custom_decoder_init()` by validating the
-    /// channel configuration, clearing the trailing buffers, and populating the
-    /// fields that depend on the current mode.  Callers receive a fully formed
-    /// [`OpusCustomDecoder`] that borrows the allocation's backing storage.
+    /// The helper mirrors `celt_decoder_init()` by validating the channel
+    /// configuration, clearing the trailing buffers, and populating the fields
+    /// that depend on the current mode and sampling rate.  Callers receive a
+    /// fully formed [`OpusCustomDecoder`] that borrows the allocation's backing
+    /// storage.
     pub(crate) fn init_decoder<'a>(
         &'a mut self,
         mode: &'a OpusCustomMode<'a>,
         channels: usize,
         stream_channels: usize,
-        rng_seed: OpusUint32,
     ) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
-        validate_channel_layout(channels, stream_channels)?;
+        let mut decoder = self.prepare_decoder(mode, channels, stream_channels)?;
 
         let downsample = resampling_factor(mode.sample_rate);
         if downsample == 0 {
             return Err(CeltDecoderInitError::UnsupportedSampleRate);
         }
 
-        self.reset();
-        let mut decoder = self.as_decoder(mode, channels, stream_channels);
         decoder.downsample = downsample as i32;
-        decoder.end_band = mode.effective_ebands as i32;
-        decoder.arch = opus_select_arch();
-        decoder.rng = rng_seed;
-        decoder.error = 0;
-        decoder.loss_duration = 0;
-        decoder.skip_plc = false;
-        decoder.postfilter_period = 0;
-        decoder.postfilter_period_old = 0;
-        decoder.postfilter_gain = 0.0;
-        decoder.postfilter_gain_old = 0.0;
-        decoder.postfilter_tapset = 0;
-        decoder.postfilter_tapset_old = 0;
-        decoder.prefilter_and_fold = false;
-        decoder.preemph_mem_decoder = [0.0; 2];
-        decoder.last_pitch_index = 0;
 
         Ok(decoder)
     }
+}
+
+/// Initialises a decoder allocation for a custom mode.
+///
+/// Mirrors `opus_custom_decoder_init()` by validating the channel count,
+/// clearing the trailing buffers, and returning a decoder view that reflects the
+/// freshly reset state.  The helper leaves the downsampling factor at unity, as
+/// the C implementation derives any alternative stride from the caller-provided
+/// sampling rate after this routine completes.
+pub(crate) fn opus_custom_decoder_init<'a>(
+    alloc: &'a mut CeltDecoderAlloc,
+    mode: &'a OpusCustomMode<'a>,
+    channels: usize,
+) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+    alloc.prepare_decoder(mode, channels, channels)
 }
 
 fn validate_channel_layout(
@@ -1156,8 +1179,8 @@ mod tests {
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
         DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState, celt_decoder_get_size,
-        opus_custom_decoder_ctl, opus_custom_decoder_get_size, prepare_frame, tf_decode,
-        validate_celt_decoder, validate_channel_layout,
+        opus_custom_decoder_ctl, opus_custom_decoder_get_size, opus_custom_decoder_init,
+        prepare_frame, tf_decode, validate_celt_decoder, validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -1326,19 +1349,51 @@ mod tests {
 
         let mut alloc = CeltDecoderAlloc::new(&mode, 1);
         let decoder = alloc
-            .init_decoder(&mode, 1, 1, 1234)
+            .init_decoder(&mode, 1, 1)
             .expect("initialisation should succeed");
 
         assert_eq!(decoder.overlap, mode.overlap);
         assert_eq!(decoder.downsample, 1);
         assert_eq!(decoder.end_band, mode.effective_ebands as i32);
         assert_eq!(decoder.arch, 0);
-        assert_eq!(decoder.rng, 1234);
+        assert_eq!(decoder.rng, 0);
         assert_eq!(decoder.loss_duration, 0);
         assert_eq!(decoder.postfilter_period, 0);
         assert_eq!(decoder.postfilter_gain, 0.0);
         assert_eq!(decoder.postfilter_tapset, 0);
-        assert!(!decoder.skip_plc);
+        assert!(decoder.skip_plc);
+    }
+
+    #[test]
+    fn opus_custom_decoder_init_matches_reference_defaults() {
+        let e_bands = [0, 2, 5];
+        let alloc_vectors = [0u8; 4];
+        let log_n = [0i16; 2];
+        let window = [0.0f32; 4];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
+        let mode = OpusCustomMode::new(
+            12_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let decoder = opus_custom_decoder_init(&mut alloc, &mode, 1)
+            .expect("custom decoder initialisation should succeed");
+
+        assert_eq!(decoder.downsample, 1);
+        assert_eq!(decoder.start_band, 0);
+        assert_eq!(decoder.end_band, mode.effective_ebands as i32);
+        assert_eq!(decoder.signalling, 1);
+        assert!(decoder.disable_inv);
+        assert!(decoder.skip_plc);
+        assert_eq!(decoder.arch, 0);
     }
 
     #[test]
@@ -1362,7 +1417,7 @@ mod tests {
 
         let mut alloc = CeltDecoderAlloc::new(&mode, 2);
         let mut decoder = alloc
-            .init_decoder(&mode, 2, 2, 0)
+            .init_decoder(&mode, 2, 2)
             .expect("decoder initialisation should succeed");
 
         let err = opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetComplexity(11))
@@ -1472,7 +1527,7 @@ mod tests {
 
         let mut alloc = CeltDecoderAlloc::new(&mode, 1);
         let mut decoder = alloc
-            .init_decoder(&mode, 1, 1, 42)
+            .init_decoder(&mode, 1, 1)
             .expect("decoder initialisation should succeed");
 
         decoder.rng = 1234;
@@ -1541,7 +1596,7 @@ mod tests {
 
         let mut alloc = CeltDecoderAlloc::new(&mode, 1);
         let mut decoder = alloc
-            .init_decoder(&mode, 1, 1, 0)
+            .init_decoder(&mode, 1, 1)
             .expect("decoder initialisation should succeed");
 
         let frame = prepare_frame(&mut decoder, &[], mode.short_mdct_size)
@@ -1572,7 +1627,7 @@ mod tests {
 
         let mut alloc = CeltDecoderAlloc::new(&mode, 1);
         let mut decoder = alloc
-            .init_decoder(&mode, 1, 1, 0)
+            .init_decoder(&mode, 1, 1)
             .expect("decoder initialisation should succeed");
 
         let err = prepare_frame(&mut decoder, &[0u8; 2], mode.short_mdct_size + 1)
