@@ -16,8 +16,8 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::celt::{init_caps, resampling_factor, COMBFILTER_MINPERIOD, TF_SELECT_TABLE};
-use crate::celt::cpu_support::{opus_select_arch, OPUS_ARCHMASK};
+use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
+use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -29,8 +29,10 @@ use crate::celt::types::{
     CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32, OpusVal16,
 };
 use crate::celt::vq::SPREAD_NORMAL;
+use core::cell::UnsafeCell;
 use core::cmp::{max, min};
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -116,6 +118,54 @@ fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) 
 /// streams.  The helper routines below mirror the same validation so the
 /// call-sites can rely on early argument checking just like the C helpers.
 const MAX_CHANNELS: usize = 2;
+
+const MODE_UNINITIALISED: u8 = 0;
+const MODE_INITIALISING: u8 = 1;
+const MODE_READY: u8 = 2;
+
+struct CanonicalModeCell {
+    state: AtomicU8,
+    value: UnsafeCell<Option<OpusCustomMode<'static>>>,
+}
+
+unsafe impl Sync for CanonicalModeCell {}
+
+static CANONICAL_MODE: CanonicalModeCell = CanonicalModeCell {
+    state: AtomicU8::new(MODE_UNINITIALISED),
+    value: UnsafeCell::new(None),
+};
+
+fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
+    loop {
+        match CANONICAL_MODE.state.load(Ordering::Acquire) {
+            MODE_READY => unsafe {
+                return (*CANONICAL_MODE.value.get()).as_ref();
+            },
+            MODE_UNINITIALISED => {
+                if CANONICAL_MODE
+                    .state
+                    .compare_exchange(
+                        MODE_UNINITIALISED,
+                        MODE_INITIALISING,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    let mode = opus_custom_mode_find_static(48_000, 960);
+                    unsafe {
+                        *CANONICAL_MODE.value.get() = mode;
+                    }
+                    CANONICAL_MODE.state.store(MODE_READY, Ordering::Release);
+                    unsafe {
+                        return (*CANONICAL_MODE.value.get()).as_ref();
+                    }
+                }
+            }
+            _ => core::hint::spin_loop(),
+        }
+    }
+}
 
 /// Cumulative distribution used to decode the global allocation trim.
 const TRIM_ICDF: [u8; 11] = [126, 124, 119, 109, 87, 41, 19, 9, 4, 2, 0];
@@ -373,6 +423,29 @@ pub(crate) fn opus_custom_decoder_get_size(
 pub(crate) fn celt_decoder_get_size(channels: usize) -> Option<usize> {
     opus_custom_mode_find_static(48_000, 960)
         .and_then(|mode| opus_custom_decoder_get_size(&mode, channels))
+}
+
+/// Initialises a decoder for the canonical 48 kHz / 960 sample configuration.
+///
+/// Mirrors `celt_decoder_init()` from `celt/celt_decoder.c` by borrowing the
+/// statically defined mode, delegating to [`opus_custom_decoder_init`], and
+/// updating the downsampling factor based on the caller-provided sampling rate.
+pub(crate) fn celt_decoder_init<'a>(
+    alloc: &'a mut CeltDecoderAlloc,
+    sampling_rate: OpusInt32,
+    channels: usize,
+) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+    let mode = canonical_mode().ok_or(CeltDecoderInitError::CanonicalModeUnavailable)?;
+    let mut decoder = alloc.init_decoder(mode, channels, channels)?;
+
+    let factor = resampling_factor(sampling_rate);
+    if factor == 0 {
+        return Err(CeltDecoderInitError::UnsupportedSampleRate);
+    }
+
+    decoder.downsample = factor as i32;
+
+    Ok(decoder)
 }
 
 /// Errors that can be reported while preparing to decode a CELT frame.
@@ -928,6 +1001,8 @@ pub(crate) enum CeltDecoderInitError {
     /// The provided mode uses a sampling rate that cannot be resampled from the
     /// 48 kHz CELT reference clock.
     UnsupportedSampleRate,
+    /// The canonical 48 kHz / 960 sample mode could not be constructed.
+    CanonicalModeUnavailable,
 }
 
 /// Errors that can be emitted by [`opus_custom_decoder_ctl`].
@@ -1232,10 +1307,11 @@ mod tests {
     #[cfg(not(feature = "fixed_point"))]
     use super::deemphasis;
     use super::{
-        celt_decoder_get_size, opus_custom_decoder_ctl, opus_custom_decoder_get_size,
+        CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
+        DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState, celt_decoder_get_size,
+        celt_decoder_init, opus_custom_decoder_ctl, opus_custom_decoder_get_size,
         opus_custom_decoder_init, prepare_frame, tf_decode, validate_celt_decoder,
-        validate_channel_layout, CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError,
-        CeltDecoderInitError, DecoderCtlRequest, RangeDecoderState, LPC_ORDER, MAX_CHANNELS,
+        validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -1343,6 +1419,22 @@ mod tests {
         assert!(celt_decoder_get_size(3).is_none());
         assert!(celt_decoder_get_size(1).is_some());
         assert!(celt_decoder_get_size(2).is_some());
+    }
+
+    #[test]
+    fn celt_decoder_init_sets_downsampling_factor() {
+        let mode = super::canonical_mode().expect("canonical mode");
+        let mut alloc = CeltDecoderAlloc::new(mode, 1);
+        let decoder = celt_decoder_init(&mut alloc, 16_000, 1).expect("decoder");
+        assert_eq!(decoder.downsample, 3);
+    }
+
+    #[test]
+    fn celt_decoder_init_rejects_unsupported_rate() {
+        let mode = super::canonical_mode().expect("canonical mode");
+        let mut alloc = CeltDecoderAlloc::new(mode, 1);
+        let err = celt_decoder_init(&mut alloc, 44_100, 1).unwrap_err();
+        assert_eq!(err, CeltDecoderInitError::UnsupportedSampleRate);
     }
 
     #[test]

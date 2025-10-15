@@ -124,6 +124,10 @@ safely.
 - `init_decoder` &rarr; builds on the custom initialiser to configure the
   architecture flags and apply the sampling-rate-dependent downsampling factor
   while returning a fully reset [`OpusCustomDecoder`].
+- `celt_decoder_init` &rarr; ports the canonical-mode wrapper from
+  `celt/celt_decoder.c`, borrowing the statically defined 48 kHz / 960 sample
+  mode, delegating to the custom decoder initialiser, and updating the
+  downsampling factor to match the caller-provided sampling rate.
 - `RangeDecoderState`, `FramePreparation`, `tf_decode`, and `prepare_frame`
   &rarr; translate the frame-header parsing and bit-allocation bookkeeping that
   feed `celt_decode_with_ec()`, including range-decoder setup, dynamic
@@ -484,7 +488,7 @@ that still gate a full end-to-end encoder/decoder.
 
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `celt/celt_decoder.c` | `celt_decoder_init()`, `celt_synthesis()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
+| `celt/celt_decoder.c` | `celt_synthesis()`, `prefilter_and_fold()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
 | `celt/celt_encoder.c` | `compute_mdcts()`, `l1_metric()`, `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
