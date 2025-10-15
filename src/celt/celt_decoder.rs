@@ -1374,14 +1374,14 @@ mod tests {
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
         DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState,
         celt_decoder_get_size, celt_decoder_init, opus_custom_decoder_ctl,
-        opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold, prepare_frame,
+        comb_filter, opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold,
+        prepare_frame,
         tf_decode, validate_celt_decoder, validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
-    #[cfg(not(feature = "fixed_point"))]
     use alloc::vec::Vec;
     #[cfg(not(feature = "fixed_point"))]
     use core::f32::consts::PI;
@@ -1937,6 +1937,170 @@ mod tests {
         for i in overlap / 2..overlap {
             let idx = start + i;
             assert_eq!(decoder.decode_mem[idx], original[i]);
+        }
+    }
+
+    #[test]
+    fn prefilter_and_fold_filters_overlap_tail_with_gain() {
+        let e_bands = [0, 1];
+        let alloc_vectors = [0u8; 1];
+        let log_n = [0i16; 1];
+        let window = [0.25f32, 0.5, 0.5, 0.25];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0i16; 2], vec![0; 2], vec![0; 2]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let mut decoder = alloc
+            .init_decoder(&mode, 1, 1)
+            .expect("decoder initialisation should succeed");
+
+        let overlap = mode.overlap;
+        let stride = DECODE_BUFFER_SIZE + overlap;
+        assert_eq!(decoder.decode_mem.len(), stride);
+
+        for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
+            *sample = (idx as f32) * 0.125;
+        }
+
+        let n = 64;
+        let start = DECODE_BUFFER_SIZE - n;
+        let baseline: Vec<f32> = decoder.decode_mem.iter().copied().collect();
+        let original = baseline[start..start + overlap].to_vec();
+
+        decoder.postfilter_gain_old = 0.2;
+        decoder.postfilter_gain = 0.35;
+        decoder.postfilter_period_old = 24;
+        decoder.postfilter_period = 32;
+        decoder.postfilter_tapset_old = 0;
+        decoder.postfilter_tapset = 1;
+
+        prefilter_and_fold(&mut decoder, n);
+
+        let mut expected_filtered = vec![0.0; overlap];
+        comb_filter(
+            &mut expected_filtered,
+            &baseline,
+            start,
+            overlap,
+            decoder.postfilter_period_old,
+            decoder.postfilter_period,
+            -decoder.postfilter_gain_old,
+            -decoder.postfilter_gain,
+            decoder.postfilter_tapset_old as usize,
+            decoder.postfilter_tapset as usize,
+            &[],
+            0,
+            decoder.arch,
+        );
+
+        let tolerance = 1e-6f32;
+        for i in 0..(overlap / 2) {
+            let expected = window[i] * expected_filtered[overlap - 1 - i]
+                + window[overlap - 1 - i] * expected_filtered[i];
+            let actual = decoder.decode_mem[start + i];
+            assert!(
+                (expected - actual).abs() <= tolerance,
+                "filtered fold {i} differs: expected {expected}, got {actual}",
+            );
+        }
+
+        for i in overlap / 2..overlap {
+            let idx = start + i;
+            assert_eq!(decoder.decode_mem[idx], original[i]);
+        }
+    }
+
+    #[test]
+    fn prefilter_and_fold_handles_stereo_channels_independently() {
+        let e_bands = [0, 1];
+        let alloc_vectors = [0u8; 1];
+        let log_n = [0i16; 1];
+        let window = [0.25f32, 0.5, 0.5, 0.25];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0i16; 2], vec![0; 2], vec![0; 2]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 2);
+        let mut decoder = alloc
+            .init_decoder(&mode, 2, 2)
+            .expect("decoder initialisation should succeed");
+
+        let overlap = mode.overlap;
+        let stride = DECODE_BUFFER_SIZE + overlap;
+        assert_eq!(decoder.decode_mem.len(), 2 * stride);
+
+        for i in 0..stride {
+            decoder.decode_mem[i] = (i as f32) * 0.25;
+            decoder.decode_mem[stride + i] = 500.0 + (i as f32) * 0.5;
+        }
+
+        let n = 48;
+        let start = DECODE_BUFFER_SIZE - n;
+        let baseline: Vec<f32> = decoder.decode_mem.iter().copied().collect();
+
+        decoder.postfilter_gain_old = 0.1;
+        decoder.postfilter_gain = 0.3;
+        decoder.postfilter_period_old = 20;
+        decoder.postfilter_period = 28;
+        decoder.postfilter_tapset_old = 2;
+        decoder.postfilter_tapset = 1;
+
+        prefilter_and_fold(&mut decoder, n);
+
+        let tolerance = 1e-6f32;
+        for channel in 0..2 {
+            let offset = channel * stride;
+            let original = &baseline[offset + start..offset + start + overlap];
+            let mut expected_filtered = vec![0.0; overlap];
+            comb_filter(
+                &mut expected_filtered,
+                &baseline[offset..offset + stride],
+                start,
+                overlap,
+                decoder.postfilter_period_old,
+                decoder.postfilter_period,
+                -decoder.postfilter_gain_old,
+                -decoder.postfilter_gain,
+                decoder.postfilter_tapset_old as usize,
+                decoder.postfilter_tapset as usize,
+                &[],
+                0,
+                decoder.arch,
+            );
+
+            for i in 0..(overlap / 2) {
+                let expected = window[i] * expected_filtered[overlap - 1 - i]
+                    + window[overlap - 1 - i] * expected_filtered[i];
+                let actual = decoder.decode_mem[offset + start + i];
+                assert!(
+                    (expected - actual).abs() <= tolerance,
+                    "channel {channel} fold {i} differs: expected {expected}, got {actual}",
+                );
+            }
+
+            for i in overlap / 2..overlap {
+                let idx = offset + start + i;
+                assert_eq!(decoder.decode_mem[idx], original[i]);
+            }
         }
     }
 

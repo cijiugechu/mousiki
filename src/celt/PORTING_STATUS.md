@@ -149,8 +149,8 @@ safely.
   candidate within the guarded pitch window used to seed packet loss concealment.
 - `prefilter_and_fold` &rarr; ports the overlap pre-filter from
   `celt/celt_decoder.c`, running the comb filter over the concealed MDCT tail and
-  folding it back into the decode history so the next frame's TDAC blends
-  smoothly.
+  folding it back into the decode history so the next frame's TDAC
+  blends smoothly.
 - **Still to port:** the synthesis side is largely unimplemented. The C
   routines `celt_decoder_init()` and the public wrappers such as
   `opus_custom_decode()`/`opus_custom_decode_float()` remain to be mirrored so
