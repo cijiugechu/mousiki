@@ -16,12 +16,13 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
-use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
+use crate::celt::celt::{init_caps, resampling_factor, COMBFILTER_MINPERIOD, TF_SELECT_TABLE};
+use crate::celt::cpu_support::{opus_select_arch, OPUS_ARCHMASK};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 use crate::celt::modes::opus_custom_mode_find_static;
+use crate::celt::pitch::{pitch_downsample, pitch_search};
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
@@ -56,6 +57,58 @@ const PLC_PITCH_LAG_MAX: i32 = 720;
 
 /// Lower bound on the pitch lag probed by the PLC search.
 const PLC_PITCH_LAG_MIN: i32 = 100;
+
+/// Runs the pitch search used when concealing packet loss.
+///
+/// Mirrors the float implementation of `celt_plc_pitch_search()` from
+/// `celt/celt_decoder.c`. The helper downsamples the decoder history, performs
+/// the coarse-to-fine lag search, and returns the pitch index expressed as the
+/// distance from `PLC_PITCH_LAG_MAX`. The value is clamped to the
+/// `[PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX]` range to mirror the guards applied
+/// by the reference implementation.
+fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) -> i32 {
+    if channels == 0 {
+        return PLC_PITCH_LAG_MAX;
+    }
+
+    let mut channel_views = Vec::with_capacity(channels);
+    for (idx, channel) in decode_mem.iter().take(channels).enumerate() {
+        debug_assert!(
+            channel.len() >= DECODE_BUFFER_SIZE,
+            "channel {idx} must expose at least DECODE_BUFFER_SIZE samples",
+        );
+        let end = DECODE_BUFFER_SIZE.min(channel.len());
+        channel_views.push(&channel[..end]);
+    }
+
+    if channel_views.is_empty() {
+        return PLC_PITCH_LAG_MAX;
+    }
+
+    let mut lp_pitch_buf = vec![0.0; DECODE_BUFFER_SIZE >> 1];
+    pitch_downsample(&channel_views, &mut lp_pitch_buf, DECODE_BUFFER_SIZE, arch);
+
+    let offset = (PLC_PITCH_LAG_MAX >> 1) as usize;
+    if lp_pitch_buf.len() <= offset {
+        return PLC_PITCH_LAG_MAX;
+    }
+
+    let search_len = lp_pitch_buf.len() - offset;
+    let max_pitch = ((PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN) >> 1) as usize;
+    if search_len == 0 || max_pitch == 0 {
+        return PLC_PITCH_LAG_MAX;
+    }
+
+    let required = search_len + max_pitch;
+    debug_assert!(lp_pitch_buf.len() >= required);
+    let x_lp = &lp_pitch_buf[offset..offset + search_len];
+    let y = &lp_pitch_buf[..required];
+
+    let pitch_offset = pitch_search(x_lp, y, search_len, max_pitch, arch);
+    let mut pitch_index = PLC_PITCH_LAG_MAX - 2 * pitch_offset;
+    pitch_index = pitch_index.clamp(PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX);
+    pitch_index
+}
 
 /// Maximum number of channels supported by the initial CELT decoder port.
 ///
@@ -1175,12 +1228,14 @@ pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
 #[cfg(test)]
 mod tests {
     #[cfg(not(feature = "fixed_point"))]
+    use super::celt_plc_pitch_search;
+    #[cfg(not(feature = "fixed_point"))]
     use super::deemphasis;
     use super::{
-        CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
-        DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState, celt_decoder_get_size,
-        opus_custom_decoder_ctl, opus_custom_decoder_get_size, opus_custom_decoder_init,
-        prepare_frame, tf_decode, validate_celt_decoder, validate_channel_layout,
+        celt_decoder_get_size, opus_custom_decoder_ctl, opus_custom_decoder_get_size,
+        opus_custom_decoder_init, prepare_frame, tf_decode, validate_celt_decoder,
+        validate_channel_layout, CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError,
+        CeltDecoderInitError, DecoderCtlRequest, RangeDecoderState, LPC_ORDER, MAX_CHANNELS,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -1188,6 +1243,8 @@ mod tests {
     use alloc::vec;
     #[cfg(not(feature = "fixed_point"))]
     use alloc::vec::Vec;
+    #[cfg(not(feature = "fixed_point"))]
+    use core::f32::consts::PI;
     use core::ptr;
 
     #[test]
@@ -1196,6 +1253,38 @@ mod tests {
         let mut tf_res = vec![0; 4];
         tf_decode(0, tf_res.len(), false, &mut tf_res, 0, range.decoder());
         assert!(tf_res.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    #[cfg(not(feature = "fixed_point"))]
+    fn celt_plc_pitch_search_detects_mono_period() {
+        let target_period = 320i32;
+        let mut channel = vec![0.0; super::DECODE_BUFFER_SIZE];
+        for (i, sample) in channel.iter_mut().enumerate() {
+            let phase = 2.0 * PI * (i as f32) / target_period as f32;
+            *sample = phase.sin();
+        }
+
+        let decode_mem = [&channel[..]];
+        let pitch = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
+        assert!((pitch - target_period).abs() <= 2);
+    }
+
+    #[test]
+    #[cfg(not(feature = "fixed_point"))]
+    fn celt_plc_pitch_search_handles_stereo_average() {
+        let target_period = 480i32;
+        let mut left = vec![0.0; super::DECODE_BUFFER_SIZE];
+        let mut right = vec![0.0; super::DECODE_BUFFER_SIZE];
+        for i in 0..super::DECODE_BUFFER_SIZE {
+            let phase = 2.0 * PI * (i as f32) / target_period as f32;
+            left[i] = phase.sin();
+            right[i] = (phase + PI / 3.0).sin();
+        }
+
+        let decode_mem = [&left[..], &right[..]];
+        let pitch = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
+        assert!((pitch - target_period).abs() <= 4);
     }
 
     #[test]
