@@ -16,7 +16,9 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
+use crate::celt::celt::{
+    COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
+};
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
@@ -26,7 +28,8 @@ use crate::celt::pitch::{pitch_downsample, pitch_search};
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
-    CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32, OpusVal16,
+    CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32,
+    OpusVal16, OpusVal32,
 };
 use crate::celt::vq::SPREAD_NORMAL;
 use core::cell::UnsafeCell;
@@ -110,6 +113,67 @@ fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) 
     let mut pitch_index = PLC_PITCH_LAG_MAX - 2 * pitch_offset;
     pitch_index = pitch_index.clamp(PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX);
     pitch_index
+}
+
+fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
+    let channels = decoder.channels;
+    if channels == 0 {
+        return;
+    }
+
+    let overlap = decoder.overlap;
+    if overlap == 0 {
+        return;
+    }
+
+    debug_assert!(n <= DECODE_BUFFER_SIZE, "prefilter span exceeds history");
+
+    let stride = DECODE_BUFFER_SIZE + overlap;
+    debug_assert_eq!(decoder.decode_mem.len(), stride * channels);
+
+    let start = DECODE_BUFFER_SIZE
+        .checked_sub(n)
+        .expect("prefilter span exceeds decode buffer");
+    debug_assert!(
+        start + overlap <= stride,
+        "decode buffer lacks overlap tail"
+    );
+
+    debug_assert!(decoder.postfilter_tapset_old >= 0);
+    debug_assert!(decoder.postfilter_tapset >= 0);
+    let tapset0 = decoder.postfilter_tapset_old.max(0) as usize;
+    let tapset1 = decoder.postfilter_tapset.max(0) as usize;
+
+    let mut etmp = vec![OpusVal32::default(); overlap];
+    let window = decoder.mode.window;
+    debug_assert!(window.len() >= overlap);
+
+    for channel in 0..channels {
+        let offset = channel * stride;
+        let channel_mem = &mut decoder.decode_mem[offset..offset + stride];
+
+        comb_filter(
+            &mut etmp,
+            channel_mem,
+            start,
+            overlap,
+            decoder.postfilter_period_old,
+            decoder.postfilter_period,
+            -decoder.postfilter_gain_old,
+            -decoder.postfilter_gain,
+            tapset0,
+            tapset1,
+            &[],
+            0,
+            decoder.arch,
+        );
+
+        for i in 0..(overlap / 2) {
+            let forward = window[i] * etmp[overlap - 1 - i];
+            let reverse = window[overlap - 1 - i] * etmp[i];
+            channel_mem[start + i] = forward + reverse;
+        }
+    }
 }
 
 /// Maximum number of channels supported by the initial CELT decoder port.
@@ -1308,10 +1372,10 @@ mod tests {
     use super::deemphasis;
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
-        DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState, celt_decoder_get_size,
-        celt_decoder_init, opus_custom_decoder_ctl, opus_custom_decoder_get_size,
-        opus_custom_decoder_init, prepare_frame, tf_decode, validate_celt_decoder,
-        validate_channel_layout,
+        DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState,
+        celt_decoder_get_size, celt_decoder_init, opus_custom_decoder_ctl,
+        opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold, prepare_frame,
+        tf_decode, validate_celt_decoder, validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -1814,6 +1878,66 @@ mod tests {
         let err = prepare_frame(&mut decoder, &[0u8; 2], mode.short_mdct_size + 1)
             .expect_err("invalid frame size must be rejected");
         assert_eq!(err, CeltDecodeError::BadArgument);
+    }
+
+    #[test]
+    fn prefilter_and_fold_rebuilds_overlap_tail() {
+        let e_bands = [0, 1];
+        let alloc_vectors = [0u8; 1];
+        let log_n = [0i16; 1];
+        let window = [0.25f32, 0.5, 0.5, 0.25];
+        let mdct = MdctLookup::new(8, 0);
+        let cache = PulseCacheData::new(vec![0i16; 2], vec![0; 2], vec![0; 2]);
+        let mode = OpusCustomMode::new(
+            48_000,
+            4,
+            &e_bands,
+            &alloc_vectors,
+            &log_n,
+            &window,
+            mdct,
+            cache,
+        );
+
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let mut decoder = alloc
+            .init_decoder(&mode, 1, 1)
+            .expect("decoder initialisation should succeed");
+
+        let overlap = mode.overlap;
+        let stride = DECODE_BUFFER_SIZE + overlap;
+        assert_eq!(decoder.decode_mem.len(), stride);
+
+        for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
+            *sample = idx as f32;
+        }
+
+        let n = 32;
+        let start = DECODE_BUFFER_SIZE - n;
+        let original = decoder.decode_mem[start..start + overlap].to_vec();
+
+        decoder.postfilter_gain = 0.0;
+        decoder.postfilter_gain_old = 0.0;
+        decoder.postfilter_tapset = 0;
+        decoder.postfilter_tapset_old = 0;
+
+        prefilter_and_fold(&mut decoder, n);
+
+        let tolerance = 1e-6f32;
+        for i in 0..(overlap / 2) {
+            let expected =
+                window[i] * original[overlap - 1 - i] + window[overlap - 1 - i] * original[i];
+            let actual = decoder.decode_mem[start + i];
+            assert!(
+                (expected - actual).abs() <= tolerance,
+                "folded sample {i} differs: expected {expected}, got {actual}",
+            );
+        }
+
+        for i in overlap / 2..overlap {
+            let idx = start + i;
+            assert_eq!(decoder.decode_mem[idx], original[i]);
+        }
     }
 
     #[cfg(not(feature = "fixed_point"))]
