@@ -183,6 +183,9 @@ safely.
 - `patch_transient_decision` &rarr; mirrors the energy-spread comparison helper
   from `celt/celt_encoder.c` that patches the transient detector when sudden
   band energy increases are observed across frames.
+- `tf_encode` &rarr; ports the range-coder front-end from `celt/celt_encoder.c`
+  that emits the per-band time/frequency flags, reserving space for the
+  selector bit and collapsing the results back through `TF_SELECT_TABLE`.
 - `normalize_tone_input` &rarr; ports the fixed-point tone-detector scaler from
   `celt/celt_encoder.c`, rescaling the scratch buffer under the `fixed_point`
   feature while remaining a no-op for the float build.
@@ -216,8 +219,8 @@ safely.
 - **Still to port:** key analysis and bitstream routines continue to live in
   C. The MDCT staging and comb-filter driver (`compute_mdcts()`,
   `run_prefilter()`), time/frequency allocation helpers
-  (`tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`,
-  `dynalloc_analysis()`), stereo/tone detectors (`stereo_analysis()`,
+  (`tf_analysis()`, `alloc_trim_analysis()`, `dynalloc_analysis()`),
+  stereo/tone detectors (`stereo_analysis()`,
   `tone_detect()`), the median filters used by the tonality estimator, and the
   public packet writers (`opus_custom_encode{,_float,_24}()` along with the
   canonical initialisation wrappers) still need Rust translations before the

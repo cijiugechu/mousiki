@@ -14,8 +14,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::bands::compute_band_energies;
-use crate::celt::celt::resampling_factor;
+use crate::celt::celt::{TF_SELECT_TABLE, resampling_factor};
 use crate::celt::cpu_support::opus_select_arch;
+use crate::celt::entcode::ec_tell;
 use crate::celt::entenc::EcEnc;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
@@ -26,11 +27,11 @@ use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::quant_bands::amp2_log2;
-use alloc::boxed::Box;
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusRes,
     OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
+use alloc::boxed::Box;
 use core::cmp::{max, min};
 use core::ptr::NonNull;
 #[cfg(not(feature = "fixed_point"))]
@@ -766,6 +767,63 @@ fn patch_transient_decision(
     mean_diff > 1.0
 }
 
+fn tf_encode(
+    start: usize,
+    end: usize,
+    is_transient: bool,
+    tf_res: &mut [i32],
+    lm: usize,
+    mut tf_select: i32,
+    enc: &mut EcEnc<'_>,
+) {
+    debug_assert!(start <= end);
+    debug_assert!(end <= tf_res.len());
+    debug_assert!(lm < TF_SELECT_TABLE.len());
+
+    let mut budget = enc.ctx().storage * 8;
+    let mut tell = ec_tell(enc.ctx()) as OpusUint32;
+    let mut logp = if is_transient { 2u32 } else { 4u32 };
+    let mut curr = 0;
+    let mut tf_changed = 0;
+
+    let reserve_select = lm > 0 && tell + logp < budget;
+    if reserve_select {
+        budget -= 1;
+    }
+
+    for slot in tf_res[start..end].iter_mut() {
+        if tell + logp <= budget {
+            let symbol = OpusInt32::from(*slot ^ curr);
+            enc.enc_bit_logp(symbol, logp);
+            tell = ec_tell(enc.ctx()) as OpusUint32;
+            curr = *slot;
+            tf_changed |= curr;
+        } else {
+            *slot = curr;
+        }
+        logp = if is_transient { 4u32 } else { 5u32 };
+    }
+
+    let base = 4 * usize::from(is_transient);
+
+    if reserve_select
+        && TF_SELECT_TABLE[lm][base + tf_changed as usize]
+            != TF_SELECT_TABLE[lm][base + 2 + tf_changed as usize]
+    {
+        enc.enc_bit_logp(tf_select, 1);
+    } else {
+        tf_select = 0;
+    }
+
+    debug_assert!((0..=1).contains(&tf_select));
+
+    for slot in tf_res[start..end].iter_mut() {
+        debug_assert!((0..=1).contains(slot));
+        let offset = base + 2 * tf_select as usize + *slot as usize;
+        *slot = i32::from(TF_SELECT_TABLE[lm][offset]);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compute_vbr(
     mode: &OpusCustomMode<'_>,
@@ -1347,16 +1405,18 @@ mod tests {
         opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
     use super::{
-        CeltEncoderCtlError, compute_vbr, l1_metric, median_of_3, median_of_5, opus_custom_encoder_ctl,
-        patch_transient_decision, tone_lpc, transient_analysis,
+        CeltEncoderCtlError, compute_vbr, l1_metric, median_of_3, median_of_5,
+        opus_custom_encoder_ctl, patch_transient_decision, tf_encode, tone_lpc, transient_analysis,
     };
     #[cfg(not(feature = "fixed_point"))]
     use super::{acos_approx, normalize_tone_input};
+    use crate::celt::OpusVal16;
+    use crate::celt::celt::TF_SELECT_TABLE;
     use crate::celt::cpu_support::opus_select_arch;
+    use crate::celt::entenc::EcEnc;
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::modes::{compute_preemphasis, opus_custom_mode_create};
     use crate::celt::types::{AnalysisInfo, OpusRes};
-    use crate::celt::OpusVal16;
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
     use core::f32::consts::PI;
@@ -1382,6 +1442,34 @@ mod tests {
 
         let biased = l1_metric(&tmp, tmp.len(), 2, 0.5);
         assert!((biased - 7.5).abs() < EPSILON);
+    }
+
+    #[test]
+    fn tf_encode_applies_select_when_budget_allows() {
+        let mut buffer = [0u8; 16];
+        let mut enc = EcEnc::new(&mut buffer);
+        let mut tf_res = [0, 1, 1, 0];
+
+        tf_encode(0, tf_res.len(), false, &mut tf_res, 1, 1, &mut enc);
+
+        let expected = [
+            i32::from(TF_SELECT_TABLE[1][2]),
+            i32::from(TF_SELECT_TABLE[1][3]),
+            i32::from(TF_SELECT_TABLE[1][3]),
+            i32::from(TF_SELECT_TABLE[1][2]),
+        ];
+        assert_eq!(tf_res, expected);
+    }
+
+    #[test]
+    fn tf_encode_clamps_to_previous_when_budget_is_exhausted() {
+        let mut buffer = [0u8; 0];
+        let mut enc = EcEnc::new(&mut buffer);
+        let mut tf_res = [1, 0];
+
+        tf_encode(0, tf_res.len(), false, &mut tf_res, 0, 1, &mut enc);
+
+        assert_eq!(tf_res, [0, 0]);
     }
 
     #[test]
