@@ -19,6 +19,7 @@ exclude = ["opus-go", "testdata"]
 [features]
 default = []
 fixed_point = []
+deep_plc = []
 
 [dependencies]
 libm = "0.2"

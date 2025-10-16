@@ -147,10 +147,19 @@ safely.
 - `celt_plc_pitch_search` &rarr; ports the pitch-based PLC lag search from
   `celt/celt_decoder.c`, downsampling the decoder history and returning the best
   candidate within the guarded pitch window used to seed packet loss concealment.
+- `update_plc_state` &rarr; mirrors the neural PLC state refresh helper from
+  `celt/celt_decoder.c`, resampling the decoder history to 16 kHz, preserving
+  the pre-emphasis memory, and feeding four downsampled frames into the
+  LPCNet-based PLC state without consuming queued FEC feature vectors.
 - `prefilter_and_fold` &rarr; ports the overlap pre-filter from
   `celt/celt_decoder.c`, running the comb filter over the concealed MDCT tail and
   folding it back into the decode history so the next frame's TDAC
   blends smoothly.
+- `celt_decode_lost` &rarr; mirrors the decoder-side PLC driver from
+  `celt/celt_decoder.c`, covering both the noise-based concealment path that
+  regenerates per-band spectra and the pitch-based extrapolation that rebuilds
+  waveform segments using LPC analysis before resynthesising the concealed
+  frame.
 - `celt_synthesis` &rarr; mirrors the decoder-side IMDCT driver from
   `celt/celt_decoder.c`, denormalising the band energies, handling mono/stereo
   up/downmixing, applying the appropriate short or long block transforms, and
@@ -510,7 +519,7 @@ that still gate a full end-to-end encoder/decoder.
 
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `celt/celt_decoder.c` | `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
+| `celt/celt_decoder.c` | `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
 | `celt/celt_encoder.c` | `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
