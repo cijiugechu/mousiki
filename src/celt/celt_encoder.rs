@@ -215,6 +215,85 @@ fn l1_metric(tmp: &[OpusVal16], n: usize, lm: i32, bias: OpusVal16) -> OpusVal32
     l1 + freq_bias * l1
 }
 
+/// Applies the MDCT to each sub-frame for all channels, mirroring
+/// `compute_mdcts()` from `celt/celt_encoder.c`.
+#[allow(clippy::too_many_arguments)]
+fn compute_mdcts(
+    mode: &OpusCustomMode<'_>,
+    short_blocks: usize,
+    input: &[CeltSig],
+    output: &mut [CeltSig],
+    coded_channels: usize,
+    total_channels: usize,
+    lm: usize,
+    upsample: usize,
+    arch: i32,
+) {
+    assert!(coded_channels > 0 && coded_channels <= total_channels);
+    assert!(upsample > 0);
+    assert!(lm <= mode.max_lm);
+
+    let overlap = mode.overlap;
+    let (block_count, shift) = if short_blocks != 0 {
+        (short_blocks, mode.max_lm)
+    } else {
+        (1, mode.max_lm - lm)
+    };
+    let transform_len = mode.mdct.effective_len(shift);
+    assert!(transform_len.is_multiple_of(2));
+    let frame_len = transform_len >> 1;
+
+    let channel_input_stride = block_count * transform_len + overlap;
+    let channel_output_stride = block_count * frame_len;
+
+    assert!(input.len() >= total_channels * channel_input_stride);
+    assert!(output.len() >= total_channels * channel_output_stride);
+
+    for channel in 0..total_channels {
+        let input_base = channel * channel_input_stride;
+        let output_base = channel * channel_output_stride;
+
+        for block in 0..block_count {
+            let input_offset = input_base + block * transform_len;
+            let output_offset = output_base + block;
+            let input_end = input_offset + overlap + transform_len;
+            let output_end = output_base + channel_output_stride;
+
+            clt_mdct_forward(
+                &mode.mdct,
+                &input[input_offset..input_end],
+                &mut output[output_offset..output_end],
+                mode.window,
+                overlap,
+                shift,
+                block_count,
+            );
+        }
+    }
+
+    if total_channels == 2 && coded_channels == 1 {
+        let band_len = block_count * frame_len;
+        for i in 0..band_len {
+            output[i] = 0.5 * (output[i] + output[band_len + i]);
+        }
+    }
+
+    if upsample != 1 {
+        for channel in 0..coded_channels {
+            let base = channel * channel_output_stride;
+            let bound = channel_output_stride / upsample;
+            let (to_scale, to_zero) =
+                output[base..base + channel_output_stride].split_at_mut(bound);
+            for value in to_scale.iter_mut() {
+                *value *= upsample as CeltSig;
+            }
+            to_zero.fill(0.0);
+        }
+    }
+
+    let _ = arch;
+}
+
 fn ensure_pcm_capacity(pcmp: &[OpusRes], channels: usize, samples: usize) {
     if samples == 0 {
         return;
@@ -1405,7 +1484,7 @@ mod tests {
         opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
     use super::{
-        CeltEncoderCtlError, compute_vbr, l1_metric, median_of_3, median_of_5,
+        CeltEncoderCtlError, compute_mdcts, compute_vbr, l1_metric, median_of_3, median_of_5,
         opus_custom_encoder_ctl, patch_transient_decision, tf_encode, tone_lpc, transient_analysis,
     };
     #[cfg(not(feature = "fixed_point"))]
@@ -1415,7 +1494,9 @@ mod tests {
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::entenc::EcEnc;
     use crate::celt::float_cast::CELT_SIG_SCALE;
-    use crate::celt::modes::{compute_preemphasis, opus_custom_mode_create};
+    use crate::celt::modes::{
+        compute_preemphasis, opus_custom_mode_create, opus_custom_mode_find_static,
+    };
     use crate::celt::types::{AnalysisInfo, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
@@ -1442,6 +1523,162 @@ mod tests {
 
         let biased = l1_metric(&tmp, tmp.len(), 2, 0.5);
         assert!((biased - 7.5).abs() < EPSILON);
+    }
+
+    #[test]
+    fn compute_mdcts_matches_manual_mdct() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let short_blocks = 0;
+        let lm = 0;
+        let upsample = 1;
+        let total_channels = 2;
+        let coded_channels = 2;
+        let block_count = 1;
+        let shift = mode.max_lm - lm;
+        let transform_len = mode.mdct.effective_len(shift);
+        let frame_len = transform_len >> 1;
+        let overlap = mode.overlap;
+        let channel_input_stride = block_count * transform_len + overlap;
+        let channel_output_stride = block_count * frame_len;
+        let mut input = vec![0.0; total_channels * channel_input_stride];
+        for (index, sample) in input.iter_mut().enumerate() {
+            *sample = index as f32;
+        }
+
+        let mut expected = vec![0.0; total_channels * channel_output_stride];
+        for channel in 0..total_channels {
+            let input_offset = channel * channel_input_stride;
+            let output_offset = channel * channel_output_stride;
+            crate::celt::mdct::clt_mdct_forward(
+                &mode.mdct,
+                &input[input_offset..input_offset + overlap + transform_len],
+                &mut expected[output_offset..output_offset + channel_output_stride],
+                mode.window,
+                overlap,
+                shift,
+                block_count,
+            );
+        }
+
+        let mut output = vec![0.0; total_channels * channel_output_stride];
+        compute_mdcts(
+            &mode,
+            short_blocks,
+            &input,
+            &mut output,
+            coded_channels,
+            total_channels,
+            lm,
+            upsample,
+            0,
+        );
+
+        assert_slice_close(&output, &expected);
+    }
+
+    #[test]
+    fn compute_mdcts_downmixes_stereo() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let short_blocks = 0;
+        let lm = 0;
+        let upsample = 1;
+        let total_channels = 2;
+        let block_count = 1;
+        let shift = mode.max_lm - lm;
+        let transform_len = mode.mdct.effective_len(shift);
+        let frame_len = transform_len >> 1;
+        let overlap = mode.overlap;
+        let channel_input_stride = block_count * transform_len + overlap;
+        let channel_output_stride = block_count * frame_len;
+        let mut input = vec![0.0; total_channels * channel_input_stride];
+        for (index, sample) in input.iter_mut().enumerate() {
+            *sample = (index as f32) / 5.0;
+        }
+
+        let mut stereo = vec![0.0; total_channels * channel_output_stride];
+        compute_mdcts(
+            &mode,
+            short_blocks,
+            &input,
+            &mut stereo,
+            total_channels,
+            total_channels,
+            lm,
+            upsample,
+            0,
+        );
+
+        let mut mono = vec![0.0; total_channels * channel_output_stride];
+        compute_mdcts(
+            &mode,
+            short_blocks,
+            &input,
+            &mut mono,
+            1,
+            total_channels,
+            lm,
+            upsample,
+            0,
+        );
+
+        for i in 0..block_count * frame_len {
+            let expected = 0.5 * (stereo[i] + stereo[block_count * frame_len + i]);
+            assert!((mono[i] - expected).abs() < EPSILON);
+        }
+    }
+
+    #[test]
+    fn compute_mdcts_scales_for_upsampling() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let short_blocks = 0;
+        let lm = 0;
+        let total_channels = 1;
+        let block_count = 1;
+        let shift = mode.max_lm - lm;
+        let transform_len = mode.mdct.effective_len(shift);
+        let frame_len = transform_len >> 1;
+        let overlap = mode.overlap;
+        let channel_input_stride = block_count * transform_len + overlap;
+        let channel_output_stride = block_count * frame_len;
+        let mut input = vec![0.0; total_channels * channel_input_stride];
+        for (index, sample) in input.iter_mut().enumerate() {
+            *sample = (index as f32) / 7.0;
+        }
+
+        let mut baseline = vec![0.0; total_channels * channel_output_stride];
+        compute_mdcts(
+            &mode,
+            short_blocks,
+            &input,
+            &mut baseline,
+            total_channels,
+            total_channels,
+            lm,
+            1,
+            0,
+        );
+
+        let upsample = 2;
+        let mut scaled = vec![0.0; total_channels * channel_output_stride];
+        compute_mdcts(
+            &mode,
+            short_blocks,
+            &input,
+            &mut scaled,
+            total_channels,
+            total_channels,
+            lm,
+            upsample,
+            0,
+        );
+
+        let bound = block_count * frame_len / upsample;
+        for i in 0..bound {
+            assert!((scaled[i] - baseline[i] * upsample as f32).abs() < EPSILON);
+        }
+        for value in &scaled[bound..block_count * frame_len] {
+            assert!(value.abs() < EPSILON);
+        }
     }
 
     #[test]
