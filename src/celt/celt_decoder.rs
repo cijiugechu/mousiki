@@ -16,6 +16,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::celt::bands::denormalise_bands;
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
 };
@@ -23,12 +24,13 @@ use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
+use crate::celt::mdct::clt_mdct_backward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{pitch_downsample, pitch_search};
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
-    CeltGlog, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32,
+    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32,
     OpusVal16, OpusVal32,
 };
 use crate::celt::vq::SPREAD_NORMAL;
@@ -62,6 +64,165 @@ const PLC_PITCH_LAG_MAX: i32 = 720;
 
 /// Lower bound on the pitch lag probed by the PLC search.
 const PLC_PITCH_LAG_MIN: i32 = 100;
+
+/// Saturation limit applied to the IMDCT output during synthesis.
+const SIG_SAT: CeltSig = 536_870_911.0;
+
+fn apply_inverse_mdct(
+    mode: &OpusCustomMode<'_>,
+    freq: &[CeltSig],
+    output: &mut [CeltSig],
+    bands: usize,
+    nb: usize,
+    shift: usize,
+) {
+    if bands == 0 {
+        return;
+    }
+
+    let stride = bands;
+    assert!(freq.len() >= nb.saturating_mul(stride));
+    assert!(output.len() >= nb.saturating_mul(stride));
+
+    let mut temp = vec![0.0f32; nb];
+    for band in 0..bands {
+        for (idx, sample) in temp.iter_mut().enumerate() {
+            let src_index = band + idx * stride;
+            *sample = freq.get(src_index).copied().unwrap_or_default();
+        }
+
+        let start = band * nb;
+        clt_mdct_backward(
+            &mode.mdct,
+            &temp,
+            &mut output[start..],
+            mode.window,
+            mode.overlap,
+            shift,
+            1,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn celt_synthesis(
+    mode: &OpusCustomMode<'_>,
+    x: &[CeltNorm],
+    out_syn: &mut [&mut [CeltSig]],
+    old_band_e: &[CeltGlog],
+    start: usize,
+    eff_end: usize,
+    coded_channels: usize,
+    output_channels: usize,
+    is_transient: bool,
+    lm: usize,
+    downsample: usize,
+    silence: bool,
+    arch: i32,
+) {
+    let _ = arch;
+
+    assert!(output_channels <= out_syn.len());
+    assert!(coded_channels <= 2);
+    assert!(output_channels <= 2);
+    assert!(lm <= mode.max_lm);
+    assert!(eff_end <= mode.num_ebands);
+    assert!(downsample > 0);
+
+    let nb_ebands = mode.num_ebands;
+    let n = mode.short_mdct_size << lm;
+    let m = 1 << lm;
+
+    assert!(x.len() >= coded_channels * n);
+    assert!(old_band_e.len() >= coded_channels * nb_ebands);
+    for channel in out_syn.iter_mut().take(output_channels) {
+        assert!(channel.len() >= n);
+    }
+
+    let (bands, nb, shift) = if is_transient {
+        (m, mode.short_mdct_size, mode.max_lm)
+    } else {
+        (1, mode.short_mdct_size << lm, mode.max_lm - lm)
+    };
+
+    let mut freq = vec![0.0f32; n];
+
+    match (output_channels, coded_channels) {
+        (2, 1) => {
+            let (left, right) = out_syn.split_at_mut(1);
+            let left_out = &mut *left[0];
+            let right_out = &mut *right[0];
+
+            denormalise_bands(
+                mode,
+                &x[..n],
+                &mut freq,
+                &old_band_e[..nb_ebands],
+                start,
+                eff_end,
+                m,
+                downsample,
+                silence,
+            );
+
+            let freq_copy = freq.clone();
+            apply_inverse_mdct(mode, &freq_copy, left_out, bands, nb, shift);
+            apply_inverse_mdct(mode, &freq, right_out, bands, nb, shift);
+        }
+        (1, 2) => {
+            let out = &mut *out_syn[0];
+
+            denormalise_bands(
+                mode,
+                &x[..n],
+                &mut freq,
+                &old_band_e[..nb_ebands],
+                start,
+                eff_end,
+                m,
+                downsample,
+                silence,
+            );
+
+            let mut freq_other = vec![0.0f32; n];
+            denormalise_bands(
+                mode,
+                &x[n..n * 2],
+                &mut freq_other,
+                &old_band_e[nb_ebands..nb_ebands * 2],
+                start,
+                eff_end,
+                m,
+                downsample,
+                silence,
+            );
+
+            for (lhs, rhs) in freq.iter_mut().zip(freq_other.iter()) {
+                *lhs = 0.5 * (*lhs + *rhs);
+            }
+
+            apply_inverse_mdct(mode, &freq, out, bands, nb, shift);
+        }
+        _ => {
+            for channel in 0..output_channels {
+                let spectrum = &x[channel * n..(channel + 1) * n];
+                let energy = &old_band_e[channel * nb_ebands..(channel + 1) * nb_ebands];
+                denormalise_bands(
+                    mode, spectrum, &mut freq, energy, start, eff_end, m, downsample, silence,
+                );
+
+                let output = &mut *out_syn[channel];
+                apply_inverse_mdct(mode, &freq, output, bands, nb, shift);
+            }
+        }
+    }
+
+    for channel in out_syn.iter_mut().take(output_channels) {
+        for sample in (*channel).iter_mut().take(n) {
+            *sample = sample.clamp(-SIG_SAT, SIG_SAT);
+        }
+    }
+}
 
 /// Runs the pitch search used when concealing packet loss.
 ///
@@ -1373,9 +1534,8 @@ mod tests {
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
         DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState,
-        celt_decoder_get_size, celt_decoder_init, opus_custom_decoder_ctl,
-        comb_filter, opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold,
-        prepare_frame,
+        celt_decoder_get_size, celt_decoder_init, comb_filter, opus_custom_decoder_ctl,
+        opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold, prepare_frame,
         tf_decode, validate_celt_decoder, validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
