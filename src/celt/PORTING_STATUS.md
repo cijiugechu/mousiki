@@ -212,6 +212,10 @@ safely.
 - `tone_lpc` &rarr; ports the two-tap LPC solver from `celt/celt_encoder.c`
   that estimates the autoregressive tone model used by the detector, preserving
   the covariance accumulation, conditioning checks, and saturation limits.
+- `tone_detect` &rarr; mirrors the narrowband tone detector from
+  `celt/celt_encoder.c`, combining channels, normalising the input, running the
+  adaptive LPC analysis, and returning the detected angle along with the
+  "toneishness" score used to suppress false transient decisions.
 - `acos_approx` &rarr; mirrors the fixed-point arccosine approximation from
   `celt/celt_encoder.c`, delegating to the float `acos` helper when the
   `fixed_point` feature is disabled.
@@ -516,7 +520,7 @@ that still gate a full end-to-end encoder/decoder.
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
 | `celt/celt_decoder.c` | `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
-| `celt/celt_encoder.c` | `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
+| `celt/celt_encoder.c` | `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
