@@ -212,6 +212,12 @@ safely.
 - `median_of_3` &rarr; ports the three-sample median helper from
   `celt/celt_encoder.c`, preserving the tie-breaking behaviour relied upon by
   the energy follower bootstrap in the allocation heuristics.
+- `stereo_analysis` &rarr; mirrors the entropy comparison helper from
+  `celt/celt_encoder.c` that evaluates the L/R versus M/S norms to decide when
+  mid/side stereo coding should be enabled.
+- `alloc_trim_analysis` &rarr; ports the trim selector from `celt/celt_encoder.c`
+  that blends stereo correlation, spectral tilt, transient strength, and
+  surround cues to choose one of the allocation bias presets.
 - `celt_encode_with_ec` &rarr; establishes the Rust-side analysis path, covering
   pre-emphasis, MDCT evaluation, and band energy bookkeeping so the encoder
   state remains in sync with the reference implementation while bitstream
@@ -228,9 +234,9 @@ safely.
 - **Still to port:** key analysis and bitstream routines continue to live in
   C. The comb-filter driver (`run_prefilter()`), time/frequency allocation
   helpers
-  (`tf_analysis()`, `alloc_trim_analysis()`, `dynalloc_analysis()`),
-  stereo/tone detectors (`stereo_analysis()`,
-  `tone_detect()`), the median filters used by the tonality estimator, and the
+  (`tf_analysis()`, `dynalloc_analysis()`),
+  the remaining stereo/tone detector `tone_detect()`, the median filters used by
+  the tonality estimator, and the
   public packet writers (`opus_custom_encode{,_float,_24}()` along with the
   canonical initialisation wrappers) still need Rust translations before the
   encoder can emit full CELT frames.
