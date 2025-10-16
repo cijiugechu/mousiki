@@ -20,6 +20,8 @@ pub type OpusVal32 = f32;
 pub type CeltSig = OpusVal32;
 /// Internal CELT logarithmic energy precision.
 pub type CeltGlog = OpusVal32;
+/// Normalised MDCT coefficient precision used throughout the codec.
+pub type CeltNorm = OpusVal16;
 /// Coefficients used by the MDCT windows.
 pub type CeltCoef = OpusVal16;
 

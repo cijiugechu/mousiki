@@ -21,18 +21,20 @@ use crate::celt::entenc::EcEnc;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
-use crate::celt::math::{celt_sqrt, frac_div32_q29};
+use crate::celt::math::{celt_log2, celt_sqrt, frac_div32_q29};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
+use crate::celt::pitch::celt_inner_prod;
 use crate::celt::quant_bands::amp2_log2;
 use crate::celt::types::{
-    AnalysisInfo, CeltGlog, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32, OpusRes,
-    OpusUint32, OpusVal16, OpusVal32, SilkInfo,
+    AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32,
+    OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
 use alloc::boxed::Box;
 use core::cmp::{max, min};
+use core::f32::consts::FRAC_1_SQRT_2;
 use core::ptr::NonNull;
 #[cfg(not(feature = "fixed_point"))]
 use libm::acosf;
@@ -213,6 +215,172 @@ fn l1_metric(tmp: &[OpusVal16], n: usize, lm: i32, bias: OpusVal16) -> OpusVal32
 
     let freq_bias = (lm as OpusVal32) * bias as OpusVal32;
     l1 + freq_bias * l1
+}
+
+/// Mirrors the stereo mode decision helper from `celt/celt_encoder.c`.
+///
+/// The function measures how well a stereo pair can be represented using
+/// mid/side coding by comparing the L/R and M/S L1 norms across the first 13
+/// bands. The reference implementation returns a non-zero integer when the
+/// entropy of the mid/side representation is lower; we translate that into a
+/// boolean result for the Rust port.
+fn stereo_analysis(mode: &OpusCustomMode<'_>, x: &[CeltNorm], lm: usize, n0: usize) -> bool {
+    const EPSILON: f32 = 1.0e-15;
+
+    debug_assert!(
+        mode.num_ebands >= 14,
+        "stereo analysis expects at least 14 bands"
+    );
+    debug_assert!(
+        x.len() >= 2 * n0,
+        "stereo analysis requires two channel buffers"
+    );
+
+    let mut sum_lr = EPSILON;
+    let mut sum_ms = EPSILON;
+
+    for band in 0..13 {
+        let start = (mode.e_bands[band] as usize) << lm;
+        let end = (mode.e_bands[band + 1] as usize) << lm;
+        if end <= start || end > n0 {
+            continue;
+        }
+
+        for idx in start..end {
+            let left = x[idx];
+            let right = x[n0 + idx];
+            let mid = left + right;
+            let side = left - right;
+            sum_lr += left.abs() + right.abs();
+            sum_ms += mid.abs() + side.abs();
+        }
+    }
+
+    sum_ms *= FRAC_1_SQRT_2;
+    let mut thetas = 13i32;
+    if lm <= 1 {
+        thetas -= 8;
+    }
+
+    let base = i32::from(mode.e_bands[13]) << (lm + 1);
+    let lhs = (base + thetas) as f32 * sum_ms;
+    let rhs = base as f32 * sum_lr;
+    lhs > rhs
+}
+
+/// Evaluates the trim selector used by the dynamic allocation heuristics.
+///
+/// This ports `alloc_trim_analysis()` from `celt/celt_encoder.c`. The helper
+/// inspects stereo correlation, spectral tilt, transient strength, and the
+/// surround analysis results to choose one of eleven trim presets. It updates
+/// the stereo saving accumulator as a side effect, mirroring the behaviour of
+/// the C implementation.
+#[allow(clippy::too_many_arguments)]
+fn alloc_trim_analysis(
+    mode: &OpusCustomMode<'_>,
+    x: &[CeltNorm],
+    band_log_e: &[CeltGlog],
+    end: usize,
+    lm: usize,
+    channels: usize,
+    n0: usize,
+    analysis: &AnalysisInfo,
+    stereo_saving: &mut OpusVal16,
+    tf_estimate: OpusVal16,
+    intensity: usize,
+    surround_trim: CeltGlog,
+    equiv_rate: OpusInt32,
+    _arch: i32,
+) -> i32 {
+    debug_assert!(channels == 1 || channels == 2);
+    debug_assert!(
+        x.len() >= channels * n0,
+        "insufficient MDCT samples for alloc_trim_analysis"
+    );
+    debug_assert!(band_log_e.len() >= channels * mode.num_ebands);
+
+    let mut trim = 5.0f32;
+    if equiv_rate < 64_000 {
+        trim = 4.0;
+    } else if equiv_rate < 80_000 {
+        let frac = ((equiv_rate - 64_000) >> 10) as f32;
+        trim = 4.0 + (1.0 / 16.0) * frac;
+    }
+
+    if channels == 2 {
+        let mut sum = 0.0f32;
+        let limit = intensity.min(mode.num_ebands);
+
+        for band in 0..8.min(mode.num_ebands) {
+            let start = (mode.e_bands[band] as usize) << lm;
+            let end = (mode.e_bands[band + 1] as usize) << lm;
+            if end <= start || end > n0 {
+                continue;
+            }
+            let left = &x[start..end];
+            let right = &x[n0 + start..n0 + end];
+            let partial = celt_inner_prod(left, right);
+            sum += partial;
+        }
+
+        sum *= 1.0 / 8.0;
+        sum = sum.abs().min(1.0);
+        let mut min_xc = sum;
+
+        for band in 8..limit {
+            let start = (mode.e_bands[band] as usize) << lm;
+            let end = (mode.e_bands[band + 1] as usize) << lm;
+            if end <= start || end > n0 {
+                continue;
+            }
+            let left = &x[start..end];
+            let right = &x[n0 + start..n0 + end];
+            let partial = celt_inner_prod(left, right).abs().min(1.0);
+            if partial < min_xc {
+                min_xc = partial;
+            }
+        }
+
+        let log_xc = celt_log2(1.001 - sum * sum);
+        let alt = celt_log2(1.001 - min_xc * min_xc);
+        let mut log_xc2 = 0.5 * log_xc;
+        if alt > log_xc2 {
+            log_xc2 = alt;
+        }
+
+        let adjustment = (0.75 * log_xc).max(-4.0);
+        trim += adjustment;
+
+        let candidate = (-0.5 * log_xc2).min(*stereo_saving + 0.25);
+        *stereo_saving = candidate;
+    }
+
+    let nb_ebands = mode.num_ebands;
+    let mut diff = 0.0f32;
+    if end > 1 {
+        for ch in 0..channels {
+            let base = ch * nb_ebands;
+            for band in 0..(end - 1) {
+                let weight = (2 + 2 * band as i32 - end as i32) as f32;
+                diff += band_log_e[base + band] * weight;
+            }
+        }
+        diff /= (channels * (end - 1)) as f32;
+    }
+
+    let slope = ((diff + 1.0) / 6.0).clamp(-2.0, 2.0);
+    trim -= slope;
+    trim -= surround_trim;
+    trim -= 2.0 * tf_estimate;
+
+    if analysis.valid {
+        let tonal = 2.0 * (analysis.tonality_slope + 0.05);
+        trim -= tonal.clamp(-2.0, 2.0);
+    }
+
+    let mut trim_index = floorf(trim + 0.5) as i32;
+    trim_index = trim_index.clamp(0, 10);
+    trim_index
 }
 
 /// Applies the MDCT to each sub-frame for all channels, mirroring
@@ -1484,8 +1652,9 @@ mod tests {
         opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
     use super::{
-        CeltEncoderCtlError, compute_mdcts, compute_vbr, l1_metric, median_of_3, median_of_5,
-        opus_custom_encoder_ctl, patch_transient_decision, tf_encode, tone_lpc, transient_analysis,
+        CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, l1_metric,
+        median_of_3, median_of_5, opus_custom_encoder_ctl, patch_transient_decision,
+        stereo_analysis, tf_encode, tone_lpc, transient_analysis,
     };
     #[cfg(not(feature = "fixed_point"))]
     use super::{acos_approx, normalize_tone_input};
@@ -1494,13 +1663,14 @@ mod tests {
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::entenc::EcEnc;
     use crate::celt::float_cast::CELT_SIG_SCALE;
+    use crate::celt::math::celt_log2;
     use crate::celt::modes::{
         compute_preemphasis, opus_custom_mode_create, opus_custom_mode_find_static,
     };
     use crate::celt::types::{AnalysisInfo, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
-    use core::f32::consts::PI;
+    use core::f32::consts::{FRAC_1_SQRT_2, PI};
 
     const EPSILON: f32 = 1e-6;
 
@@ -1900,6 +2070,166 @@ mod tests {
         let baseline = patch_transient_decision(&old_e, &old_e, nb_ebands, start, end, channels);
 
         assert!(u8::from(increase) >= u8::from(baseline));
+    }
+
+    #[test]
+    fn stereo_analysis_matches_manual_decision() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let lm = 0usize;
+        let n0 = mode.short_mdct_size << lm;
+        let mut x = vec![0.0f32; 2 * n0];
+        for i in 0..n0 {
+            let sample = ((i % 7) as f32 - 3.0) * 0.125;
+            x[i] = sample;
+            x[n0 + i] = 0.6 * sample;
+        }
+
+        let result = stereo_analysis(&mode, &x, lm, n0);
+
+        let mut sum_lr = 1.0e-15f32;
+        let mut sum_ms = 1.0e-15f32;
+        for band in 0..13 {
+            let start = (mode.e_bands[band] as usize) << lm;
+            let end = (mode.e_bands[band + 1] as usize) << lm;
+            for idx in start..end {
+                let left = x[idx];
+                let right = x[n0 + idx];
+                let mid = left + right;
+                let side = left - right;
+                sum_lr += left.abs() + right.abs();
+                sum_ms += mid.abs() + side.abs();
+            }
+        }
+
+        sum_ms *= FRAC_1_SQRT_2;
+        let mut thetas = 13i32;
+        if lm <= 1 {
+            thetas -= 8;
+        }
+        let base = i32::from(mode.e_bands[13]) << (lm + 1);
+        let expected = (base + thetas) as f32 * sum_ms > base as f32 * sum_lr;
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn alloc_trim_analysis_matches_reference_flow() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let lm = 0usize;
+        let n0 = mode.short_mdct_size << lm;
+        let channels = 2;
+        let mut x = vec![0.0f32; channels * n0];
+        for i in 0..n0 {
+            let sample = (0.005 * i as f32).sin();
+            x[i] = sample;
+            x[n0 + i] = 0.5 * sample + 0.1;
+        }
+
+        let nb_ebands = mode.num_ebands;
+        let mut band_log_e = vec![0.0f32; channels * nb_ebands];
+        for c in 0..channels {
+            for b in 0..nb_ebands {
+                band_log_e[c * nb_ebands + b] = 0.1 * (b as f32 + c as f32);
+            }
+        }
+
+        let mut analysis = AnalysisInfo::default();
+        analysis.valid = true;
+        analysis.tonality_slope = 0.075;
+
+        let mut stereo_saving = 0.0f32;
+        let tf_estimate = 0.35;
+        let surround_trim = 0.2;
+        let end = nb_ebands.min(15);
+        let intensity = end;
+        let equiv_rate = 72_000;
+
+        let trim_index = alloc_trim_analysis(
+            &mode,
+            &x,
+            &band_log_e,
+            end,
+            lm,
+            channels,
+            n0,
+            &analysis,
+            &mut stereo_saving,
+            tf_estimate,
+            intensity,
+            surround_trim,
+            equiv_rate,
+            0,
+        );
+
+        let mut expected_trim = if equiv_rate < 64_000 {
+            4.0
+        } else if equiv_rate < 80_000 {
+            4.0 + ((equiv_rate - 64_000) >> 10) as f32 / 16.0
+        } else {
+            5.0
+        };
+
+        let mut sum = 0.0f32;
+        for band in 0..8.min(mode.num_ebands) {
+            let start = (mode.e_bands[band] as usize) << lm;
+            let end = (mode.e_bands[band + 1] as usize) << lm;
+            for idx in start..end {
+                sum += x[idx] * x[n0 + idx];
+            }
+        }
+        sum *= 1.0 / 8.0;
+        sum = sum.abs().min(1.0);
+        let mut min_xc = sum;
+        for band in 8..intensity.min(mode.num_ebands) {
+            let start = (mode.e_bands[band] as usize) << lm;
+            let end = (mode.e_bands[band + 1] as usize) << lm;
+            for idx in start..end {
+                let partial = (x[idx] * x[n0 + idx]).abs().min(1.0);
+                if partial < min_xc {
+                    min_xc = partial;
+                }
+            }
+        }
+
+        let log_xc = celt_log2(1.001 - sum * sum);
+        let alt = celt_log2(1.001 - min_xc * min_xc);
+        let half_log = 0.5 * log_xc;
+        let log_xc2 = if alt > half_log { alt } else { half_log };
+        expected_trim += (0.75 * log_xc).max(-4.0);
+        let expected_stereo = (-0.5 * log_xc2).min(0.25);
+
+        let mut diff = 0.0f32;
+        if end > 1 {
+            for c in 0..channels {
+                let base = c * nb_ebands;
+                for band in 0..(end - 1) {
+                    let weight = (2 + 2 * band as i32 - end as i32) as f32;
+                    diff += band_log_e[base + band] * weight;
+                }
+            }
+            diff /= (channels * (end - 1)) as f32;
+        }
+
+        expected_trim -= ((diff + 1.0) / 6.0).clamp(-2.0, 2.0);
+        expected_trim -= surround_trim;
+        expected_trim -= 2.0 * tf_estimate;
+        if analysis.valid {
+            let tonal = 2.0 * (analysis.tonality_slope + 0.05);
+            expected_trim -= tonal.clamp(-2.0, 2.0);
+        }
+
+        let mut expected_index = (expected_trim + 0.5).floor() as i32;
+        expected_index = expected_index.clamp(0, 10);
+
+        assert_eq!(trim_index, expected_index);
+        assert!(
+            (stereo_saving - expected_stereo).abs() < 1e-6,
+            "stereo_saving={} expected={}",
+            stereo_saving,
+            expected_stereo
+        );
     }
 
     #[test]
