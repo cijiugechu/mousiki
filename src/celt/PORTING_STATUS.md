@@ -164,15 +164,11 @@ safely.
   `celt/celt_decoder.c`, denormalising the band energies, handling mono/stereo
   up/downmixing, applying the appropriate short or long block transforms, and
   saturating the time-domain output before the post-filter consumes it.
-- **Still to port:** the synthesis side is largely unimplemented. The C
-  routines `celt_decoder_init()` and the public wrappers such as
-  `opus_custom_decode()`/`opus_custom_decode_float()` remain to be mirrored so
-  the allocation matches the reference layout exactly. The signal reconstruction
-  helpers (`deemphasis[_stereo]_simple()`,
-  `celt_synthesis()`), PLC pipeline (`celt_plc_pitch_search()`,
-  `update_plc_state()`, `celt_decode_lost()`), and the
-  main `celt_decode_with_ec()` entry point with its `*_dred` variant are still
-  pending.
+- **Still to port:** the synthesis side is largely unimplemented. The public
+  wrappers such as `opus_custom_decode()`/`opus_custom_decode_float()` (and the
+  `_24` variant) remain to be mirrored so the allocation matches the reference
+  layout exactly. The main `celt_decode_with_ec()` entry point with its
+  `*_dred` variant is still pending.
 
 ### `celt_encoder.rs`
 - `CeltEncoderAlloc` &rarr; mirrors the encoder-side trailing buffers (`in_mem`,

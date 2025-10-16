@@ -207,6 +207,8 @@ pub(crate) fn update_plc_state(
         _ => unreachable!("decoder only supports mono or stereo histories"),
     }
 
+    let prev = *plc_preemphasis_mem;
+    buf48k[0] += PREEMPHASIS * prev;
     for index in 1..DECODE_BUFFER_SIZE {
         buf48k[index] += PREEMPHASIS * buf48k[index - 1];
     }
@@ -225,7 +227,7 @@ pub(crate) fn update_plc_state(
         for tap in 0..=SINC_ORDER {
             sum += buf48k[3 * frame_index + tap + offset] * SINC_FILTER[tap];
         }
-        let clamped = sum.clamp(-32_767.0, 32_767.0);
+        let clamped = sum.clamp(f32::from(i16::MIN) + 1.0, f32::from(i16::MAX));
         *sample = float2int(clamped) as i16;
     }
 
@@ -246,7 +248,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    fn reference_downsample(history: &[&[CeltSig]]) -> (Vec<i16>, f32) {
+    fn reference_downsample(history: &[&[CeltSig]], prev_mem: f32) -> (Vec<i16>, f32) {
         let mut buf48k = [0.0f32; DECODE_BUFFER_SIZE];
         if history.len() == 1 {
             buf48k.copy_from_slice(&history[0][..DECODE_BUFFER_SIZE]);
@@ -256,6 +258,7 @@ mod tests {
             }
         }
 
+        buf48k[0] += PREEMPHASIS * prev_mem;
         for index in 1..DECODE_BUFFER_SIZE {
             buf48k[index] += PREEMPHASIS * buf48k[index - 1];
         }
@@ -269,7 +272,7 @@ mod tests {
             for tap in 0..=SINC_ORDER {
                 sum += buf48k[3 * frame_index + tap + offset] * SINC_FILTER[tap];
             }
-            let clamped = sum.clamp(-32_767.0, 32_767.0);
+            let clamped = sum.clamp(f32::from(i16::MIN) + 1.0, f32::from(i16::MAX));
             *sample = float2int(clamped) as i16;
         }
 
@@ -320,7 +323,7 @@ mod tests {
             );
         }
 
-        let (expected_pcm, expected_preemph) = reference_downsample(&[&left]);
+        let (expected_pcm, expected_preemph) = reference_downsample(&[&left], 0.0);
         assert!((preemph_mem - expected_preemph).abs() < 1e-6);
 
         let tail = &state.pcm[PLC_BUF_SIZE - PLC_UPDATE_SAMPLES..];
@@ -344,11 +347,12 @@ mod tests {
         let mut preemph_mem = 0.0;
         update_plc_state(&mut state, &[&left, &right], &mut preemph_mem);
 
-        let (expected_pcm, expected_preemph) = reference_downsample(&[&left, &right]);
+        let (expected_pcm, expected_preemph) = reference_downsample(&[&left, &right], 0.0);
         assert!((preemph_mem - expected_preemph).abs() < 1e-6);
 
         let tail = &state.pcm[PLC_BUF_SIZE - PLC_FRAME_SIZE..];
-        for (sample, expected) in tail.iter().zip(expected_pcm.iter()) {
+        let start = PLC_UPDATE_SAMPLES - PLC_FRAME_SIZE;
+        for (sample, expected) in tail.iter().zip(expected_pcm[start..].iter()) {
             assert!((sample - (*expected as f32) * PCM_NORMALISATION).abs() < 1e-6);
         }
     }
