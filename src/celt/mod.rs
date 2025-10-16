@@ -12,6 +12,8 @@ mod celt_decoder;
 mod celt_encoder;
 mod cpu_support;
 mod cwrs;
+#[cfg(feature = "deep_plc")]
+mod deep_plc;
 mod entcode;
 mod entdec;
 mod entenc;
@@ -42,6 +44,9 @@ pub(crate) use celt_encoder::*;
 pub(crate) use cpu_support::*;
 #[allow(unused_imports)]
 pub(crate) use cwrs::*;
+#[cfg(feature = "deep_plc")]
+#[allow(unused_imports)]
+pub(crate) use deep_plc::*;
 #[allow(unused_imports)]
 pub(crate) use entcode::*;
 #[allow(unused_imports)]

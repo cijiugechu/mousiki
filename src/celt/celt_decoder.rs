@@ -16,6 +16,8 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::bands::celt_lcg_rand;
 use crate::celt::bands::denormalise_bands;
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
@@ -24,6 +26,10 @@ use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::mdct::clt_mdct_backward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{pitch_downsample, pitch_search};
@@ -34,10 +40,14 @@ use crate::celt::types::{
     OpusVal16, OpusVal32,
 };
 use crate::celt::vq::SPREAD_NORMAL;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
+#[cfg(not(feature = "fixed_point"))]
+use core::cmp::Ordering;
 use core::cmp::{max, min};
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -54,7 +64,7 @@ const LPC_ORDER: usize = 24;
 /// previously synthesised samples.  Mirroring the same storage requirements in
 /// Rust keeps the allocation layout compatible with the ported routines that
 /// will eventually consume these buffers.
-const DECODE_BUFFER_SIZE: usize = 2048;
+pub(crate) const DECODE_BUFFER_SIZE: usize = 2048;
 
 /// Maximum pitch period considered by the PLC pitch search.
 const MAX_PERIOD: i32 = 1024;
@@ -337,6 +347,265 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
     }
 }
 
+#[cfg(not(feature = "fixed_point"))]
+pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm: usize) {
+    let channels = decoder.channels;
+    if channels == 0 || n == 0 {
+        let increment = ((1usize) << lm) as i32;
+        decoder.loss_duration = min(10_000, decoder.loss_duration + increment);
+        return;
+    }
+
+    assert!(
+        channels <= MAX_CHANNELS,
+        "decoder only supports mono or stereo"
+    );
+    assert!(n <= DECODE_BUFFER_SIZE, "frame size exceeds decode history");
+
+    let mode = decoder.mode;
+    let overlap = mode.overlap;
+    let stride = DECODE_BUFFER_SIZE + overlap;
+    assert!(decoder.decode_mem.len() >= stride * channels);
+
+    let nb_ebands = mode.num_ebands;
+    assert!(mode.e_bands.len() > nb_ebands);
+
+    let raw_start = max(decoder.start_band, 0);
+    let start_band = min(raw_start as usize, nb_ebands);
+    let raw_end = max(decoder.end_band, raw_start);
+    let end_band = min(raw_end as usize, nb_ebands);
+    let eff_end = max(start_band, min(end_band, mode.effective_ebands));
+
+    let decode_mem_ptr = decoder.decode_mem.as_mut_ptr();
+    let loss_duration = decoder.loss_duration;
+    let noise_based = loss_duration >= 40 || start_band != 0 || decoder.skip_plc;
+
+    if noise_based {
+        let move_len = DECODE_BUFFER_SIZE
+            .checked_sub(n)
+            .expect("frame size larger than decode buffer")
+            + overlap;
+        for ch in 0..channels {
+            let channel_slice =
+                unsafe { core::slice::from_raw_parts_mut(decode_mem_ptr.add(ch * stride), stride) };
+            channel_slice.copy_within(n..n + move_len, 0);
+        }
+
+        if decoder.prefilter_and_fold {
+            prefilter_and_fold(decoder, n);
+        }
+
+        let decay = if loss_duration == 0 { 1.5_f32 } else { 0.5_f32 };
+        for ch in 0..channels {
+            let base = ch * nb_ebands;
+            for band in start_band..end_band {
+                let idx = base + band;
+                let background = decoder.background_log_e[idx];
+                let current = decoder.old_ebands[idx];
+                decoder.old_ebands[idx] = background.max(current - decay);
+            }
+        }
+
+        let mut seed = decoder.rng;
+        let mut spectrum = vec![0.0f32; channels * n];
+        for ch in 0..channels {
+            for band in start_band..eff_end {
+                let band_start = (mode.e_bands[band] as usize) << lm;
+                let width = mode.e_bands[band + 1] - mode.e_bands[band];
+                debug_assert!(width >= 0);
+                let band_width = ((width as usize) << lm).min(n.saturating_sub(band_start));
+                if band_width == 0 {
+                    continue;
+                }
+                let offset = ch * n + band_start;
+                let slice = &mut spectrum[offset..offset + band_width];
+                for sample in slice.iter_mut() {
+                    seed = celt_lcg_rand(seed);
+                    *sample = ((seed as i32) >> 20) as f32;
+                }
+                renormalise_vector(slice, band_width, 1.0, decoder.arch);
+            }
+        }
+        decoder.rng = seed;
+
+        let mut outputs = Vec::with_capacity(channels);
+        let start = DECODE_BUFFER_SIZE - n;
+        for ch in 0..channels {
+            let channel_slice =
+                unsafe { core::slice::from_raw_parts_mut(decode_mem_ptr.add(ch * stride), stride) };
+            outputs.push(&mut channel_slice[start..]);
+        }
+
+        let downsample = max(decoder.downsample, 1) as usize;
+        celt_synthesis(
+            mode,
+            &spectrum,
+            &mut outputs,
+            decoder.old_ebands,
+            start_band,
+            eff_end,
+            channels,
+            channels,
+            false,
+            lm,
+            downsample,
+            false,
+            decoder.arch,
+        );
+
+        decoder.prefilter_and_fold = false;
+        decoder.skip_plc = true;
+    } else {
+        let pitch_index = if loss_duration == 0 {
+            let mut views = Vec::with_capacity(channels);
+            for ch in 0..channels {
+                let channel_slice =
+                    unsafe { core::slice::from_raw_parts(decode_mem_ptr.add(ch * stride), stride) };
+                views.push(channel_slice);
+            }
+            let search = celt_plc_pitch_search(&views, channels, decoder.arch);
+            decoder.last_pitch_index = search;
+            search
+        } else {
+            decoder.last_pitch_index
+        };
+
+        let fade = if loss_duration == 0 { 1.0f32 } else { 0.8_f32 };
+
+        let max_period = MAX_PERIOD as usize;
+        let pitch_index = pitch_index.clamp(PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX);
+        let pitch_index_usize = min(pitch_index as usize, max_period);
+
+        let exc_length = min(2 * pitch_index_usize, max_period);
+
+        let mut exc = vec![0.0f32; max_period + LPC_ORDER];
+        let mut fir_tmp = vec![0.0f32; exc_length];
+
+        for ch in 0..channels {
+            let channel_slice =
+                unsafe { core::slice::from_raw_parts_mut(decode_mem_ptr.add(ch * stride), stride) };
+
+            for (i, slot) in exc.iter_mut().enumerate() {
+                let src = DECODE_BUFFER_SIZE + overlap - max_period - LPC_ORDER + i;
+                *slot = channel_slice[src];
+            }
+
+            if loss_duration == 0 {
+                let mut ac = [0.0f32; LPC_ORDER + 1];
+                let input = &exc[LPC_ORDER..LPC_ORDER + max_period];
+                let window = if overlap == 0 {
+                    None
+                } else {
+                    Some(&mode.window[..overlap])
+                };
+                celt_autocorr(input, &mut ac, window, overlap, LPC_ORDER, decoder.arch);
+                ac[0] *= 1.0001;
+                for (i, entry) in ac.iter_mut().enumerate().skip(1) {
+                    let factor = 0.008_f32 * 0.008_f32 * (i * i) as f32;
+                    *entry -= *entry * factor;
+                }
+                let base_idx = ch * LPC_ORDER;
+                {
+                    let lpc_slice = &mut decoder.lpc[base_idx..base_idx + LPC_ORDER];
+                    celt_lpc(lpc_slice, &ac);
+                }
+            }
+
+            let base_idx = ch * LPC_ORDER;
+            let lpc_coeffs = &decoder.lpc[base_idx..base_idx + LPC_ORDER];
+            let start = max_period - exc_length;
+            for (idx, value) in fir_tmp.iter_mut().enumerate() {
+                let mut acc = exc[LPC_ORDER + start + idx];
+                for (tap, coeff) in lpc_coeffs.iter().enumerate() {
+                    let hist_index = LPC_ORDER + start + idx - 1 - tap;
+                    acc += coeff * exc[hist_index];
+                }
+                *value = acc;
+            }
+            for (idx, value) in fir_tmp.iter().enumerate() {
+                exc[LPC_ORDER + start + idx] = *value;
+            }
+
+            let mut e1 = 1.0f32;
+            let mut e2 = 1.0f32;
+            let decay_length = exc_length / 2;
+            if decay_length > 0 {
+                let exc_slice = &exc[LPC_ORDER..];
+                for i in 0..decay_length {
+                    let a = exc_slice[max_period - decay_length + i];
+                    e1 += a * a;
+                    let b = exc_slice[max_period - 2 * decay_length + i];
+                    e2 += b * b;
+                }
+            }
+            e1 = e1.min(e2);
+            let decay = celt_sqrt(frac_div32(0.5 * e1, e2));
+
+            let move_len = DECODE_BUFFER_SIZE
+                .checked_sub(n)
+                .expect("frame size larger than decode buffer");
+            channel_slice.copy_within(n..n + move_len, 0);
+
+            let extrapolation_offset = max_period - pitch_index_usize;
+            let extrapolation_len = n + overlap;
+            let mut attenuation = fade * decay;
+            let mut j = 0usize;
+            let start_index = DECODE_BUFFER_SIZE - n;
+            let reference_base = DECODE_BUFFER_SIZE - max_period - n + extrapolation_offset;
+            let mut s1 = 0.0f32;
+            for i in 0..extrapolation_len {
+                if j >= pitch_index_usize {
+                    j -= pitch_index_usize;
+                    attenuation *= decay;
+                }
+                let sample = attenuation * exc[LPC_ORDER + extrapolation_offset + j];
+                channel_slice[start_index + i] = sample;
+                let reference = channel_slice[reference_base + j];
+                s1 += reference * reference;
+                j += 1;
+            }
+
+            let mut lpc_mem = vec![0.0f32; LPC_ORDER];
+            for (idx, mem) in lpc_mem.iter_mut().enumerate() {
+                *mem = channel_slice[start_index - 1 - idx];
+            }
+
+            let mut filtered = channel_slice[start_index..start_index + extrapolation_len].to_vec();
+            let input = filtered.clone();
+            celt_iir(&input, lpc_coeffs, &mut filtered, &mut lpc_mem);
+            channel_slice[start_index..start_index + extrapolation_len].copy_from_slice(&filtered);
+
+            let mut s2 = 0.0f32;
+            for sample in &filtered {
+                s2 += sample * sample;
+            }
+
+            let threshold = 0.2 * s2;
+            if matches!(s1.partial_cmp(&threshold), Some(Ordering::Greater)) {
+                if matches!(s1.partial_cmp(&s2), Some(Ordering::Less)) {
+                    let ratio = celt_sqrt(frac_div32(0.5 * s1 + 1.0, s2 + 1.0));
+                    for i in 0..overlap {
+                        let gain = 1.0 - mode.window[i] * (1.0 - ratio);
+                        channel_slice[start_index + i] *= gain;
+                    }
+                    for i in overlap..extrapolation_len {
+                        channel_slice[start_index + i] *= ratio;
+                    }
+                }
+            } else {
+                for value in &mut channel_slice[start_index..start_index + extrapolation_len] {
+                    *value = 0.0;
+                }
+            }
+        }
+
+        decoder.prefilter_and_fold = true;
+    }
+
+    let increment = ((1usize) << lm) as i32;
+    decoder.loss_duration = min(10_000, decoder.loss_duration + increment);
+}
+
 /// Maximum number of channels supported by the initial CELT decoder port.
 ///
 /// The reference implementation restricts the custom decoder to mono or stereo
@@ -362,7 +631,7 @@ static CANONICAL_MODE: CanonicalModeCell = CanonicalModeCell {
 
 fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
     loop {
-        match CANONICAL_MODE.state.load(Ordering::Acquire) {
+        match CANONICAL_MODE.state.load(AtomicOrdering::Acquire) {
             MODE_READY => unsafe {
                 return (*CANONICAL_MODE.value.get()).as_ref();
             },
@@ -372,8 +641,8 @@ fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
                     .compare_exchange(
                         MODE_UNINITIALISED,
                         MODE_INITIALISING,
-                        Ordering::Acquire,
-                        Ordering::Relaxed,
+                        AtomicOrdering::Acquire,
+                        AtomicOrdering::Relaxed,
                     )
                     .is_ok()
                 {
@@ -381,7 +650,9 @@ fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
                     unsafe {
                         *CANONICAL_MODE.value.get() = mode;
                     }
-                    CANONICAL_MODE.state.store(MODE_READY, Ordering::Release);
+                    CANONICAL_MODE
+                        .state
+                        .store(MODE_READY, AtomicOrdering::Release);
                     unsafe {
                         return (*CANONICAL_MODE.value.get()).as_ref();
                     }
@@ -1528,6 +1799,8 @@ pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
 #[cfg(test)]
 mod tests {
     #[cfg(not(feature = "fixed_point"))]
+    use super::celt_decode_lost;
+    #[cfg(not(feature = "fixed_point"))]
     use super::celt_plc_pitch_search;
     #[cfg(not(feature = "fixed_point"))]
     use super::deemphasis;
@@ -2262,6 +2535,61 @@ mod tests {
                 assert_eq!(decoder.decode_mem[idx], original[i]);
             }
         }
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    #[test]
+    fn celt_decode_lost_noise_branch_updates_state() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let mut decoder = alloc.as_decoder(&mode, 1, 1);
+        decoder.downsample = 1;
+        decoder.end_band = mode.num_ebands as i32;
+        decoder.loss_duration = 0;
+        decoder.skip_plc = true;
+        decoder.prefilter_and_fold = true;
+        decoder.rng = 0x1234_5678;
+        decoder.background_log_e.fill(-8.0);
+        decoder.old_ebands.fill(-4.0);
+
+        let n = mode.short_mdct_size;
+        celt_decode_lost(&mut decoder, n, 0);
+
+        assert!(decoder.skip_plc);
+        assert!(!decoder.prefilter_and_fold);
+        assert_ne!(decoder.rng, 0x1234_5678);
+        assert_eq!(decoder.loss_duration, 1);
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    #[test]
+    fn celt_decode_lost_pitch_branch_generates_output() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let mut alloc = CeltDecoderAlloc::new(&mode, 1);
+        let mut decoder = alloc.as_decoder(&mode, 1, 1);
+        decoder.downsample = 1;
+        decoder.end_band = mode.num_ebands as i32;
+        decoder.loss_duration = 2;
+        decoder.skip_plc = false;
+        decoder.last_pitch_index = 200;
+        decoder.prefilter_and_fold = false;
+
+        let stride = DECODE_BUFFER_SIZE + mode.overlap;
+        for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
+            *sample = (idx % 23) as f32 * 0.001;
+        }
+
+        let n = mode.short_mdct_size;
+        celt_decode_lost(&mut decoder, n, 0);
+
+        assert!(decoder.prefilter_and_fold);
+        assert!(!decoder.skip_plc);
+        assert_eq!(decoder.loss_duration, 3);
+
+        let start = DECODE_BUFFER_SIZE - n;
+        let produced = &decoder.decode_mem[start..start + n];
+        let energy: f32 = produced.iter().map(|v| v.abs()).sum();
+        assert!(energy > 0.0);
     }
 
     #[cfg(not(feature = "fixed_point"))]
