@@ -151,6 +151,10 @@ safely.
   `celt/celt_decoder.c`, running the comb filter over the concealed MDCT tail and
   folding it back into the decode history so the next frame's TDAC
   blends smoothly.
+- `celt_synthesis` &rarr; mirrors the decoder-side IMDCT driver from
+  `celt/celt_decoder.c`, denormalising the band energies, handling mono/stereo
+  up/downmixing, applying the appropriate short or long block transforms, and
+  saturating the time-domain output before the post-filter consumes it.
 - **Still to port:** the synthesis side is largely unimplemented. The C
   routines `celt_decoder_init()` and the public wrappers such as
   `opus_custom_decode()`/`opus_custom_decode_float()` remain to be mirrored so
@@ -506,7 +510,7 @@ that still gate a full end-to-end encoder/decoder.
 
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
-| `celt/celt_decoder.c` | `celt_synthesis()`, `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
+| `celt/celt_decoder.c` | `update_plc_state()`, `celt_decode_lost()`, `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
 | `celt/celt_encoder.c` | `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `tone_detect()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
