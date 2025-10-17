@@ -1924,7 +1924,11 @@ pub(crate) fn celt_encode_with_ec(
     if let Some(enc) = range_encoder {
         encode_internal(encoder, pcm, frame_size, enc)?;
         enc.enc_done();
+        let error = enc.ctx().error;
         encoder.rng = enc.ctx().rng;
+        if error != 0 {
+            return Err(CeltEncodeError::MissingOutput);
+        }
         return Ok(enc.range_bytes() as usize);
     }
 
@@ -1932,7 +1936,11 @@ pub(crate) fn celt_encode_with_ec(
         let mut local = EcEnc::new(buf);
         encode_internal(encoder, pcm, frame_size, &mut local)?;
         local.enc_done();
+        let error = local.ctx().error;
         encoder.rng = local.ctx().rng;
+        if error != 0 {
+            return Err(CeltEncodeError::MissingOutput);
+        }
         return Ok(local.range_bytes() as usize);
     }
 
@@ -1977,6 +1985,9 @@ fn encode_with_converted_pcm(
     nb_compressed_bytes: usize,
 ) -> Result<usize, CeltEncodeError> {
     if nb_compressed_bytes > compressed.len() {
+        return Err(CeltEncodeError::MissingOutput);
+    }
+    if nb_compressed_bytes < 2 {
         return Err(CeltEncodeError::MissingOutput);
     }
 
@@ -3485,6 +3496,21 @@ mod tests {
         let pcm = vec![0i16; 960];
         let mut compressed = vec![0u8; 8];
         let err = opus_custom_encode(&mut encoder, &pcm, 960, &mut compressed, 16).unwrap_err();
+        assert_eq!(err, CeltEncodeError::MissingOutput);
+    }
+
+    #[test]
+    fn opus_custom_encode_errors_when_nb_compressed_bytes_below_minimum() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+        let mut encoder = alloc
+            .init_custom_encoder(&mode, 1, 1, 345)
+            .expect("encoder");
+
+        let pcm = vec![0i16; 960];
+        let mut compressed = vec![0u8; 16];
+        let err = opus_custom_encode(&mut encoder, &pcm, 960, &mut compressed, 1).unwrap_err();
         assert_eq!(err, CeltEncodeError::MissingOutput);
     }
 
