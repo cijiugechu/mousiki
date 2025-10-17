@@ -253,11 +253,13 @@ safely.
   `celt/celt_encoder.c`, converting interleaved PCM into the internal signal
   representation, applying optional clipping, handling upsampling, and keeping
   the one-sample filter memory in sync with the C layout.
+- `opus_custom_encode`, `opus_custom_encode24`, and `opus_custom_encode_float`
+  &rarr; mirror the public encoding wrappers from `celt/celt_encoder.c`,
+  converting 16-bit, 24-bit, and floating-point PCM into the internal CELT
+  representation before delegating to `celt_encode_with_ec()`.
 - **Still to port:** key analysis and bitstream routines continue to live in
-  C. The comb-filter driver (`run_prefilter()`) and the public packet writers
-  (`opus_custom_encode{,_float,_24}()` along with the canonical initialisation
-  wrappers) still need Rust translations before the encoder can emit full CELT
-  frames.
+  C. The comb-filter driver (`run_prefilter()`) still needs a Rust translation
+  before the encoder can emit full CELT frames.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
@@ -525,7 +527,7 @@ that still gate a full end-to-end encoder/decoder.
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
 | `celt/celt_decoder.c` | `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
-| `celt/celt_encoder.c` | `dynalloc_analysis()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble and time/frequency selection in Rust, but the dynamic allocation sweep, comb-filter driver, and packet writers remain in C. |
+| `celt/celt_encoder.c` | `run_prefilter()` | The encoder currently performs the analysis preamble and time/frequency selection in Rust, but the comb-filter driver remains in C. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
