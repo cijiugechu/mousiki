@@ -13,7 +13,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::bands::compute_band_energies;
+use crate::celt::bands::{compute_band_energies, haar1};
 use crate::celt::celt::{resampling_factor, TF_SELECT_TABLE};
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entcode::ec_tell;
@@ -266,6 +266,213 @@ fn stereo_analysis(mode: &OpusCustomMode<'_>, x: &[CeltNorm], lm: usize, n0: usi
     let lhs = (base + thetas) as f32 * sum_ms;
     let rhs = base as f32 * sum_lr;
     lhs > rhs
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tf_analysis(
+    mode: &OpusCustomMode<'_>,
+    len: usize,
+    is_transient: bool,
+    tf_res: &mut [i32],
+    lambda: i32,
+    x: &[CeltNorm],
+    n0: usize,
+    lm: usize,
+    tf_estimate: OpusVal16,
+    tf_chan: usize,
+    importance: &[i32],
+) -> i32 {
+    debug_assert!(lm < TF_SELECT_TABLE.len());
+    debug_assert!(len <= tf_res.len());
+    debug_assert!(len <= importance.len());
+    debug_assert!(len + 1 <= mode.e_bands.len());
+
+    if len == 0 {
+        return 0;
+    }
+
+    let bias = 0.04 * (0.5 - tf_estimate).max(-0.25);
+
+    let mut max_band = 0usize;
+    for band in 0..len {
+        let start = mode.e_bands[band] as usize;
+        let end = mode.e_bands[band + 1] as usize;
+        let width = end.saturating_sub(start);
+        max_band = max(max_band, width << lm);
+    }
+
+    let mut metric = vec![0i32; len];
+    let mut path0 = vec![0i32; len];
+    let mut path1 = vec![0i32; len];
+    let mut tmp = vec![0.0f32; max_band];
+    let mut tmp_alt = vec![0.0f32; max_band];
+
+    let lm_i32 = lm as i32;
+
+    for band in 0..len {
+        let start = mode.e_bands[band] as usize;
+        let end = mode.e_bands[band + 1] as usize;
+        let width = end.saturating_sub(start);
+        let n = width << lm;
+        if n == 0 {
+            continue;
+        }
+
+        let offset = tf_chan * n0 + (start << lm);
+        debug_assert!(offset + n <= x.len());
+        tmp[..n].copy_from_slice(&x[offset..offset + n]);
+
+        let narrow = width == 1;
+        let mut best_level = 0i32;
+        let mut best_l1 = l1_metric(&tmp[..n], n, if is_transient { lm_i32 } else { 0 }, bias);
+
+        if is_transient && !narrow {
+            tmp_alt[..n].copy_from_slice(&tmp[..n]);
+            let blocks = n >> lm;
+            if blocks > 0 {
+                haar1(&mut tmp_alt[..n], blocks, 1 << lm);
+                let l1 = l1_metric(&tmp_alt[..n], n, lm_i32 + 1, bias);
+                if l1 < best_l1 {
+                    best_l1 = l1;
+                    best_level = -1;
+                }
+            }
+        }
+
+        let extra = if is_transient || narrow { 0 } else { 1 };
+        for k in 0..(lm + extra) {
+            let blocks = n >> k;
+            if blocks == 0 {
+                break;
+            }
+
+            haar1(&mut tmp[..n], blocks, 1 << k);
+            let b = if is_transient {
+                lm_i32 - k as i32 - 1
+            } else {
+                k as i32 + 1
+            };
+
+            let l1 = l1_metric(&tmp[..n], n, b, bias);
+            if l1 < best_l1 {
+                best_l1 = l1;
+                best_level = k as i32 + 1;
+            }
+        }
+
+        let mut value = if is_transient {
+            2 * best_level
+        } else {
+            -2 * best_level
+        };
+        if narrow && (value == 0 || value == -2 * lm_i32) {
+            value -= 1;
+        }
+        metric[band] = value;
+    }
+
+    let table = &TF_SELECT_TABLE[lm];
+    let base_index = if is_transient { 4 } else { 0 };
+    let mut selcost = [0i32; 2];
+
+    for sel in 0..2 {
+        let idx0 = base_index + 2 * sel;
+        let idx1 = idx0 + 1;
+        let target0 = 2 * i32::from(table[idx0]);
+        let target1 = 2 * i32::from(table[idx1]);
+
+        let mut cost0 = importance[0] * (metric[0] - target0).abs();
+        let mut cost1 = importance[0] * (metric[0] - target1).abs();
+        if !is_transient {
+            cost1 += lambda;
+        }
+
+        for band in 1..len {
+            let from0 = cost0;
+            let from1 = cost1 + lambda;
+            let curr0;
+            if from0 < from1 {
+                curr0 = from0;
+                path0[band] = 0;
+            } else {
+                curr0 = from1;
+                path0[band] = 1;
+            }
+
+            let from0 = cost0 + lambda;
+            let from1 = cost1;
+            let curr1;
+            if from0 < from1 {
+                curr1 = from0;
+                path1[band] = 0;
+            } else {
+                curr1 = from1;
+                path1[band] = 1;
+            }
+
+            cost0 = curr0 + importance[band] * (metric[band] - target0).abs();
+            cost1 = curr1 + importance[band] * (metric[band] - target1).abs();
+        }
+
+        selcost[sel] = cost0.min(cost1);
+    }
+
+    let mut tf_select = 0i32;
+    if is_transient && selcost[1] < selcost[0] {
+        tf_select = 1;
+    }
+
+    let idx0 = base_index + 2 * tf_select as usize;
+    let idx1 = idx0 + 1;
+    let target0 = 2 * i32::from(table[idx0]);
+    let target1 = 2 * i32::from(table[idx1]);
+
+    let mut cost0 = importance[0] * (metric[0] - target0).abs();
+    let mut cost1 = importance[0] * (metric[0] - target1).abs();
+    if !is_transient {
+        cost1 += lambda;
+    }
+
+    for band in 1..len {
+        let from0 = cost0;
+        let from1 = cost1 + lambda;
+        let curr0;
+        if from0 < from1 {
+            curr0 = from0;
+            path0[band] = 0;
+        } else {
+            curr0 = from1;
+            path0[band] = 1;
+        }
+
+        let from0 = cost0 + lambda;
+        let from1 = cost1;
+        let curr1;
+        if from0 < from1 {
+            curr1 = from0;
+            path1[band] = 0;
+        } else {
+            curr1 = from1;
+            path1[band] = 1;
+        }
+
+        cost0 = curr0 + importance[band] * (metric[band] - target0).abs();
+        cost1 = curr1 + importance[band] * (metric[band] - target1).abs();
+    }
+
+    tf_res[len - 1] = if cost0 < cost1 { 0 } else { 1 };
+    if len >= 2 {
+        for band in (0..=(len - 2)).rev() {
+            let next = tf_res[band + 1];
+            tf_res[band] = if next == 1 {
+                path1[band + 1]
+            } else {
+                path0[band + 1]
+            };
+        }
+    }
+
+    tf_select
 }
 
 /// Evaluates the trim selector used by the dynamic allocation heuristics.
@@ -1720,8 +1927,8 @@ mod tests {
     use super::{acos_approx, normalize_tone_input};
     use super::{
         alloc_trim_analysis, compute_mdcts, compute_vbr, l1_metric, median_of_3, median_of_5,
-        opus_custom_encoder_ctl, patch_transient_decision, stereo_analysis, tf_encode, tone_detect,
-        tone_lpc, transient_analysis, CeltEncoderCtlError,
+        opus_custom_encoder_ctl, patch_transient_decision, stereo_analysis, tf_analysis, tf_encode,
+        tone_detect, tone_lpc, transient_analysis, CeltEncoderCtlError,
     };
     use super::{
         celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy, opus_custom_encoder_init,
@@ -1765,6 +1972,65 @@ mod tests {
 
         let biased = l1_metric(&tmp, tmp.len(), 2, 0.5);
         assert!((biased - 7.5).abs() < EPSILON);
+    }
+
+    #[test]
+    fn tf_analysis_prefers_frequency_resolution_for_flat_spectrum() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let lm = 0;
+        let len = 4;
+        let n0 = (mode.e_bands[len] as usize) << lm;
+        let x = vec![0.0; n0];
+        let mut tf_res = vec![1; len];
+        let importance = vec![1; len];
+
+        let tf_select = tf_analysis(
+            &mode,
+            len,
+            false,
+            &mut tf_res,
+            100,
+            &x,
+            n0,
+            lm,
+            0.0,
+            0,
+            &importance,
+        );
+
+        assert_eq!(tf_select, 0);
+        assert!(tf_res.iter().take(len).all(|&value| value == 0));
+    }
+
+    #[test]
+    fn tf_analysis_enables_tf_select_for_transient_pattern() {
+        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
+        let lm = 1;
+        let len = 9;
+        let n0 = (mode.e_bands[len] as usize) << lm;
+        let mut x = vec![0.0; n0];
+        let pattern = [-9.119_444, -7.347_349, 9.822_017, -6.768_198];
+        let start = (mode.e_bands[8] as usize) << lm;
+        x[start..start + pattern.len()].copy_from_slice(&pattern);
+        let mut tf_res = vec![0; len];
+        let importance = vec![1; len];
+
+        let tf_select = tf_analysis(
+            &mode,
+            len,
+            true,
+            &mut tf_res,
+            80,
+            &x,
+            n0,
+            lm,
+            0.0,
+            0,
+            &importance,
+        );
+
+        assert_eq!(tf_select, 1);
+        assert_eq!(tf_res[8], 1);
     }
 
     #[test]

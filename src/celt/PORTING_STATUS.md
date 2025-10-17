@@ -199,6 +199,11 @@ safely.
 - `tf_encode` &rarr; ports the range-coder front-end from `celt/celt_encoder.c`
   that emits the per-band time/frequency flags, reserving space for the
   selector bit and collapsing the results back through `TF_SELECT_TABLE`.
+- `tf_analysis` &rarr; mirrors the transient time/frequency resolution search
+  from `celt/celt_encoder.c`, computing the per-band Haar metrics, running the
+  Viterbi pass that balances resolution changes against the hysteresis cost,
+  and returning the `tf_select` flag used to toggle the secondary decision
+  table.
 - `normalize_tone_input` &rarr; ports the fixed-point tone-detector scaler from
   `celt/celt_encoder.c`, rescaling the scratch buffer under the `fixed_point`
   feature while remaining a no-op for the float build.
@@ -245,14 +250,11 @@ safely.
   representation, applying optional clipping, handling upsampling, and keeping
   the one-sample filter memory in sync with the C layout.
 - **Still to port:** key analysis and bitstream routines continue to live in
-  C. The comb-filter driver (`run_prefilter()`), time/frequency allocation
-  helpers
-  (`tf_analysis()`, `dynalloc_analysis()`),
-  the remaining stereo/tone detector `tone_detect()`, the median filters used by
-  the tonality estimator, and the
-  public packet writers (`opus_custom_encode{,_float,_24}()` along with the
-  canonical initialisation wrappers) still need Rust translations before the
-  encoder can emit full CELT frames.
+  C. The comb-filter driver (`run_prefilter()`), the dynamic allocation sweep
+  (`dynalloc_analysis()`), and the public packet writers
+  (`opus_custom_encode{,_float,_24}()` along with the canonical initialisation
+  wrappers) still need Rust translations before the encoder can emit full CELT
+  frames.
 
 ### `math.rs`
 - `fast_atan2f` &rarr; mirrors the helper of the same name in
@@ -520,7 +522,7 @@ that still gate a full end-to-end encoder/decoder.
 | Source file | Remaining routines | Notes |
 | --- | --- | --- |
 | `celt/celt_decoder.c` | `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
-| `celt/celt_encoder.c` | `tf_analysis()`, `tf_encode()`, `alloc_trim_analysis()`, `stereo_analysis()`, `dynalloc_analysis()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble but still lacks the tone/stereo heuristics, dynamic allocation, prefilter, and packet emission paths that the C implementation provides. |
+| `celt/celt_encoder.c` | `dynalloc_analysis()`, `run_prefilter()`, `opus_custom_encode{,_float,_24}()` | The encoder currently performs the analysis preamble and time/frequency selection in Rust, but the dynamic allocation sweep, comb-filter driver, and packet writers remain in C. |
 
 Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
 optimisations that depend on the scalar implementations above and remain to be
