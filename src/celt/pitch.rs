@@ -194,17 +194,22 @@ pub(crate) fn pitch_search(
         max_pitch > 0,
         "pitch_search requires a positive search span"
     );
-    assert!(x_lp.len() >= len, "x_lp must provide len samples");
+
+    let len_half = len >> 1;
+    assert!(
+        x_lp.len() >= len_half,
+        "x_lp must provide at least len / 2 samples",
+    );
 
     let lag = len + max_pitch;
+    let max_pitch_half = max_pitch >> 1;
     assert!(
-        y.len() >= lag,
-        "y must contain len + max_pitch samples for the search window",
+        y.len() >= len_half + max_pitch_half,
+        "y must contain at least len / 2 + max_pitch / 2 samples",
     );
 
     let len_quarter = len >> 2;
     let lag_quarter = lag >> 2;
-    let max_pitch_half = max_pitch >> 1;
     let max_pitch_quarter = max_pitch >> 2;
 
     let mut best_pitch = [0i32, 0i32];
@@ -314,17 +319,17 @@ pub(crate) fn remove_doubling(
     assert!(maxperiod > 0, "maxperiod must be positive");
     assert!(minperiod > 0, "minperiod must be positive");
     assert!(n > 0, "window size must be positive");
+    let maxperiod_half = maxperiod >> 1;
+    let n_half = n >> 1;
     assert!(
-        x.len() >= maxperiod + n,
-        "x must contain maxperiod + n samples",
+        x.len() >= maxperiod_half + n_half,
+        "x must contain at least maxperiod / 2 + n / 2 samples",
     );
 
     let minperiod0 = minperiod as i32;
-    let maxperiod_half = maxperiod >> 1;
     let minperiod_half = minperiod >> 1;
     let t0_half = (*t0 >> 1).clamp(0, maxperiod_half.saturating_sub(1) as i32);
     let prev_period_half = prev_period >> 1;
-    let n_half = n >> 1;
 
     if maxperiod_half <= 1 || n_half == 0 {
         *t0 = (*t0).max(minperiod0);
@@ -960,7 +965,7 @@ mod tests {
             let diff = (t1 - prev_period_half).abs();
             let cont = if diff <= 1 {
                 prev_gain
-        } else if diff <= 2 && 5 * (k * k) < t0_half {
+            } else if diff <= 2 && 5 * (k * k) < t0_half {
                 0.5 * prev_gain
             } else {
                 0.0

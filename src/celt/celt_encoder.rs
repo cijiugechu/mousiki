@@ -15,7 +15,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::bands::{compute_band_energies, haar1};
-use crate::celt::celt::{TF_SELECT_TABLE, resampling_factor};
+use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, resampling_factor};
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entcode::{BITRES, ec_tell};
 use crate::celt::entenc::EcEnc;
@@ -27,7 +27,7 @@ use crate::celt::math::{celt_exp2, celt_log2, celt_sqrt, frac_div32_q29};
 use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
-use crate::celt::pitch::celt_inner_prod;
+use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
 use crate::celt::quant_bands::{E_MEANS, amp2_log2};
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt16,
@@ -1529,6 +1529,319 @@ fn dynalloc_analysis(
 
     *tot_boost = total_boost_bits;
     max_depth
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_prefilter(
+    encoder: &mut OpusCustomEncoder<'_>,
+    input: &mut [CeltSig],
+    prefilter_mem: &mut [CeltSig],
+    channels: usize,
+    n: usize,
+    prefilter_tapset: i32,
+    pitch: &mut i32,
+    gain: &mut OpusVal16,
+    qgain: &mut i32,
+    enabled: bool,
+    tf_estimate: OpusVal16,
+    nb_available_bytes: i32,
+    analysis: &AnalysisInfo,
+    mut tone_freq: OpusVal16,
+    toneishness: OpusVal32,
+) -> bool {
+    assert!(channels > 0, "run_prefilter requires at least one channel");
+    assert!(n > 0, "run_prefilter expects a positive frame size");
+
+    let mode = encoder.mode;
+    let overlap = mode.overlap;
+    let stride = overlap + n;
+    let history_len = COMBFILTER_MAXPERIOD;
+
+    assert!(
+        input.len() >= channels * stride,
+        "time buffer must expose channels * (n + overlap) samples",
+    );
+    assert!(
+        prefilter_mem.len() >= channels * history_len,
+        "prefilter history must expose channels * COMBFILTER_MAXPERIOD samples",
+    );
+
+    let mut pre = vec![0.0; channels * (n + history_len)];
+    for ch in 0..channels {
+        let pre_offset = ch * (n + history_len);
+        let pre_slice = &mut pre[pre_offset..pre_offset + history_len + n];
+        let history = &prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        pre_slice[..history_len].copy_from_slice(history);
+
+        let input_offset = ch * stride;
+        let input_slice = &input[input_offset + overlap..input_offset + overlap + n];
+        pre_slice[history_len..history_len + n].copy_from_slice(input_slice);
+    }
+
+    let mut channel_views: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+    for ch in 0..channels {
+        let start = ch * (n + history_len);
+        let end = start + history_len + n;
+        channel_views[ch] = &pre[start..end];
+    }
+
+    let mut pitch_index = COMBFILTER_MINPERIOD as i32;
+    let mut gain1 = 0.0;
+
+    if enabled {
+        let downsample_len = history_len + n;
+        let mut pitch_buf = vec![0.0; downsample_len >> 1];
+        pitch_downsample(&channel_views[..channels], &mut pitch_buf, downsample_len, encoder.arch);
+
+        let search_span = history_len - 3 * COMBFILTER_MINPERIOD;
+        if search_span > 0 {
+            let offset = history_len >> 1;
+            if offset < pitch_buf.len() {
+                let result = pitch_search(
+                    &pitch_buf[offset..],
+                    &pitch_buf,
+                    n,
+                    search_span,
+                    encoder.arch,
+                );
+                pitch_index = result;
+            }
+        }
+
+        gain1 = remove_doubling(
+            &pitch_buf,
+            history_len,
+            COMBFILTER_MINPERIOD,
+            n,
+            &mut pitch_index,
+            encoder.prefilter_period,
+            encoder.prefilter_gain,
+            encoder.arch,
+        );
+        let max_period = (history_len - 2) as i32;
+        if pitch_index > max_period {
+            pitch_index = max_period;
+        }
+        gain1 *= 0.7;
+
+        if toneishness > 0.99 {
+            while tone_freq >= 0.39 {
+                tone_freq *= 0.5;
+            }
+            if tone_freq > 0.006_148 {
+                let candidate = floorf(0.5 + 2.0 * core::f32::consts::PI / tone_freq) as i32;
+                pitch_index = candidate.min(max_period);
+            } else {
+                pitch_index = COMBFILTER_MINPERIOD as i32;
+            }
+            gain1 = 0.75;
+        }
+
+        if encoder.loss_rate > 2 {
+            gain1 *= 0.5;
+        }
+        if encoder.loss_rate > 4 {
+            gain1 *= 0.5;
+        }
+        if encoder.loss_rate > 8 {
+            gain1 = 0.0;
+        }
+    }
+
+    if analysis.valid {
+        gain1 *= analysis.max_pitch_ratio;
+    }
+
+    let mut pf_threshold: f32 = 0.2;
+
+    if (pitch_index - encoder.prefilter_period).abs() * 10 > pitch_index {
+        pf_threshold += 0.2;
+        if tf_estimate > 0.98 {
+            gain1 = 0.0;
+        }
+    }
+    if nb_available_bytes < 25 {
+        pf_threshold += 0.1;
+    }
+    if nb_available_bytes < 35 {
+        pf_threshold += 0.1;
+    }
+    if encoder.prefilter_gain > 0.4 {
+        pf_threshold -= 0.1;
+    }
+    if encoder.prefilter_gain > 0.55 {
+        pf_threshold -= 0.1;
+    }
+
+    pf_threshold = pf_threshold.max(0.2);
+
+    let mut pf_on = false;
+    let mut qg_local = 0;
+    if gain1 < pf_threshold {
+        gain1 = 0.0;
+        pitch_index = COMBFILTER_MINPERIOD as i32;
+    } else {
+        if (gain1 - encoder.prefilter_gain).abs() < 0.1 {
+            gain1 = encoder.prefilter_gain;
+        }
+        let mut quant = floorf(0.5 + gain1 * 32.0 / 3.0) as i32 - 1;
+        quant = quant.clamp(0, 7);
+        gain1 = 0.093_75 * (quant + 1) as f32;
+        qg_local = quant;
+        pf_on = true;
+    }
+
+    let mut before = [0.0f32; MAX_CHANNELS];
+    let mut after = [0.0f32; MAX_CHANNELS];
+    let mut cancel_pitch = false;
+
+    let prev_tapset = encoder.prefilter_tapset.max(0) as usize;
+    let new_tapset = prefilter_tapset.max(0) as usize;
+    let offset = mode.short_mdct_size.saturating_sub(overlap).min(n);
+
+    encoder.prefilter_period = encoder.prefilter_period.max(COMBFILTER_MINPERIOD as i32);
+
+    for ch in 0..channels {
+        let input_offset = ch * stride;
+        let (head, tail) = input[input_offset..input_offset + stride].split_at_mut(overlap);
+        head.copy_from_slice(&encoder.in_mem[ch * overlap..(ch + 1) * overlap]);
+
+        let mut sum_before = 0.0;
+        for sample in tail.iter().take(n) {
+            sum_before += sample.abs();
+        }
+        before[ch] = sum_before;
+
+        let pre_offset = ch * (n + history_len);
+        let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
+
+        if offset > 0 {
+            let (first, rest) = tail.split_at_mut(offset);
+            comb_filter(
+                first,
+                pre_channel,
+                history_len,
+                offset,
+                encoder.prefilter_period,
+                encoder.prefilter_period,
+                -encoder.prefilter_gain,
+                -encoder.prefilter_gain,
+                prev_tapset,
+                prev_tapset,
+                &[],
+                0,
+                encoder.arch,
+            );
+            comb_filter(
+                rest,
+                pre_channel,
+                history_len + offset,
+                n - offset,
+                encoder.prefilter_period,
+                pitch_index,
+                -encoder.prefilter_gain,
+                -gain1,
+                prev_tapset,
+                new_tapset,
+                mode.window,
+                overlap,
+                encoder.arch,
+            );
+        } else {
+            comb_filter(
+                tail,
+                pre_channel,
+                history_len,
+                n,
+                encoder.prefilter_period,
+                pitch_index,
+                -encoder.prefilter_gain,
+                -gain1,
+                prev_tapset,
+                new_tapset,
+                mode.window,
+                overlap,
+                encoder.arch,
+            );
+        }
+
+        let mut sum_after = 0.0;
+        for sample in tail.iter().take(n) {
+            sum_after += sample.abs();
+        }
+        after[ch] = sum_after;
+    }
+
+    if channels == 2 {
+        let thresh0 = 0.25 * gain1 * before[0] + 0.01 * before[1];
+        let thresh1 = 0.25 * gain1 * before[1] + 0.01 * before[0];
+        if (after[0] - before[0]) > thresh0 || (after[1] - before[1]) > thresh1 {
+            cancel_pitch = true;
+        }
+        if (before[0] - after[0]) < thresh0 && (before[1] - after[1]) < thresh1 {
+            cancel_pitch = true;
+        }
+    } else if after[0] > before[0] {
+        cancel_pitch = true;
+    }
+
+    if cancel_pitch {
+        for ch in 0..channels {
+            let input_offset = ch * stride;
+            let channel = &mut input[input_offset..input_offset + stride];
+            let pre_offset = ch * (n + history_len);
+            let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
+
+            channel[overlap..overlap + n]
+                .copy_from_slice(&pre_channel[history_len..history_len + n]);
+
+            if overlap > 0 && offset < n {
+                let span = overlap.min(n - offset);
+                let start = overlap + offset;
+                let end = start + span;
+                comb_filter(
+                    &mut channel[start..end],
+                    pre_channel,
+                    history_len + offset,
+                    span,
+                    encoder.prefilter_period,
+                    pitch_index,
+                    -encoder.prefilter_gain,
+                    0.0,
+                    prev_tapset,
+                    new_tapset,
+                    mode.window,
+                    span,
+                    encoder.arch,
+                );
+            }
+        }
+        gain1 = 0.0;
+        qg_local = 0;
+        pf_on = false;
+    }
+
+    for ch in 0..channels {
+        let input_offset = ch * stride;
+        let channel = &input[input_offset + n..input_offset + n + overlap];
+        encoder.in_mem[ch * overlap..(ch + 1) * overlap].copy_from_slice(channel);
+
+        let pre_offset = ch * (n + history_len);
+        let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
+        let mem = &mut prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        if n > history_len {
+            mem.copy_from_slice(&pre_channel[n..n + history_len]);
+        } else {
+            let shift = history_len - n;
+            mem.copy_within(n..history_len, 0);
+            mem[shift..].copy_from_slice(&pre_channel[history_len..history_len + n]);
+        }
+    }
+
+    *gain = gain1;
+    *pitch = pitch_index;
+    *qgain = qg_local;
+    pf_on
 }
 
 fn tf_encode(
