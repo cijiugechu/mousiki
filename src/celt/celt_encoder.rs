@@ -14,7 +14,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::bands::compute_band_energies;
-use crate::celt::celt::{TF_SELECT_TABLE, resampling_factor};
+use crate::celt::celt::{resampling_factor, TF_SELECT_TABLE};
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entcode::ec_tell;
 use crate::celt::entenc::EcEnc;
@@ -1449,7 +1449,11 @@ fn median_of_5(values: &[CeltGlog]) -> CeltGlog {
     }
 
     if t2 > t1 {
-        if t1 < t3 { t2.min(t3) } else { t4.min(t1) }
+        if t1 < t3 {
+            t2.min(t3)
+        } else {
+            t4.min(t1)
+        }
     } else if t2 < t3 {
         t1.min(t3)
     } else {
@@ -1544,6 +1548,73 @@ pub(crate) fn tone_lpc(x: &[OpusVal16], delay: usize, lpc: &mut [OpusVal32; 2]) 
     }
 
     false
+}
+
+/// Detects narrowband tones in the pre-filter input.
+///
+/// Mirrors `tone_detect()` from `celt/celt_encoder.c`. The helper analyses the
+/// pre-emphasised signal, attempting to fit a two-tap LPC model whose complex
+/// roots indicate the presence of a strong sinusoid. It returns the detected
+/// tone frequency in radians/sample (or `-1.0` when no stable tone is present)
+/// and writes a "toneishness" score into `toneishness` so callers can gauge how
+/// narrowly peaked the spectrum is.
+pub(crate) fn tone_detect(
+    input: &[CeltSig],
+    channels: usize,
+    n: usize,
+    toneishness: &mut OpusVal32,
+    fs: OpusInt32,
+) -> OpusVal16 {
+    debug_assert!(channels == 1 || channels == 2);
+    debug_assert!(n > 0);
+    debug_assert!(input.len() >= channels * n);
+
+    let mut workspace = vec![0.0f32; n];
+    if channels == 2 {
+        let stride = n;
+        for i in 0..n {
+            workspace[i] = input[i] + input[stride + i];
+        }
+    } else {
+        workspace.copy_from_slice(&input[..n]);
+    }
+
+    normalize_tone_input(&mut workspace);
+
+    let mut lpc = [0.0f32; 2];
+    let mut delay = 1usize;
+    let mut fail = tone_lpc(&workspace, delay, &mut lpc);
+    let mut max_delay = fs.max(0) as usize / 3000;
+    if max_delay == 0 {
+        max_delay = 1;
+    }
+
+    while delay <= max_delay && (fail || (lpc[0] > 1.0 && lpc[1] < 0.0)) {
+        delay *= 2;
+        if 2 * delay >= n {
+            fail = true;
+            break;
+        }
+        fail = tone_lpc(&workspace, delay, &mut lpc);
+    }
+
+    if !fail && (lpc[0] * lpc[0] + 3.999_999 * lpc[1]) < 0.0 {
+        *toneishness = -lpc[1];
+        let angle = {
+            #[cfg(feature = "fixed_point")]
+            {
+                acos_approx(0.5 * lpc[0])
+            }
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                acosf(0.5 * lpc[0])
+            }
+        };
+        (angle / delay as OpusVal32) as OpusVal16
+    } else {
+        *toneishness = 0.0;
+        -1.0
+    }
 }
 
 /// Normalises the tone detector input to avoid overflow in the fixed-point build.
@@ -1645,20 +1716,19 @@ fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, CeltSig, EncoderCtlRequest,
-        MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
-        PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy,
-        opus_custom_encoder_init, opus_custom_encoder_init_arch,
-    };
-    use super::{
-        CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, l1_metric,
-        median_of_3, median_of_5, opus_custom_encoder_ctl, patch_transient_decision,
-        stereo_analysis, tf_encode, tone_lpc, transient_analysis,
-    };
     #[cfg(not(feature = "fixed_point"))]
     use super::{acos_approx, normalize_tone_input};
-    use crate::celt::OpusVal16;
+    use super::{
+        alloc_trim_analysis, compute_mdcts, compute_vbr, l1_metric, median_of_3, median_of_5,
+        opus_custom_encoder_ctl, patch_transient_decision, stereo_analysis, tf_encode, tone_detect,
+        tone_lpc, transient_analysis, CeltEncoderCtlError,
+    };
+    use super::{
+        celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy, opus_custom_encoder_init,
+        opus_custom_encoder_init_arch, CeltEncoderAlloc, CeltEncoderInitError, CeltSig,
+        EncoderCtlRequest, OpusCustomEncoder, OpusCustomMode, OpusUint32, COMBFILTER_MAXPERIOD,
+        MAX_CHANNELS, OPUS_BITRATE_MAX, PREEMPHASIS_CLIP_LIMIT,
+    };
     use crate::celt::celt::TF_SELECT_TABLE;
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::entenc::EcEnc;
@@ -1669,8 +1739,10 @@ mod tests {
     };
     use crate::celt::types::{AnalysisInfo, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
+    use crate::celt::OpusVal16;
     use alloc::vec;
     use core::f32::consts::{FRAC_1_SQRT_2, PI};
+    use libm::sinf;
 
     const EPSILON: f32 = 1e-6;
 
@@ -2635,6 +2707,36 @@ mod tests {
         let expected_cos = 2.0 * omega.cos();
         assert!((lpc[0] - expected_cos).abs() < 1e-3);
         assert!((lpc[1] + 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tone_detect_identifies_sinusoid() {
+        let fs = 48_000;
+        let n = 960;
+        let target_hz = 440.0;
+        let omega = 2.0 * PI * target_hz / fs as f32;
+        let mut input = vec![0.0f32; n];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = sinf(omega * i as f32);
+        }
+
+        let mut toneishness = 0.0f32;
+        let freq = tone_detect(&input, 1, n, &mut toneishness, fs);
+
+        assert!(freq > 0.0, "freq {freq} omega {omega}");
+        assert!(freq < 0.1, "freq {freq} omega {omega}");
+        assert!(toneishness > 0.8);
+    }
+
+    #[test]
+    fn tone_detect_rejects_silence() {
+        let n = 240;
+        let input = vec![0.0f32; n];
+        let mut toneishness = 1.0f32;
+        let freq = tone_detect(&input, 1, n, &mut toneishness, 48_000);
+
+        assert_eq!(freq, -1.0);
+        assert_eq!(toneishness, 0.0);
     }
 
     #[cfg(not(feature = "fixed_point"))]
