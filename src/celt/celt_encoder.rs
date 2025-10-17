@@ -46,6 +46,15 @@ const MAX_CHANNELS: usize = 2;
 /// Size of the comb-filter history kept per channel by the encoder prefilter.
 const COMBFILTER_MAXPERIOD: usize = 1024;
 
+/// Maximum number of energy bands handled during the time/frequency analysis.
+const MAX_TF_BANDS: usize = 50;
+/// Upper bound on the number of coefficients examined per band during TF analysis.
+///
+/// The C reference rejects modes where the widest band, scaled by the maximum LM,
+/// exceeds 208 coefficients. Using the same limit lets us pre-allocate the
+/// temporary buffers on the stack.
+const MAX_TF_BAND_SIZE: usize = 208;
+
 /// Maximum amplitude allowed when clipping the pre-emphasised input.
 const PREEMPHASIS_CLIP_LIMIT: CeltSig = 65_536.0;
 
@@ -301,11 +310,20 @@ fn tf_analysis(
         max_band = max(max_band, width << lm);
     }
 
-    let mut metric = vec![0i32; len];
-    let mut path0 = vec![0i32; len];
-    let mut path1 = vec![0i32; len];
-    let mut tmp = vec![0.0f32; max_band];
-    let mut tmp_alt = vec![0.0f32; max_band];
+    debug_assert!(len <= MAX_TF_BANDS);
+    debug_assert!(max_band <= MAX_TF_BAND_SIZE);
+
+    let mut metric_storage = [0i32; MAX_TF_BANDS];
+    let mut path0_storage = [0i32; MAX_TF_BANDS];
+    let mut path1_storage = [0i32; MAX_TF_BANDS];
+    let mut tmp_storage = [0.0f32; MAX_TF_BAND_SIZE];
+    let mut tmp_alt_storage = [0.0f32; MAX_TF_BAND_SIZE];
+
+    let metric = &mut metric_storage[..len];
+    let path0 = &mut path0_storage[..len];
+    let path1 = &mut path1_storage[..len];
+    let tmp = &mut tmp_storage[..max_band.max(1)];
+    let tmp_alt = &mut tmp_alt_storage[..max_band.max(1)];
 
     let lm_i32 = lm as i32;
 
