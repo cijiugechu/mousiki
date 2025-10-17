@@ -1955,7 +1955,10 @@ fn convert_i16_to_celt_sig(pcm: &[OpusInt16], required: usize) -> Vec<CeltSig> {
 fn convert_i24_to_celt_sig(pcm: &[OpusInt32], required: usize) -> Vec<CeltSig> {
     pcm.iter()
         .take(required)
-        .map(|&sample| sample.clamp(-32_768, 32_767) as CeltSig)
+        .map(|&sample| {
+            let rounded = (sample + (1 << 7)) >> 8;
+            rounded.clamp(-32_768, 32_767) as CeltSig
+        })
         .collect()
 }
 
@@ -3493,10 +3496,13 @@ mod tests {
     }
 
     #[test]
-    fn convert_i24_to_celt_sig_saturates_at_i16_range() {
-        let input = [0i32, 100_000, -150_000];
+    fn convert_i24_to_celt_sig_matches_reference_shift() {
+        let input = [0i32, 100_000, -150_000, 255, -255, 8_388_607, -8_388_608];
         let converted = convert_i24_to_celt_sig(&input, input.len());
-        assert_eq!(converted, vec![0.0, 32_767.0, -32_768.0]);
+        assert_eq!(
+            converted,
+            vec![0.0, 391.0, -586.0, 1.0, -1.0, 32_767.0, -32_768.0]
+        );
     }
 
     #[test]
