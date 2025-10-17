@@ -1604,7 +1604,7 @@ fn run_prefilter(
                     search_span,
                     encoder.arch,
                 );
-                pitch_index = history_len as i32 - result;
+                pitch_index = result;
             }
         }
 
