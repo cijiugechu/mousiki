@@ -19,7 +19,7 @@ use crate::celt::celt::{TF_SELECT_TABLE, resampling_factor};
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entcode::{BITRES, ec_tell};
 use crate::celt::entenc::EcEnc;
-use crate::celt::float_cast::CELT_SIG_SCALE;
+use crate::celt::float_cast::{CELT_SIG_SCALE, float2int16};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 use crate::celt::math::{celt_exp2, celt_log2, celt_sqrt, frac_div32_q29};
@@ -30,8 +30,8 @@ use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::celt_inner_prod;
 use crate::celt::quant_bands::{E_MEANS, amp2_log2};
 use crate::celt::types::{
-    AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32,
-    OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
+    AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt16,
+    OpusInt32, OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
 use alloc::boxed::Box;
 use core::cmp::{max, min};
@@ -1939,6 +1939,122 @@ pub(crate) fn celt_encode_with_ec(
     Err(CeltEncodeError::MissingOutput)
 }
 
+fn required_pcm_samples(channels: usize, frame_size: usize) -> Result<usize, CeltEncodeError> {
+    channels
+        .checked_mul(frame_size)
+        .ok_or(CeltEncodeError::InsufficientPcm)
+}
+
+fn convert_i16_to_celt_sig(pcm: &[OpusInt16], required: usize) -> Vec<CeltSig> {
+    pcm.iter()
+        .take(required)
+        .map(|&sample| CeltSig::from(sample))
+        .collect()
+}
+
+fn convert_i24_to_celt_sig(pcm: &[OpusInt32], required: usize) -> Vec<CeltSig> {
+    pcm.iter()
+        .take(required)
+        .map(|&sample| sample.clamp(-32_768, 32_767) as CeltSig)
+        .collect()
+}
+
+fn convert_f32_to_celt_sig(pcm: &[f32], required: usize) -> Vec<CeltSig> {
+    pcm.iter()
+        .take(required)
+        .map(|&sample| CeltSig::from(float2int16(sample)))
+        .collect()
+}
+
+fn encode_with_converted_pcm(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[CeltSig],
+    frame_size: usize,
+    compressed: &mut [u8],
+    nb_compressed_bytes: usize,
+) -> Result<usize, CeltEncodeError> {
+    if nb_compressed_bytes > compressed.len() {
+        return Err(CeltEncodeError::MissingOutput);
+    }
+
+    celt_encode_with_ec(
+        encoder,
+        Some(pcm),
+        frame_size,
+        Some(&mut compressed[..nb_compressed_bytes]),
+        None,
+    )
+}
+
+/// Ports the 16-bit PCM wrapper `opus_custom_encode()` from `celt/celt_encoder.c`.
+pub(crate) fn opus_custom_encode(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[OpusInt16],
+    frame_size: usize,
+    compressed: &mut [u8],
+    nb_compressed_bytes: usize,
+) -> Result<usize, CeltEncodeError> {
+    let required = required_pcm_samples(encoder.channels, frame_size)?;
+    if pcm.len() < required {
+        return Err(CeltEncodeError::InsufficientPcm);
+    }
+
+    let converted = convert_i16_to_celt_sig(pcm, required);
+    encode_with_converted_pcm(
+        encoder,
+        &converted,
+        frame_size,
+        compressed,
+        nb_compressed_bytes,
+    )
+}
+
+/// Ports the 24-bit PCM wrapper `opus_custom_encode24()` from `celt/celt_encoder.c`.
+pub(crate) fn opus_custom_encode24(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[OpusInt32],
+    frame_size: usize,
+    compressed: &mut [u8],
+    nb_compressed_bytes: usize,
+) -> Result<usize, CeltEncodeError> {
+    let required = required_pcm_samples(encoder.channels, frame_size)?;
+    if pcm.len() < required {
+        return Err(CeltEncodeError::InsufficientPcm);
+    }
+
+    let converted = convert_i24_to_celt_sig(pcm, required);
+    encode_with_converted_pcm(
+        encoder,
+        &converted,
+        frame_size,
+        compressed,
+        nb_compressed_bytes,
+    )
+}
+
+/// Ports the float PCM wrapper `opus_custom_encode_float()` from `celt/celt_encoder.c`.
+pub(crate) fn opus_custom_encode_float(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[f32],
+    frame_size: usize,
+    compressed: &mut [u8],
+    nb_compressed_bytes: usize,
+) -> Result<usize, CeltEncodeError> {
+    let required = required_pcm_samples(encoder.channels, frame_size)?;
+    if pcm.len() < required {
+        return Err(CeltEncodeError::InsufficientPcm);
+    }
+
+    let converted = convert_f32_to_celt_sig(pcm, required);
+    encode_with_converted_pcm(
+        encoder,
+        &converted,
+        frame_size,
+        compressed,
+        nb_compressed_bytes,
+    )
+}
+
 /// Returns the median of five consecutive logarithmic band energies.
 ///
 /// The helper mirrors `median_of_5()` from `celt/celt_encoder.c` and keeps the
@@ -2230,10 +2346,12 @@ fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, CeltSig, EncoderCtlRequest,
-        MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
-        PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy,
-        opus_custom_encoder_init, opus_custom_encoder_init_arch,
+        COMBFILTER_MAXPERIOD, CeltEncodeError, CeltEncoderAlloc, CeltEncoderInitError, CeltSig,
+        EncoderCtlRequest, MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode,
+        OpusUint32, PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis,
+        convert_f32_to_celt_sig, convert_i16_to_celt_sig, convert_i24_to_celt_sig, float2int16,
+        opus_custom_encode, opus_custom_encoder_destroy, opus_custom_encoder_init,
+        opus_custom_encoder_init_arch,
     };
     use super::{
         CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, dynalloc_analysis,
@@ -2254,6 +2372,7 @@ mod tests {
     use crate::celt::types::{AnalysisInfo, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::vec;
+    use alloc::vec::Vec;
     use core::f32::consts::{FRAC_1_SQRT_2, PI};
     use libm::floorf;
     use libm::sinf;
@@ -3332,6 +3451,63 @@ mod tests {
         let err =
             opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(6)).unwrap_err();
         assert_eq!(err, CeltEncoderCtlError::InvalidArgument);
+    }
+
+    #[test]
+    fn opus_custom_encode_errors_on_short_pcm() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+        let mut encoder = alloc
+            .init_custom_encoder(&mode, 1, 1, 123)
+            .expect("encoder");
+
+        let pcm = vec![0i16; 100];
+        let mut compressed = vec![0u8; 16];
+        let limit = compressed.len();
+
+        let err = opus_custom_encode(&mut encoder, &pcm, 960, &mut compressed, limit).unwrap_err();
+        assert_eq!(err, CeltEncodeError::InsufficientPcm);
+    }
+
+    #[test]
+    fn opus_custom_encode_errors_when_output_too_small() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+        let mut alloc = CeltEncoderAlloc::new(&mode, 1);
+        let mut encoder = alloc
+            .init_custom_encoder(&mode, 1, 1, 234)
+            .expect("encoder");
+
+        let pcm = vec![0i16; 960];
+        let mut compressed = vec![0u8; 8];
+        let err = opus_custom_encode(&mut encoder, &pcm, 960, &mut compressed, 16).unwrap_err();
+        assert_eq!(err, CeltEncodeError::MissingOutput);
+    }
+
+    #[test]
+    fn convert_i16_to_celt_sig_preserves_values() {
+        let input = [0i16, -32_768, 32_767, 1_234];
+        let converted = convert_i16_to_celt_sig(&input, input.len());
+        assert_eq!(converted, vec![0.0, -32_768.0, 32_767.0, 1_234.0]);
+    }
+
+    #[test]
+    fn convert_i24_to_celt_sig_saturates_at_i16_range() {
+        let input = [0i32, 100_000, -150_000];
+        let converted = convert_i24_to_celt_sig(&input, input.len());
+        assert_eq!(converted, vec![0.0, 32_767.0, -32_768.0]);
+    }
+
+    #[test]
+    fn convert_f32_to_celt_sig_matches_float2int16() {
+        let input = [0.0f32, 0.5 / CELT_SIG_SCALE, -1.5];
+        let converted = convert_f32_to_celt_sig(&input, input.len());
+        let expected: Vec<CeltSig> = input
+            .iter()
+            .map(|&sample| CeltSig::from(float2int16(sample)))
+            .collect();
+        assert_eq!(converted, expected);
     }
 
     #[test]
