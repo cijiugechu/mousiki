@@ -196,6 +196,10 @@ safely.
 - `patch_transient_decision` &rarr; mirrors the energy-spread comparison helper
   from `celt/celt_encoder.c` that patches the transient detector when sudden
   band energy increases are observed across frames.
+- `dynalloc_analysis` &rarr; ports the dynamic allocation heuristic from
+  `celt/celt_encoder.c`, computing noise floors, spread weights, per-band
+  importance, and bit boosts while honouring the VBR and surround tuning used
+  by the reference encoder.
 - `tf_encode` &rarr; ports the range-coder front-end from `celt/celt_encoder.c`
   that emits the per-band time/frequency flags, reserving space for the
   selector bit and collapsing the results back through `TF_SELECT_TABLE`.
@@ -250,8 +254,7 @@ safely.
   representation, applying optional clipping, handling upsampling, and keeping
   the one-sample filter memory in sync with the C layout.
 - **Still to port:** key analysis and bitstream routines continue to live in
-  C. The comb-filter driver (`run_prefilter()`), the dynamic allocation sweep
-  (`dynalloc_analysis()`), and the public packet writers
+  C. The comb-filter driver (`run_prefilter()`) and the public packet writers
   (`opus_custom_encode{,_float,_24}()` along with the canonical initialisation
   wrappers) still need Rust translations before the encoder can emit full CELT
   frames.

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 #![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::needless_range_loop)]
 
 //! Encoder scaffolding ported from `celt/celt_encoder.c`.
 //!
@@ -14,20 +15,20 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::bands::{compute_band_energies, haar1};
-use crate::celt::celt::{resampling_factor, TF_SELECT_TABLE};
+use crate::celt::celt::{TF_SELECT_TABLE, resampling_factor};
 use crate::celt::cpu_support::opus_select_arch;
-use crate::celt::entcode::ec_tell;
+use crate::celt::entcode::{BITRES, ec_tell};
 use crate::celt::entenc::EcEnc;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
-use crate::celt::math::{celt_log2, celt_sqrt, frac_div32_q29};
+use crate::celt::math::{celt_exp2, celt_log2, celt_sqrt, frac_div32_q29};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::celt_inner_prod;
-use crate::celt::quant_bands::amp2_log2;
+use crate::celt::quant_bands::{E_MEANS, amp2_log2};
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt32,
     OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
@@ -54,6 +55,9 @@ const MAX_TF_BANDS: usize = 50;
 /// exceeds 208 coefficients. Using the same limit lets us pre-allocate the
 /// temporary buffers on the stack.
 const MAX_TF_BAND_SIZE: usize = 208;
+
+/// Number of bands that participate in the leak boost analysis.
+const LEAK_BANDS: usize = 19;
 
 /// Maximum amplitude allowed when clipping the pre-emphasised input.
 const PREEMPHASIS_CLIP_LIMIT: CeltSig = 65_536.0;
@@ -294,7 +298,7 @@ fn tf_analysis(
     debug_assert!(lm < TF_SELECT_TABLE.len());
     debug_assert!(len <= tf_res.len());
     debug_assert!(len <= importance.len());
-    debug_assert!(len + 1 <= mode.e_bands.len());
+    debug_assert!(len < mode.e_bands.len());
 
     if len == 0 {
         return 0;
@@ -1239,6 +1243,294 @@ fn patch_transient_decision(
     mean_diff > 1.0
 }
 
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::too_many_arguments)]
+fn dynalloc_analysis(
+    band_log_e: &[CeltGlog],
+    band_log_e2: &[CeltGlog],
+    old_band_e: &[CeltGlog],
+    nb_ebands: usize,
+    start: usize,
+    end: usize,
+    channels: usize,
+    offsets: &mut [i32],
+    lsb_depth: i32,
+    log_n: &[i16],
+    is_transient: bool,
+    vbr: bool,
+    constrained_vbr: bool,
+    e_bands: &[i16],
+    lm: i32,
+    effective_bytes: i32,
+    tot_boost: &mut i32,
+    lfe: bool,
+    surround_dynalloc: &mut [CeltGlog],
+    analysis: &AnalysisInfo,
+    importance: &mut [i32],
+    spread_weight: &mut [i32],
+    tone_freq: OpusVal16,
+    toneishness: OpusVal32,
+) -> CeltGlog {
+    debug_assert!(channels <= MAX_CHANNELS);
+    debug_assert!(band_log_e.len() >= channels * nb_ebands);
+    debug_assert!(band_log_e2.len() >= channels * nb_ebands);
+    debug_assert!(old_band_e.len() >= channels * nb_ebands);
+    debug_assert!(offsets.len() >= nb_ebands);
+    debug_assert!(importance.len() >= nb_ebands);
+    debug_assert!(spread_weight.len() >= nb_ebands);
+    debug_assert!(log_n.len() >= end);
+    debug_assert!(e_bands.len() > end);
+    debug_assert!(surround_dynalloc.len() >= end);
+
+    offsets.iter_mut().for_each(|value| *value = 0);
+    importance.iter_mut().for_each(|value| *value = 0);
+    spread_weight.iter_mut().for_each(|value| *value = 0);
+
+    let mut follower = vec![0.0f32; channels * nb_ebands];
+    let mut noise_floor = vec![0.0f32; nb_ebands];
+    let mut band_log_e3 = vec![0.0f32; nb_ebands];
+
+    let mut max_depth = -31.9f32;
+    let depth_shift = (9 - lsb_depth) as f32;
+
+    for i in 0..end {
+        let log_n_val = f32::from(log_n[i]);
+        let mean = E_MEANS
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| *E_MEANS.last().expect("non-empty e_means"));
+        let index = (i + 5) as f32;
+        noise_floor[i] = 0.0625 * log_n_val + 0.5 + depth_shift - mean + 0.0062 * index * index;
+    }
+
+    for c in 0..channels {
+        let base = c * nb_ebands;
+        for i in 0..end {
+            let depth = band_log_e[base + i] - noise_floor[i];
+            if depth > max_depth {
+                max_depth = depth;
+            }
+        }
+    }
+
+    let mut mask = vec![0.0f32; nb_ebands];
+    let mut sig = vec![0.0f32; nb_ebands];
+    for i in 0..end {
+        let mut value = band_log_e[i] - noise_floor[i];
+        if channels == 2 {
+            let other = band_log_e[nb_ebands + i] - noise_floor[i];
+            if other > value {
+                value = other;
+            }
+        }
+        mask[i] = value;
+        sig[i] = value;
+    }
+    for i in 1..end {
+        let candidate = mask[i - 1] - 2.0;
+        if candidate > mask[i] {
+            mask[i] = candidate;
+        }
+    }
+    if end >= 2 {
+        for i in (0..=end - 2).rev() {
+            let candidate = mask[i + 1] - 3.0;
+            if candidate > mask[i] {
+                mask[i] = candidate;
+            }
+        }
+    }
+
+    let base_threshold = (max_depth - 12.0).max(0.0);
+    for i in 0..end {
+        let clamp = base_threshold.max(mask[i]);
+        let smr = sig[i] - clamp;
+        let rounded = floorf(smr + 0.5);
+        let mut shift = -(rounded as i32);
+        shift = shift.clamp(0, 5);
+        spread_weight[i] = 32 >> shift;
+    }
+
+    let mut total_boost_bits = 0i32;
+
+    if effective_bytes >= (30 + 5 * lm) && !lfe {
+        let mut last = 0usize;
+        for c in 0..channels {
+            let base = c * nb_ebands;
+            band_log_e3[..end].copy_from_slice(&band_log_e2[base..base + end]);
+            if lm == 0 {
+                for i in 0..end.min(8) {
+                    let idx = base + i;
+                    let current = band_log_e2[idx];
+                    let previous = old_band_e[idx];
+                    band_log_e3[i] = current.max(previous);
+                }
+            }
+
+            let follower_slice = &mut follower[base..base + nb_ebands];
+            if end > 0 {
+                follower_slice[0] = band_log_e3[0];
+            }
+            for i in 1..end {
+                if band_log_e3[i] > band_log_e3[i - 1] + 0.5 {
+                    last = i;
+                }
+                let candidate = follower_slice[i - 1] + 1.5;
+                follower_slice[i] = band_log_e3[i].min(candidate);
+            }
+
+            let mut idx = last;
+            while idx > 0 {
+                let prev = idx - 1;
+                let candidate = follower_slice[idx] + 2.0;
+                let min_val = candidate.min(band_log_e3[prev]);
+                if min_val < follower_slice[prev] {
+                    follower_slice[prev] = min_val;
+                }
+                idx -= 1;
+            }
+
+            if end >= 3 {
+                let median_start = median_of_3(&band_log_e3[..3]) - 1.0;
+                follower_slice[0] = follower_slice[0].max(median_start);
+                if end > 1 {
+                    follower_slice[1] = follower_slice[1].max(median_start);
+                }
+                let median_end = median_of_3(&band_log_e3[end - 3..end]) - 1.0;
+                if end >= 2 {
+                    follower_slice[end - 2] = follower_slice[end - 2].max(median_end);
+                }
+                follower_slice[end - 1] = follower_slice[end - 1].max(median_end);
+            }
+            if end > 4 {
+                for i in 2..end - 2 {
+                    let median = median_of_5(&band_log_e3[i - 2..i + 3]) - 1.0;
+                    if median > follower_slice[i] {
+                        follower_slice[i] = median;
+                    }
+                }
+            }
+
+            for i in 0..end {
+                if noise_floor[i] > follower_slice[i] {
+                    follower_slice[i] = noise_floor[i];
+                }
+            }
+        }
+
+        if channels == 2 {
+            for i in start..end {
+                let left_idx = i;
+                let right_idx = nb_ebands + i;
+                let updated_right = follower[right_idx].max(follower[left_idx] - 4.0);
+                follower[right_idx] = updated_right;
+                let updated_left = follower[left_idx].max(updated_right - 4.0);
+                follower[left_idx] = updated_left;
+                let left_depth = (band_log_e[left_idx] - follower[left_idx]).max(0.0);
+                let right_depth = (band_log_e[right_idx] - follower[right_idx]).max(0.0);
+                follower[left_idx] = 0.5 * (left_depth + right_depth);
+            }
+        } else {
+            for i in start..end {
+                follower[i] = (band_log_e[i] - follower[i]).max(0.0);
+            }
+        }
+
+        for i in start..end {
+            let surround = surround_dynalloc[i];
+            if surround > follower[i] {
+                follower[i] = surround;
+            }
+        }
+
+        for i in start..end {
+            let capped = follower[i].min(4.0);
+            let weight = 13.0 * celt_exp2(capped);
+            importance[i] = floorf(weight + 0.5) as i32;
+        }
+
+        if ((!vbr) || constrained_vbr) && !is_transient {
+            for value in &mut follower[start..end] {
+                *value *= 0.5;
+            }
+        }
+
+        for i in start..end {
+            if i < 8 {
+                follower[i] *= 2.0;
+            }
+            if i >= 12 {
+                follower[i] *= 0.5;
+            }
+        }
+
+        if toneishness > 0.98 {
+            let freq_bin = floorf(tone_freq * (120.0 / core::f32::consts::PI) + 0.5) as i32;
+            for i in start..end {
+                let band_low = i32::from(e_bands[i]);
+                let band_high = i32::from(e_bands[i + 1]);
+                if freq_bin >= band_low && freq_bin <= band_high {
+                    follower[i] += 2.0;
+                }
+                if freq_bin >= band_low - 1 && freq_bin <= band_high + 1 {
+                    follower[i] += 1.0;
+                }
+                if freq_bin >= band_low - 2 && freq_bin <= band_high + 2 {
+                    follower[i] += 1.0;
+                }
+                if freq_bin >= band_low - 3 && freq_bin <= band_high + 3 {
+                    follower[i] += 0.5;
+                }
+            }
+        }
+
+        if analysis.valid {
+            let leak_len = end.min(LEAK_BANDS).min(analysis.leak_boost.len());
+            for i in start..leak_len {
+                follower[i] += f32::from(analysis.leak_boost[i]) / 64.0;
+            }
+        }
+
+        for i in start..end {
+            let follower_val = follower[i].min(4.0);
+            let band_width = i32::from(e_bands[i + 1]) - i32::from(e_bands[i]);
+            let width = (channels as i32 * band_width) << lm;
+            let (boost, boost_bits) = if width < 6 {
+                let boost = follower_val as i32;
+                let bits = (boost * width) << BITRES;
+                (boost, bits)
+            } else if width > 48 {
+                let boost = (follower_val * 8.0) as i32;
+                let bits = ((boost * width) << BITRES) / 8;
+                (boost, bits)
+            } else {
+                let boost = (follower_val * width as f32 / 6.0) as i32;
+                let bits = (boost * 6) << BITRES;
+                (boost, bits)
+            };
+
+            if ((!vbr) || (constrained_vbr && !is_transient))
+                && (((total_boost_bits + boost_bits) >> BITRES) >> 3) > (2 * effective_bytes / 3)
+            {
+                let cap = (2 * effective_bytes / 3) << (BITRES + 3);
+                offsets[i] = cap - total_boost_bits;
+                total_boost_bits = cap;
+                break;
+            }
+
+            offsets[i] = boost;
+            total_boost_bits += boost_bits;
+        }
+    } else {
+        for value in &mut importance[start..end] {
+            *value = 13;
+        }
+    }
+
+    *tot_boost = total_boost_bits;
+    max_depth
+}
+
 fn tf_encode(
     start: usize,
     end: usize,
@@ -1674,11 +1966,7 @@ fn median_of_5(values: &[CeltGlog]) -> CeltGlog {
     }
 
     if t2 > t1 {
-        if t1 < t3 {
-            t2.min(t3)
-        } else {
-            t4.min(t1)
-        }
+        if t1 < t3 { t2.min(t3) } else { t4.min(t1) }
     } else if t2 < t3 {
         t1.min(t3)
     } else {
@@ -1941,19 +2229,20 @@ fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        COMBFILTER_MAXPERIOD, CeltEncoderAlloc, CeltEncoderInitError, CeltSig, EncoderCtlRequest,
+        MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode, OpusUint32,
+        PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy,
+        opus_custom_encoder_init, opus_custom_encoder_init_arch,
+    };
+    use super::{
+        CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, dynalloc_analysis,
+        l1_metric, median_of_3, median_of_5, opus_custom_encoder_ctl, patch_transient_decision,
+        stereo_analysis, tf_analysis, tf_encode, tone_detect, tone_lpc, transient_analysis,
+    };
     #[cfg(not(feature = "fixed_point"))]
     use super::{acos_approx, normalize_tone_input};
-    use super::{
-        alloc_trim_analysis, compute_mdcts, compute_vbr, l1_metric, median_of_3, median_of_5,
-        opus_custom_encoder_ctl, patch_transient_decision, stereo_analysis, tf_analysis, tf_encode,
-        tone_detect, tone_lpc, transient_analysis, CeltEncoderCtlError,
-    };
-    use super::{
-        celt_encoder_init, celt_preemphasis, opus_custom_encoder_destroy, opus_custom_encoder_init,
-        opus_custom_encoder_init_arch, CeltEncoderAlloc, CeltEncoderInitError, CeltSig,
-        EncoderCtlRequest, OpusCustomEncoder, OpusCustomMode, OpusUint32, COMBFILTER_MAXPERIOD,
-        MAX_CHANNELS, OPUS_BITRATE_MAX, PREEMPHASIS_CLIP_LIMIT,
-    };
+    use crate::celt::OpusVal16;
     use crate::celt::celt::TF_SELECT_TABLE;
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::entenc::EcEnc;
@@ -1964,9 +2253,9 @@ mod tests {
     };
     use crate::celt::types::{AnalysisInfo, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
-    use crate::celt::OpusVal16;
     use alloc::vec;
     use core::f32::consts::{FRAC_1_SQRT_2, PI};
+    use libm::floorf;
     use libm::sinf;
 
     const EPSILON: f32 = 1e-6;
@@ -2429,6 +2718,108 @@ mod tests {
     }
 
     #[test]
+    fn dynalloc_analysis_defaults_when_disabled() {
+        let nb_ebands = 4;
+        let channels = 1;
+        let start = 0;
+        let end = nb_ebands;
+        let band_log_e = vec![0.5f32; channels * nb_ebands];
+        let band_log_e2 = band_log_e.clone();
+        let old_band_e = vec![-28.0f32; channels * nb_ebands];
+        let log_n = vec![10i16; nb_ebands];
+        let e_bands = [0i16, 1, 2, 3, 4];
+        let mut offsets = vec![1i32; nb_ebands];
+        let mut importance = vec![0i32; nb_ebands];
+        let mut spread_weight = vec![0i32; nb_ebands];
+        let mut surround_dynalloc = vec![0.0f32; nb_ebands];
+        let mut tot_boost = -1;
+
+        let max_depth = dynalloc_analysis(
+            &band_log_e,
+            &band_log_e2,
+            &old_band_e,
+            nb_ebands,
+            start,
+            end,
+            channels,
+            &mut offsets,
+            8,
+            &log_n,
+            false,
+            true,
+            false,
+            &e_bands,
+            0,
+            10,
+            &mut tot_boost,
+            false,
+            &mut surround_dynalloc,
+            &AnalysisInfo::default(),
+            &mut importance,
+            &mut spread_weight,
+            0.0,
+            0.0,
+        );
+
+        assert!(max_depth > 0.0);
+        assert_eq!(tot_boost, 0);
+        assert!(offsets.iter().all(|&value| value == 0));
+        assert_eq!(&importance[start..end], &[13, 13, 13, 13]);
+    }
+
+    #[test]
+    fn dynalloc_analysis_accounts_for_surround_boost() {
+        let nb_ebands = 4;
+        let channels = 1;
+        let start = 0;
+        let end = nb_ebands;
+        let band_log_e = vec![6.0f32; channels * nb_ebands];
+        let band_log_e2 = band_log_e.clone();
+        let old_band_e = vec![5.0f32; channels * nb_ebands];
+        let log_n = vec![8i16; nb_ebands];
+        let e_bands = [0i16, 1, 2, 3, 4];
+        let mut offsets = vec![0i32; nb_ebands];
+        let mut importance = vec![0i32; nb_ebands];
+        let mut spread_weight = vec![0i32; nb_ebands];
+        let mut surround_dynalloc = vec![0.0f32; nb_ebands];
+        surround_dynalloc[0] = 3.0;
+        let mut tot_boost = 0;
+
+        let toneishness = 0.0f32;
+        let max_depth = dynalloc_analysis(
+            &band_log_e,
+            &band_log_e2,
+            &old_band_e,
+            nb_ebands,
+            start,
+            end,
+            channels,
+            &mut offsets,
+            6,
+            &log_n,
+            false,
+            true,
+            false,
+            &e_bands,
+            0,
+            60,
+            &mut tot_boost,
+            false,
+            &mut surround_dynalloc,
+            &AnalysisInfo::default(),
+            &mut importance,
+            &mut spread_weight,
+            0.05,
+            toneishness,
+        );
+
+        assert!(max_depth > 0.0);
+        assert!(importance[0] > 13);
+        assert_eq!(offsets[0], 4);
+        assert_eq!(tot_boost, 32);
+    }
+
+    #[test]
     fn stereo_analysis_matches_manual_decision() {
         let owned = opus_custom_mode_create(48_000, 960).expect("mode");
         let mode = owned.mode();
@@ -2576,7 +2967,7 @@ mod tests {
             expected_trim -= tonal.clamp(-2.0, 2.0);
         }
 
-        let mut expected_index = (expected_trim + 0.5).floor() as i32;
+        let mut expected_index = floorf(expected_trim + 0.5) as i32;
         expected_index = expected_index.clamp(0, 10);
 
         assert_eq!(trim_index, expected_index);
