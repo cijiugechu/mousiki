@@ -2540,6 +2540,8 @@ mod tests {
     #[cfg(not(feature = "fixed_point"))]
     #[test]
     fn celt_decode_lost_noise_branch_updates_state() {
+        use crate::celt::modes::opus_custom_mode_find_static;
+
         let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
         let mut alloc = CeltDecoderAlloc::new(&mode, 1);
         let mut decoder = alloc.as_decoder(&mode, 1, 1);
@@ -2564,6 +2566,8 @@ mod tests {
     #[cfg(not(feature = "fixed_point"))]
     #[test]
     fn celt_decode_lost_pitch_branch_generates_output() {
+        use crate::celt::modes::opus_custom_mode_find_static;
+
         let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
         let mut alloc = CeltDecoderAlloc::new(&mode, 1);
         let mut decoder = alloc.as_decoder(&mode, 1, 1);
@@ -2574,7 +2578,7 @@ mod tests {
         decoder.last_pitch_index = 200;
         decoder.prefilter_and_fold = false;
 
-        let stride = DECODE_BUFFER_SIZE + mode.overlap;
+        let _stride = DECODE_BUFFER_SIZE + mode.overlap;
         for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
             *sample = (idx % 23) as f32 * 0.001;
         }
