@@ -1578,11 +1578,11 @@ fn run_prefilter(
         pre_slice[history_len..history_len + n].copy_from_slice(input_slice);
     }
 
-    let mut channel_views = Vec::with_capacity(channels);
+    let mut channel_views: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
     for ch in 0..channels {
         let start = ch * (n + history_len);
         let end = start + history_len + n;
-        channel_views.push(&pre[start..end]);
+        channel_views[ch] = &pre[start..end];
     }
 
     let mut pitch_index = COMBFILTER_MINPERIOD as i32;
@@ -1591,7 +1591,7 @@ fn run_prefilter(
     if enabled {
         let downsample_len = history_len + n;
         let mut pitch_buf = vec![0.0; downsample_len >> 1];
-        pitch_downsample(&channel_views, &mut pitch_buf, downsample_len, encoder.arch);
+        pitch_downsample(&channel_views[..channels], &mut pitch_buf, downsample_len, encoder.arch);
 
         let search_span = history_len - 3 * COMBFILTER_MINPERIOD;
         if search_span > 0 {
@@ -1691,8 +1691,8 @@ fn run_prefilter(
         pf_on = true;
     }
 
-    let mut before = vec![0.0; channels];
-    let mut after = vec![0.0; channels];
+    let mut before = [0.0f32; MAX_CHANNELS];
+    let mut after = [0.0f32; MAX_CHANNELS];
     let mut cancel_pitch = false;
 
     let prev_tapset = encoder.prefilter_tapset.max(0) as usize;
