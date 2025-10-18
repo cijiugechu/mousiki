@@ -1591,7 +1591,12 @@ fn run_prefilter(
     if enabled {
         let downsample_len = history_len + n;
         let mut pitch_buf = vec![0.0; downsample_len >> 1];
-        pitch_downsample(&channel_views[..channels], &mut pitch_buf, downsample_len, encoder.arch);
+        pitch_downsample(
+            &channel_views[..channels],
+            &mut pitch_buf,
+            downsample_len,
+            encoder.arch,
+        );
 
         let search_span = history_len - 3 * COMBFILTER_MINPERIOD;
         if search_span > 0 {

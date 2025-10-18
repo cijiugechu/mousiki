@@ -333,4 +333,3 @@ mod tests {
         assert!(out.iter().any(|&byte| byte != 0));
     }
 }
-
