@@ -104,6 +104,10 @@ safely.
   history, and band energy arrays) that follow `CELTDecoder` in the C layout,
   allocating them with Rust `Vec`s and exposing a safe `as_decoder()` helper to
   obtain an `OpusCustomDecoder` view.
+- `OwnedCeltDecoder`, `opus_custom_decoder_create`, and
+  `opus_custom_decoder_destroy` &rarr; mirror the custom-mode allocation helper
+  from `celt/celt_decoder.c`, boxing the trailing buffers, initialising the
+  decoder state, and releasing the storage when the wrapper is dropped.
 - `DECODE_BUFFER_SIZE` &rarr; mirrors the two-kilobyte circular history kept per
   channel by `celt_decoder.c`, allowing future PLC and post-filter ports to rely
   on an accurate backing buffer size.
@@ -164,11 +168,11 @@ safely.
   `celt/celt_decoder.c`, denormalising the band energies, handling mono/stereo
   up/downmixing, applying the appropriate short or long block transforms, and
   saturating the time-domain output before the post-filter consumes it.
-- **Still to port:** the synthesis side is largely unimplemented. The public
-  wrappers such as `opus_custom_decode()`/`opus_custom_decode_float()` (and the
-  `_24` variant) remain to be mirrored so the allocation matches the reference
-  layout exactly. The main `celt_decode_with_ec()` entry point with its
-  `*_dred` variant is still pending.
+- `celt_decode_with_ec_dred`, `celt_decode_with_ec`, and
+  `opus_custom_decode{,_float,_24}` &rarr; translate the main CELT decoding
+  loop from `celt/celt_decoder.c`, including PVQ band reconstruction,
+  anti-collapse handling, post-filter interpolation, deemphasis, and the PCM
+  conversions required by the 16-bit, 24-bit, and float wrapper APIs.
 
 ### `celt_encoder.rs`
 - `CeltEncoderAlloc` &rarr; mirrors the encoder-side trailing buffers (`in_mem`,
@@ -521,17 +525,10 @@ safely.
 
 ## Outstanding pieces of the reference sources
 
-Only a handful of routines in the C tree remain untranslated after the work
-listed above. Tracking them explicitly helps future ports focus on the pieces
-that still gate a full end-to-end encoder/decoder.
-
-| Source file | Remaining routines | Notes |
-| --- | --- | --- |
-| `celt/celt_decoder.c` | `celt_decode_with_ec()`/`celt_decode_with_ec_dred()`, `opus_custom_decode{,_float,_24}()` | The parser scaffolding is in Rust, but the synthesis/PLC loops and the public decode entry points still live in C and must be ported to complete the decoder. |
-
-Additional directories (`arm/`, `mips/`, `x86/`) contain architecture-specific
-optimisations that depend on the scalar implementations above and remain to be
-ported once the scalar logic is in place.
+The scalar decoder and encoder paths from the reference tree now have Rust
+equivalents. Remaining work is limited to the architecture-specific
+optimisations in `arm/`, `mips/`, and `x86/`, which build on top of the scalar
+implementations documented above.
 
 ## Modules intentionally left unported
 

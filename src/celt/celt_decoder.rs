@@ -16,9 +16,9 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::bands::celt_lcg_rand;
 use crate::celt::bands::denormalise_bands;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::bands::{anti_collapse, celt_lcg_rand, quant_all_bands};
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
 };
@@ -27,12 +27,16 @@ use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(not(feature = "fixed_point"))]
+use crate::celt::float_cast::{float2int, float2int16};
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::mdct::clt_mdct_backward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{pitch_downsample, pitch_search};
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::quant_bands::unquant_energy_finalise;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
@@ -921,6 +925,42 @@ pub(crate) fn celt_decoder_get_size(channels: usize) -> Option<usize> {
         .and_then(|mode| opus_custom_decoder_get_size(&mode, channels))
 }
 
+/// Owning wrapper around [`OpusCustomDecoder`] and its backing allocation.
+///
+/// The C implementation returns an opaque pointer whose trailing buffers live in
+/// the same allocation as the primary decoder fields.  In Rust we model this by
+/// keeping the [`CeltDecoderAlloc`] inside a [`Box`] and storing the decoder
+/// view alongside it.  This ensures the borrowed slices remain valid for the
+/// lifetime of the wrapper while keeping the ownership semantics of
+/// `opus_custom_decoder_create()` intact.
+#[derive(Debug)]
+pub(crate) struct OwnedCeltDecoder<'mode> {
+    decoder: OpusCustomDecoder<'mode>,
+    alloc: Box<CeltDecoderAlloc>,
+}
+
+impl<'mode> OwnedCeltDecoder<'mode> {
+    /// Borrows the underlying decoder state.
+    #[must_use]
+    pub fn decoder(&mut self) -> &mut OpusCustomDecoder<'mode> {
+        &mut self.decoder
+    }
+}
+
+impl<'mode> core::ops::Deref for OwnedCeltDecoder<'mode> {
+    type Target = OpusCustomDecoder<'mode>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.decoder
+    }
+}
+
+impl<'mode> core::ops::DerefMut for OwnedCeltDecoder<'mode> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.decoder
+    }
+}
+
 /// Initialises a decoder for the canonical 48 kHz / 960 sample configuration.
 ///
 /// Mirrors `celt_decoder_init()` from `celt/celt_decoder.c` by borrowing the
@@ -1486,6 +1526,447 @@ pub(crate) fn prepare_frame(
     })
 }
 
+#[cfg(not(feature = "fixed_point"))]
+fn res_to_int24(sample: OpusRes) -> i32 {
+    let scale = CELT_SIG_SCALE * 256.0;
+    let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
+    float2int(scaled)
+}
+
+#[cfg(not(feature = "fixed_point"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn celt_decode_with_ec_dred(
+    decoder: &mut OpusCustomDecoder<'_>,
+    packet: Option<&[u8]>,
+    pcm: &mut [OpusRes],
+    frame_size: usize,
+    range_decoder: Option<&mut EcDec<'_>>,
+    accum: bool,
+) -> Result<usize, CeltDecodeError> {
+    if range_decoder.is_some() {
+        return Err(CeltDecodeError::BadArgument);
+    }
+
+    validate_celt_decoder(decoder);
+
+    let data = packet.unwrap_or(&[]);
+    let mut frame = prepare_frame(decoder, data, frame_size)?;
+    let mode = decoder.mode;
+    let nb_ebands = mode.num_ebands;
+    let overlap = mode.overlap;
+    let stride = DECODE_BUFFER_SIZE + overlap;
+
+    let downsample = decoder.downsample.max(1) as usize;
+    let cc = frame.cc;
+    if cc == 0 {
+        return Err(CeltDecodeError::BadArgument);
+    }
+
+    let n = frame.n;
+    let output_samples = n / downsample;
+    let required_pcm = output_samples
+        .checked_mul(cc)
+        .ok_or(CeltDecodeError::BadArgument)?;
+    if pcm.len() < required_pcm {
+        return Err(CeltDecodeError::BadArgument);
+    }
+
+    if frame.packet_loss {
+        celt_decode_lost(decoder, n, frame.lm);
+
+        let mut inputs: Vec<&[CeltSig]> = Vec::with_capacity(cc);
+        for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+            let start = DECODE_BUFFER_SIZE
+                .checked_sub(n)
+                .ok_or(CeltDecodeError::BadArgument)?;
+            let (_, rest) = channel_slice.split_at(start);
+            let (output, _) = rest.split_at(n);
+            inputs.push(output);
+        }
+
+        deemphasis(
+            &inputs,
+            pcm,
+            n,
+            cc,
+            downsample,
+            mode.preemph,
+            &mut decoder.preemph_mem_decoder,
+            accum,
+        );
+
+        return Ok(output_samples);
+    }
+
+    let mut range_state = frame
+        .range_decoder
+        .take()
+        .ok_or(CeltDecodeError::InvalidPacket)?;
+    let dec = range_state.decoder();
+
+    let FramePreparation {
+        range_decoder: _,
+        tf_res,
+        cap: _,
+        offsets: _,
+        fine_quant,
+        pulses,
+        fine_priority,
+        spread_decision,
+        is_transient,
+        short_blocks,
+        intra_ener: _,
+        silence,
+        alloc_trim: _,
+        anti_collapse_rsv,
+        intensity,
+        dual_stereo,
+        balance,
+        coded_bands,
+        postfilter_pitch,
+        postfilter_gain,
+        postfilter_tapset,
+        total_bits,
+        tell: _,
+        bits: _,
+        start,
+        end,
+        eff_end,
+        lm,
+        m,
+        n,
+        c,
+        cc,
+        packet_loss: _,
+    } = frame;
+
+    let packet_len = data.len();
+
+    for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+        let move_len = DECODE_BUFFER_SIZE
+            .checked_sub(n)
+            .ok_or(CeltDecodeError::BadArgument)?
+            + overlap;
+        channel_slice.copy_within(n..n + move_len, 0);
+    }
+
+    let mut collapse_masks = vec![0u8; c * nb_ebands];
+    let mut spectrum = vec![0.0f32; c * n];
+    let mut coder = BandCodingState::Decoder(dec);
+
+    let total_available = total_bits - anti_collapse_rsv;
+    let (first_channel, second_channel_opt) = if c == 2 {
+        let (left, right) = spectrum.split_at_mut(n);
+        (left, Some(right))
+    } else {
+        (&mut spectrum[..], None)
+    };
+    quant_all_bands(
+        false,
+        mode,
+        start,
+        end,
+        first_channel,
+        second_channel_opt,
+        &mut collapse_masks,
+        &[],
+        &pulses,
+        short_blocks != 0,
+        spread_decision,
+        dual_stereo != 0,
+        intensity.max(0) as usize,
+        &tf_res,
+        total_available,
+        balance,
+        &mut coder,
+        lm as i32,
+        coded_bands.max(0) as usize,
+        &mut decoder.rng,
+        decoder.complexity,
+        decoder.arch,
+        decoder.disable_inv,
+    );
+
+    let mut anti_collapse_on = false;
+    if anti_collapse_rsv > 0 {
+        anti_collapse_on = coder.decode_bits(1) != 0;
+    }
+
+    let remaining_bits = (packet_len as OpusInt32 * 8) - entcode::ec_tell(dec.ctx());
+    unquant_energy_finalise(
+        mode,
+        start,
+        end,
+        decoder.old_ebands,
+        &fine_quant,
+        &fine_priority,
+        remaining_bits,
+        dec,
+        c,
+    );
+
+    if anti_collapse_on {
+        anti_collapse(
+            mode,
+            &mut spectrum,
+            &collapse_masks,
+            lm,
+            c,
+            n,
+            start,
+            end,
+            decoder.old_ebands,
+            decoder.old_log_e,
+            decoder.old_log_e2,
+            &pulses,
+            decoder.rng,
+            false,
+            decoder.arch,
+        );
+    }
+
+    if silence {
+        decoder.old_ebands.fill(-28.0);
+    }
+
+    if decoder.prefilter_and_fold {
+        prefilter_and_fold(decoder, n);
+    }
+
+    let mut out_slices: Vec<&mut [CeltSig]> = Vec::with_capacity(cc);
+    for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+        let start_idx = DECODE_BUFFER_SIZE
+            .checked_sub(n)
+            .ok_or(CeltDecodeError::BadArgument)?;
+        let (_, rest) = channel_slice.split_at_mut(start_idx);
+        let (output, _) = rest.split_at_mut(n);
+        out_slices.push(output);
+    }
+
+    celt_synthesis(
+        mode,
+        &spectrum,
+        &mut out_slices,
+        decoder.old_ebands,
+        start,
+        eff_end,
+        c,
+        cc,
+        is_transient,
+        lm,
+        downsample,
+        silence,
+        decoder.arch,
+    );
+
+    drop(out_slices);
+
+    decoder.postfilter_period = decoder.postfilter_period.max(COMBFILTER_MINPERIOD as i32);
+    decoder.postfilter_period_old = decoder
+        .postfilter_period_old
+        .max(COMBFILTER_MINPERIOD as i32);
+
+    for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+        let output_start = DECODE_BUFFER_SIZE - n;
+        let output = &mut channel_slice[output_start..output_start + n];
+        let full_channel =
+            unsafe { core::slice::from_raw_parts(channel_slice.as_ptr(), channel_slice.len()) };
+
+        let first_len = mode.short_mdct_size.min(output.len());
+        if first_len > 0 {
+            let (first_block, tail_block) = output.split_at_mut(first_len);
+            comb_filter(
+                first_block,
+                full_channel,
+                output_start,
+                first_len,
+                decoder.postfilter_period_old,
+                decoder.postfilter_period,
+                decoder.postfilter_gain_old,
+                decoder.postfilter_gain,
+                decoder.postfilter_tapset_old.max(0) as usize,
+                decoder.postfilter_tapset.max(0) as usize,
+                mode.window,
+                overlap,
+                decoder.arch,
+            );
+
+            if lm != 0 && !tail_block.is_empty() {
+                let tail_start = output_start + first_len;
+                comb_filter(
+                    tail_block,
+                    full_channel,
+                    tail_start,
+                    tail_block.len(),
+                    decoder.postfilter_period,
+                    postfilter_pitch,
+                    decoder.postfilter_gain,
+                    postfilter_gain,
+                    decoder.postfilter_tapset.max(0) as usize,
+                    postfilter_tapset.max(0) as usize,
+                    mode.window,
+                    overlap,
+                    decoder.arch,
+                );
+            }
+        }
+    }
+
+    decoder.postfilter_period_old = decoder.postfilter_period;
+    decoder.postfilter_gain_old = decoder.postfilter_gain;
+    decoder.postfilter_tapset_old = decoder.postfilter_tapset;
+    decoder.postfilter_period = postfilter_pitch;
+    decoder.postfilter_gain = postfilter_gain;
+    decoder.postfilter_tapset = postfilter_tapset;
+    if lm != 0 {
+        decoder.postfilter_period_old = decoder.postfilter_period;
+        decoder.postfilter_gain_old = decoder.postfilter_gain;
+        decoder.postfilter_tapset_old = decoder.postfilter_tapset;
+    }
+
+    if c == 1 {
+        let (left, right) = decoder.old_ebands.split_at_mut(nb_ebands);
+        right.copy_from_slice(left);
+    }
+
+    if !is_transient {
+        decoder.old_log_e2.copy_from_slice(decoder.old_log_e);
+        decoder.old_log_e.copy_from_slice(decoder.old_ebands);
+    } else {
+        for (log_e, band_e) in decoder.old_log_e.iter_mut().zip(decoder.old_ebands.iter()) {
+            *log_e = (*log_e).min(*band_e);
+        }
+    }
+
+    let increase = ((decoder.loss_duration + m as i32).min(160) as f32) * 0.001;
+    for (background, band_e) in decoder
+        .background_log_e
+        .iter_mut()
+        .zip(decoder.old_ebands.iter())
+    {
+        *background = (*background + increase).min(*band_e);
+    }
+
+    for ch in 0..2 {
+        let base = ch * nb_ebands;
+        for band in 0..start {
+            let idx = base + band;
+            decoder.old_ebands[idx] = 0.0;
+            decoder.old_log_e[idx] = -28.0;
+            decoder.old_log_e2[idx] = -28.0;
+        }
+        for band in end..nb_ebands {
+            let idx = base + band;
+            decoder.old_ebands[idx] = 0.0;
+            decoder.old_log_e[idx] = -28.0;
+            decoder.old_log_e2[idx] = -28.0;
+        }
+    }
+
+    decoder.rng = dec.ctx().rng;
+
+    let mut deemph_inputs: Vec<&[CeltSig]> = Vec::with_capacity(cc);
+    for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+        let start_idx = DECODE_BUFFER_SIZE - n;
+        let (_, rest) = channel_slice.split_at_mut(start_idx);
+        let (output, _) = rest.split_at_mut(n);
+        deemph_inputs.push(output);
+    }
+
+    deemphasis(
+        &deemph_inputs,
+        pcm,
+        n,
+        cc,
+        downsample,
+        mode.preemph,
+        &mut decoder.preemph_mem_decoder,
+        accum,
+    );
+
+    decoder.loss_duration = 0;
+    decoder.prefilter_and_fold = false;
+
+    if entcode::ec_tell(dec.ctx()) > (packet_len as OpusInt32 * 8) {
+        return Err(CeltDecodeError::InvalidPacket);
+    }
+
+    if dec.ctx().error() != 0 {
+        decoder.error = 1;
+    }
+
+    Ok(output_samples)
+}
+
+#[cfg(not(feature = "fixed_point"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn celt_decode_with_ec(
+    decoder: &mut OpusCustomDecoder<'_>,
+    packet: Option<&[u8]>,
+    pcm: &mut [OpusRes],
+    frame_size: usize,
+    range_decoder: Option<&mut EcDec<'_>>,
+    accum: bool,
+) -> Result<usize, CeltDecodeError> {
+    celt_decode_with_ec_dred(decoder, packet, pcm, frame_size, range_decoder, accum)
+}
+
+#[cfg(not(feature = "fixed_point"))]
+pub(crate) fn opus_custom_decode(
+    decoder: &mut OpusCustomDecoder<'_>,
+    packet: Option<&[u8]>,
+    pcm: &mut [i16],
+    frame_size: usize,
+) -> Result<usize, CeltDecodeError> {
+    let channels = decoder.channels;
+    let required = channels
+        .checked_mul(frame_size)
+        .ok_or(CeltDecodeError::BadArgument)?;
+    if pcm.len() < required {
+        return Err(CeltDecodeError::BadArgument);
+    }
+
+    let mut temp = vec![0.0f32; required];
+    let samples = celt_decode_with_ec(decoder, packet, &mut temp, frame_size, None, false)?;
+    for (dst, &src) in pcm.iter_mut().zip(temp.iter().take(samples * channels)) {
+        *dst = float2int16(src);
+    }
+    Ok(samples)
+}
+
+#[cfg(not(feature = "fixed_point"))]
+pub(crate) fn opus_custom_decode24(
+    decoder: &mut OpusCustomDecoder<'_>,
+    packet: Option<&[u8]>,
+    pcm: &mut [i32],
+    frame_size: usize,
+) -> Result<usize, CeltDecodeError> {
+    let channels = decoder.channels;
+    let required = channels
+        .checked_mul(frame_size)
+        .ok_or(CeltDecodeError::BadArgument)?;
+    if pcm.len() < required {
+        return Err(CeltDecodeError::BadArgument);
+    }
+
+    let mut temp = vec![0.0f32; required];
+    let samples = celt_decode_with_ec(decoder, packet, &mut temp, frame_size, None, false)?;
+    for (dst, &src) in pcm.iter_mut().zip(temp.iter().take(samples * channels)) {
+        *dst = res_to_int24(src);
+    }
+    Ok(samples)
+}
+
+#[cfg(not(feature = "fixed_point"))]
+pub(crate) fn opus_custom_decode_float(
+    decoder: &mut OpusCustomDecoder<'_>,
+    packet: Option<&[u8]>,
+    pcm: &mut [f32],
+    frame_size: usize,
+) -> Result<usize, CeltDecodeError> {
+    celt_decode_with_ec(decoder, packet, pcm, frame_size, None, false)
+}
+
 /// Errors that can be reported when initialising a CELT decoder instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CeltDecoderInitError {
@@ -1711,6 +2192,45 @@ pub(crate) fn opus_custom_decoder_init<'a>(
     alloc.prepare_decoder(mode, channels, channels)
 }
 
+/// Allocates and initialises a decoder for a custom mode.
+///
+/// Mirrors `opus_custom_decoder_create()` by allocating the trailing buffers,
+/// validating the channel layout, and returning an owned wrapper that keeps the
+/// decoder state and backing storage alive for the duration of the ported API.
+pub(crate) fn opus_custom_decoder_create<'mode>(
+    mode: &'mode OpusCustomMode<'mode>,
+    channels: usize,
+) -> Result<OwnedCeltDecoder<'mode>, CeltDecoderInitError> {
+    validate_channel_layout(channels, channels)?;
+    let alloc = Box::new(CeltDecoderAlloc::new(mode, channels));
+    let ptr = Box::into_raw(alloc);
+    // SAFETY: `ptr` originates from `Box::into_raw` and remains valid until it is
+    // reconstructed below. The pointer is never null.
+    let result = unsafe { (*ptr).prepare_decoder(mode, channels, channels) };
+    match result {
+        Ok(decoder) => {
+            // SAFETY: Rebuilds the `Box` returned by `Box::into_raw` so the
+            // allocation is managed by Rust again.
+            let alloc = unsafe { Box::from_raw(ptr) };
+            Ok(OwnedCeltDecoder { decoder, alloc })
+        }
+        Err(err) => {
+            // SAFETY: The allocation must be reclaimed when initialisation fails
+            // to avoid leaking memory.
+            unsafe {
+                let _ = Box::from_raw(ptr);
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Releases the resources owned by [`OwnedCeltDecoder`].
+///
+/// The wrapper owns the trailing buffers through its boxed allocation, so
+/// consuming it mirrors the behaviour of `opus_custom_decoder_destroy()`.
+pub(crate) fn opus_custom_decoder_destroy(_decoder: OwnedCeltDecoder<'_>) {}
+
 fn validate_channel_layout(
     channels: usize,
     stream_channels: usize,
@@ -1807,12 +2327,15 @@ mod tests {
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
         DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState,
-        celt_decoder_get_size, celt_decoder_init, comb_filter, opus_custom_decoder_ctl,
-        opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold, prepare_frame,
-        tf_decode, validate_celt_decoder, validate_channel_layout,
+        celt_decoder_get_size, celt_decoder_init, comb_filter, opus_custom_decoder_create,
+        opus_custom_decoder_ctl, opus_custom_decoder_get_size, opus_custom_decoder_init,
+        prefilter_and_fold, prepare_frame, tf_decode, validate_celt_decoder,
+        validate_channel_layout,
     };
     #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
+    use crate::celt::modes::opus_custom_mode_create;
+    use crate::celt::opus_select_arch;
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -1932,6 +2455,32 @@ mod tests {
         let mut alloc = CeltDecoderAlloc::new(mode, 1);
         let err = celt_decoder_init(&mut alloc, 44_100, 1).unwrap_err();
         assert_eq!(err, CeltDecoderInitError::UnsupportedSampleRate);
+    }
+
+    #[test]
+    fn opus_custom_decoder_create_initialises_state() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+
+        let decoder = opus_custom_decoder_create(&mode, 2).expect("decoder");
+
+        assert_eq!(decoder.channels, 2);
+        assert_eq!(decoder.stream_channels, 2);
+        assert_eq!(decoder.downsample, 1);
+        assert_eq!(decoder.start_band, 0);
+        assert_eq!(decoder.end_band, mode.effective_ebands as i32);
+        assert_eq!(decoder.signalling, 1);
+        assert!(!decoder.disable_inv);
+        assert_eq!(decoder.arch, opus_select_arch());
+    }
+
+    #[test]
+    fn opus_custom_decoder_create_rejects_invalid_channel_layouts() {
+        let owned = opus_custom_mode_create(48_000, 960).expect("mode");
+        let mode = owned.mode();
+
+        assert!(opus_custom_decoder_create(&mode, 0).is_err());
+        assert!(opus_custom_decoder_create(&mode, 3).is_err());
     }
 
     #[test]
