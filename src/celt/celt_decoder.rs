@@ -957,6 +957,18 @@ impl<'mode> OwnedCeltDecoder<'mode> {
     }
 }
 
+impl<'mode> AsRef<OwnedCeltDecoder<'mode>> for OwnedCeltDecoder<'mode> {
+    fn as_ref(&self) -> &OwnedCeltDecoder<'mode> {
+        self
+    }
+}
+
+impl<'mode> AsMut<OwnedCeltDecoder<'mode>> for OwnedCeltDecoder<'mode> {
+    fn as_mut(&mut self) -> &mut OwnedCeltDecoder<'mode> {
+        self
+    }
+}
+
 impl<'mode> core::ops::Deref for OwnedCeltDecoder<'mode> {
     type Target = OpusCustomDecoder<'mode>;
 
@@ -1574,6 +1586,10 @@ pub(crate) fn celt_decode_with_ec_dred(
     range_decoder: Option<&mut EcDec<'_>>,
     accum: bool,
 ) -> Result<usize, CeltDecodeError> {
+    // The reference implementation keeps the range decoder internal to the DRED
+    // helper, so passing an external instance would diverge from the validated
+    // control flow.  Mirror that constraint until the stand-alone range decoder
+    // path is ported.
     if range_decoder.into_iter().next().is_some() {
         return Err(CeltDecodeError::BadArgument);
     }
@@ -2269,7 +2285,7 @@ pub(crate) fn opus_custom_decoder_create<'mode>(
 /// consuming it mirrors the behaviour of `opus_custom_decoder_destroy()` in C.
 /// Dropping the wrapper performs all necessary cleanup, so this helper is a
 /// no-op that exists for API parity.
-#[inline(always)]
+#[inline]
 pub(crate) fn opus_custom_decoder_destroy(_decoder: OwnedCeltDecoder<'_>) {}
 
 fn validate_channel_layout(
