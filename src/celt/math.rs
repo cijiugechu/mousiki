@@ -13,9 +13,9 @@ use core::f32::consts::{LOG2_E, PI};
 use crate::celt::entcode::ec_ilog;
 use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
-use libm::{cosf, expf, logf};
 #[cfg(not(miri))]
 use libm::sqrtf;
+use libm::{cosf, expf, logf};
 
 /// Integer square root mirroring `isqrt32()` from `celt/mathops.c`.
 ///

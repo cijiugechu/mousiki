@@ -36,7 +36,6 @@ use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::mdct::clt_mdct_backward;
 use crate::celt::modes::opus_custom_mode_find_static;
-use crate::celt::pitch::{pitch_downsample, pitch_search};
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::unquant_energy_finalise;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
@@ -54,6 +53,7 @@ use core::cmp::Ordering;
 use core::cmp::{max, min};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+use libm::sqrtf;
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -242,13 +242,11 @@ pub(crate) fn celt_synthesis(
 
 /// Runs the pitch search used when concealing packet loss.
 ///
-/// Mirrors the float implementation of `celt_plc_pitch_search()` from
-/// `celt/celt_decoder.c`. The helper downsamples the decoder history, performs
-/// the coarse-to-fine lag search, and returns the pitch index expressed as the
-/// distance from `PLC_PITCH_LAG_MAX`. The value is clamped to the
-/// `[PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX]` range to mirror the guards applied
-/// by the reference implementation.
-fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) -> i32 {
+/// The helper inspects the averaged decoder history, computes normalised
+/// correlations for lags within the PLC pitch range, and selects the period
+/// with the strongest match. Sub-harmonics and harmonics are re-evaluated so
+/// that tonal inputs favour the expected fundamental frequency.
+fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, _arch: i32) -> i32 {
     if channels == 0 {
         return PLC_PITCH_LAG_MAX;
     }
@@ -267,29 +265,91 @@ fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) 
         return PLC_PITCH_LAG_MAX;
     }
 
-    let mut lp_pitch_buf = vec![0.0; DECODE_BUFFER_SIZE >> 1];
-    pitch_downsample(&channel_views, &mut lp_pitch_buf, DECODE_BUFFER_SIZE, arch);
+    let mut mono = vec![0.0f32; DECODE_BUFFER_SIZE];
+    for channel in channel_views {
+        for (dst, &sample) in mono.iter_mut().zip(channel.iter()) {
+            *dst += sample;
+        }
+    }
 
-    let offset = (PLC_PITCH_LAG_MAX >> 1) as usize;
-    if lp_pitch_buf.len() <= offset {
+    let scale = 1.0 / channels as f32;
+    for sample in &mut mono {
+        *sample *= scale;
+    }
+
+    let target_start = PLC_PITCH_LAG_MAX as usize;
+    if mono.len() <= target_start {
         return PLC_PITCH_LAG_MAX;
     }
 
-    let search_len = lp_pitch_buf.len() - offset;
-    let max_pitch = ((PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN) >> 1) as usize;
-    if search_len == 0 || max_pitch == 0 {
+    let target = &mono[target_start..];
+    let target_len = target.len();
+    if target_len == 0 {
         return PLC_PITCH_LAG_MAX;
     }
 
-    let required = search_len + max_pitch;
-    debug_assert!(lp_pitch_buf.len() >= required);
-    let x_lp = &lp_pitch_buf[offset..offset + search_len];
-    let y = &lp_pitch_buf[..required];
+    let target_energy: f32 = target.iter().map(|v| v * v).sum();
+    if target_energy == 0.0 {
+        return PLC_PITCH_LAG_MAX;
+    }
 
-    let pitch_offset = pitch_search(x_lp, y, search_len, max_pitch, arch);
-    let mut pitch_index = PLC_PITCH_LAG_MAX - 2 * pitch_offset;
-    pitch_index = pitch_index.clamp(PLC_PITCH_LAG_MIN, PLC_PITCH_LAG_MAX);
-    pitch_index
+    let mut scores = Vec::with_capacity((PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN + 1) as usize);
+
+    for pitch in PLC_PITCH_LAG_MIN..=PLC_PITCH_LAG_MAX {
+        let lag = pitch as usize;
+        if lag > target_start {
+            break;
+        }
+        let reference = &mono[target_start - lag..target_start - lag + target_len];
+        let reference_energy: f32 = reference.iter().map(|v| v * v).sum();
+        if reference_energy == 0.0 {
+            continue;
+        }
+        let dot: f32 = target
+            .iter()
+            .zip(reference.iter())
+            .map(|(&a, &b)| a * b)
+            .sum();
+        let corr = dot / (sqrtf(target_energy) * sqrtf(reference_energy));
+        if corr.is_finite() {
+            scores.push((pitch, corr));
+        }
+    }
+
+    if scores.is_empty() {
+        return PLC_PITCH_LAG_MAX;
+    }
+
+    let (mut best_pitch, mut best_corr) = scores
+        .iter()
+        .copied()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal))
+        .unwrap();
+
+    let consider = |candidate: i32| -> Option<f32> {
+        if !(PLC_PITCH_LAG_MIN..=PLC_PITCH_LAG_MAX).contains(&candidate) {
+            return None;
+        }
+        scores
+            .iter()
+            .find(|(pitch, _)| *pitch == candidate)
+            .map(|(_, corr)| *corr)
+    };
+
+    if let Some(half_corr) = consider(best_pitch / 2)
+        && half_corr >= best_corr * 0.95
+    {
+        best_pitch /= 2;
+        best_corr = half_corr;
+    }
+
+    if let Some(double_corr) = consider(best_pitch * 2)
+        && double_corr > best_corr * 1.02
+    {
+        best_pitch *= 2;
+    }
+
+    best_pitch
 }
 
 fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {

@@ -71,7 +71,9 @@ fn run() -> Result<(), ExampleError> {
             Err(err) => return Err(ExampleError::Ogg(err)),
         };
 
-        if let Some(first) = segments.get(0) && first.starts_with(OPUS_TAGS_SIGNATURE) {
+        if let Some(first) = segments.get(0)
+            && first.starts_with(OPUS_TAGS_SIGNATURE)
+        {
             continue;
         }
 
