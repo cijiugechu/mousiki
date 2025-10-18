@@ -104,7 +104,7 @@ safely.
   history, and band energy arrays) that follow `CELTDecoder` in the C layout,
   allocating them with Rust `Vec`s and exposing a safe `as_decoder()` helper to
   obtain an `OpusCustomDecoder` view.
-- `OwnedCeltDecoder`, `opus_custom_decoder_create`, and
+- `OwnedCeltDecoder`, `OwnedCeltDecoder::new`, `opus_custom_decoder_create`, and
   `opus_custom_decoder_destroy` &rarr; mirror the custom-mode allocation helper
   from `celt/celt_decoder.c`, boxing the trailing buffers, initialising the
   decoder state, and releasing the storage when the wrapper is dropped.
@@ -168,11 +168,12 @@ safely.
   `celt/celt_decoder.c`, denormalising the band energies, handling mono/stereo
   up/downmixing, applying the appropriate short or long block transforms, and
   saturating the time-domain output before the post-filter consumes it.
-- `celt_decode_with_ec_dred`, `celt_decode_with_ec`, and
-  `opus_custom_decode{,_float,_24}` &rarr; translate the main CELT decoding
-  loop from `celt/celt_decoder.c`, including PVQ band reconstruction,
-  anti-collapse handling, post-filter interpolation, deemphasis, and the PCM
-  conversions required by the 16-bit, 24-bit, and float wrapper APIs.
+- `celt_decode_with_ec_dred`, `celt_decode_with_ec` (currently requiring
+  `range_decoder == None` to match the DRED-only implementation), and
+  `opus_custom_decode{,24,_float}` &rarr; translate the main CELT decoding loop
+  from `celt/celt_decoder.c`, including PVQ band reconstruction, anti-collapse
+  handling, post-filter interpolation, deemphasis, and the PCM conversions
+  required by the 16-bit, 24-bit, and float wrapper APIs.
 
 ### `celt_encoder.rs`
 - `CeltEncoderAlloc` &rarr; mirrors the encoder-side trailing buffers (`in_mem`,

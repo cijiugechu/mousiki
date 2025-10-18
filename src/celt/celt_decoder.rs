@@ -16,6 +16,8 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::BandCodingState;
 use crate::celt::bands::denormalise_bands;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::bands::{anti_collapse, celt_lcg_rand, quant_all_bands};
@@ -945,6 +947,14 @@ impl<'mode> OwnedCeltDecoder<'mode> {
     pub fn decoder(&mut self) -> &mut OpusCustomDecoder<'mode> {
         &mut self.decoder
     }
+
+    /// Creates a new owned decoder for `mode` and `channels`.
+    pub fn new(
+        mode: &'mode OpusCustomMode<'mode>,
+        channels: usize,
+    ) -> Result<Self, CeltDecoderInitError> {
+        opus_custom_decoder_create(mode, channels)
+    }
 }
 
 impl<'mode> core::ops::Deref for OwnedCeltDecoder<'mode> {
@@ -957,6 +967,18 @@ impl<'mode> core::ops::Deref for OwnedCeltDecoder<'mode> {
 
 impl<'mode> core::ops::DerefMut for OwnedCeltDecoder<'mode> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.decoder
+    }
+}
+
+impl<'mode> AsRef<OpusCustomDecoder<'mode>> for OwnedCeltDecoder<'mode> {
+    fn as_ref(&self) -> &OpusCustomDecoder<'mode> {
+        &self.decoder
+    }
+}
+
+impl<'mode> AsMut<OpusCustomDecoder<'mode>> for OwnedCeltDecoder<'mode> {
+    fn as_mut(&mut self) -> &mut OpusCustomDecoder<'mode> {
         &mut self.decoder
     }
 }
@@ -1020,6 +1042,15 @@ impl RangeDecoderState {
     /// Borrows the underlying range decoder with the appropriate lifetime.
     pub(crate) fn decoder(&mut self) -> &mut EcDec<'static> {
         &mut self.decoder
+    }
+
+    /// Borrows the decoder using the mode lifetime expected by band quantisation helpers.
+    pub(crate) fn decoder_for_mode<'mode>(
+        &mut self,
+        _mode: &'mode OpusCustomMode<'mode>,
+    ) -> &mut EcDec<'mode> {
+        // SAFETY: The backing buffer is owned by `self` and outlives the returned borrow.
+        unsafe { core::mem::transmute::<&mut EcDec<'static>, &mut EcDec<'mode>>(&mut self.decoder) }
     }
 }
 
@@ -1543,7 +1574,7 @@ pub(crate) fn celt_decode_with_ec_dred(
     range_decoder: Option<&mut EcDec<'_>>,
     accum: bool,
 ) -> Result<usize, CeltDecodeError> {
-    if range_decoder.is_some() {
+    if range_decoder.into_iter().next().is_some() {
         return Err(CeltDecodeError::BadArgument);
     }
 
@@ -1590,7 +1621,7 @@ pub(crate) fn celt_decode_with_ec_dred(
             n,
             cc,
             downsample,
-            mode.preemph,
+            &mode.pre_emphasis,
             &mut decoder.preemph_mem_decoder,
             accum,
         );
@@ -1602,8 +1633,6 @@ pub(crate) fn celt_decode_with_ec_dred(
         .range_decoder
         .take()
         .ok_or(CeltDecodeError::InvalidPacket)?;
-    let dec = range_state.decoder();
-
     let FramePreparation {
         range_decoder: _,
         tf_res,
@@ -1652,8 +1681,6 @@ pub(crate) fn celt_decode_with_ec_dred(
 
     let mut collapse_masks = vec![0u8; c * nb_ebands];
     let mut spectrum = vec![0.0f32; c * n];
-    let mut coder = BandCodingState::Decoder(dec);
-
     let total_available = total_bits - anti_collapse_rsv;
     let (first_channel, second_channel_opt) = if c == 2 {
         let (left, right) = spectrum.split_at_mut(n);
@@ -1661,35 +1688,42 @@ pub(crate) fn celt_decode_with_ec_dred(
     } else {
         (&mut spectrum[..], None)
     };
-    quant_all_bands(
-        false,
-        mode,
-        start,
-        end,
-        first_channel,
-        second_channel_opt,
-        &mut collapse_masks,
-        &[],
-        &pulses,
-        short_blocks != 0,
-        spread_decision,
-        dual_stereo != 0,
-        intensity.max(0) as usize,
-        &tf_res,
-        total_available,
-        balance,
-        &mut coder,
-        lm as i32,
-        coded_bands.max(0) as usize,
-        &mut decoder.rng,
-        decoder.complexity,
-        decoder.arch,
-        decoder.disable_inv,
-    );
 
+    {
+        let dec = range_state.decoder_for_mode(mode);
+        let mut coder = BandCodingState::Decoder(dec);
+
+        quant_all_bands(
+            false,
+            mode,
+            start,
+            end,
+            first_channel,
+            second_channel_opt,
+            &mut collapse_masks,
+            &[],
+            &pulses,
+            short_blocks != 0,
+            spread_decision,
+            dual_stereo != 0,
+            intensity.max(0) as usize,
+            &tf_res,
+            total_available,
+            balance,
+            &mut coder,
+            lm as i32,
+            coded_bands.max(0) as usize,
+            &mut decoder.rng,
+            decoder.complexity,
+            decoder.arch,
+            decoder.disable_inv,
+        );
+    }
     let mut anti_collapse_on = false;
+    let dec = range_state.decoder_for_mode(mode);
+
     if anti_collapse_rsv > 0 {
-        anti_collapse_on = coder.decode_bits(1) != 0;
+        anti_collapse_on = dec.dec_bits(1) != 0;
     }
 
     let remaining_bits = (packet_len as OpusInt32 * 8) - entcode::ec_tell(dec.ctx());
@@ -1768,9 +1802,10 @@ pub(crate) fn celt_decode_with_ec_dred(
 
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
         let output_start = DECODE_BUFFER_SIZE - n;
+        let channel_len = channel_slice.len();
+        let channel_ptr = channel_slice.as_ptr();
         let output = &mut channel_slice[output_start..output_start + n];
-        let full_channel =
-            unsafe { core::slice::from_raw_parts(channel_slice.as_ptr(), channel_slice.len()) };
+        let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
 
         let first_len = mode.short_mdct_size.min(output.len());
         if first_len > 0 {
@@ -1829,13 +1864,13 @@ pub(crate) fn celt_decode_with_ec_dred(
         right.copy_from_slice(left);
     }
 
-    if !is_transient {
-        decoder.old_log_e2.copy_from_slice(decoder.old_log_e);
-        decoder.old_log_e.copy_from_slice(decoder.old_ebands);
-    } else {
+    if is_transient {
         for (log_e, band_e) in decoder.old_log_e.iter_mut().zip(decoder.old_ebands.iter()) {
             *log_e = (*log_e).min(*band_e);
         }
+    } else {
+        decoder.old_log_e2.copy_from_slice(decoder.old_log_e);
+        decoder.old_log_e.copy_from_slice(decoder.old_ebands);
     }
 
     let increase = ((decoder.loss_duration + m as i32).min(160) as f32) * 0.001;
@@ -1865,6 +1900,9 @@ pub(crate) fn celt_decode_with_ec_dred(
 
     decoder.rng = dec.ctx().rng;
 
+    // TODO: The temporary vectors in this decode path mirror the C implementation's
+    // scratch allocations. Reuse decoder-owned scratch storage once functional
+    // parity is fully established to avoid repeated heap allocations on hot paths.
     let mut deemph_inputs: Vec<&[CeltSig]> = Vec::with_capacity(cc);
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
         let start_idx = DECODE_BUFFER_SIZE - n;
@@ -1879,7 +1917,7 @@ pub(crate) fn celt_decode_with_ec_dred(
         n,
         cc,
         downsample,
-        mode.preemph,
+        &mode.pre_emphasis,
         &mut decoder.preemph_mem_decoder,
         accum,
     );
@@ -2228,7 +2266,10 @@ pub(crate) fn opus_custom_decoder_create<'mode>(
 /// Releases the resources owned by [`OwnedCeltDecoder`].
 ///
 /// The wrapper owns the trailing buffers through its boxed allocation, so
-/// consuming it mirrors the behaviour of `opus_custom_decoder_destroy()`.
+/// consuming it mirrors the behaviour of `opus_custom_decoder_destroy()` in C.
+/// Dropping the wrapper performs all necessary cleanup, so this helper is a
+/// no-op that exists for API parity.
+#[inline(always)]
 pub(crate) fn opus_custom_decoder_destroy(_decoder: OwnedCeltDecoder<'_>) {}
 
 fn validate_channel_layout(
