@@ -1,11 +1,12 @@
 # SILK Porting Status
 
 ## Current Rust Coverage
-- `src/silk/mod.rs` exposes only the `codebook`, `decoder`, and `icdf` modules, along with the `FrameSignalType` and `FrameQuantizationOffsetType` enums used when parsing the bitstream.【F:src/silk/mod.rs†L1-L16】
+- `src/silk/mod.rs` exposes the `codebook`, `decoder`, `icdf`, and `sum_sqr_shift` modules, along with the `FrameSignalType` and `FrameQuantizationOffsetType` enums used when parsing the bitstream.【F:src/silk/mod.rs†L1-L16】
 - `src/silk/icdf.rs` ports the inverse cumulative distribution function tables that drive entropy decoding of gains, LSF codebooks, LTP parameters, and related side information.【F:src/silk/icdf.rs†L1-L185】
 - `src/silk/codebook.rs` mirrors the SILK stage-two LSF vector-quantiser tables used during decoding.【F:src/silk/codebook.rs†L1-L200】
 - `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【F:src/silk/decoder.rs†L200-L700】
 - `src/silk/decoder/nomarlize.rs` (sic) provides Rust representations of several C helper types (`NlsfQ15`, `ResQ10`, `A32Q17`, `Aq12Coefficients`, `Aq12List`) that back the LSF interpolation logic.【F:src/silk/decoder/nomarlize.rs†L1-L220】
+- `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【F:src/silk/sum_sqr_shift.rs†L1-L101】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
