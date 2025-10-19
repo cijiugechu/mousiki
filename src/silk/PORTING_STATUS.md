@@ -7,6 +7,7 @@
 - `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【src/silk/decoder.rs†L200-L700】
 - `src/silk/decoder/nomarlize.rs` (sic) provides Rust representations of several C helper types (`NlsfQ15`, `ResQ10`, `A32Q17`, `Aq12Coefficients`, `Aq12List`) that back the LSF interpolation logic.【src/silk/decoder/nomarlize.rs†L1-L220】
 - `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【src/silk/sum_sqr_shift.rs†L1-L101】
+- `src/silk/lin2log.rs` mirrors the fixed-point approximation of `128 * log2(x)` used throughout the signal-processing helpers, matching `silk_lin2log` from the C sources.【src/silk/lin2log.rs†L1-L72】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -44,7 +45,7 @@ These support libraries are prerequisites for a full port but have not yet been 
 
 ### Resampling and Utility Modules
 - `resampler.c`, `resampler_private_*.c`, `resampler_rom.c`, and `resampler_structs.h` implement the multi-stage resamplers used on the encoder side and for decoder bandwidth transitions.【77a597†L1-L120】【723e57†L1-L100】
-- Helper utilities such as `sum_sqr_shift.c`, `sort.c`, `interpolate.c`, `lin2log.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data.【28a6dc†L1-L44】【a6d7bc†L1-L48】
+- Helper utilities such as `sum_sqr_shift.c`, `sort.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data.【28a6dc†L1-L44】【a6d7bc†L1-L48】
 
 No equivalent Rust modules exist for these resamplers or shared utilities.
 
