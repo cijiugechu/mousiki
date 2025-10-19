@@ -1,12 +1,12 @@
 # SILK Porting Status
 
 ## Current Rust Coverage
-- `src/silk/mod.rs` exposes the `codebook`, `decoder`, `icdf`, and `sum_sqr_shift` modules, along with the `FrameSignalType` and `FrameQuantizationOffsetType` enums used when parsing the bitstream.【F:src/silk/mod.rs†L1-L16】
-- `src/silk/icdf.rs` ports the inverse cumulative distribution function tables that drive entropy decoding of gains, LSF codebooks, LTP parameters, and related side information.【F:src/silk/icdf.rs†L1-L185】
-- `src/silk/codebook.rs` mirrors the SILK stage-two LSF vector-quantiser tables used during decoding.【F:src/silk/codebook.rs†L1-L200】
-- `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【F:src/silk/decoder.rs†L200-L700】
-- `src/silk/decoder/nomarlize.rs` (sic) provides Rust representations of several C helper types (`NlsfQ15`, `ResQ10`, `A32Q17`, `Aq12Coefficients`, `Aq12List`) that back the LSF interpolation logic.【F:src/silk/decoder/nomarlize.rs†L1-L220】
-- `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【F:src/silk/sum_sqr_shift.rs†L1-L101】
+- `src/silk/mod.rs` exposes the `codebook`, `decoder`, `icdf`, and `sum_sqr_shift` modules, along with the `FrameSignalType` and `FrameQuantizationOffsetType` enums used when parsing the bitstream.【src/silk/mod.rs†L1-L16】
+- `src/silk/icdf.rs` ports the inverse cumulative distribution function tables that drive entropy decoding of gains, LSF codebooks, LTP parameters, and related side information.【src/silk/icdf.rs†L1-L185】
+- `src/silk/codebook.rs` mirrors the SILK stage-two LSF vector-quantiser tables used during decoding.【src/silk/codebook.rs†L1-L200】
+- `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【src/silk/decoder.rs†L200-L700】
+- `src/silk/decoder/nomarlize.rs` (sic) provides Rust representations of several C helper types (`NlsfQ15`, `ResQ10`, `A32Q17`, `Aq12Coefficients`, `Aq12List`) that back the LSF interpolation logic.【src/silk/decoder/nomarlize.rs†L1-L220】
+- `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【src/silk/sum_sqr_shift.rs†L1-L101】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -58,20 +58,20 @@ These stereo/bandwidth-extension paths have no representation in the Rust tree.
 
 | Kind | C definition | Purpose | Rust status |
 | --- | --- | --- | --- |
-| Function | `silk_Get_Encoder_Size` (`enc_API.c`) | Returns the size of the encoder state object for allocation.【22c9aa†L47-L72】 | No Rust encoder API; `src/silk` exposes no encoder module.【F:src/silk/mod.rs†L1-L16】 |
-| Function | `silk_InitEncoder` (`enc_API.c`) | Initialises or resets encoder channels and configuration.【29ff48†L18-L60】 | Missing from Rust; no encoder lifecycle implementation exists.【F:src/silk/mod.rs†L1-L16】 |
-| Function | `silk_Encode` (`enc_API.c`) | Top-level frame encode driver managing buffers, transitions, and range coding.【29ff48†L20-L66】 | Not ported; Rust tree lacks encoder entry points.【F:src/silk/mod.rs†L1-L16】 |
-| Function | `silk_LoadOSCEModels` (`dec_API.c`) | Loads optional neural enhancement models into the decoder state.【49e9b1†L34-L68】 | Absent; Rust decoder has no OSCE integration or equivalent hooks.【F:src/silk/decoder.rs†L949-L1206】 |
-| Function | `silk_Get_Decoder_Size` (`dec_API.c`) | Reports the size of the decoder super-structure.【49e9b1†L86-L112】 | Not implemented; Rust exposes a simplified `DecoderBuilder` without size queries.【F:src/silk/decoder.rs†L36-L81】 |
-| Function | `silk_ResetDecoder` / `silk_InitDecoder` (`dec_API.c`) | Reset and initialisation routines for multi-channel decoder state.【1cceb7†L1-L40】【d0e901†L1-L28】 | Missing; Rust lacks channel management and reset APIs.【F:src/silk/mod.rs†L1-L16】 |
-| Function | `silk_Decode` (`dec_API.c`) | High-level frame decode orchestration including PLC and stereo handling.【d0e901†L15-L112】 | Partially covered by `Decoder::decode`, but PLC/stereo paths are absent.【F:src/silk/decoder.rs†L949-L1206】 |
-| Function | `silk_decode_frame` (`decode_frame.c`) | Core per-frame decoder tying together index, pulse, parameter, and PLC steps.【adaec1†L1-L80】 | No direct Rust analogue; current decoder skips PLC, shell, and stereo updates.【F:src/silk/decoder.rs†L949-L1206】 |
-| Function | `silk_decode_parameters` (`decode_parameters.c`) | Reconstructs predictor coefficients, gains, and interpolation weights from bitstream indices.【b6184a†L1-L76】 | Not ported; Rust reconstructs some LSF/LTP data but omits this combined routine.【F:src/silk/decoder.rs†L208-L700】 |
-| Function | `silk_decode_pulses` (`decode_pulses.c`) | Expands entropy-coded pulse data into excitation vectors.【b563fc†L1-L78】 | Partially mirrored by `Decoder::decode_excitation`, but there is no standalone Rust module that matches the C entry point or its shell coder helpers.【F:src/silk/decoder.rs†L1143-L1314】 |
-| Function | `silk_PLC` (`PLC.c`) | Performs packet-loss concealment using decoder history.【f552ca†L1-L94】 | Not implemented; Rust decode path lacks PLC integration.【F:src/silk/decoder.rs†L949-L1206】 |
-| Function | `silk_CNG` (`CNG.c`) | Generates comfort noise during silent periods or packet loss.【a5a877†L1-L64】 | Missing from Rust decoder pipeline.【F:src/silk/decoder.rs†L949-L1206】 |
-| Type | `silk_encoder_state` (`structs.h`) | Full encoder working state including buffers, resamplers, and entropy indices.【6988cc†L1-L60】 | No Rust encoder state struct exists.【F:src/silk/mod.rs†L1-L16】 |
-| Type | `silk_decoder_state` (`structs.h`) | Decoder state with LPC buffers, PLC/CNG members, and channel metadata.【9c7ced†L1-L36】 | Rust `Decoder` is a minimal subset without these fields.【F:src/silk/decoder.rs†L82-L160】 |
-| Type | `silk_decoder_control` (`structs.h`) | Holds decoded predictor coefficients, gains, and LTP parameters for synthesis.【9c7ced†L36-L48】 | Not represented; Rust code uses ad-hoc structures for partial data only.【F:src/silk/decoder.rs†L530-L598】 |
+| Function | `silk_Get_Encoder_Size` (`enc_API.c`) | Returns the size of the encoder state object for allocation.【22c9aa†L47-L72】 | No Rust encoder API; `src/silk` exposes no encoder module.【src/silk/mod.rs†L1-L16】 |
+| Function | `silk_InitEncoder` (`enc_API.c`) | Initialises or resets encoder channels and configuration.【29ff48†L18-L60】 | Missing from Rust; no encoder lifecycle implementation exists.【src/silk/mod.rs†L1-L16】 |
+| Function | `silk_Encode` (`enc_API.c`) | Top-level frame encode driver managing buffers, transitions, and range coding.【29ff48†L20-L66】 | Not ported; Rust tree lacks encoder entry points.【src/silk/mod.rs†L1-L16】 |
+| Function | `silk_LoadOSCEModels` (`dec_API.c`) | Loads optional neural enhancement models into the decoder state.【49e9b1†L34-L68】 | Absent; Rust decoder has no OSCE integration or equivalent hooks.【src/silk/decoder.rs†L949-L1206】 |
+| Function | `silk_Get_Decoder_Size` (`dec_API.c`) | Reports the size of the decoder super-structure.【49e9b1†L86-L112】 | Not implemented; Rust exposes a simplified `DecoderBuilder` without size queries.【src/silk/decoder.rs†L36-L81】 |
+| Function | `silk_ResetDecoder` / `silk_InitDecoder` (`dec_API.c`) | Reset and initialisation routines for multi-channel decoder state.【1cceb7†L1-L40】【d0e901†L1-L28】 | Missing; Rust lacks channel management and reset APIs.【src/silk/mod.rs†L1-L16】 |
+| Function | `silk_Decode` (`dec_API.c`) | High-level frame decode orchestration including PLC and stereo handling.【d0e901†L15-L112】 | Partially covered by `Decoder::decode`, but PLC/stereo paths are absent.【src/silk/decoder.rs†L949-L1206】 |
+| Function | `silk_decode_frame` (`decode_frame.c`) | Core per-frame decoder tying together index, pulse, parameter, and PLC steps.【adaec1†L1-L80】 | No direct Rust analogue; current decoder skips PLC, shell, and stereo updates.【src/silk/decoder.rs†L949-L1206】 |
+| Function | `silk_decode_parameters` (`decode_parameters.c`) | Reconstructs predictor coefficients, gains, and interpolation weights from bitstream indices.【b6184a†L1-L76】 | Not ported; Rust reconstructs some LSF/LTP data but omits this combined routine.【src/silk/decoder.rs†L208-L700】 |
+| Function | `silk_decode_pulses` (`decode_pulses.c`) | Expands entropy-coded pulse data into excitation vectors.【b563fc†L1-L78】 | Partially mirrored by `Decoder::decode_excitation`, but there is no standalone Rust module that matches the C entry point or its shell coder helpers.【src/silk/decoder.rs†L1143-L1314】 |
+| Function | `silk_PLC` (`PLC.c`) | Performs packet-loss concealment using decoder history.【f552ca†L1-L94】 | Not implemented; Rust decode path lacks PLC integration.【src/silk/decoder.rs†L949-L1206】 |
+| Function | `silk_CNG` (`CNG.c`) | Generates comfort noise during silent periods or packet loss.【a5a877†L1-L64】 | Missing from Rust decoder pipeline.【src/silk/decoder.rs†L949-L1206】 |
+| Type | `silk_encoder_state` (`structs.h`) | Full encoder working state including buffers, resamplers, and entropy indices.【6988cc†L1-L60】 | No Rust encoder state struct exists.【src/silk/mod.rs†L1-L16】 |
+| Type | `silk_decoder_state` (`structs.h`) | Decoder state with LPC buffers, PLC/CNG members, and channel metadata.【9c7ced†L1-L36】 | Rust `Decoder` is a minimal subset without these fields.【src/silk/decoder.rs†L82-L160】 |
+| Type | `silk_decoder_control` (`structs.h`) | Holds decoded predictor coefficients, gains, and LTP parameters for synthesis.【9c7ced†L36-L48】 | Not represented; Rust code uses ad-hoc structures for partial data only.【src/silk/decoder.rs†L530-L598】 |
 
 This inventory highlights that the Rust port currently implements only portions of the SILK decoder’s entropy and LPC reconstruction logic. The remaining decoder orchestration, PLC/CNG support, encoder pipeline, and supporting DSP libraries still need to be translated from the C sources.
