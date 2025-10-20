@@ -3,6 +3,7 @@ pub mod decoder;
 pub mod icdf;
 pub mod lin2log;
 pub mod log2lin;
+pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
 
