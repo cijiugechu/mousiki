@@ -16,6 +16,8 @@ pub fn lin2log(in_lin: i32) -> i32 {
     let in_lin_u32 = in_lin as u32;
     let lz = in_lin_u32.leading_zeros() as i32;
 
+    // Rotate so that the leading one sits in bit position seven, making the lower bits the
+    // fractional component of the logarithm in Q7 space.
     let rot = 24 - lz;
     let rotated = if rot >= 0 {
         in_lin_u32.rotate_right(rot as u32)
@@ -25,6 +27,7 @@ pub fn lin2log(in_lin: i32) -> i32 {
     let frac_q7 = rotated & 0x7f;
 
     let product = frac_q7 * (128 - frac_q7);
+    // 179/2^16 is the quadratic correction that tightens the polynomial approximation.
     let correction = frac_q7 + ((i64::from(product) * 179) >> 16) as i32;
 
     ((31 - lz) * 128) + correction
