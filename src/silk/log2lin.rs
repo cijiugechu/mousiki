@@ -25,8 +25,11 @@ pub fn log2lin(in_log_q7: i32) -> i32 {
     let mut out = 1i32 << ((in_log_q7 >> 7) as u32);
     let frac_q7 = in_log_q7 & 0x7f;
     let product = frac_q7 * (128 - frac_q7);
+    // Magic constant derived from Taylor series fitting of 2^(frac / 128)
     let correction = frac_q7 + ((i64::from(product) * -174) >> 16) as i32;
 
+    // Split to multiply before shifting for inputs below 2048 (2^16 output),
+    // shifting first afterwards to avoid overflow while retaining precision
     if in_log_q7 < 2048 {
         out += ((i64::from(out) * i64::from(correction)) >> 7) as i32;
     } else {
