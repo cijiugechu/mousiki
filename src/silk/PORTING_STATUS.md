@@ -9,6 +9,7 @@
 - `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【src/silk/sum_sqr_shift.rs†L1-L101】
 - `src/silk/lin2log.rs` mirrors the fixed-point approximation of `128 * log2(x)` used throughout the signal-processing helpers, matching `silk_lin2log` from the C sources.【src/silk/lin2log.rs†L1-L72】
 - `src/silk/log2lin.rs` provides the companion fixed-point exponential that maps a Q7 log-domain value back to linear amplitude, matching `silk_log2lin` from the C implementation.【src/silk/log2lin.rs†L1-L71】
+- `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -46,7 +47,8 @@ These support libraries are prerequisites for a full port but have not yet been 
 
 ### Resampling and Utility Modules
 - `resampler.c`, `resampler_private_*.c`, `resampler_rom.c`, and `resampler_structs.h` implement the multi-stage resamplers used on the encoder side and for decoder bandwidth transitions.【77a597†L1-L120】【723e57†L1-L100】
-- Helper utilities such as `sum_sqr_shift.c`, `sort.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data.【28a6dc†L1-L44】【a6d7bc†L1-L48】
+- Helper utilities such as `sum_sqr_shift.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data.【28a6dc†L1-L44】【a6d7bc†L1-L48】
+- `sort.c` is now mirrored by `src/silk/sort.rs`, providing the insertion-sort routines used across decoder helpers.【src/silk/sort.rs†L1-L159】
 
 No equivalent Rust modules exist for these resamplers or shared utilities.
 
