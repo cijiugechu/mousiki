@@ -1,7 +1,7 @@
 # SILK Porting Status
 
 ## Current Rust Coverage
-- `src/silk/mod.rs` exposes the `codebook`, `decoder`, `icdf`, and `sum_sqr_shift` modules, along with the `FrameSignalType` and `FrameQuantizationOffsetType` enums used when parsing the bitstream.【src/silk/mod.rs†L1-L16】
+- `src/silk/mod.rs` exposes the `codebook`, `decoder`, `icdf`, `interpolate`, and `sum_sqr_shift` modules, re-exporting the `FrameSignalType`, `FrameQuantizationOffsetType`, and `MAX_LPC_ORDER` items used when parsing the bitstream.【src/silk/mod.rs†L1-L18】
 - `src/silk/icdf.rs` ports the inverse cumulative distribution function tables that drive entropy decoding of gains, LSF codebooks, LTP parameters, and related side information.【src/silk/icdf.rs†L1-L185】
 - `src/silk/codebook.rs` mirrors the SILK stage-two LSF vector-quantiser tables used during decoding.【src/silk/codebook.rs†L1-L200】
 - `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【src/silk/decoder.rs†L200-L700】
@@ -9,6 +9,7 @@
 - `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【src/silk/sum_sqr_shift.rs†L1-L101】
 - `src/silk/lin2log.rs` mirrors the fixed-point approximation of `128 * log2(x)` used throughout the signal-processing helpers, matching `silk_lin2log` from the C sources.【src/silk/lin2log.rs†L1-L72】
 - `src/silk/log2lin.rs` provides the companion fixed-point exponential that maps a Q7 log-domain value back to linear amplitude, matching `silk_log2lin` from the C implementation.【src/silk/log2lin.rs†L1-L71】
+- `src/silk/interpolate.rs` ports the fixed-point helper that interpolates between LPC parameter vectors using a Q2 factor, mirroring `silk_interpolate` from the reference C sources.【src/silk/interpolate.rs†L1-L74】
 - `src/silk/sigm_q15.rs` ports the lookup-table-based sigmoid approximation leveraged by SILK's predictor tuning helpers, mirroring `silk_sigm_Q15` from the reference C sources.【src/silk/sigm_q15.rs†L1-L86】
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
 
@@ -48,10 +49,10 @@ These support libraries are prerequisites for a full port but have not yet been 
 
 ### Resampling and Utility Modules
 - `resampler.c`, `resampler_private_*.c`, `resampler_rom.c`, and `resampler_structs.h` implement the multi-stage resamplers used on the encoder side and for decoder bandwidth transitions.【77a597†L1-L120】【723e57†L1-L100】
-- Helper utilities such as `sum_sqr_shift.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data.【28a6dc†L1-L44】【a6d7bc†L1-L48】
+- Helper utilities such as `sum_sqr_shift.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data; Rust now mirrors the `sum_sqr_shift`, `log2lin`, and `interpolate` helpers via `src/silk/sum_sqr_shift.rs`, `src/silk/log2lin.rs`, and `src/silk/interpolate.rs`, but the lookup tables and remaining utilities stay in C.【28a6dc†L1-L44】【a6d7bc†L1-L48】【src/silk/sum_sqr_shift.rs†L1-L101】【src/silk/log2lin.rs†L1-L71】【src/silk/interpolate.rs†L1-L74】
 - `sort.c` is now mirrored by `src/silk/sort.rs`, providing the insertion-sort routines used across decoder helpers.【src/silk/sort.rs†L1-L159】
 
-No equivalent Rust modules exist for these resamplers or shared utilities.
+Rust still lacks the resampler implementations and lookup tables noted above.
 
 ### Stereo, Bandwidth Extension, and Optional Features
 - Stereo prediction, MS/LR transforms, and predictor quantisation live in `stereo_*.c`, while bandwidth extension and tuning logic appear in files such as `HP_variable_cutoff.c`, `LP_variable_cutoff.c`, and `tuning_parameters.h`. Optional OSCE support is wired through additional headers referenced by the decoder API.【6e5ae6†L1-L44】【03d532†L1-L60】

@@ -1,11 +1,14 @@
 pub mod codebook;
 pub mod decoder;
 pub mod icdf;
+pub mod interpolate;
 pub mod lin2log;
 pub mod log2lin;
 pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
+
+pub use interpolate::MAX_LPC_ORDER;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrameSignalType {
