@@ -19,6 +19,7 @@
 - `src/silk/tables_other.rs` now provides the remaining stereo predictor, LBRR flag, uniform entropy, quantisation offset, and transition filter tables sourced from `silk/tables_other.c`, along with associated constants shared across SILK's stereo and bandwidth-transition paths.【src/silk/tables_other.rs†L1-L75】
 - `src/silk/resampler_down2.rs` ports the fixed-point 2× downsampler used by SILK's resampling pipeline, mirroring the all-pass structure in `silk/resampler_down2.c` and relying on the ROM coefficients from `silk/resampler_rom.h`.【src/silk/resampler_down2.rs†L1-L82】
 - `src/silk/bwexpander.rs` mirrors the chirp-based LPC bandwidth expander from `silk/bwexpander.c`, applying the fixed-point helper that shrinks LPC magnitudes during prediction setup.【src/silk/bwexpander.rs†L1-L83】【opus-c/opus-main/silk/bwexpander.c†L34-L49】
+- `src/silk/bwexpander_32.rs` ports the 32-bit variant of the LPC bandwidth-expansion helper from `silk/bwexpander_32.c`, applying the same chirp logic to full-precision predictor coefficients used in resampling and analysis paths.【src/silk/bwexpander_32.rs†L1-L66】【opus-c/opus-main/silk/bwexpander_32.c†L34-L51】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 

@@ -1,4 +1,5 @@
 pub mod bwexpander;
+pub mod bwexpander_32;
 pub mod codebook;
 pub mod decoder;
 pub mod icdf;
