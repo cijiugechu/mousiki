@@ -17,6 +17,7 @@
 - `src/silk/tables_gain.rs` mirrors the quantization gain iCDF tables and associated delta-gain bounds defined in `silk/tables_gain.c`, supplying the lookup data used when decoding independent and delta gain indices.【src/silk/tables_gain.rs†L1-L31】【opus-c/silk/tables_gain.c†L1-L55】
 - `src/silk/table_lsf_cos.rs` ports the fixed-point cosine lookup table used when converting LSFs to cosines, matching the values from `silk/table_LSF_cos.c`.【src/silk/table_lsf_cos.rs†L1-L26】【opus-c/opus-main/silk/table_LSF_cos.c†L1-L69】
 - `src/silk/tables_other.rs` now provides the remaining stereo predictor, LBRR flag, uniform entropy, quantisation offset, and transition filter tables sourced from `silk/tables_other.c`, along with associated constants shared across SILK's stereo and bandwidth-transition paths.【src/silk/tables_other.rs†L1-L75】
+- `src/silk/resampler_down2.rs` ports the fixed-point 2× downsampler used by SILK's resampling pipeline, mirroring the all-pass structure in `silk/resampler_down2.c` and relying on the ROM coefficients from `silk/resampler_rom.h`.【src/silk/resampler_down2.rs†L1-L82】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -57,7 +58,7 @@ These support libraries are prerequisites for a full port but have not yet been 
 - Helper utilities such as `sum_sqr_shift.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`) supply math helpers and lookup data; Rust now mirrors the `sum_sqr_shift`, `log2lin`, `interpolate`, `tables_pitch_lag`, `tables_pulses_per_block`, `tables_gain`, and `table_LSF_cos` helpers via `src/silk/sum_sqr_shift.rs`, `src/silk/log2lin.rs`, `src/silk/interpolate.rs`, `src/silk/tables_pitch_lag.rs`, `src/silk/tables_pulses_per_block.rs`, `src/silk/tables_gain.rs`, and `src/silk/table_lsf_cos.rs`, but the remaining lookup tables stay in C.【28a6dc†L1-L44】【a6d7bc†L1-L48】【src/silk/sum_sqr_shift.rs†L1-L101】【src/silk/log2lin.rs†L1-L71】【src/silk/interpolate.rs†L1-L74】【src/silk/tables_pitch_lag.rs†L1-L29】【src/silk/tables_pulses_per_block.rs】【src/silk/tables_gain.rs†L1-L31】【src/silk/table_lsf_cos.rs†L1-L26】
 - `sort.c` is now mirrored by `src/silk/sort.rs`, providing the insertion-sort routines used across decoder helpers.【src/silk/sort.rs†L1-L159】
 
-Rust still lacks the resampler implementations and lookup tables noted above.
+Rust still lacks the more elaborate fractional and multi-stage resampler implementations noted above; only the basic 2× downsampler has been ported so far via `src/silk/resampler_down2.rs`.【src/silk/resampler_down2.rs†L1-L82】
 
 ### Stereo, Bandwidth Extension, and Optional Features
 - Stereo prediction, MS/LR transforms, and predictor quantisation live in `stereo_*.c`, while bandwidth extension and tuning logic appear in files such as `HP_variable_cutoff.c`, `LP_variable_cutoff.c`, and `tuning_parameters.h`. Optional OSCE support is wired through additional headers referenced by the decoder API.【6e5ae6†L1-L44】【03d532†L1-L60】

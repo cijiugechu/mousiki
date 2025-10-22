@@ -4,6 +4,7 @@ pub mod icdf;
 pub mod interpolate;
 pub mod lin2log;
 pub mod log2lin;
+pub mod resampler_down2;
 pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
