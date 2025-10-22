@@ -7,6 +7,7 @@ pub mod log2lin;
 pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
+pub mod table_lsf_cos;
 pub mod tables_gain;
 pub mod tables_other;
 pub mod tables_pitch_lag;
