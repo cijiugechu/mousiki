@@ -8,6 +8,7 @@ pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
 pub mod tables_pulses_per_block;
+pub mod tables_pitch_lag;
 
 pub use interpolate::MAX_LPC_ORDER;
 
