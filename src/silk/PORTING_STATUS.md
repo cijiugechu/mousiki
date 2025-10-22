@@ -12,6 +12,7 @@
 - `src/silk/interpolate.rs` ports the fixed-point helper that interpolates between LPC parameter vectors using a Q2 factor, mirroring `silk_interpolate` from the reference C sources.【src/silk/interpolate.rs†L1-L74】
 - `src/silk/sigm_q15.rs` ports the lookup-table-based sigmoid approximation leveraged by SILK's predictor tuning helpers, mirroring `silk_sigm_Q15` from the reference C sources.【src/silk/sigm_q15.rs†L1-L86】
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
+- `src/silk/tables_pulses_per_block.rs` mirrors the shell coder probability tables for rate levels, pulse counts, and sign decoding, replacing the lookup data from `silk/tables_pulses_per_block.c`.【src/silk/tables_pulses_per_block.rs】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -49,7 +50,7 @@ These support libraries are prerequisites for a full port but have not yet been 
 
 ### Resampling and Utility Modules
 - `resampler.c`, `resampler_private_*.c`, `resampler_rom.c`, and `resampler_structs.h` implement the multi-stage resamplers used on the encoder side and for decoder bandwidth transitions.【77a597†L1-L120】【723e57†L1-L100】
-- Helper utilities such as `sum_sqr_shift.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data; Rust now mirrors the `sum_sqr_shift`, `log2lin`, and `interpolate` helpers via `src/silk/sum_sqr_shift.rs`, `src/silk/log2lin.rs`, and `src/silk/interpolate.rs`, but the lookup tables and remaining utilities stay in C.【28a6dc†L1-L44】【a6d7bc†L1-L48】【src/silk/sum_sqr_shift.rs†L1-L101】【src/silk/log2lin.rs†L1-L71】【src/silk/interpolate.rs†L1-L74】
+- Helper utilities such as `sum_sqr_shift.c`, `interpolate.c`, `log2lin.c`, and table files (`tables_*.c`, `table_LSF_cos.c`) supply math helpers and lookup data; Rust now mirrors the `sum_sqr_shift`, `log2lin`, `interpolate`, and `tables_pulses_per_block` helpers via `src/silk/sum_sqr_shift.rs`, `src/silk/log2lin.rs`, `src/silk/interpolate.rs`, and `src/silk/tables_pulses_per_block.rs`, but the remaining lookup tables stay in C.【28a6dc†L1-L44】【a6d7bc†L1-L48】【src/silk/sum_sqr_shift.rs†L1-L101】【src/silk/log2lin.rs†L1-L71】【src/silk/interpolate.rs†L1-L74】【src/silk/tables_pulses_per_block.rs】
 - `sort.c` is now mirrored by `src/silk/sort.rs`, providing the insertion-sort routines used across decoder helpers.【src/silk/sort.rs†L1-L159】
 
 Rust still lacks the resampler implementations and lookup tables noted above.
