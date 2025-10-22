@@ -1,3 +1,4 @@
+pub mod bwexpander;
 pub mod codebook;
 pub mod decoder;
 pub mod icdf;
