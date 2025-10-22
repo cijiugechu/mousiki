@@ -7,8 +7,9 @@ pub mod log2lin;
 pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
-pub mod tables_pulses_per_block;
+pub mod tables_other;
 pub mod tables_pitch_lag;
+pub mod tables_pulses_per_block;
 
 pub use interpolate::MAX_LPC_ORDER;
 
