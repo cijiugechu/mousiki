@@ -77,12 +77,19 @@ pub static SILK_SIGN_ICDF: [u8; 42] =
 [254,  49,  67,  77,  82,  93,  99, 198,  11,  18,  24,  31,  36,  45, 255,  46,  66,  78,  87,  94, 104, 208,  14,  21,  32,  42,  51,  66, 255,  94, 104, 109, 112, 115, 118, 248,  53,  69,  80,  88,  95, 102];
 
 // Compile-time shape checks
+const _: [(); 4] = [(); SILK_MAX_PULSES_TABLE.len()];
 const _: [(); 10] = [(); SILK_PULSES_PER_BLOCK_ICDF.len()];
 const _: [(); 18] = [(); SILK_PULSES_PER_BLOCK_ICDF[0].len()];
 const _: [(); 9] = [(); SILK_PULSES_PER_BLOCK_BITS_Q5.len()];
 const _: [(); 18] = [(); SILK_PULSES_PER_BLOCK_BITS_Q5[0].len()];
 const _: [(); 2] = [(); SILK_RATE_LEVELS_ICDF.len()];
 const _: [(); 9] = [(); SILK_RATE_LEVELS_ICDF[0].len()];
+const _: [(); 152] = [(); SILK_SHELL_CODE_TABLE0.len()];
+const _: [(); 152] = [(); SILK_SHELL_CODE_TABLE1.len()];
+const _: [(); 152] = [(); SILK_SHELL_CODE_TABLE2.len()];
+const _: [(); 152] = [(); SILK_SHELL_CODE_TABLE3.len()];
+const _: [(); 17] = [(); SILK_SHELL_CODE_TABLE_OFFSETS.len()];
+const _: [(); 42] = [(); SILK_SIGN_ICDF.len()];
 
 #[cfg(test)]
 mod tests {
@@ -90,6 +97,10 @@ mod tests {
 
     fn is_nonincreasing(xs: &[u8]) -> bool {
         xs.windows(2).all(|window| window[0] >= window[1])
+    }
+
+    fn is_nondecreasing(xs: &[u8]) -> bool {
+        xs.windows(2).all(|window| window[0] <= window[1])
     }
 
     #[test]
@@ -105,6 +116,20 @@ mod tests {
         for row in SILK_RATE_LEVELS_ICDF.iter() {
             assert_eq!(*row.last().unwrap(), 0);
             assert!(is_nonincreasing(row));
+        }
+    }
+
+    #[test]
+    fn sign_icdf_well_formed() {
+        const CHUNK: usize = 7;
+        assert_eq!(SILK_SIGN_ICDF.len() % CHUNK, 0);
+
+        for chunk in SILK_SIGN_ICDF.chunks(CHUNK) {
+            let (head, tail) = chunk.split_first().unwrap();
+            assert_eq!(tail.len(), CHUNK - 1);
+            assert!(*head >= 128);
+            assert!(is_nondecreasing(tail));
+            assert!(tail.iter().all(|value| value < head));
         }
     }
 }
