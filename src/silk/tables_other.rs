@@ -1,0 +1,69 @@
+pub const STEREO_QUANT_TAB_SIZE: usize = 16;
+pub const STEREO_QUANT_SUB_STEPS: usize = 5;
+
+pub const OFFSET_VL_Q10: i16 = 32;
+pub const OFFSET_VH_Q10: i16 = 100;
+pub const OFFSET_UVL_Q10: i16 = 100;
+pub const OFFSET_UVH_Q10: i16 = 240;
+
+pub const TRANSITION_INT_NUM: usize = 5;
+pub const TRANSITION_NB: usize = 3;
+pub const TRANSITION_NA: usize = 2;
+
+pub const SILK_STEREO_PRED_QUANT_Q13: [i16; STEREO_QUANT_TAB_SIZE] = [
+    -13732, -10050, -8266, -7526, -6500, -5000, -2950, -820, 820, 2950, 5000, 6500, 7526, 8266,
+    10050, 13732,
+];
+
+pub const SILK_STEREO_PRED_JOINT_ICDF: [u8; 25] = [
+    249, 247, 246, 245, 244, 234, 210, 202, 201, 200, 197, 174, 82, 59, 56, 55, 54, 46, 22, 12, 11,
+    10, 9, 7, 0,
+];
+
+pub const SILK_STEREO_ONLY_CODE_MID_ICDF: [u8; 2] = [64, 0];
+
+pub const SILK_LBRR_FLAGS_2_ICDF: [u8; 3] = [203, 150, 0];
+pub const SILK_LBRR_FLAGS_3_ICDF: [u8; 7] = [215, 195, 166, 125, 110, 82, 0];
+
+pub const SILK_LBRR_FLAGS_ICDF_PTR: [&[u8]; 2] = [&SILK_LBRR_FLAGS_2_ICDF, &SILK_LBRR_FLAGS_3_ICDF];
+
+pub const SILK_LSB_ICDF: [u8; 2] = [120, 0];
+
+pub const SILK_LTPSCALE_ICDF: [u8; 3] = [128, 64, 0];
+
+pub const SILK_TYPE_OFFSET_VAD_ICDF: [u8; 4] = [232, 158, 10, 0];
+
+pub const SILK_TYPE_OFFSET_NO_VAD_ICDF: [u8; 2] = [230, 0];
+
+pub const SILK_NLSF_INTERPOLATION_FACTOR_ICDF: [u8; 5] = [243, 221, 192, 181, 0];
+
+pub const SILK_QUANTIZATION_OFFSETS_Q10: [[i16; 2]; 2] = [
+    [OFFSET_UVL_Q10, OFFSET_UVH_Q10],
+    [OFFSET_VL_Q10, OFFSET_VH_Q10],
+];
+
+pub const SILK_LTPSCALES_TABLE_Q14: [i16; 3] = [15565, 12288, 8192];
+
+pub const SILK_UNIFORM3_ICDF: [u8; 3] = [171, 85, 0];
+pub const SILK_UNIFORM4_ICDF: [u8; 4] = [192, 128, 64, 0];
+pub const SILK_UNIFORM5_ICDF: [u8; 5] = [205, 154, 102, 51, 0];
+pub const SILK_UNIFORM6_ICDF: [u8; 6] = [213, 171, 128, 85, 43, 0];
+pub const SILK_UNIFORM8_ICDF: [u8; 8] = [224, 192, 160, 128, 96, 64, 32, 0];
+
+pub const SILK_NLSF_EXT_ICDF: [u8; 7] = [100, 40, 16, 7, 3, 1, 0];
+
+pub const SILK_TRANSITION_LP_B_Q28: [[i32; TRANSITION_NB]; TRANSITION_INT_NUM] = [
+    [250_767_114, 501_534_038, 250_767_114],
+    [209_867_381, 419_732_057, 209_867_381],
+    [170_987_846, 341_967_853, 170_987_846],
+    [131_531_482, 263_046_905, 131_531_482],
+    [89_306_658, 178_584_282, 89_306_658],
+];
+
+pub const SILK_TRANSITION_LP_A_Q28: [[i32; TRANSITION_NA]; TRANSITION_INT_NUM] = [
+    [506_393_414, 239_854_379],
+    [411_067_935, 169_683_996],
+    [306_733_530, 116_694_253],
+    [185_807_084, 77_959_395],
+    [35_497_197, 57_401_098],
+];

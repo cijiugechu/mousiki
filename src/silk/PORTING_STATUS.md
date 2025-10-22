@@ -14,6 +14,7 @@
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
 - `src/silk/tables_pulses_per_block.rs` mirrors the shell coder probability tables for rate levels, pulse counts, and sign decoding, replacing the lookup data from `silk/tables_pulses_per_block.c`.【src/silk/tables_pulses_per_block.rs】
 - `src/silk/tables_pitch_lag.rs` ports the iCDF tables that parameterise SILK's pitch-lag estimation and contour decoding, matching `silk/tables_pitch_lag.c`.【src/silk/tables_pitch_lag.rs†L1-L29】
+- `src/silk/tables_other.rs` now provides the remaining stereo predictor, LBRR flag, uniform entropy, quantisation offset, and transition filter tables sourced from `silk/tables_other.c`, along with associated constants shared across SILK's stereo and bandwidth-transition paths.【src/silk/tables_other.rs†L1-L75】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
