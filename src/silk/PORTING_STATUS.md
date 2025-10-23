@@ -10,6 +10,7 @@
 - `src/silk/lin2log.rs` mirrors the fixed-point approximation of `128 * log2(x)` used throughout the signal-processing helpers, matching `silk_lin2log` from the C sources.【src/silk/lin2log.rs†L1-L72】
 - `src/silk/log2lin.rs` provides the companion fixed-point exponential that maps a Q7 log-domain value back to linear amplitude, matching `silk_log2lin` from the C implementation.【src/silk/log2lin.rs†L1-L71】
 - `src/silk/interpolate.rs` ports the fixed-point helper that interpolates between LPC parameter vectors using a Q2 factor, mirroring `silk_interpolate` from the reference C sources.【src/silk/interpolate.rs†L1-L74】
+- `src/silk/inner_prod_aligned.rs` mirrors the scaled 16-bit inner-product helper from `silk/inner_prod_aligned.c`, exposing `inner_prod_aligned_scale` for resamplers and vector kernels that need partial products.【src/silk/inner_prod_aligned.rs†L1-L71】【opus-main/silk/inner_prod_aligned.c†L1-L48】
 - `src/silk/sigm_q15.rs` ports the lookup-table-based sigmoid approximation leveraged by SILK's predictor tuning helpers, mirroring `silk_sigm_Q15` from the reference C sources.【src/silk/sigm_q15.rs†L1-L86】
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
 - `src/silk/tables_pulses_per_block.rs` mirrors the shell coder probability tables for rate levels, pulse counts, and sign decoding, replacing the lookup data from `silk/tables_pulses_per_block.c`.【src/silk/tables_pulses_per_block.rs】
