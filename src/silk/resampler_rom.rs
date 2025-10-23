@@ -1,7 +1,9 @@
 //! Coefficient tables used by SILK's fixed-point resamplers.
 //!
-//! This module mirrors the lookup tables declared in `silk/resampler_rom.c`
-//! and `silk/resampler_rom.h` from the reference Opus implementation.
+//! Ported from `silk/resampler_rom.c` and `silk/resampler_rom.h` in the reference
+//! Opus implementation.
+//! Source: https://gitlab.xiph.org/xiph/opus/-/blob/v1.5.2/silk/resampler_rom.c
+//! Values copied verbatim; see the upstream license header for provenance.
 
 /// Order of the first fractional downsampler FIR sections.
 pub const RESAMPLER_DOWN_ORDER_FIR0: usize = 18;
@@ -155,5 +157,26 @@ mod tests {
         assert_eq!(SILK_RESAMPLER_2_3_COEFS_LQ[3], 10_739);
         assert_eq!(SILK_RESAMPLER_FRAC_FIR_12[0], [189, -600, 617, 30_567]);
         assert_eq!(SILK_RESAMPLER_FRAC_FIR_12[11], [-46, 425, -1_375, 2_996]);
+    }
+
+    #[test]
+    fn tables_have_stable_checksums() {
+        fn sum_i32(xs: &[i16]) -> i32 {
+            xs.iter().map(|&v| i32::from(v)).sum()
+        }
+
+        assert_eq!(sum_i32(&SILK_RESAMPLER_3_4_COEFS), 41_839);
+        assert_eq!(sum_i32(&SILK_RESAMPLER_2_3_COEFS), 16_660);
+        assert_eq!(sum_i32(&SILK_RESAMPLER_1_2_COEFS), 1_386);
+        assert_eq!(sum_i32(&SILK_RESAMPLER_1_3_COEFS), 8_672);
+        assert_eq!(sum_i32(&SILK_RESAMPLER_1_4_COEFS), 11_870);
+        assert_eq!(sum_i32(&SILK_RESAMPLER_1_6_COEFS), 14_345);
+        assert_eq!(sum_i32(&SILK_RESAMPLER_2_3_COEFS_LQ), 15_975);
+
+        let mut frac_sum = 0;
+        for row in SILK_RESAMPLER_FRAC_FIR_12.iter() {
+            frac_sum += sum_i32(row);
+        }
+        assert_eq!(frac_sum, 196_636);
     }
 }
