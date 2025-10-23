@@ -28,11 +28,7 @@ pub fn inner_prod_aligned_scale(in_vec1: &[i16], in_vec2: &[i16], scale: i32) ->
     let mut sum = 0i32;
     for (&a, &b) in in_vec1.iter().zip(in_vec2.iter()) {
         let product = i32::from(a) * i32::from(b);
-        let shifted = if scale == 0 {
-            product
-        } else {
-            product >> scale
-        };
+        let shifted = product >> scale;
         sum = sum.wrapping_add(shifted);
     }
 
