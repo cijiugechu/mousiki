@@ -7,8 +7,8 @@
 //! calls.
 
 /// Q15 coefficients lifted from `silk/resampler_rom.h`.
-const RESAMPLER_DOWN2_COEF0: i32 = 9_872;
-const RESAMPLER_DOWN2_COEF1: i32 = 39_809 - 65_536;
+const RESAMPLER_DOWN2_COEF0: i32 = super::resampler_rom::SILK_RESAMPLER_DOWN2_0 as i32;
+const RESAMPLER_DOWN2_COEF1: i32 = super::resampler_rom::SILK_RESAMPLER_DOWN2_1 as i32;
 
 /// Downsamples `input` by a factor of two using first-order all-pass sections.
 ///
