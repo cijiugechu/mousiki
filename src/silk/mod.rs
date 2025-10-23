@@ -3,6 +3,7 @@ pub mod bwexpander_32;
 pub mod codebook;
 pub mod decoder;
 pub mod icdf;
+pub mod inner_prod_aligned;
 pub mod interpolate;
 pub mod lin2log;
 pub mod log2lin;
