@@ -7,6 +7,7 @@ pub mod inner_prod_aligned;
 pub mod interpolate;
 pub mod lin2log;
 pub mod log2lin;
+pub mod pitch_est_tables;
 pub mod resampler_down2;
 pub mod sigm_q15;
 pub mod sort;
