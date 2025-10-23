@@ -6,9 +6,11 @@
 //! Q10 precision and keep a small `[i32; 2]` state that tracks their running sums between
 //! calls.
 
+use super::resampler_rom::{SILK_RESAMPLER_DOWN2_0, SILK_RESAMPLER_DOWN2_1};
+
 /// Q15 coefficients lifted from `silk/resampler_rom.h`.
-const RESAMPLER_DOWN2_COEF0: i32 = 9_872;
-const RESAMPLER_DOWN2_COEF1: i32 = 39_809 - 65_536;
+const RESAMPLER_DOWN2_COEF0: i16 = SILK_RESAMPLER_DOWN2_0;
+const RESAMPLER_DOWN2_COEF1: i16 = SILK_RESAMPLER_DOWN2_1;
 
 /// Downsamples `input` by a factor of two using first-order all-pass sections.
 ///
@@ -36,13 +38,13 @@ pub fn resampler_down2(state: &mut [i32; 2], output: &mut [i16], input: &[i16]) 
     for k in 0..len2 {
         let mut in32 = i32::from(input[2 * k]) << 10;
         let mut y = in32 - state[0];
-        let mut x = smlawb(y, y, RESAMPLER_DOWN2_COEF1);
+        let mut x = smlawb(y, y, i32::from(RESAMPLER_DOWN2_COEF1));
         let mut out32 = state[0] + x;
         state[0] = in32 + x;
 
         in32 = i32::from(input[2 * k + 1]) << 10;
         y = in32 - state[1];
-        x = smulwb(y, RESAMPLER_DOWN2_COEF0);
+        x = smulwb(y, i32::from(RESAMPLER_DOWN2_COEF0));
         out32 += state[1];
         out32 += x;
         state[1] = in32 + x;

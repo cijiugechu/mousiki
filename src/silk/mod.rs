@@ -9,6 +9,7 @@ pub mod lin2log;
 pub mod log2lin;
 pub mod pitch_est_tables;
 pub mod resampler_down2;
+pub mod resampler_rom;
 pub mod sigm_q15;
 pub mod sort;
 pub mod sum_sqr_shift;
