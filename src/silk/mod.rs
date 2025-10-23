@@ -12,6 +12,7 @@ pub mod sort;
 pub mod sum_sqr_shift;
 pub mod table_lsf_cos;
 pub mod tables_gain;
+pub mod tables_nlsf_cb_nb_mb;
 pub mod tables_nlsf_cb_wb;
 pub mod tables_other;
 pub mod tables_pitch_lag;
