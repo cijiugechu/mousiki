@@ -1,3 +1,4 @@
+pub mod biquad_alt;
 pub mod bwexpander;
 pub mod bwexpander_32;
 pub mod codebook;
