@@ -9,6 +9,7 @@ pub mod interpolate;
 pub mod lin2log;
 pub mod log2lin;
 pub mod lpc_inv_pred_gain;
+pub mod nlsf_unpack;
 pub mod pitch_est_tables;
 pub mod resampler_down2;
 pub mod resampler_rom;
