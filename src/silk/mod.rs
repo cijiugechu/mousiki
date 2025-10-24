@@ -1,3 +1,4 @@
+pub mod ana_filt_bank_1;
 pub mod biquad_alt;
 pub mod bwexpander;
 pub mod bwexpander_32;
