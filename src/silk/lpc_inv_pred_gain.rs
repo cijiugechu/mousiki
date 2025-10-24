@@ -161,7 +161,7 @@ fn smmul(a: i32, b: i32) -> i32 {
 }
 
 fn smulwb(a: i32, b: i32) -> i32 {
-    ((i64::from(a) * i64::from(b as i16)) >> 16) as i32
+    ((i64::from(a) * i64::from(b)) >> 16) as i32
 }
 
 fn smlaww(a: i32, b: i32, c: i32) -> i32 {
@@ -219,6 +219,7 @@ mod tests {
         lpc_inverse_pred_gain,
         mul32_frac_q,
         smmul,
+        smulwb,
         sub_sat32,
         QA,
         SILK_MAX_ORDER_LPC,
@@ -266,5 +267,22 @@ mod tests {
         assert_eq!(sub_sat32(i32::MAX, -1), i32::MAX);
         assert_eq!(mul32_frac_q(1 << QA, 1 << (31 - QA), 31), 1);
         assert_eq!(inverse32_varq(1 << 30, 31), 1);
+    }
+
+    #[test]
+    fn smulwb_uses_full_word_of_b() {
+        let a = 1 << 20;
+
+        let positive_high_bits = 0x1234_8000;
+        let expected_positive = ((i64::from(a) * i64::from(positive_high_bits)) >> 16) as i32;
+        assert_eq!(smulwb(a, positive_high_bits), expected_positive);
+
+        let negative_high_bits = 0x8765_8000u32 as i32;
+        let expected_negative = ((i64::from(a) * i64::from(negative_high_bits)) >> 16) as i32;
+        assert_eq!(smulwb(a, negative_high_bits), expected_negative);
+
+        let top_bit_set = i32::MIN >> 1; // 0xC000_0000
+        let expected_top_bit = ((i64::from(a) * i64::from(top_bit_set)) >> 16) as i32;
+        assert_eq!(smulwb(a, top_bit_set), expected_top_bit);
     }
 }
