@@ -9,8 +9,10 @@
 use core::cmp::max;
 
 const QA: i32 = 24;
-const A_LIMIT: i32 = ((0.99975 * ((1u64 << QA) as f64)) + 0.5) as i32;
-const MIN_INV_GAIN_Q30: i32 = ((0.0001 * ((1u64 << 30) as f64)) + 0.5) as i32; // 1 / 1e4 in Q30
+// 0.99975 == 3999 / 4000 with rounding.
+const A_LIMIT: i32 = (((1i64 << QA) * 3999 + 2000) / 4000) as i32;
+// 0.0001 == 1 / 10_000 with rounding.
+const MIN_INV_GAIN_Q30: i32 = (((1i64 << 30) + 5_000) / 10_000) as i32;
 
 /// Maximum LPC order handled by the fixed-point helpers.
 pub const SILK_MAX_ORDER_LPC: usize = 24;
@@ -23,7 +25,11 @@ pub const SILK_MAX_ORDER_LPC: usize = 24;
 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub fn lpc_inverse_pred_gain(a_q12: &[i16]) -> i32 {
     let order = a_q12.len();
-    assert!(order > 0, "LPC order must be strictly positive");
+    if order == 0 {
+        // Unity gain for zero-tap predictor.
+        return 1 << 30;
+    }
+    debug_assert!(order > 0, "LPC order must be strictly positive");
     assert!(
         order <= SILK_MAX_ORDER_LPC,
         "order {} exceeds {}",
@@ -124,8 +130,11 @@ fn update_coefficient(
 }
 
 fn inverse32_varq(b32: i32, qres: i32) -> i32 {
-    assert!(b32 != 0);
-    assert!(qres > 0);
+    debug_assert!(b32 != 0);
+    debug_assert!(qres > 0);
+    if b32 == 0 || qres <= 0 {
+        return 0;
+    }
 
     let abs_b32 = max(b32.abs(), 1);
     let b_headroom = leading_zeros_i32(abs_b32) - 1;
@@ -161,7 +170,7 @@ fn smlaww(a: i32, b: i32, c: i32) -> i32 {
 
 fn shift_left(value: i32, shift: i32) -> i32 {
     debug_assert!((0..32).contains(&shift));
-    value << shift
+    value.wrapping_shl(shift as u32)
 }
 
 fn saturating_lshift(value: i32, shift: i32) -> i32 {
@@ -205,7 +214,15 @@ fn leading_zeros_i32(value: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{QA, inverse32_varq, lpc_inverse_pred_gain, mul32_frac_q, smmul, sub_sat32};
+    use super::{
+        inverse32_varq,
+        lpc_inverse_pred_gain,
+        mul32_frac_q,
+        smmul,
+        sub_sat32,
+        QA,
+        SILK_MAX_ORDER_LPC,
+    };
 
     #[test]
     fn computes_gain_for_simple_predictor() {
@@ -226,9 +243,21 @@ mod tests {
     }
 
     #[test]
+    fn zero_tap_predictor_returns_unity_gain() {
+        let coeffs: [i16; 0] = [];
+        assert_eq!(lpc_inverse_pred_gain(&coeffs), 1 << 30);
+    }
+
+    #[test]
     fn matches_reference_for_asymmetric_predictor() {
         let coeffs = [3000, -2000, 1000, -500];
         assert_eq!(lpc_inverse_pred_gain(&coeffs), 691_862_120);
+    }
+
+    #[test]
+    fn handles_max_order_predictor() {
+        let coeffs = [0i16; SILK_MAX_ORDER_LPC];
+        assert_eq!(lpc_inverse_pred_gain(&coeffs), 1 << 30);
     }
 
     #[test]
