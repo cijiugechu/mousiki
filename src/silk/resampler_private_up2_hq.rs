@@ -20,6 +20,14 @@ impl ResamplerStateUp2Hq {
     pub const fn new() -> Self {
         Self { s_iir: [0; 6] }
     }
+
+    pub fn resampler_private_up2_hq_wrapper(
+        &mut self,
+        output: &mut [i16],
+        input: &[i16],
+    ) {
+        resampler_private_up2_hq(&mut self.s_iir, output, input);
+    }
 }
 
 /// Runs the high-quality 2× upsampler on `input`, writing interleaved even/odd samples
@@ -80,13 +88,7 @@ pub fn resampler_private_up2_hq(state: &mut [i32; 6], output: &mut [i16], input:
 }
 
 /// Convenience wrapper that mirrors the C entry point taking a resampler state struct.
-pub fn resampler_private_up2_hq_wrapper(
-    state: &mut ResamplerStateUp2Hq,
-    output: &mut [i16],
-    input: &[i16],
-) {
-    resampler_private_up2_hq(&mut state.s_iir, output, input);
-}
+
 
 #[inline]
 fn smulwb(a: i32, b_q15: i32) -> i32 {
@@ -123,7 +125,7 @@ fn rshift_round(value: i32, shift: u32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResamplerStateUp2Hq, resampler_private_up2_hq, resampler_private_up2_hq_wrapper};
+    use super::{ResamplerStateUp2Hq, resampler_private_up2_hq};
 
     #[test]
     fn produces_zero_output_for_zero_input() {
@@ -155,7 +157,7 @@ mod tests {
         let mut state = ResamplerStateUp2Hq::new();
         let input = [3123i16, -1812, 904, -222];
         let mut output = [0i16; 8];
-        resampler_private_up2_hq_wrapper(&mut state, &mut output, &input);
+        state.resampler_private_up2_hq_wrapper(&mut output, &input);
         assert_eq!(output, [11, 109, 478, 1236, 1967, 1680, -29, -1_740]);
         assert_eq!(
             state.s_iir,
