@@ -44,6 +44,7 @@ fn silk_smlawb(a: i32, b: i32, c: i32) -> i32 {
 
 #[inline]
 fn silk_lshift(value: i32, shift: u32) -> i32 {
+    debug_assert!(shift < 32, "shift must be less than 32");
     ((value as u32) << shift) as i32
 }
 
