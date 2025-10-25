@@ -17,6 +17,7 @@ pub mod nlsf_vq_weights_laroia;
 pub mod pitch_est_tables;
 pub mod resampler_down2;
 pub mod resampler_private_ar2;
+pub mod resampler_private_up2_hq;
 pub mod resampler_rom;
 pub mod sigm_q15;
 pub mod sort;
