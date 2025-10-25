@@ -21,6 +21,7 @@ pub mod resampler_rom;
 pub mod sigm_q15;
 pub mod sort;
 pub mod stereo_decode_pred;
+pub mod stereo_encode_pred;
 pub mod stereo_quant_pred;
 pub mod sum_sqr_shift;
 pub mod table_lsf_cos;

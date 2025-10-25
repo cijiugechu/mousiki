@@ -336,6 +336,30 @@ impl RangeEncoder {
         self.normalize();
     }
 
+    pub fn encode_symbol_with_icdf(&mut self, symbol: usize, icdf_ctx: ICDFContext) {
+        let ICDFContext { total, dist_table } = icdf_ctx;
+        let scale = self.range_size / total;
+
+        let high = dist_table[symbol] as u32;
+        let low = if symbol > 0 {
+            dist_table[symbol - 1] as u32
+        } else {
+            0
+        };
+
+        if low > 0 {
+            let offset = u64::from(scale) * u64::from(total - low);
+            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
+            let width = u64::from(scale) * u64::from(high - low);
+            self.range_size = width as u32;
+        } else {
+            let offset = u64::from(scale) * u64::from(total - high);
+            self.range_size -= offset as u32;
+        }
+
+        self.normalize();
+    }
+
     pub fn encode_icdf16(&mut self, symbol: usize, icdf: &[u16], ftb: u32) {
         let r = self.range_size >> ftb;
 
@@ -541,5 +565,22 @@ mod tests {
         for _i in 0..20 {
             assert_eq!(decoder.decode_symbol_with_icdf(SILK_PULSE_COUNT[0]), 0);
         }
+    }
+
+    #[test]
+    fn encodes_symbols_with_icdf_context() {
+        let mut encoder = RangeEncoder::new();
+        encoder.encode_symbol_with_icdf(1, SILK_FRAME_TYPE_INACTIVE);
+        encoder.encode_symbol_with_icdf(2, SILK_GAIN_HIGH_BITS[1]);
+        encoder.encode_symbol_with_icdf(6, SILK_GAIN_LOW_BITS);
+        encoder.encode_symbol_with_icdf(0, SILK_GAIN_DELTA);
+
+        let data = encoder.finish();
+        let mut decoder = RangeDecoder::init(&data);
+
+        assert_eq!(decoder.decode_symbol_with_icdf(SILK_FRAME_TYPE_INACTIVE), 1);
+        assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_HIGH_BITS[1]), 2);
+        assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_LOW_BITS), 6);
+        assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_DELTA), 0);
     }
 }
