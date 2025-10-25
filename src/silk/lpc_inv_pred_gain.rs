@@ -215,14 +215,8 @@ fn leading_zeros_i32(value: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        inverse32_varq,
-        lpc_inverse_pred_gain,
-        mul32_frac_q,
-        smmul,
-        smulwb,
+        QA, SILK_MAX_ORDER_LPC, inverse32_varq, lpc_inverse_pred_gain, mul32_frac_q, smmul, smulwb,
         sub_sat32,
-        QA,
-        SILK_MAX_ORDER_LPC,
     };
 
     #[test]
