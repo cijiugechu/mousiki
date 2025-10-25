@@ -86,8 +86,8 @@ impl StereoDecState {
             side[n + 1] = sat16(rshift_round(sum, 8));
         }
 
-        self.pred_prev_q13[0] = pred_q13[0] as i16;
-        self.pred_prev_q13[1] = pred_q13[1] as i16;
+        self.pred_prev_q13[0] = sat16(pred_q13[0]);
+        self.pred_prev_q13[1] = sat16(pred_q13[1]);
 
         for n in 0..frame_length {
             let mid_val = i32::from(mid[n + 1]);
