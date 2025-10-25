@@ -20,6 +20,7 @@ pub mod resampler_private_ar2;
 pub mod resampler_rom;
 pub mod sigm_q15;
 pub mod sort;
+pub mod stereo_quant_pred;
 pub mod sum_sqr_shift;
 pub mod table_lsf_cos;
 pub mod tables_gain;
