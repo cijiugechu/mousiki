@@ -25,7 +25,7 @@ pub fn ana_filt_bank_1(
     high_band: &mut [i16],
     input: &[i16],
 ) {
-    assert!(input.len() % 2 == 0, "input length must be even");
+    assert!(input.len().is_multiple_of(2), "input length must be even");
     let half_len = input.len() / 2;
     assert!(low_band.len() >= half_len, "low_band buffer too small");
     assert!(high_band.len() >= half_len, "high_band buffer too small");

@@ -27,11 +27,11 @@ fn weight_from_interval(interval: i32) -> i32 {
 /// has a different length.
 pub fn nlsf_vq_weights_laroia(weights_q_out: &mut [i16], nlsf_q15: &[i16]) {
     debug_assert!(!nlsf_q15.is_empty());
-    debug_assert!(nlsf_q15.len() % 2 == 0);
+    debug_assert!(nlsf_q15.len().is_multiple_of(2));
     debug_assert_eq!(weights_q_out.len(), nlsf_q15.len());
 
     assert!(!nlsf_q15.is_empty(), "NLSF vector must not be empty");
-    assert!(nlsf_q15.len() % 2 == 0, "NLSF vector length must be even");
+    assert!(nlsf_q15.len().is_multiple_of(2), "NLSF vector length must be even");
     assert_eq!(
         weights_q_out.len(),
         nlsf_q15.len(),

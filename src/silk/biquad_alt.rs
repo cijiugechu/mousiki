@@ -75,7 +75,7 @@ pub fn biquad_alt_stride2(
     output: &mut [i16],
 ) {
     assert_eq!(input.len(), output.len());
-    assert!(input.len() % 2 == 0, "signal length must be even");
+    assert!(input.len().is_multiple_of(2), "signal length must be even");
 
     let mut s0 = state[0];
     let mut s1 = state[1];

@@ -87,9 +87,6 @@ pub fn resampler_private_up2_hq(state: &mut [i32; 6], output: &mut [i16], input:
     }
 }
 
-/// Convenience wrapper that mirrors the C entry point taking a resampler state struct.
-
-
 #[inline]
 fn smulwb(a: i32, b_q15: i32) -> i32 {
     let product = i64::from(a) * i64::from(b_q15 as i16);

@@ -21,7 +21,7 @@ const NLSF_QUANT_STEP: i16 = 2 * NLSF_QUANT_MAX_AMPLITUDE + 1;
 /// original implementation.
 pub fn nlsf_unpack(ec_ix: &mut [i16], pred_q8: &mut [u8], codebook: &SilkNlsfCb, cb1_index: usize) {
     let order = codebook.order as usize;
-    assert!(order % 2 == 0, "NLSF order must be even");
+    assert!(order.is_multiple_of(2), "NLSF order must be even");
     assert_eq!(ec_ix.len(), order, "entropy-index buffer must match order");
     assert_eq!(pred_q8.len(), order, "predictor buffer must match order");
     assert!(cb1_index < codebook.n_vectors as usize);
