@@ -51,7 +51,8 @@ fn smulwb(a: i32, b: i32) -> i32 {
 }
 
 fn smlabb(a: i32, b: i32, c: i32) -> i32 {
-    a.wrapping_add(i32::from((b as i16).wrapping_mul(c as i16)))
+    let prod = i32::from(b as i16).wrapping_mul(i32::from(c as i16));
+    a.wrapping_add(prod)
 }
 
 #[cfg(test)]
