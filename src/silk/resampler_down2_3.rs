@@ -6,8 +6,6 @@
 //! history alongside the two-element AR state and processes input in small batches to
 //! avoid unbounded stack allocation in the reference C implementation.
 
-use alloc::vec;
-
 use core::convert::TryInto;
 
 use super::resampler_private_ar2::resampler_private_ar2;
@@ -25,7 +23,7 @@ const RESAMPLER_MAX_BATCH_SIZE_IN: usize = 480;
 ///
 /// # Panics
 ///
-/// * If `output.len()` is smaller than `2 * input.len() / 3`.
+/// * If `output.len()` is smaller than `2 * (input.len() / 3)`.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
@@ -42,7 +40,7 @@ pub fn resampler_down2_3(
         return 0;
     }
 
-    let required = (2 * input.len()) / 3;
+    let required = 2 * (input.len() / 3);
     assert!(
         output.len() >= required,
         "output buffer too small: need {} samples",
@@ -63,7 +61,8 @@ pub fn resampler_down2_3(
     let fir2 = i32::from(SILK_RESAMPLER_2_3_COEFS_LQ[4]);
     let fir3 = i32::from(SILK_RESAMPLER_2_3_COEFS_LQ[5]);
 
-    let mut buf = vec![0i32; RESAMPLER_MAX_BATCH_SIZE_IN + ORDER_FIR];
+    // Fixed-size buffer: ORDER_FIR history + up to RESAMPLER_MAX_BATCH_SIZE_IN AR outputs
+    let mut buf = [0i32; RESAMPLER_MAX_BATCH_SIZE_IN + ORDER_FIR];
     buf[..ORDER_FIR].copy_from_slice(fir_state);
 
     let mut produced = 0usize;
@@ -142,11 +141,11 @@ fn sat16(value: i32) -> i16 {
 
 #[inline]
 fn rshift_round(value: i32, shift: u32) -> i32 {
-    assert!(shift > 0);
-    if shift == 1 {
-        (value >> 1) + (value & 1)
+    debug_assert!(shift <= 31);
+    if shift == 0 {
+        value
     } else {
-        ((value >> (shift - 1)) + 1) >> 1
+        (value + (1 << (shift - 1))) >> shift
     }
 }
 
@@ -187,7 +186,31 @@ mod tests {
         assert_eq!(output, [65, 7_412, 13_067, 13_750, 13_278, -28_142]);
         assert_eq!(
             state,
-            [-488_595, 4_766_869, -147_410, -2_754_553, 528_788, 1_093_986]
+            [
+                -488_595, 4_766_869, -147_410, -2_754_553, 528_788, 1_093_986
+            ]
         );
+    }
+
+    #[test]
+    fn small_blocks_produce_zero_without_panic() {
+        let mut state = [0i32; 6];
+        let mut out0 = [0i16; 0];
+        let mut out1 = [0i16; 0];
+        assert_eq!(resampler_down2_3(&mut state, &mut out0, &[123i16]), 0);
+        assert_eq!(resampler_down2_3(&mut state, &mut out1, &[1i16, 2]), 0);
+    }
+
+    #[test]
+    fn exact_capacity_for_partial_triplets() {
+        let mut state = [0i32; 6];
+        let mut output4 = [0i16; 2];
+        let produced4 = resampler_down2_3(&mut state, &mut output4, &[1i16, 2, 3, 4]);
+        assert_eq!(produced4, 2);
+
+        state = [0i32; 6];
+        let mut output5 = [0i16; 2];
+        let produced5 = resampler_down2_3(&mut state, &mut output5, &[1i16, 2, 3, 4, 5]);
+        assert_eq!(produced5, 2);
     }
 }
