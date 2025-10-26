@@ -12,6 +12,7 @@ pub mod lin2log;
 pub mod log2lin;
 pub mod lpc_inv_pred_gain;
 pub mod nlsf_stabilize;
+pub mod nlsf_decode;
 pub mod nlsf_unpack;
 pub mod nlsf_vq_weights_laroia;
 pub mod pitch_est_tables;
