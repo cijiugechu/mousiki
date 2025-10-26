@@ -20,6 +20,7 @@ pub mod resampler_down2;
 pub mod resampler_down2_3;
 pub mod resampler_private_ar2;
 pub mod resampler_private_down_fir;
+pub mod resampler_private_iir_fir;
 pub mod resampler_private_up2_hq;
 pub mod resampler_rom;
 pub mod schur;
