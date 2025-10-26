@@ -19,9 +19,13 @@ pub fn stereo_find_predictor(
     x: &[i16],
     y: &[i16],
     mid_res_amp_q0: &mut [i32; 2],
+    // Expected range: 0..=32767; used by SMLAWB as a Q16-like smoothing factor.
     smooth_coef_q16: i32,
 ) -> (i32, i32) {
-    assert_eq!(x.len(), y.len(), "input vectors must have equal lengths");
+    debug_assert_eq!(x.len(), y.len(), "input vectors must have equal lengths");
+    if x.len() != y.len() {
+        return (0, 0);
+    }
 
     if x.is_empty() {
         return (0, 0);
@@ -106,6 +110,8 @@ fn sub_lshift32(a: i32, b: i32, shift: i32) -> i32 {
     a.wrapping_sub(b.wrapping_shl(shift as u32))
 }
 
+const SQRT_COEF_Q7: i32 = 213; // Matches SILK polynomial coefficient.
+
 fn sqrt_approx(x: i32) -> i32 {
     if x <= 0 {
         return 0;
@@ -114,7 +120,7 @@ fn sqrt_approx(x: i32) -> i32 {
     let (lz, frac_q7) = clz_frac(x);
     let mut y = if lz & 1 != 0 { 32768 } else { 46214 };
     y >>= lz >> 1;
-    smlawb(y, y, smulbb(213, frac_q7))
+    smlawb(y, y, smulbb(SQRT_COEF_Q7, frac_q7))
 }
 
 fn clz_frac(x: i32) -> (i32, i32) {
@@ -136,7 +142,9 @@ fn div32_varq(a32: i32, b32: i32, q_res: i32) -> i32 {
     let b_headroom = clz32(abs_b) - 1;
     let b_norm = lshift32(b32, b_headroom);
 
-    let b_inv = div32_16(i32::MAX >> 2, rshift32(b_norm, 16));
+    let denom16 = rshift32(b_norm, 16);
+    debug_assert!(denom16 != 0, "normalized denominator high word must be non-zero");
+    let b_inv = div32_16(i32::MAX >> 2, denom16);
 
     let mut result = smulwb(a_norm, b_inv);
 
