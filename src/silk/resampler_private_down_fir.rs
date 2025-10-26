@@ -18,19 +18,21 @@ use super::resampler_rom::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResamplerStateDownFIR<'a> {
     /// Two-element IIR delay line stored in Q18 format.
-    pub s_iir: [i32; 2],
+    s_iir: [i32; 2],
     /// FIR delay line holding `fir_order` Q8 samples.
-    pub s_fir: Vec<i32>,
+    s_fir: Vec<i32>,
     /// Number of input samples processed per inner iteration.
-    pub batch_size: usize,
+    batch_size: usize,
     /// Fixed-point ratio between input and output sample positions (Q16).
-    pub inv_ratio_q16: i32,
+    inv_ratio_q16: i32,
     /// FIR tap count (must equal one of the `RESAMPLER_DOWN_ORDER_FIR*` constants).
-    pub fir_order: usize,
+    fir_order: usize,
     /// Number of fractional interpolation tables.
-    pub fir_fracs: usize,
+    fir_fracs: usize,
     /// Concatenated IIR and FIR coefficients sourced from `resampler_rom`.
-    pub coefs: &'a [i16],
+    coefs: &'a [i16],
+    /// Scratch buffer reused across invocations to avoid per-call allocation.
+    work: Vec<i32>,
 }
 
 impl<'a> ResamplerStateDownFIR<'a> {
@@ -44,6 +46,11 @@ impl<'a> ResamplerStateDownFIR<'a> {
     ) -> Self {
         assert!(fir_order % 2 == 0, "FIR order must be even");
         assert!(fir_fracs > 0, "at least one fractional table is required");
+        assert!(batch_size > 0, "batch_size must be > 0");
+        assert!(
+            inv_ratio_q16 > 0,
+            "inv_ratio_q16 must be > 0 (Q16 step size)"
+        );
         assert!(
             fir_order == RESAMPLER_DOWN_ORDER_FIR0
                 || fir_order == RESAMPLER_DOWN_ORDER_FIR1
@@ -66,7 +73,60 @@ impl<'a> ResamplerStateDownFIR<'a> {
             fir_order,
             fir_fracs,
             coefs,
+            work: vec![0; batch_size + fir_order],
         }
+    }
+
+    /// Returns the configured batch size.
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    /// Returns the fixed-point ratio used for interpolation.
+    pub fn inv_ratio_q16(&self) -> i32 {
+        self.inv_ratio_q16
+    }
+
+    /// Returns the FIR order associated with this state.
+    pub fn fir_order(&self) -> usize {
+        self.fir_order
+    }
+
+    /// Returns the number of fractional interpolation tables.
+    pub fn fir_fracs(&self) -> usize {
+        self.fir_fracs
+    }
+
+    /// Returns the filter coefficients backing this state.
+    pub fn coefficients(&self) -> &'a [i16] {
+        self.coefs
+    }
+
+    /// Exposes the IIR state for inspection without allowing mutation.
+    pub fn iir_state(&self) -> &[i32; 2] {
+        &self.s_iir
+    }
+
+    /// Exposes the FIR tail preserved between calls.
+    pub fn fir_tail(&self) -> &[i32] {
+        &self.s_fir
+    }
+
+    fn ensure_work_capacity(&mut self) {
+        let required = self.batch_size + self.fir_order;
+        if self.work.len() < required {
+            self.work.resize(required, 0);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iir_state_mut(&mut self) -> &mut [i32; 2] {
+        &mut self.s_iir
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fir_tail_mut(&mut self) -> &mut [i32] {
+        &mut self.s_fir
     }
 }
 
@@ -85,11 +145,18 @@ pub fn resampler_private_down_fir(
         return 0;
     }
 
-    let mut buf = vec![0i32; state.batch_size + state.fir_order];
-    buf[..state.fir_order].copy_from_slice(&state.s_fir);
+    state.ensure_work_capacity();
+    let fir_order = state.fir_order;
+    let batch_size = state.batch_size;
+    let inv_ratio_q16 = state.inv_ratio_q16;
+    let fir_fracs = state.fir_fracs;
+    let coefs = state.coefs;
+    let fir_coefs = &coefs[2..];
+    let ar_coefs = [coefs[0], coefs[1]];
 
-    let fir_coefs = &state.coefs[2..];
-    let ar_coefs = [state.coefs[0], state.coefs[1]];
+    let buf_len = batch_size + fir_order;
+    state.work[..fir_order].copy_from_slice(&state.s_fir);
+    let buf = &mut state.work[..buf_len];
 
     let mut remaining = input.len();
     let mut in_index = 0;
@@ -97,8 +164,8 @@ pub fn resampler_private_down_fir(
     let mut last_n_samples_in = 0usize;
 
     while remaining > 0 {
-        let n_samples_in = remaining.min(state.batch_size);
-        let buf_range = state.fir_order..state.fir_order + n_samples_in;
+        let n_samples_in = remaining.min(batch_size);
+        let buf_range = fir_order..fir_order + n_samples_in;
         resampler_private_ar2(
             &mut state.s_iir,
             &mut buf[buf_range.clone()],
@@ -108,12 +175,12 @@ pub fn resampler_private_down_fir(
 
         let max_index_q16 = (n_samples_in as i32) << 16;
         out_index += resampler_private_down_fir_interpol(
-            &buf,
+            buf,
             fir_coefs,
-            state.fir_order,
-            state.fir_fracs,
+            fir_order,
+            fir_fracs,
             max_index_q16,
-            state.inv_ratio_q16,
+            inv_ratio_q16,
             &mut output[out_index..],
         );
 
@@ -121,19 +188,17 @@ pub fn resampler_private_down_fir(
         remaining -= n_samples_in;
         last_n_samples_in = n_samples_in;
 
-        if remaining > 1 {
-            for idx in 0..state.fir_order {
+        if remaining > 0 {
+            for idx in 0..fir_order {
                 buf[idx] = buf[n_samples_in + idx];
             }
-        } else {
-            break;
         }
     }
 
     if last_n_samples_in > 0 {
         state
             .s_fir
-            .copy_from_slice(&buf[last_n_samples_in..last_n_samples_in + state.fir_order]);
+            .copy_from_slice(&buf[last_n_samples_in..last_n_samples_in + fir_order]);
     }
 
     out_index
@@ -148,9 +213,20 @@ fn resampler_private_down_fir_interpol(
     index_increment_q16: i32,
     output: &mut [i16],
 ) -> usize {
+    debug_assert!(index_increment_q16 > 0, "index increment must be positive");
     let mut out_index = 0usize;
     let mut index_q16 = 0i32;
     let half_order = fir_order / 2;
+
+    if index_increment_q16 > 0 && max_index_q16 > 0 {
+        let required =
+            ((i64::from(max_index_q16 - 1) / i64::from(index_increment_q16)) + 1) as usize;
+        assert!(
+            required <= output.len(),
+            "output buffer too small: need at least {} samples",
+            required
+        );
+    }
 
     while index_q16 < max_index_q16 {
         let base = (index_q16 >> 16) as usize;
@@ -199,11 +275,6 @@ fn resampler_private_down_fir_interpol(
             _ => unreachable!("unsupported FIR order: {fir_order}"),
         };
 
-        assert!(
-            out_index < output.len(),
-            "output buffer too small: need at least {} samples",
-            out_index + 1
-        );
         output[out_index] = sat16(rshift_round(sample, 6));
         out_index += 1;
         index_q16 = index_q16.wrapping_add(index_increment_q16);
@@ -272,8 +343,8 @@ mod tests {
         let produced = resampler_private_down_fir(&mut state, &mut output, &input);
         assert_eq!(produced, expected.len());
         assert_eq!(&output[..produced], expected.as_slice());
-        assert_eq!(state.s_fir, reference.s_fir);
-        assert_eq!(state.s_iir, reference.s_iir);
+        assert_eq!(state.fir_tail(), reference.fir_tail());
+        assert_eq!(state.iir_state(), reference.iir_state());
     }
 
     #[test]
@@ -292,8 +363,8 @@ mod tests {
         let produced = resampler_private_down_fir(&mut state, &mut output, &input);
         assert_eq!(produced, expected.len());
         assert_eq!(&output[..produced], expected.as_slice());
-        assert_eq!(state.s_fir, reference.s_fir);
-        assert_eq!(state.s_iir, reference.s_iir);
+        assert_eq!(state.fir_tail(), reference.fir_tail());
+        assert_eq!(state.iir_state(), reference.iir_state());
     }
 
     #[test]
@@ -314,8 +385,48 @@ mod tests {
         let produced = resampler_private_down_fir(&mut state, &mut output, &input);
         assert_eq!(produced, expected.len());
         assert_eq!(&output[..produced], expected.as_slice());
-        assert_eq!(state.s_fir, reference.s_fir);
-        assert_eq!(state.s_iir, reference.s_iir);
+        assert_eq!(state.fir_tail(), reference.fir_tail());
+        assert_eq!(state.iir_state(), reference.iir_state());
+    }
+
+    #[test]
+    fn consumes_tail_sample_when_remaining_one() {
+        let mut state = ResamplerStateDownFIR::new(
+            4,
+            45_000,
+            RESAMPLER_DOWN_ORDER_FIR0,
+            3,
+            &SILK_RESAMPLER_3_4_COEFS,
+        );
+        let mut reference = state.clone();
+        let input = [250i16, -200, 150, -100, 50];
+        let expected = reference_resampler_private_down_fir(&mut reference, &input);
+        let mut output = vec![0i16; expected.len()];
+        let produced = resampler_private_down_fir(&mut state, &mut output, &input);
+        assert_eq!(produced, expected.len());
+        assert_eq!(&output[..produced], expected.as_slice());
+        assert_eq!(state.fir_tail(), reference.fir_tail());
+        assert_eq!(state.iir_state(), reference.iir_state());
+    }
+
+    #[test]
+    fn handles_max_fraction_index() {
+        let mut state = ResamplerStateDownFIR::new(
+            6,
+            (1 << 16) - 1,
+            RESAMPLER_DOWN_ORDER_FIR0,
+            3,
+            &SILK_RESAMPLER_3_4_COEFS,
+        );
+        let mut reference = state.clone();
+        let input = [400i16, -350, 300, -250, 200, -150, 100, -50];
+        let expected = reference_resampler_private_down_fir(&mut reference, &input);
+        let mut output = vec![0i16; expected.len()];
+        let produced = resampler_private_down_fir(&mut state, &mut output, &input);
+        assert_eq!(produced, expected.len());
+        assert_eq!(&output[..produced], expected.as_slice());
+        assert_eq!(state.fir_tail(), reference.fir_tail());
+        assert_eq!(state.iir_state(), reference.iir_state());
     }
 
     fn reference_resampler_private_down_fir(
@@ -326,10 +437,13 @@ mod tests {
             return Vec::new();
         }
 
-        let mut buf = vec![0i32; state.batch_size + state.fir_order];
-        buf[..state.fir_order].copy_from_slice(&state.s_fir);
-        let fir_coefs = &state.coefs[2..];
-        let ar_coefs = [state.coefs[0], state.coefs[1]];
+        let fir_order = state.fir_order();
+        let batch_size = state.batch_size();
+        let mut buf = vec![0i32; batch_size + fir_order];
+        buf[..fir_order].copy_from_slice(state.fir_tail());
+        let coefs = state.coefficients();
+        let fir_coefs = &coefs[2..];
+        let ar_coefs = [coefs[0], coefs[1]];
 
         let mut outputs = Vec::new();
         let mut remaining = input.len();
@@ -337,10 +451,10 @@ mod tests {
         let mut last_n_samples_in = 0usize;
 
         while remaining > 0 {
-            let n_samples_in = remaining.min(state.batch_size);
-            let range = state.fir_order..state.fir_order + n_samples_in;
+            let n_samples_in = remaining.min(batch_size);
+            let range = fir_order..fir_order + n_samples_in;
             super::resampler_private_ar2(
-                &mut state.s_iir,
+                state.iir_state_mut(),
                 &mut buf[range.clone()],
                 &input[in_index..in_index + n_samples_in],
                 &ar_coefs,
@@ -350,33 +464,33 @@ mod tests {
             let max_index_q16 = (n_samples_in as i32) << 16;
             while index_q16 < max_index_q16 {
                 let base = (index_q16 >> 16) as usize;
-                let buf_ptr = &buf[base..base + state.fir_order];
-                let sample = match state.fir_order {
+                let buf_ptr = &buf[base..base + fir_order];
+                let sample = match fir_order {
                     RESAMPLER_DOWN_ORDER_FIR0 => {
-                        let half = state.fir_order / 2;
+                        let half = fir_order / 2;
                         let interpol_ind =
-                            super::smulwb(index_q16 & 0xFFFF, state.fir_fracs as i32) as usize;
+                            super::smulwb(index_q16 & 0xFFFF, state.fir_fracs() as i32) as usize;
                         let forward = &fir_coefs[half * interpol_ind..half * (interpol_ind + 1)];
-                        let mirror_index = half * (state.fir_fracs - 1 - interpol_ind);
+                        let mirror_index = half * (state.fir_fracs() - 1 - interpol_ind);
                         let backward = &fir_coefs[mirror_index..mirror_index + half];
                         let mut acc = super::smulwb(buf_ptr[0], i32::from(forward[0]));
                         for k in 1..half {
                             acc = super::smlawb(acc, buf_ptr[k], i32::from(forward[k]));
                         }
                         for (offset, &coef) in backward.iter().enumerate() {
-                            let buf_idx = state.fir_order - 1 - offset;
+                            let buf_idx = fir_order - 1 - offset;
                             acc = super::smlawb(acc, buf_ptr[buf_idx], i32::from(coef));
                         }
                         acc
                     }
                     RESAMPLER_DOWN_ORDER_FIR1 | RESAMPLER_DOWN_ORDER_FIR2 => {
-                        let half = state.fir_order / 2;
+                        let half = fir_order / 2;
                         let mut acc = super::smulwb(
-                            buf_ptr[0].wrapping_add(buf_ptr[state.fir_order - 1]),
+                            buf_ptr[0].wrapping_add(buf_ptr[fir_order - 1]),
                             i32::from(fir_coefs[0]),
                         );
                         for k in 1..half {
-                            let sum = buf_ptr[k].wrapping_add(buf_ptr[state.fir_order - 1 - k]);
+                            let sum = buf_ptr[k].wrapping_add(buf_ptr[fir_order - 1 - k]);
                             acc = super::smlawb(acc, sum, i32::from(fir_coefs[k]));
                         }
                         acc
@@ -384,26 +498,24 @@ mod tests {
                     _ => unreachable!("unexpected FIR order"),
                 };
                 outputs.push(super::sat16(super::rshift_round(sample, 6)));
-                index_q16 = index_q16.wrapping_add(state.inv_ratio_q16);
+                index_q16 = index_q16.wrapping_add(state.inv_ratio_q16());
             }
 
             in_index += n_samples_in;
             remaining -= n_samples_in;
             last_n_samples_in = n_samples_in;
 
-            if remaining > 1 {
-                for idx in 0..state.fir_order {
+            if remaining > 0 {
+                for idx in 0..fir_order {
                     buf[idx] = buf[n_samples_in + idx];
                 }
-            } else {
-                break;
             }
         }
 
         if last_n_samples_in > 0 {
             state
-                .s_fir
-                .copy_from_slice(&buf[last_n_samples_in..last_n_samples_in + state.fir_order]);
+                .fir_tail_mut()
+                .copy_from_slice(&buf[last_n_samples_in..last_n_samples_in + fir_order]);
         }
 
         outputs
