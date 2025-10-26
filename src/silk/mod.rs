@@ -37,6 +37,7 @@ pub mod tables_nlsf_cb_wb;
 pub mod tables_other;
 pub mod tables_pitch_lag;
 pub mod tables_pulses_per_block;
+pub mod tuning_parameters;
 
 pub use interpolate::MAX_LPC_ORDER;
 pub use tables_nlsf_cb_wb::SilkNlsfCb;
