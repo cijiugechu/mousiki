@@ -9,6 +9,16 @@ use crate::silk::errors::SilkError;
 /// Maximum number of channels supported by the SILK encoder.
 const ENCODER_NUM_CHANNELS: i32 = 2;
 
+/// Minimum target bitrate supported by the SILK encoder, in bits per second.
+///
+/// Mirrors `MIN_TARGET_RATE_BPS` from `silk/define.h`.
+const MIN_TARGET_RATE_BPS: i32 = 5_000;
+
+/// Maximum target bitrate supported by the SILK encoder, in bits per second.
+///
+/// Mirrors `MAX_TARGET_RATE_BPS` from `silk/define.h`.
+const MAX_TARGET_RATE_BPS: i32 = 80_000;
+
 /// Encoder control parameters mirrored from `silk_EncControlStruct`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncControl {
@@ -79,6 +89,10 @@ impl EncControl {
             || self.min_internal_sample_rate > self.max_internal_sample_rate
         {
             return Err(SilkError::EncFsNotSupported);
+        }
+
+        if self.bit_rate < MIN_TARGET_RATE_BPS || self.bit_rate > MAX_TARGET_RATE_BPS {
+            return Err(SilkError::EncInvalidBitrate);
         }
 
         if !PAYLOAD_SIZES_MS.contains(&self.payload_size_ms) {
@@ -159,6 +173,22 @@ mod tests {
         assert_eq!(
             control.check_control_input(),
             Err(SilkError::EncPacketSizeNotSupported)
+        );
+    }
+
+    #[test]
+    fn validates_bit_rate_bounds() {
+        let mut control = EncControl::default();
+        control.bit_rate = 4_000;
+        assert_eq!(
+            control.check_control_input(),
+            Err(SilkError::EncInvalidBitrate)
+        );
+
+        control.bit_rate = 90_000;
+        assert_eq!(
+            control.check_control_input(),
+            Err(SilkError::EncInvalidBitrate)
         );
     }
 

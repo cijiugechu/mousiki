@@ -49,6 +49,9 @@ pub enum SilkError {
     /// Number of channels setting invalid.
     EncInvalidNumberOfChannelsError = -111,
 
+    /// Target bitrate is outside the supported range.
+    EncInvalidBitrate = -112,
+
     /// Output sampling frequency lower than the internal decoded sampling frequency.
     DecInvalidSamplingFrequency = -200,
 
@@ -83,6 +86,7 @@ impl SilkError {
             -109 => Some(Self::EncInvalidCbrSetting),
             -110 => Some(Self::EncInternalError),
             -111 => Some(Self::EncInvalidNumberOfChannelsError),
+            -112 => Some(Self::EncInvalidBitrate),
             -200 => Some(Self::DecInvalidSamplingFrequency),
             -201 => Some(Self::DecPayloadTooLarge),
             -202 => Some(Self::DecPayloadError),
@@ -106,6 +110,7 @@ mod tests {
     fn discriminants_match_reference_values() {
         assert_eq!(SilkError::NoError.code(), 0);
         assert_eq!(SilkError::EncInvalidLossRate as i32, -105);
+        assert_eq!(SilkError::EncInvalidBitrate as i32, -112);
         assert_eq!(SilkError::DecInvalidFrameSize as i32, -203);
     }
 
@@ -115,6 +120,7 @@ mod tests {
             (0, SilkError::NoError),
             (-101, SilkError::EncInputInvalidNoOfSamples),
             (-110, SilkError::EncInternalError),
+            (-112, SilkError::EncInvalidBitrate),
             (-201, SilkError::DecPayloadTooLarge),
         ] {
             assert_eq!(SilkError::from_code(code), Some(expected));
