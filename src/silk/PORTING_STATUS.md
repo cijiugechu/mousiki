@@ -47,6 +47,7 @@
 - `src/silk/resampler_rom.rs` provides the coefficient ROM shared by SILK's fixed-point resamplers, mirroring the lookup tables from `silk/resampler_rom.c` and `silk/resampler_rom.h`.【src/silk/resampler_rom.rs†L1-L182】
 - `src/silk/bwexpander.rs` mirrors the chirp-based LPC bandwidth expander from `silk/bwexpander.c`, applying the fixed-point helper that shrinks LPC magnitudes during prediction setup.【src/silk/bwexpander.rs†L1-L83】【opus-c/opus-main/silk/bwexpander.c†L34-L49】
 - `src/silk/bwexpander_32.rs` ports the 32-bit variant of the LPC bandwidth-expansion helper from `silk/bwexpander_32.c`, applying the same chirp logic to full-precision predictor coefficients used in resampling and analysis paths.【src/silk/bwexpander_32.rs†L1-L66】【opus-c/opus-main/silk/bwexpander_32.c†L34-L51】
+- `src/silk/check_control_input.rs` validates the encoder control structure prior to encoding, mirroring `silk/check_control_input.c` and returning the same `SilkError` codes when parameters fall outside the supported ranges.【src/silk/check_control_input.rs†L1-L166】【opus-c/opus-main/silk/check_control_input.c†L35-L110】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 

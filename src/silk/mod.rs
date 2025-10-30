@@ -2,6 +2,7 @@ pub mod ana_filt_bank_1;
 pub mod biquad_alt;
 pub mod bwexpander;
 pub mod bwexpander_32;
+pub mod check_control_input;
 pub mod codebook;
 pub mod decoder;
 pub mod errors;
@@ -43,6 +44,7 @@ pub mod tables_pitch_lag;
 pub mod tables_pulses_per_block;
 pub mod tuning_parameters;
 
+pub use check_control_input::EncControl;
 pub use interpolate::MAX_LPC_ORDER;
 pub use tables_nlsf_cb_wb::SilkNlsfCb;
 
