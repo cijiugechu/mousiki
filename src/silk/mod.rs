@@ -31,6 +31,7 @@ pub mod sort;
 pub mod stereo_decode_pred;
 pub mod stereo_encode_pred;
 pub mod stereo_find_predictor;
+pub mod stereo_lr_to_ms;
 pub mod stereo_ms_to_lr;
 pub mod stereo_quant_pred;
 pub mod sum_sqr_shift;
@@ -46,6 +47,7 @@ pub mod tuning_parameters;
 
 pub use check_control_input::EncControl;
 pub use interpolate::MAX_LPC_ORDER;
+pub use stereo_lr_to_ms::{StereoConversionResult, StereoEncState};
 pub use tables_nlsf_cb_wb::SilkNlsfCb;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

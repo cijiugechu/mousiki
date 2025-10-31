@@ -143,7 +143,10 @@ fn div32_varq(a32: i32, b32: i32, q_res: i32) -> i32 {
     let b_norm = lshift32(b32, b_headroom);
 
     let denom16 = rshift32(b_norm, 16);
-    debug_assert!(denom16 != 0, "normalized denominator high word must be non-zero");
+    debug_assert!(
+        denom16 != 0,
+        "normalized denominator high word must be non-zero"
+    );
     let b_inv = div32_16(i32::MAX >> 2, denom16);
 
     let mut result = smulwb(a_norm, b_inv);
