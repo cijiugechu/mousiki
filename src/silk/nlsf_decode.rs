@@ -8,10 +8,10 @@
 
 use core::convert::TryFrom;
 
+use super::MAX_LPC_ORDER;
+use super::SilkNlsfCb;
 use super::nlsf_stabilize::nlsf_stabilize;
 use super::nlsf_unpack::nlsf_unpack;
-use super::SilkNlsfCb;
-use super::MAX_LPC_ORDER;
 
 const NLSF_QUANT_LEVEL_ADJ_Q10: i32 = 102; // SILK_FIX_CONST(0.1, 10)
 

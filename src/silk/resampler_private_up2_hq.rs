@@ -21,11 +21,7 @@ impl ResamplerStateUp2Hq {
         Self { s_iir: [0; 6] }
     }
 
-    pub fn resampler_private_up2_hq_wrapper(
-        &mut self,
-        output: &mut [i16],
-        input: &[i16],
-    ) {
+    pub fn resampler_private_up2_hq_wrapper(&mut self, output: &mut [i16], input: &[i16]) {
         resampler_private_up2_hq(&mut self.s_iir, output, input);
     }
 }
