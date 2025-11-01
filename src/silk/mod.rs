@@ -12,6 +12,7 @@ pub mod interpolate;
 pub mod k2a;
 pub mod lin2log;
 pub mod log2lin;
+pub mod lpc_analysis_filter;
 pub mod lpc_fit;
 pub mod lpc_inv_pred_gain;
 pub mod nlsf2a;
