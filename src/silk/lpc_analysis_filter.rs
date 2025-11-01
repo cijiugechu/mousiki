@@ -38,8 +38,8 @@ pub fn lpc_analysis_filter(
             acc = acc.wrapping_add(sample * coeff);
         }
 
-        let predicted = i32::from(input[ix]) << 12;
-        let residual_q12 = predicted.wrapping_sub(acc);
+        let input_q12 = i32::from(input[ix]) << 12;
+        let residual_q12 = input_q12.wrapping_sub(acc);
         let residual = rshift_round(residual_q12, 12);
         output[ix] = sat16(residual);
     }
