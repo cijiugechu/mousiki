@@ -40,8 +40,8 @@ pub fn nlsf2a(a_q12: &mut [i16], nlsf_q15: &[i16], _arch: i32) {
     };
 
     let mut cos_lsf_qa = [0i32; SILK_MAX_ORDER_LPC];
-    for (k, &index) in ordering.iter().enumerate().take(order) {
-        let nlsf = i32::from(nlsf_q15[k]);
+    for &index in ordering.iter().take(order) {
+        let nlsf = i32::from(nlsf_q15[index]);
         assert!(nlsf >= 0, "NLSF values must be non-negative");
 
         let f_int = (nlsf >> (15 - 7)) as usize;
