@@ -11,6 +11,7 @@ pub mod icdf;
 pub mod inner_prod_aligned;
 pub mod interpolate;
 pub mod k2a;
+pub mod k2a_q16;
 pub mod lin2log;
 pub mod log2lin;
 pub mod lpc_analysis_filter;
