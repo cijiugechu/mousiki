@@ -103,6 +103,95 @@ impl Resampler {
             ResamplerKernel::DownFIR(_) => ResamplerMode::DownFIR,
         }
     }
+
+    /// Initialise the resampler for the given input and output sampling rates.
+    ///
+    /// Mirrors `silk_resampler_init` from the reference implementation.
+    pub fn silk_resampler_init(
+        &mut self,
+        fs_hz_in: i32,
+        fs_hz_out: i32,
+        for_enc: bool,
+    ) -> Result<(), ResamplerInitError> {
+        if fs_hz_in % 1000 != 0 || fs_hz_out % 1000 != 0 {
+            return Err(ResamplerInitError::NonIntegralKilohertz);
+        }
+
+        let (input_index, output_index) = if for_enc {
+            let in_idx = ENCODER_INPUT_RATES
+                .iter()
+                .position(|&rate| rate == fs_hz_in)
+                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
+            let out_idx = ENCODER_OUTPUT_RATES
+                .iter()
+                .position(|&rate| rate == fs_hz_out)
+                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
+            (in_idx, out_idx)
+        } else {
+            let in_idx = DECODER_INPUT_RATES
+                .iter()
+                .position(|&rate| rate == fs_hz_in)
+                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
+            let out_idx = DECODER_OUTPUT_RATES
+                .iter()
+                .position(|&rate| rate == fs_hz_out)
+                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
+            (in_idx, out_idx)
+        };
+
+        let input_delay = if for_enc {
+            usize::from(DELAY_MATRIX_ENC[input_index][output_index])
+        } else {
+            usize::from(DELAY_MATRIX_DEC[input_index][output_index])
+        };
+
+        let fs_in_khz = (fs_hz_in / 1000) as usize;
+        let fs_out_khz = (fs_hz_out / 1000) as usize;
+        let batch_size = fs_in_khz * RESAMPLER_MAX_BATCH_SIZE_MS;
+
+        let mode = match fs_hz_out.cmp(&fs_hz_in) {
+            Ordering::Greater => {
+                if fs_hz_out == fs_hz_in * 2 {
+                    ResamplerMode::Up2
+                } else {
+                    ResamplerMode::IirFir
+                }
+            }
+            Ordering::Less => ResamplerMode::DownFIR,
+            Ordering::Equal => ResamplerMode::Copy,
+        };
+
+        let up2x = u32::from(matches!(mode, ResamplerMode::IirFir));
+        let inv_ratio_q16 = compute_inv_ratio_q16(fs_hz_in, fs_hz_out, up2x)?;
+
+        self.fs_in_khz = fs_in_khz;
+        self.fs_out_khz = fs_out_khz;
+        self.batch_size = batch_size;
+        self.input_delay = input_delay;
+        self.inv_ratio_q16 = inv_ratio_q16;
+        self.delay_buf = [0; RESAMPLER_DELAY_BUF_SIZE];
+
+        self.kernel = match mode {
+            ResamplerMode::Copy => ResamplerKernel::Copy,
+            ResamplerMode::Up2 => ResamplerKernel::Up2(ResamplerStateUp2Hq::default()),
+            ResamplerMode::IirFir => {
+                ResamplerKernel::IirFir(ResamplerStateIirFir::new(batch_size, inv_ratio_q16))
+            }
+            ResamplerMode::DownFIR => {
+                let (fir_fracs, fir_order, coefs) =
+                    down_fir_config(fs_hz_in, fs_hz_out).ok_or(ResamplerInitError::UnsupportedRatio)?;
+                ResamplerKernel::DownFIR(ResamplerStateDownFIR::new(
+                    batch_size,
+                    inv_ratio_q16,
+                    fir_order,
+                    fir_fracs,
+                    coefs,
+                ))
+            }
+        };
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -133,94 +222,7 @@ const DELAY_MATRIX_ENC: [[u8; ENCODER_OUTPUT_RATES.len()]; ENCODER_INPUT_RATES.l
 const DELAY_MATRIX_DEC: [[u8; DECODER_OUTPUT_RATES.len()]; DECODER_INPUT_RATES.len()] =
     [[4, 0, 2, 0, 0], [0, 9, 4, 7, 4], [0, 3, 12, 7, 7]];
 
-/// Initialise the resampler for the given input and output sampling rates.
-///
-/// Mirrors `silk_resampler_init` from the reference implementation.
-pub fn silk_resampler_init(
-    state: &mut Resampler,
-    fs_hz_in: i32,
-    fs_hz_out: i32,
-    for_enc: bool,
-) -> Result<(), ResamplerInitError> {
-    if fs_hz_in % 1000 != 0 || fs_hz_out % 1000 != 0 {
-        return Err(ResamplerInitError::NonIntegralKilohertz);
-    }
 
-    let (input_index, output_index) = if for_enc {
-        let in_idx = ENCODER_INPUT_RATES
-            .iter()
-            .position(|&rate| rate == fs_hz_in)
-            .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
-        let out_idx = ENCODER_OUTPUT_RATES
-            .iter()
-            .position(|&rate| rate == fs_hz_out)
-            .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
-        (in_idx, out_idx)
-    } else {
-        let in_idx = DECODER_INPUT_RATES
-            .iter()
-            .position(|&rate| rate == fs_hz_in)
-            .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
-        let out_idx = DECODER_OUTPUT_RATES
-            .iter()
-            .position(|&rate| rate == fs_hz_out)
-            .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
-        (in_idx, out_idx)
-    };
-
-    let input_delay = if for_enc {
-        usize::from(DELAY_MATRIX_ENC[input_index][output_index])
-    } else {
-        usize::from(DELAY_MATRIX_DEC[input_index][output_index])
-    };
-
-    let fs_in_khz = (fs_hz_in / 1000) as usize;
-    let fs_out_khz = (fs_hz_out / 1000) as usize;
-    let batch_size = fs_in_khz * RESAMPLER_MAX_BATCH_SIZE_MS;
-
-    let mode = match fs_hz_out.cmp(&fs_hz_in) {
-        Ordering::Greater => {
-            if fs_hz_out == fs_hz_in * 2 {
-                ResamplerMode::Up2
-            } else {
-                ResamplerMode::IirFir
-            }
-        }
-        Ordering::Less => ResamplerMode::DownFIR,
-        Ordering::Equal => ResamplerMode::Copy,
-    };
-
-    let up2x = u32::from(matches!(mode, ResamplerMode::IirFir));
-    let inv_ratio_q16 = compute_inv_ratio_q16(fs_hz_in, fs_hz_out, up2x)?;
-
-    state.fs_in_khz = fs_in_khz;
-    state.fs_out_khz = fs_out_khz;
-    state.batch_size = batch_size;
-    state.input_delay = input_delay;
-    state.inv_ratio_q16 = inv_ratio_q16;
-    state.delay_buf = [0; RESAMPLER_DELAY_BUF_SIZE];
-
-    state.kernel = match mode {
-        ResamplerMode::Copy => ResamplerKernel::Copy,
-        ResamplerMode::Up2 => ResamplerKernel::Up2(ResamplerStateUp2Hq::default()),
-        ResamplerMode::IirFir => {
-            ResamplerKernel::IirFir(ResamplerStateIirFir::new(batch_size, inv_ratio_q16))
-        }
-        ResamplerMode::DownFIR => {
-            let (fir_fracs, fir_order, coefs) =
-                down_fir_config(fs_hz_in, fs_hz_out).ok_or(ResamplerInitError::UnsupportedRatio)?;
-            ResamplerKernel::DownFIR(ResamplerStateDownFIR::new(
-                batch_size,
-                inv_ratio_q16,
-                fir_order,
-                fir_fracs,
-                coefs,
-            ))
-        }
-    };
-
-    Ok(())
-}
 
 fn compute_inv_ratio_q16(
     fs_hz_in: i32,
@@ -363,7 +365,7 @@ mod tests {
     #[test]
     fn rejects_invalid_rates() {
         let mut state = Resampler::default();
-        let err = silk_resampler_init(&mut state, 44_100, 48_000, false)
+        let err = state.silk_resampler_init(44_100, 48_000, false)
             .expect_err("44.1 kHz should not be accepted");
         assert_eq!(err, ResamplerInitError::NonIntegralKilohertz);
     }
@@ -371,7 +373,7 @@ mod tests {
     #[test]
     fn copy_mode_matches_expected_flow() {
         let mut state = Resampler::default();
-        silk_resampler_init(&mut state, 16_000, 16_000, false).unwrap();
+        state.silk_resampler_init(16_000, 16_000, false).unwrap();
         assert_eq!(state.mode(), ResamplerMode::Copy);
 
         let fs_in_khz = state.fs_in_khz();
@@ -399,7 +401,7 @@ mod tests {
     #[test]
     fn up2_mode_matches_direct_wrapper() {
         let mut state = Resampler::default();
-        silk_resampler_init(&mut state, 8_000, 16_000, false).unwrap();
+        state.silk_resampler_init(8_000, 16_000, false).unwrap();
         assert_eq!(state.mode(), ResamplerMode::Up2);
 
         let fs_in_khz = state.fs_in_khz();
@@ -438,7 +440,7 @@ mod tests {
     #[test]
     fn iir_fir_mode_matches_component() {
         let mut state = Resampler::default();
-        silk_resampler_init(&mut state, 12_000, 48_000, false).unwrap();
+        state.silk_resampler_init(12_000, 48_000, false).unwrap();
         assert_eq!(state.mode(), ResamplerMode::IirFir);
 
         let fs_in_khz = state.fs_in_khz();
@@ -480,7 +482,7 @@ mod tests {
     #[test]
     fn down_fir_mode_matches_component() {
         let mut state = Resampler::default();
-        silk_resampler_init(&mut state, 16_000, 8_000, false).unwrap();
+        state.silk_resampler_init(16_000, 8_000, false).unwrap();
         assert_eq!(state.mode(), ResamplerMode::DownFIR);
 
         let fs_in_khz = state.fs_in_khz();
