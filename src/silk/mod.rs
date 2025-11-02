@@ -5,6 +5,7 @@ pub mod bwexpander;
 pub mod bwexpander_32;
 pub mod check_control_input;
 pub mod codebook;
+pub mod code_signs;
 pub mod decoder;
 pub mod errors;
 pub mod icdf;

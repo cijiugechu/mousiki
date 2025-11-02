@@ -5,6 +5,7 @@ use super::{FrameQuantizationOffsetType, FrameSignalType};
 use crate::math::{ilog, sign};
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
+use crate::silk::code_signs;
 use crate::silk::codebook::{
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_0, CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_1,
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_2,
@@ -35,6 +36,7 @@ use crate::silk::icdf::{
     PRIMARY_PITCH_LAG_LOW_PART_NARROWBAND, PRIMARY_PITCH_LAG_LOW_PART_WIDEBAND,
     SUBFRAME_PITCH_CONTOUR_MEDIUMBAND_OR_WIDEBAND20_MS, SUBFRAME_PITCH_CONTOUR_NARROWBAND20_MS,
 };
+use core::convert::TryFrom;
 use core::fmt;
 use log::{debug, trace};
 use nomarlize::{A32Q17, Aq12Coefficients, Aq12List, MAX_D_LPC, MAX_D2_LPC, NlsfQ15, ResQ10};
@@ -121,6 +123,18 @@ impl ShellBlockCounts {
             pulse_counts: [0; MAX_SHELL_BLOCKS],
             lsb_counts: [0; MAX_SHELL_BLOCKS],
         }
+    }
+
+    /// Returns the per-block pulse counts encoded with their LSB extension flags,
+    /// matching the layout expected by the SILK sign decoder.
+    pub fn sign_sums(&self) -> [i32; MAX_SHELL_BLOCKS] {
+        let mut sums = [0i32; MAX_SHELL_BLOCKS];
+        for (block_idx, sum) in sums.iter_mut().enumerate().take(self.block_count) {
+            let base = i32::from(self.pulse_counts[block_idx]);
+            let lsb = i32::from(self.lsb_counts[block_idx]);
+            *sum = base | (lsb << 5);
+        }
+        sums
     }
 }
 
@@ -1339,22 +1353,43 @@ impl Decoder {
         counts: &ShellBlockCounts,
         len: usize,
     ) {
-        for (sample_idx, sample) in e_raw.iter_mut().take(len).enumerate() {
-            if *sample == 0 {
-                continue;
-            }
+        if len == 0 {
+            return;
+        }
 
-            let block_idx = sample_idx / PULSECOUNT_LARGEST_PARTITION_SIZE;
-            let pulse_count = counts.pulse_counts[block_idx];
-            let icdf_ctx = Self::select_excitation_sign_icdf(
-                signal_type,
-                quantization_offset_type,
-                pulse_count,
-            );
+        debug_assert_eq!(
+            len,
+            counts.block_count * PULSECOUNT_LARGEST_PARTITION_SIZE,
+            "excitation length must match shell block allocation"
+        );
 
-            if range_decoder.decode_symbol_with_icdf(icdf_ctx) == 0 {
-                *sample = -*sample;
-            }
+        let signal_type_index = match signal_type {
+            FrameSignalType::Inactive => 0,
+            FrameSignalType::Unvoiced => 1,
+            FrameSignalType::Voiced => 2,
+        };
+        let quant_offset_index = match quantization_offset_type {
+            FrameQuantizationOffsetType::Low => 0,
+            FrameQuantizationOffsetType::High => 1,
+        };
+
+        let mut pulses = [0i16; MAX_EXCITATION_SAMPLES];
+        for (dst, &value) in pulses.iter_mut().take(len).zip(e_raw.iter().take(len)) {
+            *dst = i16::try_from(value).expect("shell pulse magnitude exceeds i16 range");
+        }
+
+        let sign_sums = counts.sign_sums();
+        code_signs::silk_decode_signs(
+            range_decoder,
+            &mut pulses[..len],
+            len,
+            signal_type_index,
+            quant_offset_index,
+            &sign_sums[..counts.block_count],
+        );
+
+        for (src, dst) in pulses.iter().take(len).zip(e_raw.iter_mut()) {
+            *dst = i32::from(*src);
         }
     }
 
@@ -1375,145 +1410,6 @@ impl Decoder {
         let left = range_decoder.decode_symbol_with_icdf(contexts[index]) as u8;
         halves[0] = left;
         halves[1] = block.saturating_sub(left);
-    }
-
-    fn select_excitation_sign_icdf(
-        signal_type: FrameSignalType,
-        quantization_offset_type: FrameQuantizationOffsetType,
-        pulse_count: u8,
-    ) -> icdf::ICDFContext {
-        let bucket = if pulse_count > 6 {
-            6
-        } else {
-            pulse_count as usize
-        };
-
-        match (signal_type, quantization_offset_type, bucket) {
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 0) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION0_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 1) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION1_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 2) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION2_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 3) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION3_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 4) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION4_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, 5) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION5_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::Low, _) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_LOW_QUANTIZATION6_PLUS_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 0) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION0_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 1) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION1_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 2) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION2_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 3) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION3_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 4) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION4_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, 5) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION5_PULSE
-            }
-            (FrameSignalType::Inactive, FrameQuantizationOffsetType::High, _) => {
-                icdf::EXCITATION_SIGN_INACTIVE_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 0) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION0_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 1) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION1_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 2) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION2_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 3) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION3_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 4) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION4_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, 5) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION5_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::Low, _) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_LOW_QUANTIZATION6_PLUS_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 0) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION0_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 1) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION1_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 2) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION2_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 3) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION3_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 4) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION4_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, 5) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION5_PULSE
-            }
-            (FrameSignalType::Unvoiced, FrameQuantizationOffsetType::High, _) => {
-                icdf::EXCITATION_SIGN_UNVOICED_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 0) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION0_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 1) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION1_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 2) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION2_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 3) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION3_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 4) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION4_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, 5) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION5_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::Low, _) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_LOW_QUANTIZATION6_PLUS_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 0) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION0_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 1) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION1_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 2) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION2_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 3) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION3_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 4) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION4_PULSE
-            }
-            (FrameSignalType::Voiced, FrameQuantizationOffsetType::High, 5) => {
-                icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION5_PULSE
-            }
-            _ => icdf::EXCITATION_SIGN_VOICED_SIGNAL_HIGH_QUANTIZATION6_PLUS_PULSE,
-        }
     }
 
     fn convert_normalized_lsfs_to_lpc_coefficients(
