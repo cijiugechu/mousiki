@@ -123,7 +123,7 @@ pub fn a2nlsf(nlsf_q15: &mut [i16], a_q16: &mut [i32]) {
             }
 
             let value = ((k as i32) << 8).wrapping_add(ffrac);
-            let clamped = value.min(i32::from(i16::MAX));
+            let clamped = value.clamp(0, i32::from(i16::MAX));
             debug_assert!(clamped >= 0, "NLSF values must be non-negative");
             nlsf_q15[root_ix] = clamped as i16;
 
