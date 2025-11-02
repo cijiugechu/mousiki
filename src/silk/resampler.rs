@@ -178,8 +178,8 @@ impl Resampler {
                 ResamplerKernel::IirFir(ResamplerStateIirFir::new(batch_size, inv_ratio_q16))
             }
             ResamplerMode::DownFIR => {
-                let (fir_fracs, fir_order, coefs) =
-                    down_fir_config(fs_hz_in, fs_hz_out).ok_or(ResamplerInitError::UnsupportedRatio)?;
+                let (fir_fracs, fir_order, coefs) = down_fir_config(fs_hz_in, fs_hz_out)
+                    .ok_or(ResamplerInitError::UnsupportedRatio)?;
                 ResamplerKernel::DownFIR(ResamplerStateDownFIR::new(
                     batch_size,
                     inv_ratio_q16,
@@ -221,8 +221,6 @@ const DELAY_MATRIX_ENC: [[u8; ENCODER_OUTPUT_RATES.len()]; ENCODER_INPUT_RATES.l
 
 const DELAY_MATRIX_DEC: [[u8; DECODER_OUTPUT_RATES.len()]; DECODER_INPUT_RATES.len()] =
     [[4, 0, 2, 0, 0], [0, 9, 4, 7, 4], [0, 3, 12, 7, 7]];
-
-
 
 fn compute_inv_ratio_q16(
     fs_hz_in: i32,
@@ -365,7 +363,8 @@ mod tests {
     #[test]
     fn rejects_invalid_rates() {
         let mut state = Resampler::default();
-        let err = state.silk_resampler_init(44_100, 48_000, false)
+        let err = state
+            .silk_resampler_init(44_100, 48_000, false)
             .expect_err("44.1 kHz should not be accepted");
         assert_eq!(err, ResamplerInitError::NonIntegralKilohertz);
     }

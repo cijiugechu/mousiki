@@ -23,6 +23,7 @@
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
 - `src/silk/stereo_quant_pred.rs` ports the mid/side predictor quantisation helper that searches the stereo predictor table and emits entropy indices, mirroring `silk/stereo_quant_pred.c`.【src/silk/stereo_quant_pred.rs†L1-L139】【opus-main/silk/stereo_quant_pred.c†L34-L78】
 - `src/silk/vq_wmat_ec.rs` mirrors the entropy-constrained matrix-weighted VQ search (`silk_VQ_WMat_EC_c`) that evaluates 5-tap LTP codebook rows and returns the best index, residual energy, and rate/distortion score for the encoder pipeline.【src/silk/vq_wmat_ec.rs†L1-L142】【opus-main/silk/VQ_WMat_EC.c†L29-L115】
+- `src/silk/gain_quant.rs` ports the scalar gain quantisation/dequantisation routines and gain identifier helper from `silk/gain_quant.c`, preserving the encoder's hysteresis logic and delta-index bounds in Rust.【src/silk/gain_quant.rs†L1-L170】【opus-main/silk/gain_quant.c†L34-L147】
 - `src/silk/stereo_ms_to_lr.rs` mirrors the adaptive mid/side to left/right conversion used during stereo decoding, porting the decoder-side state (`StereoDecState`) and exposing `StereoDecState::ms_to_lr`, a Rust translation of `silk_stereo_MS_to_LR`.【src/silk/stereo_ms_to_lr.rs†L1-L225】【opus-main/silk/stereo_MS_to_LR.c†L31-L89】
 - `src/silk/stereo_decode_pred.rs` reproduces the entropy decoding of stereo predictor indices and the reconstruction of quantised mid/side predictors, mirroring `silk/stereo_decode_pred.c`.【src/silk/stereo_decode_pred.rs†L1-L118】【opus-main/silk/stereo_decode_pred.c†L28-L75】
 - `src/silk/stereo_encode_pred.rs` mirrors the entropy coding of the mid/side predictor indices and the mid-only flag used during stereo encoding, matching `silk/stereo_encode_pred.c`.【src/silk/stereo_encode_pred.rs†L1-L58】【opus-main/silk/stereo_encode_pred.c†L34-L63】
@@ -85,7 +86,7 @@ The Rust decoder implements only a slice of this logic: there are no ports yet f
 - `enc_API.c` delegates to encoder control helpers like `control_codec.c`, `control_SNR.c`, `control_audio_bandwidth.c`, `check_control_input.c`, and gain/pitch analysis routines spread across `gain_quant.c`, `quant_LTP_gains.c`, `NSQ.c`, and `NSQ_del_dec.c`. These files handle bandwidth switching, rate control, long-term prediction updates, and noise-shaping quantisation.【f1c0fa†L1-L64】【57d235†L1-L60】【da49cd†L1-L74】【7b30e4†L1-L56】【760d41†L1-L68】【7f3cdd†L1-L76】【cbc6a2†L1-L120】
 - `encode_indices.c`, `encode_pulses.c`, and numerous files in `fixed/` and `float/` provide the forward (encoder) versions of the entropy coding, LSF quantisation, and signal analysis pipeline.【7cf3d9†L1-L108】【424aff†L1-L88】【a500cb†L1-L80】【c56351†L1-L88】
 
-No encoder functionality exists in the Rust tree, leaving these modules entirely unported.
+Rust currently mirrors only selected encoder-side helpers (`check_control_input.rs`, `gain_quant.rs`, and the stereo predictor modules); the top-level encoder control flow, LTP/gain analysis, and range-coding drivers listed above remain unported.
 
 ### Signal Processing Libraries
 - The `fixed/` directory implements fixed-point DSP kernels for the encoder and decoder, including LPC/LTP analysis, pitch detection, residual energy estimation, and vector operations.【424aff†L1-L88】【a500cb†L1-L96】

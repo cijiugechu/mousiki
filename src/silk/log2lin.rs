@@ -71,4 +71,9 @@ mod tests {
             assert_eq!(log2lin(input), expected, "log2lin({input})");
         }
     }
+
+    #[test]
+    fn matches_reference_for_2264() {
+        assert_eq!(log2lin(2264), 210_944);
+    }
 }
