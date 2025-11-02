@@ -300,7 +300,7 @@ pub fn silk_resampler(state: &mut Resampler, output: &mut [i16], input: &[i16]) 
             produced += state.fs_in_khz;
             if !second_input.is_empty() {
                 let len = second_input.len();
-                output[produced..produced + len].copy_from_slice(&second_input[..len]);
+                output[produced..produced + len].copy_from_slice(second_input);
                 produced += len;
             }
         }
