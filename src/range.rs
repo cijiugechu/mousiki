@@ -221,6 +221,31 @@ impl<'a> RangeDecoder<'a> {
         k as u32
     }
 
+    /// Decodes a symbol using the compact 8-bit cumulative distribution format
+    /// employed by SILK's tables.
+    pub fn decode_icdf(&mut self, icdf: &[u8], ftb: u32) -> usize {
+        debug_assert!(!icdf.is_empty(), "icdf tables must not be empty");
+
+        let mut s = self.range_size;
+        let d = self.high_and_coded_difference;
+        let r = s >> ftb;
+        let mut index = 0usize;
+
+        loop {
+            let t = s;
+            s = r * u32::from(icdf[index]);
+            if d >= s {
+                self.high_and_coded_difference = d - s;
+                self.range_size = t - s;
+                self.normalize();
+                return index;
+            }
+
+            index += 1;
+            debug_assert!(index < icdf.len(), "icdf table exhausted before decoding symbol");
+        }
+    }
+
     /// Init sets the state of the Decoder
     /// Let b0 be an 8-bit unsigned integer containing first input byte (or
     /// containing zero if there are no bytes in this Opus frame).  The
@@ -377,6 +402,27 @@ impl RangeEncoder {
         self.normalize();
     }
 
+    /// Encodes a symbol using the compact 8-bit cumulative distribution format
+    /// used by SILK's shell coder and related tables.
+    pub fn encode_icdf(&mut self, symbol: usize, icdf: &[u8], ftb: u32) {
+        debug_assert!(symbol < icdf.len(), "symbol index out of bounds");
+
+        let r = self.range_size >> ftb;
+
+        if symbol > 0 {
+            let prev = u32::from(icdf[symbol - 1]);
+            let curr = u32::from(icdf[symbol]);
+            let offset = u64::from(r) * u64::from(prev);
+            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
+            self.range_size = (u64::from(r) * u64::from(prev - curr)) as u32;
+        } else {
+            let offset = u64::from(r) * u64::from(icdf[symbol]);
+            self.range_size -= offset as u32;
+        }
+
+        self.normalize();
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
         let mut l = EC_CODE_BITS as i32 - ec_ilog(self.range_size);
         let mut mask = (EC_CODE_TOP - 1) >> l;
@@ -425,6 +471,10 @@ impl RangeEncoder {
 mod tests {
     use super::*;
     use crate::icdf;
+    use crate::silk::tables_other::SILK_UNIFORM4_ICDF;
+    use crate::silk::tables_pulses_per_block::{
+        SILK_SHELL_CODE_TABLE0, SILK_SHELL_CODE_TABLE_OFFSETS,
+    };
 
     const SILK_FRAME_TYPE_INACTIVE: ICDFContext = icdf!(256; 26, 256);
 
@@ -582,5 +632,35 @@ mod tests {
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_HIGH_BITS[1]), 2);
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_LOW_BITS), 6);
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_DELTA), 0);
+    }
+
+    #[test]
+    fn encode_decode_with_u8_icdf_roundtrip() {
+        let mut encoder = RangeEncoder::new();
+        encoder.encode_icdf(2, &SILK_UNIFORM4_ICDF, 8);
+        encoder.encode_icdf(0, &SILK_UNIFORM4_ICDF, 8);
+
+        let data = encoder.finish();
+        let mut decoder = RangeDecoder::init(&data);
+
+        assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 2);
+        assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 0);
+    }
+
+    #[test]
+    fn encode_decode_with_shell_table_slice() {
+        let start = usize::from(SILK_SHELL_CODE_TABLE_OFFSETS[4]);
+        let end = usize::from(SILK_SHELL_CODE_TABLE_OFFSETS[5]);
+        let icdf = &SILK_SHELL_CODE_TABLE0[start..end];
+
+        let mut encoder = RangeEncoder::new();
+        encoder.encode_icdf(2, icdf, 8);
+        encoder.encode_icdf(1, icdf, 8);
+
+        let data = encoder.finish();
+        let mut decoder = RangeDecoder::init(&data);
+
+        assert_eq!(decoder.decode_icdf(icdf, 8), 2);
+        assert_eq!(decoder.decode_icdf(icdf, 8), 1);
     }
 }
