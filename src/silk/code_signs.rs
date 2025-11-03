@@ -148,7 +148,7 @@ mod tests {
     fn encode_decode_roundtrip() {
         let frame_length = 32;
         let pulses = [
-            3, -1, 0, 2, -2, 0, 1, -4, 0, 0, 2, -1, 0, 1, 0, -1,  //
+            3, -1, 0, 2, -2, 0, 1, -4, 0, 0, 2, -1, 0, 1, 0, -1, //
             -2, 1, 0, -1, 3, 0, 0, -2, 0, 1, 0, 2, -1, 0, 1, 0,
         ];
         let sums = sums_for_blocks(&pulses);

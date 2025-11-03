@@ -242,7 +242,10 @@ impl<'a> RangeDecoder<'a> {
             }
 
             index += 1;
-            debug_assert!(index < icdf.len(), "icdf table exhausted before decoding symbol");
+            debug_assert!(
+                index < icdf.len(),
+                "icdf table exhausted before decoding symbol"
+            );
         }
     }
 
@@ -473,7 +476,7 @@ mod tests {
     use crate::icdf;
     use crate::silk::tables_other::SILK_UNIFORM4_ICDF;
     use crate::silk::tables_pulses_per_block::{
-        SILK_SHELL_CODE_TABLE0, SILK_SHELL_CODE_TABLE_OFFSETS,
+        SILK_SHELL_CODE_TABLE_OFFSETS, SILK_SHELL_CODE_TABLE0,
     };
 
     const SILK_FRAME_TYPE_INACTIVE: ICDFContext = icdf!(256; 26, 256);

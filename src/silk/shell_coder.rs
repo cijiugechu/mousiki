@@ -6,8 +6,8 @@
 
 use crate::range::{RangeDecoder, RangeEncoder};
 use crate::silk::tables_pulses_per_block::{
-    SILK_SHELL_CODE_TABLE0, SILK_SHELL_CODE_TABLE1, SILK_SHELL_CODE_TABLE2,
-    SILK_SHELL_CODE_TABLE3, SILK_SHELL_CODE_TABLE_OFFSETS,
+    SILK_SHELL_CODE_TABLE_OFFSETS, SILK_SHELL_CODE_TABLE0, SILK_SHELL_CODE_TABLE1,
+    SILK_SHELL_CODE_TABLE2, SILK_SHELL_CODE_TABLE3,
 };
 
 const SHELL_CODEC_FRAME_LENGTH: usize = 16;
@@ -84,11 +84,7 @@ pub fn silk_shell_encoder(encoder: &mut RangeEncoder, pulses0: &[i32]) {
 }
 
 /// Shell decoder, operates on one shell code frame of 16 pulses.
-pub fn silk_shell_decoder(
-    pulses0: &mut [i16],
-    decoder: &mut RangeDecoder<'_>,
-    total_pulses: i32,
-) {
+pub fn silk_shell_decoder(pulses0: &mut [i16], decoder: &mut RangeDecoder<'_>, total_pulses: i32) {
     assert_eq!(pulses0.len(), SHELL_CODEC_FRAME_LENGTH);
     debug_assert!(total_pulses >= 0);
 
@@ -131,9 +127,7 @@ mod tests {
 
     #[test]
     fn round_trip_shell_coder() {
-        let pulses = [
-            3, 0, 1, 2, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 0, 0,
-        ];
+        let pulses = [3, 0, 1, 2, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 0, 0];
 
         let mut encoder = RangeEncoder::new();
         silk_shell_encoder(&mut encoder, &pulses);
@@ -161,9 +155,7 @@ mod tests {
 
     #[test]
     fn handles_maximum_pulse_count() {
-        let pulses = [
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-        ];
+        let pulses = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 
         let mut encoder = RangeEncoder::new();
         silk_shell_encoder(&mut encoder, &pulses);
