@@ -6,7 +6,7 @@
 //! interpolation between pre-computed filter coefficient tables during bandwidth
 //! transitions.
 
-use crate::silk::biquad_alt::biquad_alt_stride1;
+use crate::silk::biquad_alt::biquad_alt_stride1_inplace;
 use crate::silk::tables_other::{
     SILK_TRANSITION_LP_A_Q28, SILK_TRANSITION_LP_B_Q28, TRANSITION_INT_NUM, TRANSITION_NA,
     TRANSITION_NB,
@@ -109,19 +109,7 @@ impl LpState {
         assert_eq!(TRANSITION_NB, 3);
         assert_eq!(TRANSITION_NA, 2);
 
-        // SAFETY: biquad_alt_stride1 reads each input sample before writing the
-        // corresponding output sample, so in-place operation is safe.
-        unsafe {
-            let frame_ptr = frame.as_mut_ptr();
-            let len = frame.len();
-            biquad_alt_stride1(
-                core::slice::from_raw_parts(frame_ptr as *const i16, len),
-                &b_q28,
-                &a_q28,
-                &mut self.in_lp_state,
-                core::slice::from_raw_parts_mut(frame_ptr, len),
-            );
-        }
+        biquad_alt_stride1_inplace(frame, &b_q28, &a_q28, &mut self.in_lp_state);
     }
 }
 
