@@ -83,7 +83,7 @@ impl LpState {
             (TRANSITION_FRAMES - self.transition_frame_no) << (16 - 6)
         } else {
             // General division
-            ((TRANSITION_FRAMES - self.transition_frame_no) << 16) / TRANSITION_FRAMES
+            ((TRANSITION_FRAMES - self.transition_frame_no) << 16) / TRANSITION_INT_STEPS
         };
 
         let ind = (fac_q16 >> 16) as usize;
