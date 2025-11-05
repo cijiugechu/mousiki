@@ -6,9 +6,9 @@
 //! the rising (type 1) and falling (type 2) halves of the sine curve.
 
 const FREQ_TABLE_Q16: [i16; 27] = [
-    12_111, 9_804, 8_235, 7_100, 6_239, 5_565, 5_022, 4_575, 4_202, 3_885, 3_612,
-    3_375, 3_167, 2_984, 2_820, 2_674, 2_542, 2_422, 2_313, 2_214, 2_123, 2_038,
-    1_961, 1_889, 1_822, 1_760, 1_702,
+    12_111, 9_804, 8_235, 7_100, 6_239, 5_565, 5_022, 4_575, 4_202, 3_885, 3_612, 3_375, 3_167,
+    2_984, 2_820, 2_674, 2_542, 2_422, 2_313, 2_214, 2_123, 2_038, 1_961, 1_889, 1_822, 1_760,
+    1_702,
 ];
 
 const UNITY_Q16: i32 = 1 << 16;
@@ -65,10 +65,7 @@ pub fn apply_sine_window(output: &mut [i16], input: &[i16], win_type: i32) {
             .wrapping_add((length as i32) >> 4);
     }
 
-    for (chunk_in, chunk_out) in input
-        .chunks_exact(4)
-        .zip(output.chunks_exact_mut(4))
-    {
+    for (chunk_in, chunk_out) in input.chunks_exact(4).zip(output.chunks_exact_mut(4)) {
         let avg_q16 = (s0_q16.wrapping_add(s1_q16)) >> 1;
         chunk_out[0] = smulwb(avg_q16, i32::from(chunk_in[0])) as i16;
         chunk_out[1] = smulwb(s1_q16, i32::from(chunk_in[1])) as i16;
@@ -108,9 +105,7 @@ mod tests {
 
     #[test]
     fn rising_window_matches_reference_sequence() {
-        let input: Vec<i16> = (0..16)
-            .map(|i| (i as i32 * 100) as i16)
-            .collect();
+        let input: Vec<i16> = (0..16).map(|i| (i as i32 * 100) as i16).collect();
         let mut output = vec![0i16; input.len()];
 
         apply_sine_window(&mut output, &input, 1);
@@ -125,9 +120,7 @@ mod tests {
 
     #[test]
     fn falling_window_matches_reference_sequence() {
-        let input: Vec<i16> = (0..16)
-            .map(|i| (1000 - i as i32 * 50) as i16)
-            .collect();
+        let input: Vec<i16> = (0..16).map(|i| (1000 - i as i32 * 50) as i16).collect();
         let mut output = vec![0i16; input.len()];
 
         apply_sine_window(&mut output, &input, 2);
@@ -155,8 +148,7 @@ mod tests {
             output,
             [
                 -39, -58, -57, -38, 0, 56, 130, 223, -333, -276, -201, -109, 0, 123, 262, 414,
-                -580, -455, -315, -164, 0, 173, 355, 546, -744, -569, -385, -195, 0, 198, 398,
-                600
+                -580, -455, -315, -164, 0, 173, 355, 546, -744, -569, -385, -195, 0, 198, 398, 600
             ]
         );
     }
