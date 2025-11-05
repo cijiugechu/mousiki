@@ -55,6 +55,51 @@ pub fn biquad_alt_stride1(
     state[1] = s1;
 }
 
+/// Applies the alternative biquad filter in-place to a mono buffer.
+///
+/// This is the in-place counterpart to [`biquad_alt_stride1`], allowing callers to
+/// filter a buffer without allocating a temporary copy.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::arithmetic_side_effects
+)]
+pub fn biquad_alt_stride1_inplace(
+    signal: &mut [i16],
+    b_q28: &[i32; 3],
+    a_q28: &[i32; 2],
+    state: &mut [i32; 2],
+) {
+    let mut s0 = state[0];
+    let mut s1 = state[1];
+
+    let a0_l_q28 = (-a_q28[0]) & 0x0000_3fff;
+    let a0_u_q28 = (-a_q28[0]) >> 14;
+    let a1_l_q28 = (-a_q28[1]) & 0x0000_3fff;
+    let a1_u_q28 = (-a_q28[1]) >> 14;
+
+    for sample in signal.iter_mut() {
+        let inval = i32::from(*sample);
+        let mut out32_q14 = smlawb(s0, b_q28[0], inval);
+        out32_q14 <<= 2;
+
+        s0 = s1.wrapping_add(rshift_round(smulwb(out32_q14, a0_l_q28), 14));
+        s0 = smlawb(s0, out32_q14, a0_u_q28);
+        s0 = smlawb(s0, b_q28[1], inval);
+
+        s1 = rshift_round(smulwb(out32_q14, a1_l_q28), 14);
+        s1 = smlawb(s1, out32_q14, a1_u_q28);
+        s1 = smlawb(s1, b_q28[2], inval);
+
+        let rounded = out32_q14.wrapping_add((1 << 14) - 1) >> 14;
+        *sample = sat16(rounded);
+    }
+
+    state[0] = s0;
+    state[1] = s1;
+}
+
 /// Applies the alternative biquad filter to interleaved stereo data with stride two.
 ///
 /// This mirrors `silk_biquad_alt_stride2_c` from the reference C implementation and
@@ -155,7 +200,7 @@ fn sat16(value: i32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{biquad_alt_stride1, biquad_alt_stride2};
+    use super::{biquad_alt_stride1, biquad_alt_stride1_inplace, biquad_alt_stride2};
 
     #[test]
     fn stride1_matches_reference_sequence() {
@@ -201,5 +246,24 @@ mod tests {
         biquad_alt_stride1(&input, &b, &a, &mut state, &mut output);
         assert_eq!(output, input);
         assert_eq!(state, [0, 0]);
+    }
+
+    #[test]
+    fn inplace_matches_out_of_place_processing() {
+        let b = [1_145_324_612, -229_064_922, 1_145_324_612];
+        let a = [-1_010_580_540, 505_290_270];
+        let input = [1234, -2345, 3456, -4567, 5678, -6789];
+
+        let mut state_out = [123_456, -654_321];
+        let mut state_inplace = state_out;
+
+        let mut output = [0i16; 6];
+        let mut inplace_buffer = input;
+
+        biquad_alt_stride1(&input, &b, &a, &mut state_out, &mut output);
+        biquad_alt_stride1_inplace(&mut inplace_buffer, &b, &a, &mut state_inplace);
+
+        assert_eq!(inplace_buffer, output);
+        assert_eq!(state_inplace, state_out);
     }
 }

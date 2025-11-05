@@ -17,6 +17,7 @@ pub mod k2a;
 pub mod k2a_q16;
 pub mod lin2log;
 pub mod log2lin;
+pub mod lp_variable_cutoff;
 pub mod lpc_analysis_filter;
 pub mod lpc_fit;
 pub mod lpc_inv_pred_gain;
