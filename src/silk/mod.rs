@@ -22,6 +22,8 @@ pub mod lpc_fit;
 pub mod lpc_inv_pred_gain;
 pub mod nlsf2a;
 pub mod nlsf_decode;
+pub mod nlsf_del_dec_quant;
+pub mod nlsf_encode;
 pub mod nlsf_stabilize;
 pub mod nlsf_unpack;
 pub mod nlsf_vq;

@@ -131,7 +131,7 @@ fn clz_frac(x: i32) -> (i32, i32) {
     (lz, frac)
 }
 
-fn div32_varq(a32: i32, b32: i32, q_res: i32) -> i32 {
+pub(crate) fn div32_varq(a32: i32, b32: i32, q_res: i32) -> i32 {
     assert!(b32 != 0, "denominator must be non-zero");
     assert!(q_res >= 0, "result Q-domain must be non-negative");
 
