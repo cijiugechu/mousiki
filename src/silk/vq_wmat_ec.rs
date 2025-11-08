@@ -9,7 +9,7 @@
 
 use crate::silk::lin2log::lin2log;
 
-const LTP_ORDER: usize = 5;
+pub const LTP_ORDER: usize = 5;
 const SILK_FIX_CONST_1_001_Q15: i32 = 32_801;
 
 /// Result produced by [`vq_wmat_ec`].
@@ -40,7 +40,7 @@ impl Default for VqWMatEcResult {
 ///
 /// * `xx_q17` — flattened 5×5 correlation matrix stored in row-major order.
 /// * `x_x_q17` — correlation vector.
-/// * `cb_q7` — concatenated codebook rows in Q7, with each row containing five entries.
+/// * `cb_q7` — codebook rows in Q7, each holding five taps.
 /// * `cb_gain_q7` — per-row effective gains in Q7.
 /// * `cl_q5` — per-row code lengths in Q5.
 /// * `subfr_len` — number of time-domain samples represented by the correlations.
@@ -51,18 +51,14 @@ impl Default for VqWMatEcResult {
 pub fn vq_wmat_ec(
     xx_q17: &[i32; LTP_ORDER * LTP_ORDER],
     x_x_q17: &[i32; LTP_ORDER],
-    cb_q7: &[i8],
+    cb_q7: &[[i8; LTP_ORDER]],
     cb_gain_q7: &[u8],
     cl_q5: &[u8],
     subfr_len: i32,
     max_gain_q7: i32,
 ) -> VqWMatEcResult {
     let l = cb_gain_q7.len();
-    assert_eq!(
-        cb_q7.len(),
-        l * LTP_ORDER,
-        "codebook rows must be contiguous"
-    );
+    assert_eq!(cb_q7.len(), l, "codebook rows must match gain table");
     assert_eq!(cl_q5.len(), l, "code lengths must match the codebook size");
 
     let mut neg_xx_q24 = [0i32; LTP_ORDER];
@@ -72,7 +68,7 @@ pub fn vq_wmat_ec(
 
     let mut best = VqWMatEcResult::default();
 
-    for (row_index, row) in cb_q7.chunks_exact(LTP_ORDER).enumerate() {
+    for (row_index, row) in cb_q7.iter().enumerate() {
         let gain_tmp_q7 = i32::from(cb_gain_q7[row_index]);
         let penalty = (gain_tmp_q7 - max_gain_q7).max(0).wrapping_shl(11);
 
@@ -155,7 +151,7 @@ mod tests {
             16_000,
         ];
         let x_x_q17: [i32; 5] = [300, 400, 500, 600, 700];
-        let cb_q7 = [-3, -2, -1, 0, 1];
+        let cb_q7 = [[-3, -2, -1, 0, 1]];
         let cb_gain_q7 = [12u8];
         let cl_q5 = [5u8];
 
@@ -181,8 +177,8 @@ mod tests {
         ];
         let x_x_q17: [i32; 5] = [250, 260, 270, 280, 290];
         let cb_q7 = [
-            3, 2, 1, 0, -1, // row 0
-            -2, -2, -2, -2, -2, // row 1
+            [3, 2, 1, 0, -1],     // row 0
+            [-2, -2, -2, -2, -2], // row 1
         ];
         let cb_gain_q7 = [18u8, 10u8];
         let cl_q5 = [10u8, 6u8];
@@ -207,7 +203,7 @@ mod tests {
             -1_000_000, 0, 0, 0, 0, 0, -1_000_000,
         ];
         let x_x_q17: [i32; 5] = [0, 0, 0, 0, 0];
-        let cb_q7 = [127, 127, 127, 127, 127];
+        let cb_q7 = [[127, 127, 127, 127, 127]];
         let cb_gain_q7 = [127u8];
         let cl_q5 = [0u8];
 
@@ -220,9 +216,11 @@ mod tests {
     fn codebook_layout_matches_rows() {
         let mut cb = Vec::new();
         for row in 0..3 {
+            let mut taps = [0i8; LTP_ORDER];
             for col in 0..LTP_ORDER {
-                cb.push((row * 10 + col) as i8);
+                taps[col] = (row * 10 + col) as i8;
             }
+            cb.push(taps);
         }
         let xx_q17: [i32; 25] = [
             25_000, 0, 0, 0, 0, 0, 25_000, 0, 0, 0, 0, 0, 25_000, 0, 0, 0, 0, 0, 25_000, 0, 0, 0,
