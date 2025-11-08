@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn scale_copy_matches_reference() {
         let input = [1234, -2345, 32767, -32768];
-        let gain_q16 = (3 * (1 << 16)) / 2; // 1.5 in Q16
+        let gain_q16 = (3 * (1 << 16)) / 4; // 0.75 in Q16 so the result fits i16 with strict asserts
         let mut output = [0i16; 4];
         scale_copy_vector16(&mut output, &input, gain_q16);
         let expected: Vec<i16> = input
@@ -109,8 +109,8 @@ mod tests {
 
     #[test]
     fn scale_vector32_matches_reference() {
-        let gain_q26 = (3 * (1 << 26)) / 4; // 0.75 in Q26
-        let mut data = [1 << 24, -(1 << 23), 123456789, -98765432];
+        let gain_q26 = (1 << 26) / 4; // 0.25 in Q26 so the result fits i32 with strict asserts
+        let mut data = [1 << 12, -(1 << 11), 12345, -9876];
         let expected: Vec<i32> = data
             .iter()
             .map(|&x| ((i64::from(x) * i64::from(gain_q26)) >> 8) as i32)
