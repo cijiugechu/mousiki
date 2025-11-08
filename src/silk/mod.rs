@@ -40,6 +40,7 @@ pub mod resampler_private_down_fir;
 pub mod resampler_private_iir_fir;
 pub mod resampler_private_up2_hq;
 pub mod resampler_rom;
+pub mod residual_energy16;
 pub mod schur;
 pub mod shell_coder;
 pub mod sigm_q15;
