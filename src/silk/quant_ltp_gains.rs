@@ -58,7 +58,8 @@ pub fn silk_quant_ltp_gains(
     let mut temp_idx = [0i8; MAX_NB_SUBFR];
     let mut min_rate_dist_q8 = i32::MAX;
     let mut best_sum_log_gain_q7 = *sum_log_gain_q7;
-    let mut res_nrg_q15 = 0;
+    let mut best_res_nrg_q15 = 0;
+    let mut res_nrg_q15;
 
     for k in 0..NB_LTP_CBKS {
         let cb_rows = SILK_LTP_GAIN_VQ_Q7[k];
@@ -118,6 +119,7 @@ pub fn silk_quant_ltp_gains(
             *periodicity_index = k as i8;
             cbk_index[..nb_subfr].copy_from_slice(&temp_idx[..nb_subfr]);
             best_sum_log_gain_q7 = sum_log_gain_tmp_q7;
+            best_res_nrg_q15 = res_nrg_q15;
         }
     }
 
@@ -132,14 +134,15 @@ pub fn silk_quant_ltp_gains(
         }
     }
 
+    let mut winning_res_nrg_q15 = best_res_nrg_q15;
     if nb_subfr == 2 {
-        res_nrg_q15 >>= 1;
+        winning_res_nrg_q15 >>= 1;
     } else {
-        res_nrg_q15 >>= 2;
+        winning_res_nrg_q15 >>= 2;
     }
 
     *sum_log_gain_q7 = best_sum_log_gain_q7;
-    *pred_gain_db_q7 = -3 * (lin2log(res_nrg_q15) - (15 << 7));
+    *pred_gain_db_q7 = -3 * (lin2log(winning_res_nrg_q15) - (15 << 7));
 }
 
 fn add_pos_sat32(a: i32, b: i32) -> i32 {
