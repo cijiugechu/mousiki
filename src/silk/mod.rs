@@ -60,6 +60,7 @@ pub mod tables_other;
 pub mod tables_pitch_lag;
 pub mod tables_pulses_per_block;
 pub mod tuning_parameters;
+pub mod vector_ops;
 pub mod vq_wmat_ec;
 
 pub use check_control_input::EncControl;
