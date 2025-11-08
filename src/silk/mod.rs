@@ -62,12 +62,14 @@ pub mod tables_pulses_per_block;
 pub mod tuning_parameters;
 pub mod vector_ops;
 pub mod vq_wmat_ec;
+pub mod warped_autocorrelation;
 
 pub use check_control_input::EncControl;
 pub use gain_quant::MAX_NB_SUBFR;
 pub use interpolate::MAX_LPC_ORDER;
 pub use stereo_lr_to_ms::{StereoConversionResult, StereoEncState};
 pub use tables_nlsf_cb_wb::SilkNlsfCb;
+pub use warped_autocorrelation::MAX_SHAPE_LPC_ORDER;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrameSignalType {
