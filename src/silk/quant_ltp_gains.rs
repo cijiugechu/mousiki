@@ -5,6 +5,7 @@
 //! cost. It mirrors the fixed-point implementation, including the cumulative
 //! `sum_log_gain` bookkeeping that guards against unstable gain trajectories.
 
+use crate::silk::MAX_NB_SUBFR;
 use crate::silk::lin2log::lin2log;
 use crate::silk::log2lin::log2lin;
 use crate::silk::tables_ltp::{
@@ -12,8 +13,7 @@ use crate::silk::tables_ltp::{
     SILK_LTP_VQ_SIZES,
 };
 use crate::silk::tuning_parameters::MAX_SUM_LOG_GAIN_DB;
-use crate::silk::vq_wmat_ec::{vq_wmat_ec, LTP_ORDER};
-use crate::silk::MAX_NB_SUBFR;
+use crate::silk::vq_wmat_ec::{LTP_ORDER, vq_wmat_ec};
 
 const LOG_SCALE_OFFSET_Q7: i32 = 7 << 7;
 const GAIN_SAFETY_Q7: i32 = ((0.4 * (1 << 7) as f32) + 0.5) as i32;
@@ -77,17 +77,15 @@ pub fn silk_quant_ltp_gains(
         let mut x_offset = 0;
 
         for temp in temp_idx.iter_mut().take(nb_subfr) {
-            let log_target = (MAX_SUM_LOG_GAIN_DB_Q7 - sum_log_gain_tmp_q7)
-                .saturating_add(LOG_SCALE_OFFSET_Q7);
+            let log_target =
+                (MAX_SUM_LOG_GAIN_DB_Q7 - sum_log_gain_tmp_q7).saturating_add(LOG_SCALE_OFFSET_Q7);
             let mut max_gain_q7 = log2lin(log_target).saturating_sub(GAIN_SAFETY_Q7);
             if max_gain_q7 < 0 {
                 max_gain_q7 = 0;
             }
 
             let mut xx_block = [0i32; LTP_ORDER * LTP_ORDER];
-            xx_block.copy_from_slice(
-                &xx_q17[xx_offset..xx_offset + LTP_ORDER * LTP_ORDER],
-            );
+            xx_block.copy_from_slice(&xx_q17[xx_offset..xx_offset + LTP_ORDER * LTP_ORDER]);
             let mut x_block = [0i32; LTP_ORDER];
             x_block.copy_from_slice(&x_x_q17[x_offset..x_offset + LTP_ORDER]);
 
@@ -105,8 +103,7 @@ pub fn silk_quant_ltp_gains(
             res_nrg_q15 = add_pos_sat32(res_nrg_q15, result.residual_energy_q15);
             rate_dist_q8 = add_pos_sat32(rate_dist_q8, result.rate_dist_q8);
 
-            let gain_log_delta =
-                lin2log(GAIN_SAFETY_Q7 + result.gain_q7) - LOG_SCALE_OFFSET_Q7;
+            let gain_log_delta = lin2log(GAIN_SAFETY_Q7 + result.gain_q7) - LOG_SCALE_OFFSET_Q7;
             sum_log_gain_tmp_q7 = (sum_log_gain_tmp_q7 + gain_log_delta).max(0);
 
             xx_offset += LTP_ORDER * LTP_ORDER;
@@ -187,10 +184,7 @@ mod tests {
         assert_eq!(pred_gain, 0);
         assert_eq!(sum_log_gain, 1098);
         assert_eq!(cbk_index, [0, 0]);
-        assert_eq!(
-            b_q14,
-            [512, 768, 3072, 896, 640, 512, 768, 3072, 896, 640]
-        );
+        assert_eq!(b_q14, [512, 768, 3072, 896, 640, 512, 768, 3072, 896, 640]);
     }
 
     #[test]
@@ -206,9 +200,9 @@ mod tests {
             400, 600, 900, 19500, 700, 200, 300, 500, 700, 19000, 22500, 1600, 1000, 600, 250,
             1600, 21500, 1300, 900, 450, 1000, 1300, 20700, 750, 380, 600, 900, 750, 19900, 650,
             250, 450, 380, 650, 19350, 20000, 1100, 700, 300, 100, 1100, 19800, 800, 400, 200, 700,
-            800, 19400, 600, 250, 300, 400, 600, 19000, 500, 100, 200, 250, 500, 18800, 21500, 1700,
-            1300, 900, 500, 1700, 21200, 1400, 1100, 600, 1300, 1400, 20800, 1000, 550, 900, 1100,
-            1000, 20000, 700, 500, 600, 550, 700, 19500,
+            800, 19400, 600, 250, 300, 400, 600, 19000, 500, 100, 200, 250, 500, 18800, 21500,
+            1700, 1300, 900, 500, 1700, 21200, 1400, 1100, 600, 1300, 1400, 20800, 1000, 550, 900,
+            1100, 1000, 20000, 700, 500, 600, 550, 700, 19500,
         ];
         let x_x_q17 = [
             800, 600, 400, 200, 0, 750, 550, 350, 150, 50, 700, 500, 300, 100, -50, 650, 450, 250,
