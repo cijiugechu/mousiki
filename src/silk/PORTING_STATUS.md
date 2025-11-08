@@ -21,6 +21,7 @@
 - `src/silk/schur.rs` ports the fixed-point Schur recursion that derives reflection coefficients and residual energy from correlation sequences, mirroring `silk/fixed/schur_FIX.c`.【src/silk/schur.rs†L1-L90】【opus-main/silk/fixed/schur_FIX.c†L34-L106】
 - `src/silk/inner_prod_aligned.rs` mirrors the scaled 16-bit inner-product helper from `silk/inner_prod_aligned.c`, exposing `inner_prod_aligned_scale` for resamplers and vector kernels that need partial products.【src/silk/inner_prod_aligned.rs†L1-L71】【opus-main/silk/inner_prod_aligned.c†L1-L48】
 - `src/silk/vector_ops.rs` ports the fixed-point scaling and inner-product helpers from `silk/fixed/vector_ops_FIX.c`, providing `scale_copy_vector16`, `scale_vector32_q26_lshift_18`, and `inner_prod16` so predictor analysis code can reuse the shared vector math primitives without touching the C library.【src/silk/vector_ops.rs†L1-L126】【opus-c/silk/fixed/vector_ops_FIX.c†L35-L101】
+- `src/silk/warped_autocorrelation.rs` mirrors the warped autocorrelation helper that noise-shaping analysis relies on, matching the fixed-point pipeline in `silk/fixed/warped_autocorrelation_FIX.c` and re-exposing `MAX_SHAPE_LPC_ORDER`.【src/silk/warped_autocorrelation.rs†L1-L173】【opus-c/silk/fixed/warped_autocorrelation_FIX.c†L1-L94】
 - `src/silk/regularize_correlations.rs` ports the diagonal-noise injection used to stabilise correlation matrices before LPC solving, matching `silk/fixed/regularize_correlations_FIX.c`.【src/silk/regularize_correlations.rs†L1-L29】【opus-c/silk/fixed/regularize_correlations_FIX.c†L35-L47】
 - `src/silk/sigm_q15.rs` ports the lookup-table-based sigmoid approximation leveraged by SILK's predictor tuning helpers, mirroring `silk_sigm_Q15` from the reference C sources.【src/silk/sigm_q15.rs†L1-L86】
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c`.【src/silk/sort.rs†L1-L159】
@@ -100,7 +101,7 @@ Rust currently mirrors only selected encoder-side helpers (`check_control_input.
 - The `float/` directory mirrors these routines with floating-point implementations used in certain build configurations.【c56351†L1-L88】
 - Platform-specific optimisations under `arm/`, `x86/`, `mips/`, and `xtensa/` provide SIMD kernels and specialised math headers.【c0a208†L1-L80】【4e0c2f†L1-L96】【cbc6a2†L1-L120】【880630†L1-L80】
 
-These support libraries are prerequisites for a full port but have not yet been translated to Rust.
+These support libraries are prerequisites for a full port; while helpers like `vector_ops`, `regularize_correlations`, and `warped_autocorrelation` now exist in Rust, most LPC/LTP analysis kernels remain C-only.
 
 ### Resampling and Utility Modules
 - `resampler.c`, `resampler_private_*.c`, `resampler_rom.c`, and `resampler_structs.h` implement the multi-stage resamplers used on the encoder side and for decoder bandwidth transitions.【77a597†L1-L120】【723e57†L1-L100】
