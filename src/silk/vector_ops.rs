@@ -23,11 +23,7 @@ pub fn scale_copy_vector16(data_out: &mut [i16], data_in: &[i16], gain_q16: i32)
 
     for (dst, &src) in data_out.iter_mut().zip(data_in.iter()) {
         let scaled = smulwb(gain_q16, i32::from(src));
-        debug_assert!(
-            (i32::from(i16::MIN)..=i32::from(i16::MAX)).contains(&scaled),
-            "value {scaled} cannot be represented as i16"
-        );
-        *dst = scaled as i16;
+        *dst = cast_to_i16(scaled);
     }
 }
 
@@ -40,11 +36,7 @@ pub fn scale_vector32_q26_lshift_18(data: &mut [i32], gain_q26: i32) {
     for value in data.iter_mut() {
         let product = i64::from(*value) * i64::from(gain_q26);
         let shifted = product >> 8;
-        debug_assert!(
-            (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&shifted),
-            "value {shifted} cannot be represented as i32"
-        );
-        *value = shifted as i32;
+        *value = cast_to_i32(shifted);
     }
 }
 
@@ -75,6 +67,26 @@ pub fn inner_prod16(in_vec1: &[i16], in_vec2: &[i16]) -> i64 {
 #[inline]
 fn smulwb(a: i32, b: i32) -> i32 {
     ((i64::from(a) * i64::from(b as i16)) >> 16) as i32
+}
+
+#[inline]
+fn cast_to_i16(value: i32) -> i16 {
+    #[cfg(all(debug_assertions, feature = "silk_strict_asserts"))]
+    assert!(
+        (i32::from(i16::MIN)..=i32::from(i16::MAX)).contains(&value),
+        "value {value} cannot be represented as i16"
+    );
+    value as i16
+}
+
+#[inline]
+fn cast_to_i32(value: i64) -> i32 {
+    #[cfg(all(debug_assertions, feature = "silk_strict_asserts"))]
+    assert!(
+        (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value),
+        "value {value} cannot be represented as i32"
+    );
+    value as i32
 }
 
 #[cfg(test)]
