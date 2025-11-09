@@ -21,6 +21,8 @@ default = []
 fixed_point = []
 deep_plc = []
 silk_strict_asserts = []
+silk_debug = []
+silk_tic_toc = []
 
 [dependencies]
 libm = "0.2"
