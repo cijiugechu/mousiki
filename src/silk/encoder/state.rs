@@ -7,11 +7,82 @@
 //! translation of `silk_HP_variable_cutoff`.
 
 use crate::silk::FrameSignalType;
+use crate::silk::MAX_NB_SUBFR;
 use crate::silk::lin2log::lin2log;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
 
 /// Number of VAD bands tracked per SILK channel.
 pub const VAD_N_BANDS: usize = 4;
+/// Internal SILK maximum sampling rate (kHz).
+pub(crate) const MAX_FS_KHZ: usize = 16;
+/// Sub-frame duration in milliseconds.
+pub(crate) const SUB_FRAME_LENGTH_MS: usize = 5;
+/// Default number of milliseconds per frame.
+pub(crate) const MAX_FRAME_LENGTH_MS: usize = SUB_FRAME_LENGTH_MS * MAX_NB_SUBFR;
+/// Default internal sampling rate in kHz used when initialising the encoder state.
+const DEFAULT_INTERNAL_FS_KHZ: i32 = 16;
+/// Default frame length in samples (20 ms @ 16 kHz).
+pub(crate) const DEFAULT_FRAME_LENGTH: usize =
+    MAX_FRAME_LENGTH_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
+/// Bias used by the VAD noise estimator.
+pub(crate) const VAD_NOISE_LEVELS_BIAS: i32 = 50;
+/// Initial smoothed SNR per VAD band (100 * 256 -> 20 dB).
+const INITIAL_NRG_RATIO_Q8: i32 = 100 * 256;
+/// Number of frames used for the initial fast noise update phase.
+const INITIAL_VAD_COUNTER: i32 = 15;
+
+/// Fixed-point voice activity detector state (mirror of `silk_VAD_state`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VadState {
+    pub ana_state: [i32; 2],
+    pub ana_state1: [i32; 2],
+    pub ana_state2: [i32; 2],
+    pub xnrg_subfr: [i32; VAD_N_BANDS],
+    pub nrg_ratio_smth_q8: [i32; VAD_N_BANDS],
+    pub hp_state: i16,
+    pub nl: [i32; VAD_N_BANDS],
+    pub inv_nl: [i32; VAD_N_BANDS],
+    pub noise_level_bias: [i32; VAD_N_BANDS],
+    pub counter: i32,
+}
+
+impl Default for VadState {
+    fn default() -> Self {
+        let mut state = Self {
+            ana_state: [0; 2],
+            ana_state1: [0; 2],
+            ana_state2: [0; 2],
+            xnrg_subfr: [0; VAD_N_BANDS],
+            nrg_ratio_smth_q8: [INITIAL_NRG_RATIO_Q8; VAD_N_BANDS],
+            hp_state: 0,
+            nl: [0; VAD_N_BANDS],
+            inv_nl: [0; VAD_N_BANDS],
+            noise_level_bias: [0; VAD_N_BANDS],
+            counter: INITIAL_VAD_COUNTER,
+        };
+        state.reset();
+        state
+    }
+}
+
+impl VadState {
+    /// Mirrors `silk_VAD_Init` by reinitialising the noise estimator members.
+    pub fn reset(&mut self) {
+        for (band, bias) in self.noise_level_bias.iter_mut().enumerate() {
+            *bias = (VAD_NOISE_LEVELS_BIAS / (band as i32 + 1)).max(1);
+        }
+        for (nl, bias) in self.nl.iter_mut().zip(self.noise_level_bias.iter()) {
+            *nl = 100 * *bias;
+        }
+        for (inv, nl) in self.inv_nl.iter_mut().zip(self.nl.iter()) {
+            *inv = if *nl != 0 { i32::MAX / *nl } else { 0 };
+        }
+        self.nrg_ratio_smth_q8 = [INITIAL_NRG_RATIO_Q8; VAD_N_BANDS];
+        self.xnrg_subfr = [0; VAD_N_BANDS];
+        self.hp_state = 0;
+        self.counter = INITIAL_VAD_COUNTER;
+    }
+}
 
 /// Minimal subset of the encoder common state needed by the Rust ports.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,10 +91,14 @@ pub struct EncoderStateCommon {
     pub prev_signal_type: FrameSignalType,
     /// Internal sampling rate in kHz.
     pub fs_khz: i32,
+    /// Active frame length in samples.
+    pub frame_length: usize,
     /// Previous frame pitch lag (in samples).
     pub prev_lag: i32,
     /// Per-band input quality metrics in Q15.
     pub input_quality_bands_q15: [i32; VAD_N_BANDS],
+    /// Smoothed tilt estimate in Q15.
+    pub input_tilt_q15: i32,
     /// Smoothed speech-activity estimate in Q8.
     pub speech_activity_q8: i32,
     /// Smoothed logarithmic cut-off frequency in Q15.
@@ -34,9 +109,11 @@ impl Default for EncoderStateCommon {
     fn default() -> Self {
         Self {
             prev_signal_type: FrameSignalType::Inactive,
-            fs_khz: 16,
+            fs_khz: DEFAULT_INTERNAL_FS_KHZ,
+            frame_length: DEFAULT_FRAME_LENGTH,
             prev_lag: 0,
             input_quality_bands_q15: [0; VAD_N_BANDS],
+            input_tilt_q15: 0,
             speech_activity_q8: 0,
             variable_hp_smth1_q15: lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8,
         }
@@ -48,6 +125,8 @@ impl Default for EncoderStateCommon {
 pub struct EncoderChannelState {
     /// Common fields shared with the floating-point build.
     pub common: EncoderStateCommon,
+    /// Voice activity detector state.
+    pub vad: VadState,
 }
 
 impl EncoderChannelState {
@@ -60,7 +139,10 @@ impl EncoderChannelState {
     /// Construct a channel state around an existing common state snapshot.
     #[must_use]
     pub fn with_common(common: EncoderStateCommon) -> Self {
-        Self { common }
+        Self {
+            common,
+            vad: VadState::default(),
+        }
     }
 
     /// Borrow the common encoder fields.
@@ -73,6 +155,24 @@ impl EncoderChannelState {
     #[must_use]
     pub fn common_mut(&mut self) -> &mut EncoderStateCommon {
         &mut self.common
+    }
+
+    /// Borrow the VAD state.
+    #[must_use]
+    pub fn vad(&self) -> &VadState {
+        &self.vad
+    }
+
+    /// Mutably borrow the VAD state.
+    #[must_use]
+    pub fn vad_mut(&mut self) -> &mut VadState {
+        &mut self.vad
+    }
+
+    /// Simultaneously borrow the common encoder fields and VAD state.
+    pub(crate) fn parts_mut(&mut self) -> (&mut EncoderStateCommon, &mut VadState) {
+        let ptr = self as *mut Self;
+        unsafe { (&mut (*ptr).common, &mut (*ptr).vad) }
     }
 
     /// Update the adaptive high-pass smoother using the current channel statistics.
@@ -89,9 +189,11 @@ mod tests {
     fn encoder_state_common_defaults_match_reference() {
         let common = EncoderStateCommon::default();
         assert_eq!(common.prev_signal_type, FrameSignalType::Inactive);
-        assert_eq!(common.fs_khz, 16);
+        assert_eq!(common.fs_khz, DEFAULT_INTERNAL_FS_KHZ);
+        assert_eq!(common.frame_length, DEFAULT_FRAME_LENGTH);
         assert_eq!(common.prev_lag, 0);
         assert_eq!(common.input_quality_bands_q15, [0; VAD_N_BANDS]);
+        assert_eq!(common.input_tilt_q15, 0);
         assert_eq!(common.speech_activity_q8, 0);
         assert_eq!(
             common.variable_hp_smth1_q15,
@@ -103,6 +205,7 @@ mod tests {
     fn encoder_channel_state_default_wraps_common() {
         let channel = EncoderChannelState::default();
         assert_eq!(*channel.common(), EncoderStateCommon::default());
+        assert_eq!(channel.vad(), &VadState::default());
     }
 
     #[test]
@@ -111,5 +214,19 @@ mod tests {
         custom.fs_khz = 24;
         let channel = EncoderChannelState::with_common(custom.clone());
         assert_eq!(channel.common(), &custom);
+    }
+
+    #[test]
+    fn vad_state_reset_matches_reference_bias() {
+        let mut vad = VadState::default();
+        vad.noise_level_bias = [0; VAD_N_BANDS];
+        vad.reset();
+        assert_eq!(vad.noise_level_bias[0], VAD_NOISE_LEVELS_BIAS);
+        assert_eq!(vad.noise_level_bias[1], VAD_NOISE_LEVELS_BIAS / 2);
+        assert_eq!(vad.noise_level_bias[2], VAD_NOISE_LEVELS_BIAS / 3);
+        assert_eq!(vad.noise_level_bias[3], VAD_NOISE_LEVELS_BIAS / 4);
+        assert!(vad.nl.iter().all(|&nl| nl > 0));
+        assert!(vad.inv_nl.iter().all(|&inv| inv > 0));
+        assert_eq!(vad.nrg_ratio_smth_q8, [INITIAL_NRG_RATIO_Q8; VAD_N_BANDS]);
     }
 }
