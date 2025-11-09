@@ -15,3 +15,9 @@ The directory where the C version is located is `/opus-c`(Which is a git submodu
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
 - Run `cargo check --all-features`, `cargo test --all-features` and `cargo clippy` automatically after making code changes, you need to make sure no errors.
+
+## Invariants and assertions
+
+- Across the port, Rust `assert!` / `debug_assert!` calls mirror the original `silk_assert` / `celt_assert` invariants in the C sources. They guard encoder-internal preconditions such as state bounds, interpolation configuration, and LPC order limits.
+- Preserve these invariants as assertions instead of returning `Result`. Treat failures as programming errors: adding recoverable error paths would diverge from the reference semantics, require widespread signature changes, and risk masking bugs that the C code treats as fatal.
+- When porting new routines (e.g. `process_nlsfs`), locate the corresponding C asserts and encode them directly as Rust assertions to keep behaviour aligned.
