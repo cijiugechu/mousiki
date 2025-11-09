@@ -225,7 +225,7 @@ pub const SILK_NLSF_DELTA_MIN_WB_Q15: [i16; 17] = [
        347
 ];
 
-pub const SILK_NLSF_CB_WB: SilkNlsfCb = SilkNlsfCb {
+pub static SILK_NLSF_CB_WB: SilkNlsfCb = SilkNlsfCb {
     n_vectors: 32,
     order: 16,
     quant_step_size_q16: 9830,
