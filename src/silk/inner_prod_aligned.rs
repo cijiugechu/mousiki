@@ -1,11 +1,37 @@
-//! Port of the `silk_inner_prod_aligned_scale` helper from the reference SILK
-//! implementation.
+//! Inner-product helpers mirrored from the reference SILK implementation.
 //!
-//! The routine computes the inner product between two 16-bit vectors while
-//! applying an arithmetic right shift to each product term before the
-//! accumulation. This mirrors the behaviour of the C function in
-//! `silk/inner_prod_aligned.c`, which is used throughout the resampler helpers
-//! and other fixed-point kernels where partial scaling is required.
+//! The C sources provide two closely related helpers:
+//! `silk_inner_prod_aligned`, which performs an unscaled dot product between
+//! two 16-bit vectors, and `silk_inner_prod_aligned_scale`, which right-shifts
+//! each partial product before accumulating. This module exposes Rust
+//! equivalents used by higher-level DSP kernels such as the correlation matrix
+//! builder, stereo predictor search, and resampler primitives.
+
+/// Computes the unscaled inner product between two 16-bit vectors.
+///
+/// Mirrors `silk_inner_prod_aligned`; the `arch` parameter is accepted for API
+/// parity with the C code but is currently unused (architecture-specific SIMD
+/// paths have not been ported yet).
+///
+/// # Panics
+///
+/// * If the input slices have different lengths.
+#[must_use]
+pub fn inner_prod_aligned(in_vec1: &[i16], in_vec2: &[i16], arch: i32) -> i32 {
+    let _ = arch;
+    assert_eq!(
+        in_vec1.len(),
+        in_vec2.len(),
+        "input vectors must have identical lengths"
+    );
+
+    let mut sum = 0i32;
+    for (&a, &b) in in_vec1.iter().zip(in_vec2.iter()) {
+        sum = sum.wrapping_add(i32::from(a) * i32::from(b));
+    }
+
+    sum
+}
 
 /// Computes the scaled inner product of `in_vec1` and `in_vec2`.
 ///
@@ -37,7 +63,7 @@ pub fn inner_prod_aligned_scale(in_vec1: &[i16], in_vec2: &[i16], scale: i32) ->
 
 #[cfg(test)]
 mod tests {
-    use super::inner_prod_aligned_scale;
+    use super::{inner_prod_aligned, inner_prod_aligned_scale};
 
     #[test]
     fn matches_unscaled_inner_product() {
@@ -49,6 +75,7 @@ mod tests {
             .map(|(&a, &b)| i32::from(a) * i32::from(b))
             .sum();
         assert_eq!(inner_prod_aligned_scale(&vec1, &vec2, 0), expected);
+        assert_eq!(inner_prod_aligned(&vec1, &vec2, 0), expected);
     }
 
     #[test]
@@ -73,5 +100,18 @@ mod tests {
     fn empty_vectors_return_zero() {
         let vec: [i16; 0] = [];
         assert_eq!(inner_prod_aligned_scale(&vec, &vec, 0), 0);
+        assert_eq!(inner_prod_aligned(&vec, &vec, 0), 0);
+    }
+
+    #[test]
+    fn inner_prod_aligned_handles_arch_parameter() {
+        let vec1 = [123, -456, 789];
+        let vec2 = [-111, 222, -333];
+        let expected: i32 = vec1
+            .iter()
+            .zip(vec2.iter())
+            .map(|(&a, &b)| i32::from(a) * i32::from(b))
+            .sum();
+        assert_eq!(inner_prod_aligned(&vec1, &vec2, 1), expected);
     }
 }

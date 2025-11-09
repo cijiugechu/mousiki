@@ -9,6 +9,7 @@ pub mod check_control_input;
 pub mod cng;
 pub mod code_signs;
 pub mod codebook;
+pub mod corr_matrix;
 pub mod decode_indices;
 pub mod decoder;
 pub mod decoder_set_fs;
