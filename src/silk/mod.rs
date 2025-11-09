@@ -11,6 +11,7 @@ pub mod codebook;
 pub mod decoder;
 pub mod errors;
 pub mod gain_quant;
+pub mod hp_variable_cutoff;
 pub mod icdf;
 pub mod inner_prod_aligned;
 pub mod interpolate;

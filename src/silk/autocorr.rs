@@ -17,12 +17,7 @@ use crate::celt::{celt_ilog2, ec_ilog};
 /// matching the behaviour of the C implementation's `scale` out-parameter. The
 /// caller must provide a `results` buffer whose length is at least
 /// `min(input.len(), correlation_count)`.
-pub fn autocorr(
-    results: &mut [i32],
-    input: &[i16],
-    correlation_count: usize,
-    arch: i32,
-) -> i32 {
+pub fn autocorr(results: &mut [i32], input: &[i16], correlation_count: usize, arch: i32) -> i32 {
     let corr_count = correlation_count.min(input.len());
     assert!(
         results.len() >= corr_count,
@@ -66,9 +61,7 @@ pub fn autocorr(
         shift = 0;
         None
     };
-    let signal = scaled_storage
-        .as_deref()
-        .unwrap_or(input);
+    let signal = scaled_storage.as_deref().unwrap_or(input);
 
     compute_autocorrelation(&mut results[..corr_count], signal);
 
@@ -160,9 +153,7 @@ mod tests {
 
     #[test]
     fn matches_reference_for_high_energy_signal() {
-        let input = [
-            30_000, -20_000, 15_000, -10_000, 5_000, -2_500, 1_250, -625,
-        ];
+        let input = [30_000, -20_000, 15_000, -10_000, 5_000, -2_500, 1_250, -625];
         let mut output = [0i32; 5];
         let taps = output.len();
 
@@ -189,15 +180,7 @@ mod tests {
 
         let scale = autocorr(&mut output, &input, taps, 0);
 
-        assert_eq!(
-            output,
-            [
-                462_422_016,
-                387_973_120,
-                315_621_376,
-                245_366_784
-            ]
-        );
+        assert_eq!(output, [462_422_016, 387_973_120, 315_621_376, 245_366_784]);
         assert_eq!(scale, -20);
     }
 }
