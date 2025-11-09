@@ -1,6 +1,7 @@
 pub mod a2nlsf;
 pub mod ana_filt_bank_1;
 pub mod apply_sine_window;
+pub mod autocorr;
 pub mod biquad_alt;
 pub mod bwexpander;
 pub mod bwexpander_32;
