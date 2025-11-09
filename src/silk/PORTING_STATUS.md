@@ -5,6 +5,7 @@
 - `src/silk/icdf.rs` ports the inverse cumulative distribution function tables that drive entropy decoding of gains, LSF codebooks, LTP parameters, and related side information.【src/silk/icdf.rs†L1-L185】
 - `src/silk/codebook.rs` mirrors the SILK stage-two LSF vector-quantiser tables used during decoding.【src/silk/codebook.rs†L1-L200】
 - `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【src/silk/decoder.rs†L200-L700】
+- `src/silk/decoder_set_fs.rs` mirrors the `silk_decoder_set_fs` helper, reinitialising the decoder resampler, pitch-contour tables, NLSF codebooks, and LTP/LPC state when the internal sample rate changes.【src/silk/decoder_set_fs.rs†L1-L220】【opus-c/silk/decoder_set_fs.c†L33-L134】
 - `src/silk/errors.rs` exposes the SILK encoder and decoder error codes as the `SilkError` enum so Rust callers can mirror the reference `errors.h` failure reporting while preserving the original numeric discriminants.【src/silk/errors.rs†L1-L112】【opus-main/silk/errors.h†L1-L88】
 - `src/silk/decoder/nomarlize.rs` (sic) provides Rust representations of several C helper types (`NlsfQ15`, `ResQ10`, `A32Q17`, `Aq12Coefficients`, `Aq12List`) that back the LSF interpolation logic.【src/silk/decoder/nomarlize.rs†L1-L220】
 - `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【src/silk/sum_sqr_shift.rs†L1-L101】
@@ -82,7 +83,8 @@ The existing Rust implementation therefore covers only a subset of the full SILK
 - `enc_API.c` wires the high-level encoder API, exposing `silk_Encode` and driving channel/state transitions, VAD hooks, and configuration updates.【29ff48†L18-L66】
 - `dec_API.c` implements the matching decoder super-structure (`silk_decoder`) and API functions such as `silk_LoadOSCEModels`, `silk_Get_Decoder_Size`, `silk_ResetDecoder`, `silk_InitDecoder`, and `silk_Decode`, orchestrating per-channel decode calls and packet handling.【49e9b1†L1-L120】
 - `structs.h` defines the comprehensive encoder and decoder state structures (`silk_encoder_state`, `silk_decoder_state`, `silk_decoder_control`) that hold buffers, configuration, PLC/CNG state, entropy indices, and architecture-specific metadata.【6988cc†L1-L60】【9c7ced†L1-L56】
-- `init_encoder.c`, `init_decoder.c`, and `decoder_set_fs.c` set up and reset codec state, manage sample-rate transitions, and enforce buffer invariants during initialisation.【1cceb7†L1-L40】【608c41†L1-L52】
+- `init_encoder.c` and `init_decoder.c` set up and reset codec state, manage sample-rate transitions, and enforce buffer invariants during initialisation.【1cceb7†L1-L40】
+- `decoder_set_fs.c` is now mirrored by `src/silk/decoder_set_fs.rs`, leaving only the encoder/decoder initialisation routines unported on this front.【src/silk/decoder_set_fs.rs†L1-L220】【608c41†L1-L52】
 
 None of these lifecycle or state-management layers have been ported to Rust; the Rust tree lacks equivalents for the public C API wrappers and the large codec state structures.
 

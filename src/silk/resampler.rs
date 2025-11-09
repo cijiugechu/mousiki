@@ -113,36 +113,43 @@ impl Resampler {
         fs_hz_out: i32,
         for_enc: bool,
     ) -> Result<(), ResamplerInitError> {
-        if fs_hz_in % 1000 != 0 || fs_hz_out % 1000 != 0 {
+        if fs_hz_in <= 0
+            || fs_hz_out <= 0
+            || fs_hz_in > (RESAMPLER_MAX_FS_KHZ as i32) * 1000
+            || fs_hz_out > (RESAMPLER_MAX_FS_KHZ as i32) * 1000
+        {
+            return Err(ResamplerInitError::UnsupportedSampleRate);
+        }
+
+        if fs_hz_in % 1000 != 0 || (for_enc && fs_hz_out % 1000 != 0) {
             return Err(ResamplerInitError::NonIntegralKilohertz);
         }
 
-        let (input_index, output_index) = if for_enc {
-            let in_idx = ENCODER_INPUT_RATES
+        let input_index = if for_enc {
+            ENCODER_INPUT_RATES
                 .iter()
                 .position(|&rate| rate == fs_hz_in)
-                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
+        } else {
+            DECODER_INPUT_RATES
+                .iter()
+                .position(|&rate| rate == fs_hz_in)
+        }
+        .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
+
+        let input_delay = if for_enc {
             let out_idx = ENCODER_OUTPUT_RATES
                 .iter()
                 .position(|&rate| rate == fs_hz_out)
                 .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
-            (in_idx, out_idx)
+            usize::from(DELAY_MATRIX_ENC[input_index][out_idx])
         } else {
-            let in_idx = DECODER_INPUT_RATES
-                .iter()
-                .position(|&rate| rate == fs_hz_in)
-                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
             let out_idx = DECODER_OUTPUT_RATES
                 .iter()
                 .position(|&rate| rate == fs_hz_out)
-                .ok_or(ResamplerInitError::UnsupportedSampleRate)?;
-            (in_idx, out_idx)
-        };
-
-        let input_delay = if for_enc {
-            usize::from(DELAY_MATRIX_ENC[input_index][output_index])
-        } else {
-            usize::from(DELAY_MATRIX_DEC[input_index][output_index])
+                ;
+            out_idx
+                .map(|idx| usize::from(DELAY_MATRIX_DEC[input_index][idx]))
+                .unwrap_or_else(|| decoder_delay_fallback(fs_hz_in, fs_hz_out))
         };
 
         let fs_in_khz = (fs_hz_in / 1000) as usize;
@@ -257,6 +264,16 @@ fn down_fir_config(fs_hz_in: i32, fs_hz_out: i32) -> Option<(usize, usize, &'sta
     }
 }
 
+fn decoder_delay_fallback(fs_hz_in: i32, fs_hz_out: i32) -> usize {
+    debug_assert!(fs_hz_in > 0 && fs_hz_out > 0);
+    if fs_hz_out >= fs_hz_in {
+        0
+    } else {
+        let fs_in_khz = (fs_hz_in / 1000) as usize;
+        fs_in_khz.min(RESAMPLER_DELAY_BUF_SIZE / 2)
+    }
+}
+
 /// Resample `input` into `output`, returning the number of produced samples.
 ///
 /// Mirrors the behaviour of `silk_resampler` from the C implementation.
@@ -364,8 +381,29 @@ mod tests {
     fn rejects_invalid_rates() {
         let mut state = Resampler::default();
         let err = state
-            .silk_resampler_init(44_100, 48_000, false)
-            .expect_err("44.1 kHz should not be accepted");
+            .silk_resampler_init(11_000, 48_000, false)
+            .expect_err("11 kHz input should not be accepted");
+        assert_eq!(err, ResamplerInitError::UnsupportedSampleRate);
+    }
+
+    #[test]
+    fn accepts_non_integral_decoder_output_rate() {
+        let mut state = Resampler::default();
+        state
+            .silk_resampler_init(16_000, 44_100, false)
+            .expect("decoder path should accept 44.1 kHz");
+        assert_eq!(state.mode(), ResamplerMode::IirFir);
+        assert_eq!(state.fs_in_khz(), 16);
+        assert_eq!(state.fs_out_khz(), 44);
+        assert_eq!(state.input_delay(), 0);
+    }
+
+    #[test]
+    fn encoder_rejects_non_integral_output_rate() {
+        let mut state = Resampler::default();
+        let err = state
+            .silk_resampler_init(16_000, 44_100, true)
+            .expect_err("encoder path still requires integral output rate");
         assert_eq!(err, ResamplerInitError::NonIntegralKilohertz);
     }
 

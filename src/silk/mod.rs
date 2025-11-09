@@ -9,6 +9,7 @@ pub mod check_control_input;
 pub mod code_signs;
 pub mod codebook;
 pub mod decoder;
+pub mod decoder_set_fs;
 pub mod encoder;
 pub mod errors;
 pub mod gain_quant;
@@ -75,6 +76,7 @@ pub use interpolate::MAX_LPC_ORDER;
 pub use stereo_lr_to_ms::{StereoConversionResult, StereoEncState};
 pub use tables_nlsf_cb_wb::SilkNlsfCb;
 pub use warped_autocorrelation::MAX_SHAPE_LPC_ORDER;
+pub const MIN_LPC_ORDER: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrameSignalType {
