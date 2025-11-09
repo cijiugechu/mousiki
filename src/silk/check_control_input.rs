@@ -48,6 +48,12 @@ pub struct EncControl {
     pub use_dtx: i32,
     /// Enables constant-bitrate mode when set to 1.
     pub use_cbr: i32,
+    /// Maximum number of bits the encoder may spend on the current frame.
+    pub max_bits: i32,
+    /// Flag indicating that the Opus wrapper allows SILK to switch bandwidth this frame.
+    pub opus_can_switch: bool,
+    /// Flag set by SILK when it is ready to switch bandwidth.
+    pub switch_ready: bool,
 }
 
 impl Default for EncControl {
@@ -66,6 +72,9 @@ impl Default for EncControl {
             use_in_band_fec: 0,
             use_dtx: 0,
             use_cbr: 0,
+            max_bits: 0,
+            opus_can_switch: false,
+            switch_ready: false,
         }
     }
 }

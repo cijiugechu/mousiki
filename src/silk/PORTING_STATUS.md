@@ -80,6 +80,7 @@
 - `src/silk/bwexpander_32.rs` ports the 32-bit variant of the LPC bandwidth-expansion helper from `silk/bwexpander_32.c`, applying the same chirp logic to full-precision predictor coefficients used in resampling and analysis paths.【src/silk/bwexpander_32.rs†L1-L66】【opus-c/opus-main/silk/bwexpander_32.c†L34-L51】
 - `src/silk/check_control_input.rs` validates the encoder control structure prior to encoding, mirroring `silk/check_control_input.c` and returning the same `SilkError` codes when parameters fall outside the supported ranges.【src/silk/check_control_input.rs†L1-L166】【opus-c/opus-main/silk/check_control_input.c†L35-L110】
 - `src/silk/cng.rs` ports the SILK comfort-noise generator, exposing `CngState`, `PlcState`, and the `apply_cng` helper that smooths NLSFs/gains and synthesises Q14 noise during packet loss, matching the behaviour of `silk/CNG.c`.【src/silk/cng.rs†L1-L210】【opus-c/silk/CNG.c†L36-L190】
+- `src/silk/control_audio_bandwidth.rs` mirrors the sampling-rate state machine from `silk/control_audio_bandwidth.c`, updating the encoder’s low-pass transition state, bandwidth-switch handshake flags, and frame bit budget so Opus can safely change internal sample rates.【src/silk/control_audio_bandwidth.rs†L13-L186】【opus-c/silk/control_audio_bandwidth.c†L35-L132】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -104,10 +105,10 @@ Rust still lacks equivalents for the remaining public C API wrappers and the lar
 The Rust decoder implements only a slice of this logic: there are no ports yet for the top-level `silk_decode_frame` orchestration, PLC/CNG handling, entropy decoding of pulses, or the auxiliary VAD module, although `src/silk/decode_indices.rs` now covers the range-decoder side-information stage.【src/silk/decode_indices.rs†L1-L275】【src/silk/shell_coder.rs†L1-L164】
 
 ### Encoder Pipeline
-- `enc_API.c` delegates to encoder control helpers like `control_codec.c`, `control_SNR.c`, `control_audio_bandwidth.c`, `check_control_input.c`, and gain/pitch analysis routines spread across `NSQ.c` and `NSQ_del_dec.c`. These files handle bandwidth switching, rate control, long-term prediction updates, and noise-shaping quantisation.【f1c0fa†L1-L64】【57d235†L1-L60】【da49cd†L1-L74】【7b30e4†L1-L56】【760d41†L1-L68】【7f3cdd†L1-L76】【cbc6a2†L1-L120】
+- `enc_API.c` delegates to encoder control helpers like `control_codec.c`, `control_SNR.c`, `control_audio_bandwidth.c` (now mirrored by `src/silk/control_audio_bandwidth.rs`), `check_control_input.c`, and gain/pitch analysis routines spread across `NSQ.c` and `NSQ_del_dec.c`. These files handle bandwidth switching, rate control, long-term prediction updates, and noise-shaping quantisation.【f1c0fa†L1-L64】【57d235†L1-L60】【da49cd†L1-L74】【7b30e4†L1-L56】【760d41†L1-L68】【7f3cdd†L1-L76】【cbc6a2†L1-L120】【src/silk/control_audio_bandwidth.rs†L13-L90】
 - `encode_indices.c`, `encode_pulses.c`, and numerous files in `fixed/` and `float/` provide the forward (encoder) versions of the entropy coding, LSF quantisation, and signal analysis pipeline.【7cf3d9†L1-L108】【424aff†L1-L88】【a500cb†L1-L80】【c56351†L1-L88】
 
-Rust currently mirrors only selected encoder-side helpers (`check_control_input.rs`, `gain_quant.rs`, `quant_ltp_gains.rs`, `nlsf_encode.rs`/`nlsf_del_dec_quant.rs`, and the stereo predictor modules); the top-level encoder control flow, NSQ/NSQ-del-dec logic, and range-coding drivers listed above remain unported.
+Rust currently mirrors only selected encoder-side helpers (`check_control_input.rs`, `control_audio_bandwidth.rs`, `gain_quant.rs`, `quant_ltp_gains.rs`, `nlsf_encode.rs`/`nlsf_del_dec_quant.rs`, and the stereo predictor modules); the top-level encoder control flow, NSQ/NSQ-del-dec logic, and range-coding drivers listed above remain unported.
 
 ### Signal Processing Libraries
 - The `fixed/` directory implements fixed-point DSP kernels for the encoder and decoder, including LPC/LTP analysis, pitch detection, residual energy estimation, and vector operations.【424aff†L1-L88】【a500cb†L1-L96】

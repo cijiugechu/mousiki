@@ -9,6 +9,7 @@
 use crate::silk::FrameSignalType;
 use crate::silk::MAX_NB_SUBFR;
 use crate::silk::lin2log::lin2log;
+use crate::silk::lp_variable_cutoff::LpState;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
 
 /// Number of VAD bands tracked per SILK channel.
@@ -95,6 +96,16 @@ pub struct EncoderStateCommon {
     pub nb_subfr: usize,
     /// Active frame length in samples.
     pub frame_length: usize,
+    /// External API sample rate in Hz.
+    pub api_sample_rate_hz: i32,
+    /// Maximum internal sampling rate allowed in Hz.
+    pub max_internal_sample_rate_hz: i32,
+    /// Minimum internal sampling rate allowed in Hz.
+    pub min_internal_sample_rate_hz: i32,
+    /// Requested internal sampling rate in Hz.
+    pub desired_internal_sample_rate_hz: i32,
+    /// Whether the encoder may change its internal bandwidth this frame.
+    pub allow_bandwidth_switch: bool,
     /// Previous frame pitch lag (in samples).
     pub prev_lag: i32,
     /// Target bitrate expressed in bits per second.
@@ -118,6 +129,11 @@ impl Default for EncoderStateCommon {
             fs_khz: DEFAULT_INTERNAL_FS_KHZ,
             nb_subfr: MAX_NB_SUBFR,
             frame_length: DEFAULT_FRAME_LENGTH,
+            api_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
+            max_internal_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
+            min_internal_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
+            desired_internal_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
+            allow_bandwidth_switch: false,
             prev_lag: 0,
             target_rate_bps: 0,
             snr_db_q7: 0,
@@ -136,6 +152,8 @@ pub struct EncoderChannelState {
     pub common: EncoderStateCommon,
     /// Voice activity detector state.
     pub vad: VadState,
+    /// Variable low-pass filter state used during bandwidth transitions.
+    pub lp_state: LpState,
 }
 
 impl EncoderChannelState {
@@ -151,6 +169,7 @@ impl EncoderChannelState {
         Self {
             common,
             vad: VadState::default(),
+            lp_state: LpState::default(),
         }
     }
 
@@ -184,6 +203,24 @@ impl EncoderChannelState {
         unsafe { (&mut (*ptr).common, &mut (*ptr).vad) }
     }
 
+    /// Simultaneously borrow the common encoder fields and low-pass transition state.
+    pub(crate) fn common_and_lp_mut(&mut self) -> (&mut EncoderStateCommon, &mut LpState) {
+        let ptr = self as *mut Self;
+        unsafe { (&mut (*ptr).common, &mut (*ptr).lp_state) }
+    }
+
+    /// Borrow the bandwidth-transition low-pass state.
+    #[must_use]
+    pub fn low_pass_state(&self) -> &LpState {
+        &self.lp_state
+    }
+
+    /// Mutably borrow the bandwidth-transition low-pass state.
+    #[must_use]
+    pub fn low_pass_state_mut(&mut self) -> &mut LpState {
+        &mut self.lp_state
+    }
+
     /// Update the adaptive high-pass smoother using the current channel statistics.
     pub fn update_variable_high_pass(&mut self) {
         crate::silk::hp_variable_cutoff::hp_variable_cutoff(self);
@@ -201,6 +238,14 @@ mod tests {
         assert_eq!(common.fs_khz, DEFAULT_INTERNAL_FS_KHZ);
         assert_eq!(common.nb_subfr, MAX_NB_SUBFR);
         assert_eq!(common.frame_length, DEFAULT_FRAME_LENGTH);
+        assert_eq!(common.api_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
+        assert_eq!(common.max_internal_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
+        assert_eq!(common.min_internal_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
+        assert_eq!(
+            common.desired_internal_sample_rate_hz,
+            DEFAULT_INTERNAL_FS_KHZ * 1000
+        );
+        assert!(!common.allow_bandwidth_switch);
         assert_eq!(common.prev_lag, 0);
         assert_eq!(common.target_rate_bps, 0);
         assert_eq!(common.snr_db_q7, 0);
@@ -218,6 +263,7 @@ mod tests {
         let channel = EncoderChannelState::default();
         assert_eq!(*channel.common(), EncoderStateCommon::default());
         assert_eq!(channel.vad(), &VadState::default());
+        assert_eq!(channel.low_pass_state(), &LpState::default());
     }
 
     #[test]

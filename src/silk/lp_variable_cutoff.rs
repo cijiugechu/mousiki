@@ -19,7 +19,7 @@ const MAX_FRAME_LENGTH_MS: i32 = 20;
 const TRANSITION_TIME_MS: i32 = 5120;
 
 /// Number of frames over which the transition occurs.
-const TRANSITION_FRAMES: i32 = TRANSITION_TIME_MS / MAX_FRAME_LENGTH_MS;
+pub(crate) const TRANSITION_FRAMES: i32 = TRANSITION_TIME_MS / MAX_FRAME_LENGTH_MS;
 
 /// Number of interpolation steps between coefficient tables.
 const TRANSITION_INT_STEPS: i32 = TRANSITION_FRAMES / (TRANSITION_INT_NUM as i32 - 1);
@@ -29,7 +29,7 @@ const TRANSITION_INT_STEPS: i32 = TRANSITION_FRAMES / (TRANSITION_INT_NUM as i32
 /// This mirrors `silk_LP_state` from the C implementation. The filter can be
 /// activated and deactivated dynamically, and the cut-off frequency changes
 /// gradually over multiple frames during bandwidth transitions.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LpState {
     /// Two-element Q12 state vector for the biquad filter.
     pub in_lp_state: [i32; 2],
