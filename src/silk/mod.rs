@@ -39,6 +39,7 @@ pub mod nlsf_unpack;
 pub mod nlsf_vq;
 pub mod nlsf_vq_weights_laroia;
 pub mod pitch_est_tables;
+pub mod process_nlsfs;
 pub mod quant_ltp_gains;
 pub mod regularize_correlations;
 pub mod resampler;
@@ -89,6 +90,16 @@ pub enum FrameSignalType {
     Inactive,
     Unvoiced,
     Voiced,
+}
+
+impl From<FrameSignalType> for i32 {
+    fn from(value: FrameSignalType) -> Self {
+        match value {
+            FrameSignalType::Inactive => 0,
+            FrameSignalType::Unvoiced => 1,
+            FrameSignalType::Voiced => 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
