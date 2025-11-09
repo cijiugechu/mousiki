@@ -6,6 +6,7 @@
 - `src/silk/codebook.rs` mirrors the SILK stage-two LSF vector-quantiser tables used during decoding.【src/silk/codebook.rs†L1-L200】
 - `src/silk/decoder.rs` implements parts of the SILK frame decoder, including routines for classifying frame types, decoding gain and LSF indices, reconstructing LPC coefficients, recovering pitch lags, and synthesising excitation via LTP; it also contains helper data structures such as `Decoder`, `DecoderBuilder`, `ShellBlockCounts`, `ExcitationQ23`, and `PitchLagInfo`.【src/silk/decoder.rs†L200-L700】
 - `src/silk/decoder_set_fs.rs` mirrors the `silk_decoder_set_fs` helper, reinitialising the decoder resampler, pitch-contour tables, NLSF codebooks, and LTP/LPC state when the internal sample rate changes.【src/silk/decoder_set_fs.rs†L1-L220】【opus-c/silk/decoder_set_fs.c†L33-L134】
+- `src/silk/decode_indices.rs` mirrors `silk_decode_indices`, decoding the frame signal type, quantisation gains, NLSF/NLSF-interpolation indices, voiced-frame pitch lags, LTP metadata, and the entropy seed from the SILK range decoder so downstream helpers can reconstruct the same side information as the reference implementation.【src/silk/decode_indices.rs†L1-L275】【opus-c/silk/decode_indices.c†L35-L152】
 - `src/silk/errors.rs` exposes the SILK encoder and decoder error codes as the `SilkError` enum so Rust callers can mirror the reference `errors.h` failure reporting while preserving the original numeric discriminants.【src/silk/errors.rs†L1-L112】【opus-main/silk/errors.h†L1-L88】
 - `src/silk/decoder/nomarlize.rs` (sic) provides Rust representations of several C helper types (`NlsfQ15`, `ResQ10`, `A32Q17`, `Aq12Coefficients`, `Aq12List`) that back the LSF interpolation logic.【src/silk/decoder/nomarlize.rs†L1-L220】
 - `src/silk/sum_sqr_shift.rs` ports the fixed-point helper that accumulates the energy of 16-bit sample blocks while determining the right-shift needed to avoid 32-bit overflow, mirroring `silk_sum_sqr_shift` from the C code.【src/silk/sum_sqr_shift.rs†L1-L101】
@@ -91,11 +92,11 @@ None of these lifecycle or state-management layers have been ported to Rust; the
 
 ### Decoder Pipeline
 - `decode_frame.c` sequences the SILK frame decode by invoking index, pulse, parameter, and core reconstruction stages, then updates PLC/CNG state and output buffers.【adaec1†L1-L80】
-- `decode_core.c`, `decode_parameters.c`, `decode_indices.c`, `decode_pitch.c`, and `decode_pulses.c` contain the detailed algorithms that unpack side information, reconstruct gains and predictor coefficients, decode pitch contours, and run the inverse noise-shaping quantiser.【b6184a†L1-L76】【b563fc†L1-L78】
+- `decode_core.c`, `decode_parameters.c`, `decode_pitch.c`, and `decode_pulses.c` contain the detailed algorithms that unpack side information, reconstruct gains and predictor coefficients, decode pitch contours, and run the inverse noise-shaping quantiser.【b6184a†L1-L76】【b563fc†L1-L78】
 - `PLC.c` and `PLC.h` implement packet-loss concealment, while `CNG.c` performs comfort-noise generation that depends on decoder state.【f552ca†L1-L94】【a5a877†L1-L64】
 - The fixed-point VAD is now available via `src/silk/vad.rs`, leaving PLC/CNG and the higher-level decoder drivers as the remaining gaps in the Rust decoder coverage.【src/silk/vad.rs†L1-L287】
 
-The Rust decoder implements only a slice of this logic: there are no ports yet for the top-level `silk_decode_frame` orchestration, PLC/CNG handling, entropy decoding of pulses, or the auxiliary VAD module.【src/silk/shell_coder.rs†L1-L164】
+The Rust decoder implements only a slice of this logic: there are no ports yet for the top-level `silk_decode_frame` orchestration, PLC/CNG handling, entropy decoding of pulses, or the auxiliary VAD module, although `src/silk/decode_indices.rs` now covers the range-decoder side-information stage.【src/silk/decode_indices.rs†L1-L275】【src/silk/shell_coder.rs†L1-L164】
 
 ### Encoder Pipeline
 - `enc_API.c` delegates to encoder control helpers like `control_codec.c`, `control_SNR.c`, `control_audio_bandwidth.c`, `check_control_input.c`, and gain/pitch analysis routines spread across `NSQ.c` and `NSQ_del_dec.c`. These files handle bandwidth switching, rate control, long-term prediction updates, and noise-shaping quantisation.【f1c0fa†L1-L64】【57d235†L1-L60】【da49cd†L1-L74】【7b30e4†L1-L56】【760d41†L1-L68】【7f3cdd†L1-L76】【cbc6a2†L1-L120】

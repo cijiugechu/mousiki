@@ -145,8 +145,7 @@ impl Resampler {
         } else {
             let out_idx = DECODER_OUTPUT_RATES
                 .iter()
-                .position(|&rate| rate == fs_hz_out)
-                ;
+                .position(|&rate| rate == fs_hz_out);
             out_idx
                 .map(|idx| usize::from(DELAY_MATRIX_DEC[input_index][idx]))
                 .unwrap_or_else(|| decoder_delay_fallback(fs_hz_in, fs_hz_out))

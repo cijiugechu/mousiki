@@ -7,6 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::silk::MAX_FRAMES_PER_PACKET;
 use crate::silk::stereo_find_predictor::stereo_find_predictor;
 use crate::silk::stereo_quant_pred::stereo_quant_pred;
 
@@ -16,9 +17,6 @@ const STEREO_INTERP_LEN_MS: i32 = 8;
 /// Look-ahead in milliseconds for the shaping window that controls how long the
 /// encoder keeps transmitting the side channel after collapsing to mono.
 const LA_SHAPE_MS: i32 = 5;
-
-/// Maximum number of SILK frames carried in a single Opus packet.
-const MAX_FRAMES_PER_PACKET: usize = 3;
 
 /// Fixed-point representation of `STEREO_RATIO_SMOOTH_COEF` in Q16.
 const STEREO_RATIO_SMOOTH_COEF_Q16: i32 = 655;

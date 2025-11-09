@@ -248,12 +248,7 @@ fn update_excitation_buffer(
 ) {
     let mut max_gain_q16 = 0;
     let mut strongest_subfr = 0usize;
-    for (idx, &gain) in control
-        .gains_q16
-        .iter()
-        .take(inputs.nb_subfr)
-        .enumerate()
-    {
+    for (idx, &gain) in control.gains_q16.iter().take(inputs.nb_subfr).enumerate() {
         if gain > max_gain_q16 {
             max_gain_q16 = gain;
             strongest_subfr = idx;
@@ -273,8 +268,7 @@ fn update_excitation_buffer(
 
     let start = strongest_subfr * inputs.subfr_length;
     let end = start + inputs.subfr_length;
-    state.exc_buf_q14[..inputs.subfr_length]
-        .copy_from_slice(&inputs.exc_q14[start..end]);
+    state.exc_buf_q14[..inputs.subfr_length].copy_from_slice(&inputs.exc_q14[start..end]);
 }
 
 fn smooth_gain(state: &mut CngState, control: &DecoderControl, nb_subfr: usize) {
@@ -335,8 +329,7 @@ fn synthesize_noise(
         let mut lpc_pred_q10 = (inputs.lpc_order as i32) >> 1;
         for (tap, coeff) in a_q12.iter().take(inputs.lpc_order).enumerate() {
             let hist_idx = MAX_LPC_ORDER + i - 1 - tap;
-            lpc_pred_q10 =
-                smlawb(lpc_pred_q10, cng_sig_q14[hist_idx], i32::from(*coeff));
+            lpc_pred_q10 = smlawb(lpc_pred_q10, cng_sig_q14[hist_idx], i32::from(*coeff));
         }
         let updated = add_sat32(
             cng_sig_q14[MAX_LPC_ORDER + i],
@@ -349,10 +342,17 @@ fn synthesize_noise(
         frame[i] = add_sat16(frame[i], sample);
     }
 
-    state.synth_state.copy_from_slice(&cng_sig_q14[length..length + MAX_LPC_ORDER]);
+    state
+        .synth_state
+        .copy_from_slice(&cng_sig_q14[length..length + MAX_LPC_ORDER]);
 }
 
-fn generate_excitation(out: &mut [i32], exc_buf: &[i32; MAX_FRAME_LENGTH], length: usize, seed: &mut i32) {
+fn generate_excitation(
+    out: &mut [i32],
+    exc_buf: &[i32; MAX_FRAME_LENGTH],
+    length: usize,
+    seed: &mut i32,
+) {
     if out.is_empty() {
         return;
     }
@@ -365,7 +365,8 @@ fn generate_excitation(out: &mut [i32], exc_buf: &[i32; MAX_FRAME_LENGTH], lengt
     let mut current_seed = *seed;
     for sample in out.iter_mut() {
         current_seed = rand(current_seed);
-        let idx = ((current_seed >> 24) & exc_mask).clamp(0, (MAX_FRAME_LENGTH - 1) as i32) as usize;
+        let idx =
+            ((current_seed >> 24) & exc_mask).clamp(0, (MAX_FRAME_LENGTH - 1) as i32) as usize;
         *sample = exc_buf[idx];
     }
     *seed = current_seed;
@@ -392,11 +393,7 @@ fn smultt(a: i32, b: i32) -> i32 {
 }
 
 fn div32_16(a: i32, b: i32) -> i32 {
-    if b == 0 {
-        0
-    } else {
-        a / b
-    }
+    if b == 0 { 0 } else { a / b }
 }
 
 fn add_sat32(a: i32, b: i32) -> i32 {
@@ -515,9 +512,7 @@ mod tests {
         let lpc_order = 10;
         let frame_len = subfr_length * nb_subfr;
 
-        let prev_nlsf: Vec<i16> = (0..MAX_LPC_ORDER)
-            .map(|idx| (idx as i16) * 123)
-            .collect();
+        let prev_nlsf: Vec<i16> = (0..MAX_LPC_ORDER).map(|idx| (idx as i16) * 123).collect();
         let mut exc_q14 = vec![0i32; frame_len];
         for (idx, sample) in exc_q14.iter_mut().enumerate() {
             *sample = (idx as i32 + 1) * 10;
@@ -567,7 +562,8 @@ mod tests {
         let mut state = CngState::new();
         state.reset(10);
         state.smth_gain_q16 = 1 << 20;
-        state.smth_nlsf_q15
+        state
+            .smth_nlsf_q15
             .iter_mut()
             .enumerate()
             .for_each(|(idx, value)| *value = 200 + (idx as i16) * 50);
@@ -602,20 +598,24 @@ mod tests {
         );
 
         apply_cng(&mut state, &plc, &control, &inputs, &mut frame);
+        assert!(frame.iter().any(|&sample| sample != 0), "frame={:?}", frame);
         assert!(
-            frame.iter().any(|&sample| sample != 0),
-            "frame={:?}",
-            frame
+            state
+                .synth_state
+                .iter()
+                .take(lpc_order)
+                .any(|&value| value != 0)
         );
-        assert!(state
-            .synth_state
-            .iter()
-            .take(lpc_order)
-            .any(|&value| value != 0));
 
         // Deterministic seed evolution ensures identical results when re-running.
         let mut expected_frame = vec![0i16; frame_len];
-        apply_cng(&mut state_clone, &plc, &control, &inputs, &mut expected_frame);
+        apply_cng(
+            &mut state_clone,
+            &plc,
+            &control,
+            &inputs,
+            &mut expected_frame,
+        );
         assert_eq!(frame, expected_frame);
     }
 }

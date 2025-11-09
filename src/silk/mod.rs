@@ -9,6 +9,7 @@ pub mod check_control_input;
 pub mod cng;
 pub mod code_signs;
 pub mod codebook;
+pub mod decode_indices;
 pub mod decoder;
 pub mod decoder_set_fs;
 pub mod encoder;
@@ -78,15 +79,16 @@ pub use stereo_lr_to_ms::{StereoConversionResult, StereoEncState};
 pub use tables_nlsf_cb_wb::SilkNlsfCb;
 pub use warped_autocorrelation::MAX_SHAPE_LPC_ORDER;
 pub const MIN_LPC_ORDER: usize = 10;
+pub const MAX_FRAMES_PER_PACKET: usize = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameSignalType {
     Inactive,
     Unvoiced,
     Voiced,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameQuantizationOffsetType {
     Low,
     High,
