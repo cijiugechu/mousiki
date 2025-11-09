@@ -66,6 +66,7 @@
 - `src/silk/ana_filt_bank_1.rs` mirrors the two-band analysis filter bank that splits audio into low and high components using first-order all-pass sections, matching `silk/ana_filt_bank_1.c`.【src/silk/ana_filt_bank_1.rs†L1-L118】【opus-main/silk/ana_filt_bank_1.c†L1-L78】
 - `src/silk/biquad_alt.rs` reproduces the alternative second-order ARMA filter used during resampling and bandwidth switching, handling both stride-one and stride-two sample layouts exactly as in `silk/biquad_alt.c`.【src/silk/biquad_alt.rs†L1-L205】
 - `src/silk/lp_variable_cutoff.rs` ports the variable cut-off low-pass filter that ramps bandwidth transitions by interpolating the elliptic coefficient tables, mirroring `silk/LP_variable_cutoff.c`.【src/silk/lp_variable_cutoff.rs†L1-L137】【opus-c/silk/LP_variable_cutoff.c†L32-L134】
+- `src/silk/hp_variable_cutoff.rs` mirrors the adaptive high-pass cut-off controller from `silk/HP_variable_cutoff.c`, exposing the trimmed `EncoderStateCommon` plus `hp_variable_cutoff` so voiced-frame pitch statistics can update the smoothed cut-off entirely in Rust.【src/silk/hp_variable_cutoff.rs†L1-L162】【opus-c/silk/HP_variable_cutoff.c†L1-L76】
 - `src/silk/resampler_rom.rs` provides the coefficient ROM shared by SILK's fixed-point resamplers, mirroring the lookup tables from `silk/resampler_rom.c` and `silk/resampler_rom.h`.【src/silk/resampler_rom.rs†L1-L182】
 - `src/silk/bwexpander.rs` mirrors the chirp-based LPC bandwidth expander from `silk/bwexpander.c`, applying the fixed-point helper that shrinks LPC magnitudes during prediction setup.【src/silk/bwexpander.rs†L1-L83】【opus-c/opus-main/silk/bwexpander.c†L34-L49】
 - `src/silk/bwexpander_32.rs` ports the 32-bit variant of the LPC bandwidth-expansion helper from `silk/bwexpander_32.c`, applying the same chirp logic to full-precision predictor coefficients used in resampling and analysis paths.【src/silk/bwexpander_32.rs†L1-L66】【opus-c/opus-main/silk/bwexpander_32.c†L34-L51】
@@ -113,10 +114,10 @@ These support libraries are prerequisites for a full port; while helpers like `v
 Rust now mirrors the resampler orchestration, high-quality upsampler, fractional downsampler, and shared AR helper through `src/silk/resampler.rs`, `src/silk/resampler_down2.rs`, `src/silk/resampler_down2_3.rs`, `src/silk/resampler_private_up2_hq.rs`, `src/silk/resampler_private_iir_fir.rs`, `src/silk/resampler_private_down_fir.rs`, and `src/silk/resampler_private_ar2.rs`, leaving only the encoder-specific resampler variants in C.【src/silk/resampler.rs†L1-L353】【src/silk/resampler_down2.rs†L1-L82】【src/silk/resampler_down2_3.rs†L1-L170】【src/silk/resampler_private_up2_hq.rs†L1-L120】【src/silk/resampler_private_iir_fir.rs†L1-L238】【src/silk/resampler_private_down_fir.rs†L1-L213】【src/silk/resampler_private_ar2.rs†L1-L34】
 
 ### Stereo, Bandwidth Extension, and Optional Features
-- Stereo prediction, MS/LR transforms, and predictor quantisation live in `stereo_*.c`, while bandwidth extension and tuning logic appear in files such as `HP_variable_cutoff.c`, `LP_variable_cutoff.c`, and `tuning_parameters.h`. Optional OSCE support is wired through additional headers referenced by the decoder API.【6e5ae6†L1-L44】【03d532†L1-L60】
-- Architecture-specific noise-shaping and vectorisation code extends many of these features for NEON, SSE4.1, AVX2, and other targets.【cbc6a2†L1-L160】【880630†L1-L80】
+- Stereo prediction, MS/LR transforms, and predictor quantisation live in `stereo_*.c`, while the remaining bandwidth extension logic relies on files such as `LP_variable_cutoff.c` and `tuning_parameters.h`. Optional OSCE support is wired through additional headers referenced by the decoder API. The adaptive high-pass smoother from `HP_variable_cutoff.c` is now mirrored by `src/silk/hp_variable_cutoff.rs`, though the broader stereo/bandwidth pipeline is still C-only.【6e5ae6†L1-L44】【03d532†L1-L60】【src/silk/hp_variable_cutoff.rs†L1-L162】
+- Architecture-specific noise-shaping and vectorisation code extends many of these features for NEON, SSE4.1, AVX2, and other targets.【cbc6a2†L1-L160】
 
-These stereo/bandwidth-extension paths have no representation in the Rust tree.
+These stereo/bandwidth-extension paths remain largely unported despite the new high-pass helper.
 
 ## Missing Functions and Types
 
