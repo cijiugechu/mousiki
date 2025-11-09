@@ -14,6 +14,7 @@ pub mod corr_matrix;
 pub mod decode_indices;
 pub mod decoder;
 pub mod decoder_set_fs;
+pub mod get_decoder_size;
 pub mod encoder;
 pub mod errors;
 pub mod gain_quant;
