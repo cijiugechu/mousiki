@@ -91,10 +91,16 @@ pub struct EncoderStateCommon {
     pub prev_signal_type: FrameSignalType,
     /// Internal sampling rate in kHz.
     pub fs_khz: i32,
+    /// Number of 5 ms subframes tracked per frame (2 or 4).
+    pub nb_subfr: usize,
     /// Active frame length in samples.
     pub frame_length: usize,
     /// Previous frame pitch lag (in samples).
     pub prev_lag: i32,
+    /// Target bitrate expressed in bits per second.
+    pub target_rate_bps: i32,
+    /// Encoder-side SNR tuning value in Q7.
+    pub snr_db_q7: i32,
     /// Per-band input quality metrics in Q15.
     pub input_quality_bands_q15: [i32; VAD_N_BANDS],
     /// Smoothed tilt estimate in Q15.
@@ -110,8 +116,11 @@ impl Default for EncoderStateCommon {
         Self {
             prev_signal_type: FrameSignalType::Inactive,
             fs_khz: DEFAULT_INTERNAL_FS_KHZ,
+            nb_subfr: MAX_NB_SUBFR,
             frame_length: DEFAULT_FRAME_LENGTH,
             prev_lag: 0,
+            target_rate_bps: 0,
+            snr_db_q7: 0,
             input_quality_bands_q15: [0; VAD_N_BANDS],
             input_tilt_q15: 0,
             speech_activity_q8: 0,
@@ -190,8 +199,11 @@ mod tests {
         let common = EncoderStateCommon::default();
         assert_eq!(common.prev_signal_type, FrameSignalType::Inactive);
         assert_eq!(common.fs_khz, DEFAULT_INTERNAL_FS_KHZ);
+        assert_eq!(common.nb_subfr, MAX_NB_SUBFR);
         assert_eq!(common.frame_length, DEFAULT_FRAME_LENGTH);
         assert_eq!(common.prev_lag, 0);
+        assert_eq!(common.target_rate_bps, 0);
+        assert_eq!(common.snr_db_q7, 0);
         assert_eq!(common.input_quality_bands_q15, [0; VAD_N_BANDS]);
         assert_eq!(common.input_tilt_q15, 0);
         assert_eq!(common.speech_activity_q8, 0);
