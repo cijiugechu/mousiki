@@ -6,6 +6,7 @@ pub mod biquad_alt;
 pub mod bwexpander;
 pub mod bwexpander_32;
 pub mod check_control_input;
+pub mod cng;
 pub mod code_signs;
 pub mod codebook;
 pub mod decoder;

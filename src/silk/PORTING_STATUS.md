@@ -73,6 +73,7 @@
 - `src/silk/bwexpander.rs` mirrors the chirp-based LPC bandwidth expander from `silk/bwexpander.c`, applying the fixed-point helper that shrinks LPC magnitudes during prediction setup.【src/silk/bwexpander.rs†L1-L83】【opus-c/opus-main/silk/bwexpander.c†L34-L49】
 - `src/silk/bwexpander_32.rs` ports the 32-bit variant of the LPC bandwidth-expansion helper from `silk/bwexpander_32.c`, applying the same chirp logic to full-precision predictor coefficients used in resampling and analysis paths.【src/silk/bwexpander_32.rs†L1-L66】【opus-c/opus-main/silk/bwexpander_32.c†L34-L51】
 - `src/silk/check_control_input.rs` validates the encoder control structure prior to encoding, mirroring `silk/check_control_input.c` and returning the same `SilkError` codes when parameters fall outside the supported ranges.【src/silk/check_control_input.rs†L1-L166】【opus-c/opus-main/silk/check_control_input.c†L35-L110】
+- `src/silk/cng.rs` ports the SILK comfort-noise generator, exposing `CngState`, `PlcState`, and the `apply_cng` helper that smooths NLSFs/gains and synthesises Q14 noise during packet loss, matching the behaviour of `silk/CNG.c`.【src/silk/cng.rs†L1-L210】【opus-c/silk/CNG.c†L36-L190】
 
 The existing Rust implementation therefore covers only a subset of the full SILK decoder pipeline and omits all encoder- and platform-specific code.
 
@@ -137,7 +138,6 @@ These stereo/bandwidth-extension paths remain largely unported despite the new h
 | Function | `silk_decode_parameters` (`decode_parameters.c`) | Reconstructs predictor coefficients, gains, and interpolation weights from bitstream indices.【b6184a†L1-L76】 | Not ported; Rust reconstructs some LSF/LTP data but omits this combined routine.【src/silk/decoder.rs†L208-L700】 |
 | Function | `silk_decode_pulses` (`decode_pulses.c`) | Expands entropy-coded pulse data into excitation vectors.【b563fc†L1-L78】 | Partially mirrored by `Decoder::decode_excitation` and the standalone shell coder, but there is no Rust analogue to the combined entry point yet.【src/silk/decoder.rs†L1143-L1314】【src/silk/shell_coder.rs†L1-L164】 |
 | Function | `silk_PLC` (`PLC.c`) | Performs packet-loss concealment using decoder history.【f552ca†L1-L94】 | Not implemented; Rust decode path lacks PLC integration.【src/silk/decoder.rs†L949-L1206】 |
-| Function | `silk_CNG` (`CNG.c`) | Generates comfort noise during silent periods or packet loss.【a5a877†L1-L64】 | Missing from Rust decoder pipeline.【src/silk/decoder.rs†L949-L1206】 |
 | Type | `silk_encoder_state` (`structs.h`) | Full encoder working state including buffers, resamplers, and entropy indices.【6988cc†L1-L60】 | No Rust encoder state struct exists.【src/silk/mod.rs†L1-L16】 |
 | Type | `silk_decoder_state` (`structs.h`) | Decoder state with LPC buffers, PLC/CNG members, and channel metadata.【9c7ced†L1-L36】 | Rust `Decoder` is a minimal subset without these fields.【src/silk/decoder.rs†L82-L160】 |
 | Type | `silk_decoder_control` (`structs.h`) | Holds decoded predictor coefficients, gains, and LTP parameters for synthesis.【9c7ced†L36-L48】 | Not represented; Rust code uses ad-hoc structures for partial data only.【src/silk/decoder.rs†L530-L598】 |
