@@ -9,6 +9,7 @@ pub mod check_control_input;
 pub mod code_signs;
 pub mod codebook;
 pub mod decoder;
+pub mod encoder;
 pub mod errors;
 pub mod gain_quant;
 pub mod hp_variable_cutoff;
