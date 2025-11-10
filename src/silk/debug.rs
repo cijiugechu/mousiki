@@ -14,10 +14,10 @@
 #[cfg(feature = "silk_tic_toc")]
 use core::fmt::Write as _;
 
-#[cfg(any(feature = "silk_tic_toc", feature = "silk_debug"))]
-use core::cell::UnsafeCell;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(any(feature = "silk_tic_toc", feature = "silk_debug"))]
+use core::cell::UnsafeCell;
 
 pub const SILK_DEBUG: bool = cfg!(feature = "silk_debug");
 pub const SILK_TIC_TOC: bool = cfg!(feature = "silk_tic_toc");
@@ -308,11 +308,7 @@ pub fn timer_table() -> Option<String> {
         writeln!(
             output,
             "{indent}{:<27}{:8}{:12}{:12}{:10}",
-            report.tag,
-            report.min,
-            avg,
-            report.max,
-            report.count
+            report.tag, report.min, avg, report.max, report.count
         )
         .ok()?;
     }
@@ -477,4 +473,3 @@ mod debug_store_tests {
         assert_eq!(debug_store_count(), 0);
     }
 }
-

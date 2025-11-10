@@ -6,9 +6,9 @@
 //! bandwidth-switch permission handshake with the surrounding Opus encoder
 //! behaves identically.
 
+use crate::silk::EncControl;
 use crate::silk::encoder::state::EncoderChannelState;
 use crate::silk::lp_variable_cutoff::TRANSITION_FRAMES;
-use crate::silk::EncControl;
 
 /// Mirrors `silk_control_audio_bandwidth`.
 #[allow(clippy::arithmetic_side_effects)]

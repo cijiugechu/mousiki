@@ -12,13 +12,13 @@ use crate::silk::cng::DecoderControl;
 use crate::silk::decode_indices::{ConditionalCoding, SideInfoIndices};
 use crate::silk::decode_pitch::silk_decode_pitch;
 use crate::silk::gain_quant::silk_gains_dequant;
-use crate::silk::nlsf2a::nlsf2a;
 use crate::silk::nlsf_decode::nlsf_decode;
+use crate::silk::nlsf2a::nlsf2a;
 use crate::silk::tables_ltp::SILK_LTP_GAIN_VQ_Q7;
 use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
 use crate::silk::tables_other::SILK_LTPSCALES_TABLE_Q14;
 use crate::silk::vq_wmat_ec::LTP_ORDER;
-use crate::silk::{FrameSignalType, SilkNlsfCb, MAX_LPC_ORDER, MAX_NB_SUBFR};
+use crate::silk::{FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR, SilkNlsfCb};
 
 const BWE_AFTER_LOSS_Q16: i32 = 63_570;
 
@@ -89,7 +89,10 @@ pub fn silk_decode_parameters(
 
     let codebook_order = usize::try_from(state.nlsf_codebook.order)
         .expect("NLSF codebook order must fit into usize");
-    assert_eq!(order, codebook_order, "LPC order must match NLSF codebook order");
+    assert_eq!(
+        order, codebook_order,
+        "LPC order must match NLSF codebook order"
+    );
 
     silk_gains_dequant(
         &mut control.gains_q16[..nb_subfr],
@@ -169,8 +172,8 @@ pub fn silk_decode_parameters(
             nb_subfr,
         );
 
-        let per_index = usize::try_from(state.indices.per_index)
-            .expect("PERIndex must be non-negative");
+        let per_index =
+            usize::try_from(state.indices.per_index).expect("PERIndex must be non-negative");
         let codebook = SILK_LTP_GAIN_VQ_Q7
             .get(per_index)
             .expect("PERIndex out of range");
@@ -195,11 +198,11 @@ pub fn silk_decode_parameters(
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
     use super::*;
     use crate::silk::decode_pitch::silk_decode_pitch;
     use crate::silk::tables_ltp::SILK_LTP_GAIN_VQ_Q7;
     use crate::silk::tables_other::SILK_LTPSCALES_TABLE_Q14;
+    use alloc::vec::Vec;
 
     fn base_state() -> DecoderParametersState {
         DecoderParametersState {

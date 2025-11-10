@@ -239,8 +239,14 @@ mod tests {
         assert_eq!(common.nb_subfr, MAX_NB_SUBFR);
         assert_eq!(common.frame_length, DEFAULT_FRAME_LENGTH);
         assert_eq!(common.api_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
-        assert_eq!(common.max_internal_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
-        assert_eq!(common.min_internal_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
+        assert_eq!(
+            common.max_internal_sample_rate_hz,
+            DEFAULT_INTERNAL_FS_KHZ * 1000
+        );
+        assert_eq!(
+            common.min_internal_sample_rate_hz,
+            DEFAULT_INTERNAL_FS_KHZ * 1000
+        );
         assert_eq!(
             common.desired_internal_sample_rate_hz,
             DEFAULT_INTERNAL_FS_KHZ * 1000

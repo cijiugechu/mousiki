@@ -10,9 +10,9 @@ use core::convert::TryFrom;
 
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::interpolate::interpolate;
-use crate::silk::nlsf2a::nlsf2a;
 use crate::silk::nlsf_encode::nlsf_encode;
 use crate::silk::nlsf_vq_weights_laroia::nlsf_vq_weights_laroia;
+use crate::silk::nlsf2a::nlsf2a;
 use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR, SilkNlsfCb};
 
 const NLSF_MU_BASE_Q20: i32 = 3_146; // SILK_FIX_CONST(0.003, 20)
@@ -50,8 +50,8 @@ impl<'a> ProcessNlsfConfig<'a> {
             (1..=MAX_NLSF_SURVIVORS).contains(&self.nlsf_msvq_survivors),
             "nlsf_msvq_survivors must be within 1..=32"
         );
-        let codebook_order = usize::try_from(self.codebook.order)
-            .expect("codebook order must fit into usize");
+        let codebook_order =
+            usize::try_from(self.codebook.order).expect("codebook order must fit into usize");
         assert_eq!(
             codebook_order, self.predict_lpc_order,
             "codebook order mismatch"
@@ -182,8 +182,8 @@ fn add_rshift32(a: i32, b: i32, shift: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::silk::nlsf_decode::nlsf_decode;
     use crate::silk::FrameSignalType;
+    use crate::silk::nlsf_decode::nlsf_decode;
     use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
 
     fn sample_nlsf(order: usize, offset: i16) -> [i16; MAX_LPC_ORDER] {
@@ -214,7 +214,13 @@ mod tests {
             arch: 0,
         };
 
-        process_nlsfs(&cfg, &mut indices, &mut predictors, &mut nlsf[..order], &prev[..order]);
+        process_nlsfs(
+            &cfg,
+            &mut indices,
+            &mut predictors,
+            &mut nlsf[..order],
+            &prev[..order],
+        );
 
         assert_eq!(&predictors[0][..order], &predictors[1][..order]);
 
@@ -247,7 +253,13 @@ mod tests {
             arch: 0,
         };
 
-        process_nlsfs(&cfg, &mut indices, &mut predictors, &mut nlsf[..order], &prev[..order]);
+        process_nlsfs(
+            &cfg,
+            &mut indices,
+            &mut predictors,
+            &mut nlsf[..order],
+            &prev[..order],
+        );
 
         let mut expected_full = [0i16; MAX_LPC_ORDER];
         nlsf2a(&mut expected_full[..order], &nlsf[..order], cfg.arch);
@@ -261,7 +273,11 @@ mod tests {
             i32::from(indices.nlsf_interp_coef_q2),
         );
         let mut expected_half = [0i16; MAX_LPC_ORDER];
-        nlsf2a(&mut expected_half[..order], &interpolated[..order], cfg.arch);
+        nlsf2a(
+            &mut expected_half[..order],
+            &interpolated[..order],
+            cfg.arch,
+        );
         assert_eq!(&predictors[0][..order], &expected_half[..order]);
     }
 }

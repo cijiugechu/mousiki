@@ -6,7 +6,6 @@ use crate::math::{ilog, sign};
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::code_signs;
-use crate::silk::decode_pitch::silk_decode_pitch;
 use crate::silk::codebook::{
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_0, CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_1,
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_2,
@@ -22,6 +21,7 @@ use crate::silk::codebook::{
     PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
     PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF, Q12_COSINE_TABLE_FOR_LSFCONVERION,
 };
+use crate::silk::decode_pitch::silk_decode_pitch;
 use crate::silk::icdf::{
     self, DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
