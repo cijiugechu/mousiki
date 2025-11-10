@@ -6,6 +6,7 @@ use crate::math::{ilog, sign};
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
 use crate::silk::code_signs;
+use crate::silk::decode_pitch::silk_decode_pitch;
 use crate::silk::codebook::{
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_0, CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_1,
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_2,
@@ -20,7 +21,6 @@ use crate::silk::codebook::{
     PREDICTION_WEIGHT_FOR_WIDEBAND_NORMALIZED_LSF,
     PREDICTION_WEIGHT_SELECTION_FOR_NARROWBAND_AND_MEDIUMBAND_NORMALIZED_LSF,
     PREDICTION_WEIGHT_SELECTION_FOR_WIDEBAND_NORMALIZED_LSF, Q12_COSINE_TABLE_FOR_LSFCONVERION,
-    SUBFRAME_PITCH_COUNTER_MEDIUMBAND_OR_WIDEBAND20_MS, SUBFRAME_PITCH_COUNTER_NARROWBAND20_MS,
 };
 use crate::silk::icdf::{
     self, DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
@@ -584,26 +584,31 @@ impl Decoder {
             return Err(DecodePitchLagsError::NonAbsoluteLagsUnsupported);
         };
 
-        let (lag_cb, lag_icdf) = match bandwidth {
-            Bandwidth::Narrow => (
-                SUBFRAME_PITCH_COUNTER_NARROWBAND20_MS,
-                SUBFRAME_PITCH_CONTOUR_NARROWBAND20_MS,
-            ),
-            Bandwidth::Medium | Bandwidth::Wide => (
-                SUBFRAME_PITCH_COUNTER_MEDIUMBAND_OR_WIDEBAND20_MS,
-                SUBFRAME_PITCH_CONTOUR_MEDIUMBAND_OR_WIDEBAND20_MS,
-            ),
+        let lag_icdf = match bandwidth {
+            Bandwidth::Narrow => SUBFRAME_PITCH_CONTOUR_NARROWBAND20_MS,
+            Bandwidth::Medium | Bandwidth::Wide => {
+                SUBFRAME_PITCH_CONTOUR_MEDIUMBAND_OR_WIDEBAND20_MS
+            }
             _ => return Err(DecodePitchLagsError::UnsupportedBandwidth),
         };
 
-        let contour_index = range_decoder.decode_symbol_with_icdf(lag_icdf) as usize;
+        let contour_index = range_decoder.decode_symbol_with_icdf(lag_icdf) as i8;
 
         let mut pitch_lags = [0i16; SUBFRAME_COUNT];
-        for (idx, value) in pitch_lags.iter_mut().enumerate() {
-            let offset = i32::from(lag_cb[contour_index][idx]);
-            let candidate = lag as i32 + offset;
-            *value = candidate.clamp(lag_min as i32, lag_max as i32) as i16;
-        }
+        let lag_index = (lag - lag_min) as i16;
+        let fs_khz = match bandwidth {
+            Bandwidth::Narrow => 8,
+            Bandwidth::Medium => 12,
+            Bandwidth::Wide => 16,
+            _ => return Err(DecodePitchLagsError::UnsupportedBandwidth),
+        };
+        silk_decode_pitch(
+            lag_index,
+            contour_index,
+            &mut pitch_lags,
+            fs_khz,
+            SUBFRAME_COUNT,
+        );
 
         Ok(Some(PitchLagInfo {
             lag_max,
