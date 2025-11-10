@@ -13,6 +13,7 @@ pub mod control_audio_bandwidth;
 pub mod control_snr;
 pub mod corr_matrix;
 pub mod decode_indices;
+pub mod decode_parameters;
 pub mod decode_pitch;
 pub mod debug;
 pub mod decoder;
