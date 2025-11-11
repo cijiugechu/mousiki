@@ -10,6 +10,7 @@ pub mod cng;
 pub mod code_signs;
 pub mod codebook;
 pub mod control_audio_bandwidth;
+pub mod control_codec;
 pub mod control_snr;
 pub mod corr_matrix;
 pub mod debug;

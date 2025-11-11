@@ -7,10 +7,15 @@
 //! translation of `silk_HP_variable_cutoff`.
 
 use crate::silk::FrameSignalType;
-use crate::silk::MAX_NB_SUBFR;
+use crate::silk::SilkNlsfCb;
 use crate::silk::lin2log::lin2log;
 use crate::silk::lp_variable_cutoff::LpState;
+use crate::silk::resampler::Resampler;
+use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
+use crate::silk::tables_other::SILK_UNIFORM8_ICDF;
+use crate::silk::tables_pitch_lag::PITCH_CONTOUR_ICDF;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
+use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR};
 
 /// Number of VAD bands tracked per SILK channel.
 pub const VAD_N_BANDS: usize = 4;
@@ -25,6 +30,30 @@ const DEFAULT_INTERNAL_FS_KHZ: i32 = 16;
 /// Default frame length in samples (20 ms @ 16 kHz).
 pub(crate) const DEFAULT_FRAME_LENGTH: usize =
     MAX_FRAME_LENGTH_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
+/// Look-ahead applied during pitch analysis (ms).
+pub(crate) const LA_PITCH_MS: usize = 2;
+/// Look-ahead applied during noise-shaping analysis (ms).
+pub(crate) const LA_SHAPE_MS: usize = 5;
+/// Maximum look-ahead in samples for noise shaping.
+pub(crate) const LA_SHAPE_MAX: usize = LA_SHAPE_MS * MAX_FS_KHZ;
+/// LPC window (ms) used during 20 ms (4 subframe) pitch estimation.
+pub(crate) const FIND_PITCH_LPC_WIN_MS: usize = 20 + (LA_PITCH_MS << 1);
+/// LPC window (ms) used during 10 ms (2 subframe) pitch estimation.
+pub(crate) const FIND_PITCH_LPC_WIN_MS_2_SF: usize = 10 + (LA_PITCH_MS << 1);
+/// Number of milliseconds retained in the pitch-analysis buffer.
+pub(crate) const LTP_MEM_LENGTH_MS: usize = 20;
+/// Maximum frame length in samples given the supported subframes and sampling rates.
+pub(crate) const MAX_FRAME_LENGTH: usize = MAX_FRAME_LENGTH_MS * MAX_FS_KHZ;
+/// Size of the encoder input buffer.
+pub(crate) const INPUT_BUFFER_LENGTH: usize = MAX_FRAME_LENGTH + 2;
+/// Number of samples stored in the pitch-analysis scratch buffer.
+pub(crate) const X_BUFFER_LENGTH: usize = 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX;
+/// Maximum number of delayed-decision states.
+pub(crate) const MAX_DEL_DEC_STATES: i32 = 4;
+/// Maximum LPC order used during pitch estimation.
+pub(crate) const MAX_FIND_PITCH_LPC_ORDER: i32 = 16;
+/// Upper bound on the noise-shaping analysis window (samples).
+pub(crate) const SHAPE_LPC_WIN_MAX: i32 = 15 * MAX_FS_KHZ as i32;
 /// Bias used by the VAD noise estimator.
 pub(crate) const VAD_NOISE_LEVELS_BIAS: i32 = 50;
 /// Initial smoothed SNR per VAD band (100 * 256 -> 20 dB).
@@ -85,9 +114,31 @@ impl VadState {
     }
 }
 
+/// Fixed-point noise-shaping analysis state (`silk_shape_state_FIX`).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct EncoderShapeState {
+    pub last_gain_index: i32,
+    pub harm_boost_smth_q16: i32,
+    pub harm_shape_gain_smth_q16: i32,
+    pub tilt_smth_q16: i32,
+}
+
+/// Minimal mirror of `silk_nsq_state` used by the Rust ports so far.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct NoiseShapingQuantizerState {
+    pub lag_prev: i32,
+    pub prev_gain_q16: i32,
+}
+
 /// Minimal subset of the encoder common state needed by the Rust ports.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EncoderStateCommon {
+    /// Enables discontinuous transmission.
+    pub use_dtx: bool,
+    /// Enables constant-bit-rate mode.
+    pub use_cbr: bool,
+    /// Enables in-band forward error correction.
+    pub use_in_band_fec: bool,
     /// Previously decoded signal classification.
     pub prev_signal_type: FrameSignalType,
     /// Internal sampling rate in kHz.
@@ -98,6 +149,8 @@ pub struct EncoderStateCommon {
     pub frame_length: usize,
     /// External API sample rate in Hz.
     pub api_sample_rate_hz: i32,
+    /// API sample rate used during the previous packet.
+    pub prev_api_sample_rate_hz: i32,
     /// Maximum internal sampling rate allowed in Hz.
     pub max_internal_sample_rate_hz: i32,
     /// Minimum internal sampling rate allowed in Hz.
@@ -106,8 +159,38 @@ pub struct EncoderStateCommon {
     pub desired_internal_sample_rate_hz: i32,
     /// Whether the encoder may change its internal bandwidth this frame.
     pub allow_bandwidth_switch: bool,
+    /// Number of channels exposed to the API.
+    pub n_channels_api: i32,
+    /// Number of internal encoder channels.
+    pub n_channels_internal: i32,
+    /// Channel index within a stereo encoder.
+    pub channel_nb: i32,
     /// Previous frame pitch lag (in samples).
     pub prev_lag: i32,
+    /// Samples tracked per subframe.
+    pub subfr_length: usize,
+    /// Samples stored in the LTP state.
+    pub ltp_mem_length: usize,
+    /// Look-ahead for pitch analysis (samples).
+    pub la_pitch: i32,
+    /// Look-ahead for noise-shaping analysis (samples).
+    pub la_shape: i32,
+    /// Window length for noise-shaping analysis (samples).
+    pub shape_win_length: i32,
+    /// Maximum supported pitch lag in samples.
+    pub max_pitch_lag: i32,
+    /// Pitch-analysis LPC window length (samples).
+    pub pitch_lpc_win_length: usize,
+    /// Active LPC order used for prediction.
+    pub predict_lpc_order: usize,
+    /// Active NLSF codebook.
+    pub ps_nlsf_cb: &'static SilkNlsfCb,
+    /// Pointer to the active pitch-contour iCDF.
+    pub pitch_contour_icdf: &'static [u8],
+    /// Pointer to the active low-bit pitch-lag iCDF.
+    pub pitch_lag_low_bits_icdf: &'static [u8],
+    /// Cached quantised NLSF vector from the previous frame.
+    pub prev_nlsf_q15: [i16; MAX_LPC_ORDER],
     /// Target bitrate expressed in bits per second.
     pub target_rate_bps: i32,
     /// Encoder-side SNR tuning value in Q7.
@@ -120,33 +203,118 @@ pub struct EncoderStateCommon {
     pub speech_activity_q8: i32,
     /// Smoothed logarithmic cut-off frequency in Q15.
     pub variable_hp_smth1_q15: i32,
+    /// Packet size in milliseconds.
+    pub packet_size_ms: i32,
+    /// Downlink packet loss percentage.
+    pub packet_loss_perc: i32,
+    /// Number of frames stored per packet.
+    pub n_frames_per_packet: usize,
+    /// Number of frames encoded so far in the current packet.
+    pub n_frames_encoded: usize,
+    /// Write index into the input buffer.
+    pub input_buf_ix: usize,
+    /// Flag indicating the first frame after a reset.
+    pub first_frame_after_reset: bool,
+    /// Ensures codec control only runs once per packet.
+    pub controlled_since_last_payload: bool,
+    /// Indicates that only buffers were prefilled (no coding).
+    pub prefill_flag: bool,
+    /// Pitch-estimator complexity level.
+    pub pitch_estimation_complexity: i32,
+    /// Pitch-estimator threshold in Q16.
+    pub pitch_estimation_threshold_q16: i32,
+    /// Pitch-estimator LPC order.
+    pub pitch_estimation_lpc_order: i32,
+    /// LPC order used for noise-shaping filters.
+    pub shaping_lpc_order: i32,
+    /// Number of delayed-decision states.
+    pub n_states_delayed_decision: i32,
+    /// Enables NLSF interpolation.
+    pub use_interpolated_nlsfs: bool,
+    /// Number of survivors in the NLSF MSVQ search.
+    pub nlsf_msvq_survivors: i32,
+    /// Warping control parameter in Q16.
+    pub warping_q16: i32,
+    /// Complexity setting (0-10).
+    pub complexity: i32,
+    /// Tracks whether low-bit-rate redundancy is enabled.
+    pub lbrr_enabled: bool,
+    /// Gain increase applied when coding LBRR frames.
+    pub lbrr_gain_increases: i32,
 }
 
 impl Default for EncoderStateCommon {
     fn default() -> Self {
+        let api_fs_hz = DEFAULT_INTERNAL_FS_KHZ * 1000;
+        let subfr_length = SUB_FRAME_LENGTH_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
+        let ltp_mem_length = LTP_MEM_LENGTH_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
+        let la_pitch = (LA_PITCH_MS as i32) * DEFAULT_INTERNAL_FS_KHZ;
+        let la_shape = (LA_SHAPE_MS as i32) * DEFAULT_INTERNAL_FS_KHZ;
+        let shape_win_length =
+            (SUB_FRAME_LENGTH_MS as i32 * DEFAULT_INTERNAL_FS_KHZ) + 2 * la_shape;
+        let max_pitch_lag = 18 * DEFAULT_INTERNAL_FS_KHZ;
+        let pitch_lpc_win_length = FIND_PITCH_LPC_WIN_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
         Self {
+            use_dtx: false,
+            use_cbr: false,
+            use_in_band_fec: false,
             prev_signal_type: FrameSignalType::Inactive,
             fs_khz: DEFAULT_INTERNAL_FS_KHZ,
             nb_subfr: MAX_NB_SUBFR,
             frame_length: DEFAULT_FRAME_LENGTH,
-            api_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
-            max_internal_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
-            min_internal_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
-            desired_internal_sample_rate_hz: DEFAULT_INTERNAL_FS_KHZ * 1000,
+            api_sample_rate_hz: api_fs_hz,
+            prev_api_sample_rate_hz: api_fs_hz,
+            max_internal_sample_rate_hz: api_fs_hz,
+            min_internal_sample_rate_hz: api_fs_hz,
+            desired_internal_sample_rate_hz: api_fs_hz,
             allow_bandwidth_switch: false,
+            n_channels_api: 1,
+            n_channels_internal: 1,
+            channel_nb: 0,
             prev_lag: 0,
+            subfr_length,
+            ltp_mem_length,
+            la_pitch,
+            la_shape,
+            shape_win_length,
+            max_pitch_lag,
+            pitch_lpc_win_length,
+            predict_lpc_order: MAX_LPC_ORDER,
+            ps_nlsf_cb: &SILK_NLSF_CB_WB,
+            pitch_contour_icdf: &PITCH_CONTOUR_ICDF,
+            pitch_lag_low_bits_icdf: &SILK_UNIFORM8_ICDF,
+            prev_nlsf_q15: [0; MAX_LPC_ORDER],
             target_rate_bps: 0,
             snr_db_q7: 0,
             input_quality_bands_q15: [0; VAD_N_BANDS],
             input_tilt_q15: 0,
             speech_activity_q8: 0,
             variable_hp_smth1_q15: lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8,
+            packet_size_ms: MAX_FRAME_LENGTH_MS as i32,
+            packet_loss_perc: 0,
+            n_frames_per_packet: 1,
+            n_frames_encoded: 0,
+            input_buf_ix: 0,
+            first_frame_after_reset: true,
+            controlled_since_last_payload: false,
+            prefill_flag: false,
+            pitch_estimation_complexity: 0,
+            pitch_estimation_threshold_q16: 0,
+            pitch_estimation_lpc_order: 0,
+            shaping_lpc_order: 0,
+            n_states_delayed_decision: 0,
+            use_interpolated_nlsfs: false,
+            nlsf_msvq_survivors: 0,
+            warping_q16: 0,
+            complexity: 0,
+            lbrr_enabled: false,
+            lbrr_gain_increases: 0,
         }
     }
 }
 
 /// Encoder channel state (Rust mirror of `silk_encoder_state` minus unported fields).
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug)]
 pub struct EncoderChannelState {
     /// Common fields shared with the floating-point build.
     pub common: EncoderStateCommon,
@@ -154,6 +322,31 @@ pub struct EncoderChannelState {
     pub vad: VadState,
     /// Variable low-pass filter state used during bandwidth transitions.
     pub lp_state: LpState,
+    /// Noise-shaping analysis state.
+    pub shape_state: EncoderShapeState,
+    /// Noise-shaping quantiser state.
+    pub nsq_state: NoiseShapingQuantizerState,
+    /// High-level SILK resampler state used by the API wrapper.
+    pub resampler_state: Resampler,
+    /// Buffered input samples preserved across frames.
+    pub input_buf: [i16; INPUT_BUFFER_LENGTH],
+    /// Pitch-analysis buffer mirrored from `x_buf`.
+    pub x_buf: [i16; X_BUFFER_LENGTH],
+}
+
+impl Default for EncoderChannelState {
+    fn default() -> Self {
+        Self {
+            common: EncoderStateCommon::default(),
+            vad: VadState::default(),
+            lp_state: LpState::default(),
+            shape_state: EncoderShapeState::default(),
+            nsq_state: NoiseShapingQuantizerState::default(),
+            resampler_state: Resampler::default(),
+            input_buf: [0; INPUT_BUFFER_LENGTH],
+            x_buf: [0; X_BUFFER_LENGTH],
+        }
+    }
 }
 
 impl EncoderChannelState {
@@ -170,6 +363,11 @@ impl EncoderChannelState {
             common,
             vad: VadState::default(),
             lp_state: LpState::default(),
+            shape_state: EncoderShapeState::default(),
+            nsq_state: NoiseShapingQuantizerState::default(),
+            resampler_state: Resampler::default(),
+            input_buf: [0; INPUT_BUFFER_LENGTH],
+            x_buf: [0; X_BUFFER_LENGTH],
         }
     }
 
@@ -234,25 +432,45 @@ mod tests {
     #[test]
     fn encoder_state_common_defaults_match_reference() {
         let common = EncoderStateCommon::default();
+        let api_fs = DEFAULT_INTERNAL_FS_KHZ * 1000;
+        let subfr_len = SUB_FRAME_LENGTH_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
+        let ltp_mem_len = LTP_MEM_LENGTH_MS * DEFAULT_INTERNAL_FS_KHZ as usize;
         assert_eq!(common.prev_signal_type, FrameSignalType::Inactive);
+        assert!(!common.use_dtx);
+        assert!(!common.use_cbr);
+        assert!(!common.use_in_band_fec);
         assert_eq!(common.fs_khz, DEFAULT_INTERNAL_FS_KHZ);
         assert_eq!(common.nb_subfr, MAX_NB_SUBFR);
         assert_eq!(common.frame_length, DEFAULT_FRAME_LENGTH);
-        assert_eq!(common.api_sample_rate_hz, DEFAULT_INTERNAL_FS_KHZ * 1000);
-        assert_eq!(
-            common.max_internal_sample_rate_hz,
-            DEFAULT_INTERNAL_FS_KHZ * 1000
-        );
-        assert_eq!(
-            common.min_internal_sample_rate_hz,
-            DEFAULT_INTERNAL_FS_KHZ * 1000
-        );
-        assert_eq!(
-            common.desired_internal_sample_rate_hz,
-            DEFAULT_INTERNAL_FS_KHZ * 1000
-        );
+        assert_eq!(common.api_sample_rate_hz, api_fs);
+        assert_eq!(common.prev_api_sample_rate_hz, api_fs);
+        assert_eq!(common.max_internal_sample_rate_hz, api_fs);
+        assert_eq!(common.min_internal_sample_rate_hz, api_fs);
+        assert_eq!(common.desired_internal_sample_rate_hz, api_fs);
         assert!(!common.allow_bandwidth_switch);
+        assert_eq!(common.n_channels_api, 1);
+        assert_eq!(common.n_channels_internal, 1);
+        assert_eq!(common.channel_nb, 0);
         assert_eq!(common.prev_lag, 0);
+        assert_eq!(common.subfr_length, subfr_len);
+        assert_eq!(common.ltp_mem_length, ltp_mem_len);
+        assert_eq!(
+            common.la_pitch,
+            LA_PITCH_MS as i32 * DEFAULT_INTERNAL_FS_KHZ
+        );
+        assert_eq!(
+            common.la_shape,
+            LA_SHAPE_MS as i32 * DEFAULT_INTERNAL_FS_KHZ
+        );
+        assert_eq!(
+            common.pitch_lpc_win_length,
+            FIND_PITCH_LPC_WIN_MS * DEFAULT_INTERNAL_FS_KHZ as usize
+        );
+        assert_eq!(common.predict_lpc_order, MAX_LPC_ORDER);
+        assert_eq!(common.ps_nlsf_cb, &SILK_NLSF_CB_WB);
+        assert_eq!(common.pitch_contour_icdf, &PITCH_CONTOUR_ICDF);
+        assert_eq!(common.pitch_lag_low_bits_icdf, &SILK_UNIFORM8_ICDF);
+        assert_eq!(common.prev_nlsf_q15, [0; MAX_LPC_ORDER]);
         assert_eq!(common.target_rate_bps, 0);
         assert_eq!(common.snr_db_q7, 0);
         assert_eq!(common.input_quality_bands_q15, [0; VAD_N_BANDS]);
@@ -262,6 +480,16 @@ mod tests {
             common.variable_hp_smth1_q15,
             lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
         );
+        assert_eq!(common.packet_size_ms, MAX_FRAME_LENGTH_MS as i32);
+        assert_eq!(common.packet_loss_perc, 0);
+        assert_eq!(common.n_frames_per_packet, 1);
+        assert_eq!(common.n_frames_encoded, 0);
+        assert_eq!(common.input_buf_ix, 0);
+        assert!(common.first_frame_after_reset);
+        assert!(!common.controlled_since_last_payload);
+        assert!(!common.prefill_flag);
+        assert!(!common.lbrr_enabled);
+        assert_eq!(common.lbrr_gain_increases, 0);
     }
 
     #[test]
@@ -270,6 +498,12 @@ mod tests {
         assert_eq!(*channel.common(), EncoderStateCommon::default());
         assert_eq!(channel.vad(), &VadState::default());
         assert_eq!(channel.low_pass_state(), &LpState::default());
+        assert_eq!(channel.shape_state, EncoderShapeState::default());
+        assert_eq!(channel.nsq_state, NoiseShapingQuantizerState::default());
+        assert_eq!(channel.resampler_state.fs_in_khz(), 0);
+        assert_eq!(channel.resampler_state.fs_out_khz(), 0);
+        assert_eq!(channel.input_buf, [0; INPUT_BUFFER_LENGTH]);
+        assert_eq!(channel.x_buf, [0; X_BUFFER_LENGTH]);
     }
 
     #[test]

@@ -44,6 +44,8 @@ pub struct EncControl {
     pub complexity: i32,
     /// Enables in-band forward error correction when set to 1.
     pub use_in_band_fec: i32,
+    /// Forces the encoder to emit low-bit-rate redundancy for the current packet.
+    pub lbrr_coded: i32,
     /// Enables discontinuous transmission when set to 1.
     pub use_dtx: i32,
     /// Enables constant-bitrate mode when set to 1.
@@ -70,6 +72,7 @@ impl Default for EncControl {
             packet_loss_percentage: 0,
             complexity: 10,
             use_in_band_fec: 0,
+            lbrr_coded: 0,
             use_dtx: 0,
             use_cbr: 0,
             max_bits: 0,
@@ -122,6 +125,10 @@ impl EncControl {
 
         if !matches!(self.use_in_band_fec, 0 | 1) {
             return Err(SilkError::EncInvalidInbandFecSetting);
+        }
+
+        if !matches!(self.lbrr_coded, 0 | 1) {
+            return Err(SilkError::EncInternalError);
         }
 
         if self.n_channels_api < 1

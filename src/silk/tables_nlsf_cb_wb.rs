@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SilkNlsfCb {
     pub n_vectors: i16,
     pub order: i16,
