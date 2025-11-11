@@ -16,6 +16,7 @@ pub mod debug;
 pub mod decode_indices;
 pub mod decode_parameters;
 pub mod decode_pitch;
+pub mod decode_pulses;
 pub mod decoder;
 pub mod decoder_set_fs;
 pub mod encode_indices;
