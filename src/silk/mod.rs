@@ -19,6 +19,7 @@ pub mod decode_pitch;
 pub mod decoder;
 pub mod decoder_set_fs;
 pub mod encode_indices;
+pub mod encode_pulses;
 pub mod encoder;
 pub mod errors;
 pub mod gain_quant;
