@@ -19,13 +19,13 @@ use crate::silk::tables_pitch_lag::{
 };
 use crate::silk::{FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR, MIN_LPC_ORDER, SilkNlsfCb};
 
-const SUB_FRAME_LENGTH_MS: usize = 5;
+pub(crate) const SUB_FRAME_LENGTH_MS: usize = 5;
 const LTP_MEM_LENGTH_MS: usize = 20;
 const MAX_FS_KHZ: usize = 16;
-const MAX_SUB_FRAME_LENGTH: usize = SUB_FRAME_LENGTH_MS * MAX_FS_KHZ;
+pub(crate) const MAX_SUB_FRAME_LENGTH: usize = SUB_FRAME_LENGTH_MS * MAX_FS_KHZ;
 const MAX_FRAME_LENGTH_MS: usize = SUB_FRAME_LENGTH_MS * MAX_NB_SUBFR;
-const MAX_FRAME_LENGTH: usize = MAX_FRAME_LENGTH_MS * MAX_FS_KHZ;
-const MAX_DECODER_BUFFER: usize = MAX_FRAME_LENGTH + 2 * MAX_SUB_FRAME_LENGTH;
+pub(crate) const MAX_FRAME_LENGTH: usize = MAX_FRAME_LENGTH_MS * MAX_FS_KHZ;
+pub(crate) const MAX_DECODER_BUFFER: usize = MAX_FRAME_LENGTH + 2 * MAX_SUB_FRAME_LENGTH;
 
 /// Errors that can occur when switching decoder sampling rates.
 #[derive(Debug, Clone, PartialEq, Eq)]

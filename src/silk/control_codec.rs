@@ -15,6 +15,8 @@ use crate::silk::encoder::state::{
     MAX_DEL_DEC_STATES, MAX_FIND_PITCH_LPC_ORDER, MAX_FRAME_LENGTH_MS, NoiseShapingQuantizerState,
     SHAPE_LPC_WIN_MAX, SUB_FRAME_LENGTH_MS,
 };
+use crate::silk::errors::SilkError;
+use crate::silk::lp_variable_cutoff::LpState;
 use crate::silk::pitch_est_tables::{
     SILK_PE_MAX_COMPLEX, SILK_PE_MID_COMPLEX, SILK_PE_MIN_COMPLEX,
 };
@@ -26,8 +28,6 @@ use crate::silk::tables_pitch_lag::{
     PITCH_CONTOUR_10_MS_ICDF, PITCH_CONTOUR_10_MS_NB_ICDF, PITCH_CONTOUR_ICDF,
     PITCH_CONTOUR_NB_ICDF,
 };
-use crate::silk::lp_variable_cutoff::LpState;
-use crate::silk::errors::SilkError;
 use crate::silk::tuning_parameters::WARPING_MULTIPLIER;
 use crate::silk::{EncControl, FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR, MIN_LPC_ORDER};
 
