@@ -129,7 +129,7 @@ fn update_coefficient(
     }
 }
 
-fn inverse32_varq(b32: i32, qres: i32) -> i32 {
+pub(crate) fn inverse32_varq(b32: i32, qres: i32) -> i32 {
     debug_assert!(b32 != 0);
     debug_assert!(qres > 0);
     if b32 == 0 || qres <= 0 {

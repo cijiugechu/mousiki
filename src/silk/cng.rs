@@ -374,7 +374,7 @@ fn generate_excitation(
 
     let mut current_seed = *seed;
     for sample in out.iter_mut() {
-        current_seed = rand(current_seed);
+        current_seed = silk_rand(current_seed);
         let idx =
             ((current_seed >> 24) & exc_mask).clamp(0, (MAX_FRAME_LENGTH - 1) as i32) as usize;
         *sample = exc_buf[idx];
@@ -382,7 +382,7 @@ fn generate_excitation(
     *seed = current_seed;
 }
 
-fn rand(seed: i32) -> i32 {
+pub(crate) fn silk_rand(seed: i32) -> i32 {
     RAND_INCREMENT.wrapping_add(seed.wrapping_mul(RAND_MULTIPLIER))
 }
 
