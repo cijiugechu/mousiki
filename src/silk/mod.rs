@@ -27,6 +27,7 @@ pub mod encoder;
 pub mod errors;
 pub mod gain_quant;
 pub mod get_decoder_size;
+pub mod get_encoder_size;
 pub mod hp_variable_cutoff;
 pub mod icdf;
 pub mod init_decoder;

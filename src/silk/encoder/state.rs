@@ -8,6 +8,7 @@
 
 use crate::silk::FrameSignalType;
 use crate::silk::SilkNlsfCb;
+use crate::silk::StereoEncState;
 use crate::silk::lin2log::lin2log;
 use crate::silk::lp_variable_cutoff::LpState;
 use crate::silk::resampler::Resampler;
@@ -16,9 +17,12 @@ use crate::silk::tables_other::SILK_UNIFORM8_ICDF;
 use crate::silk::tables_pitch_lag::PITCH_CONTOUR_ICDF;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
 use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR};
+use core::array::from_fn;
 
 /// Number of VAD bands tracked per SILK channel.
 pub const VAD_N_BANDS: usize = 4;
+/// Number of encoder channels managed by the top-level super-structure.
+pub const ENCODER_NUM_CHANNELS: usize = 2;
 /// Internal SILK maximum sampling rate (kHz).
 pub(crate) const MAX_FS_KHZ: usize = 16;
 /// Sub-frame duration in milliseconds.
@@ -425,6 +429,48 @@ impl EncoderChannelState {
     }
 }
 
+/// Top-level encoder super-structure mirroring `silk_encoder`.
+#[derive(Clone, Debug)]
+pub struct Encoder {
+    /// Per-channel encoder states (`state_Fxx` in the reference sources).
+    pub state_fxx: [EncoderChannelState; ENCODER_NUM_CHANNELS],
+    /// Stereo mid/side predictor state shared across channels.
+    pub stereo_state: StereoEncState,
+    /// Number of bits consumed by the LBRR side channel in the current packet.
+    pub n_bits_used_lbrr: i32,
+    /// Tracks bit-budget overflows reported by the encoder control path.
+    pub n_bits_exceeded: i32,
+    /// Number of active channels exposed through the public API.
+    pub n_channels_api: i32,
+    /// Number of internally active encoder channels.
+    pub n_channels_internal: i32,
+    /// Previous number of internal channels (used during transitions).
+    pub n_prev_channels_internal: i32,
+    /// Cooldown timer before another bandwidth switch is permitted.
+    pub time_since_switch_allowed_ms: i32,
+    /// Indicates whether bandwidth switching is currently allowed.
+    pub allow_bandwidth_switch: bool,
+    /// Remembers whether the decoder was forced to mid-only last frame.
+    pub prev_decode_only_middle: bool,
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self {
+            state_fxx: from_fn(|_| EncoderChannelState::default()),
+            stereo_state: StereoEncState::default(),
+            n_bits_used_lbrr: 0,
+            n_bits_exceeded: 0,
+            n_channels_api: 1,
+            n_channels_internal: 1,
+            n_prev_channels_internal: 1,
+            time_since_switch_allowed_ms: 0,
+            allow_bandwidth_switch: false,
+            prev_decode_only_middle: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +572,23 @@ mod tests {
         assert!(vad.nl.iter().all(|&nl| nl > 0));
         assert!(vad.inv_nl.iter().all(|&inv| inv > 0));
         assert_eq!(vad.nrg_ratio_smth_q8, [INITIAL_NRG_RATIO_Q8; VAD_N_BANDS]);
+    }
+
+    #[test]
+    fn encoder_super_state_defaults_cover_channels() {
+        let encoder = Encoder::default();
+        assert_eq!(encoder.state_fxx.len(), ENCODER_NUM_CHANNELS);
+        assert!(encoder
+            .state_fxx
+            .iter()
+            .all(|channel| *channel.common() == EncoderStateCommon::default()));
+        assert_eq!(encoder.n_channels_api, 1);
+        assert_eq!(encoder.n_channels_internal, 1);
+        assert_eq!(encoder.n_prev_channels_internal, 1);
+        assert_eq!(encoder.n_bits_used_lbrr, 0);
+        assert_eq!(encoder.n_bits_exceeded, 0);
+        assert_eq!(encoder.time_since_switch_allowed_ms, 0);
+        assert!(!encoder.allow_bandwidth_switch);
+        assert!(!encoder.prev_decode_only_middle);
     }
 }
