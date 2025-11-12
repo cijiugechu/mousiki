@@ -7,7 +7,7 @@
 
 use core::convert::TryFrom;
 
-use crate::silk::cng::{silk_rand, DecoderControl};
+use crate::silk::cng::{DecoderControl, silk_rand};
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::decoder_set_fs::{MAX_FRAME_LENGTH, MAX_SUB_FRAME_LENGTH};
 use crate::silk::decoder_state::DecoderState;
@@ -16,9 +16,7 @@ use crate::silk::lpc_inv_pred_gain::inverse32_varq;
 use crate::silk::stereo_find_predictor::div32_varq;
 use crate::silk::tables_other::SILK_QUANTIZATION_OFFSETS_Q10;
 use crate::silk::vq_wmat_ec::LTP_ORDER;
-use crate::silk::{
-    FrameQuantizationOffsetType, FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR,
-};
+use crate::silk::{FrameQuantizationOffsetType, FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR};
 
 const MAX_LTP_MEM_LENGTH: usize = 4 * MAX_SUB_FRAME_LENGTH;
 const UNITY_Q16: i32 = 1 << 16;
@@ -33,19 +31,26 @@ pub fn silk_decode_core(
     pulses: &[i16],
     arch: i32,
 ) {
-    let (frame_length, subfr_length, nb_subfr, ltp_mem_length, lpc_order, prev_signal_type, lag_prev) =
-        {
-            let sr = &state.sample_rate;
-            (
-                sr.frame_length,
-                sr.subfr_length,
-                sr.nb_subfr,
-                sr.ltp_mem_length,
-                sr.lpc_order,
-                sr.prev_signal_type,
-                sr.lag_prev,
-            )
-        };
+    let (
+        frame_length,
+        subfr_length,
+        nb_subfr,
+        ltp_mem_length,
+        lpc_order,
+        prev_signal_type,
+        lag_prev,
+    ) = {
+        let sr = &state.sample_rate;
+        (
+            sr.frame_length,
+            sr.subfr_length,
+            sr.nb_subfr,
+            sr.ltp_mem_length,
+            sr.lpc_order,
+            sr.prev_signal_type,
+            sr.lag_prev,
+        )
+    };
 
     assert!(
         frame_length > 0 && frame_length <= MAX_FRAME_LENGTH,
@@ -124,8 +129,7 @@ pub fn silk_decode_core(
 
         let predictor_row = k >> 1;
         let mut a_q12 = [0i16; MAX_LPC_ORDER];
-        a_q12[..lpc_order]
-            .copy_from_slice(&control.pred_coef_q12[predictor_row][..lpc_order]);
+        a_q12[..lpc_order].copy_from_slice(&control.pred_coef_q12[predictor_row][..lpc_order]);
 
         let ltp_offset = k * LTP_ORDER;
         let (b_start, b_end) = (ltp_offset, ltp_offset + LTP_ORDER);
@@ -247,14 +251,26 @@ pub fn silk_decode_core(
                     let mut ltp_pred_q13 = 2;
                     ltp_pred_q13 =
                         smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_index], i32::from(b_q14[0]));
-                    ltp_pred_q13 =
-                        smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_index - 1], i32::from(b_q14[1]));
-                    ltp_pred_q13 =
-                        smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_index - 2], i32::from(b_q14[2]));
-                    ltp_pred_q13 =
-                        smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_index - 3], i32::from(b_q14[3]));
-                    ltp_pred_q13 =
-                        smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_index - 4], i32::from(b_q14[4]));
+                    ltp_pred_q13 = smlawb(
+                        ltp_pred_q13,
+                        s_ltp_q15[pred_lag_index - 1],
+                        i32::from(b_q14[1]),
+                    );
+                    ltp_pred_q13 = smlawb(
+                        ltp_pred_q13,
+                        s_ltp_q15[pred_lag_index - 2],
+                        i32::from(b_q14[2]),
+                    );
+                    ltp_pred_q13 = smlawb(
+                        ltp_pred_q13,
+                        s_ltp_q15[pred_lag_index - 3],
+                        i32::from(b_q14[3]),
+                    );
+                    ltp_pred_q13 = smlawb(
+                        ltp_pred_q13,
+                        s_ltp_q15[pred_lag_index - 4],
+                        i32::from(b_q14[4]),
+                    );
                     pred_lag_index += 1;
 
                     let value = add_lshift32(state.exc_q14[pexc_idx + i], ltp_pred_q13, 1);
@@ -274,11 +290,7 @@ pub fn silk_decode_core(
             let mut lpc_pred_q10 = (lpc_order as i32) >> 1;
             for (tap, &coef) in a_q12.iter().enumerate().take(lpc_order) {
                 let hist_idx = MAX_LPC_ORDER + i - 1 - tap;
-                lpc_pred_q10 = smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[hist_idx],
-                    i32::from(coef),
-                );
+                lpc_pred_q10 = smlawb(lpc_pred_q10, s_lpc_q14[hist_idx], i32::from(coef));
             }
 
             let base = MAX_LPC_ORDER + i;
@@ -337,8 +349,7 @@ fn smlawb(acc: i32, x: i32, y: i32) -> i32 {
 
 #[inline]
 fn add_sat32(a: i32, b: i32) -> i32 {
-    (i64::from(a) + i64::from(b))
-        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    (i64::from(a) + i64::from(b)).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[inline]

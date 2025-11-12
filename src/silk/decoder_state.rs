@@ -179,8 +179,8 @@ impl DecoderState {
 #[cfg(test)]
 mod tests {
     use super::{
-        DecoderState, PacketLossConcealmentState, DEFAULT_PLC_SUBFRAME_COUNT,
-        DEFAULT_PLC_SUBFRAME_LENGTH, UNITY_Q16,
+        DEFAULT_PLC_SUBFRAME_COUNT, DEFAULT_PLC_SUBFRAME_LENGTH, DecoderState,
+        PacketLossConcealmentState, UNITY_Q16,
     };
     use crate::silk::decoder_set_fs::MAX_FRAME_LENGTH;
     use crate::silk::{MAX_FRAMES_PER_PACKET, MAX_LPC_ORDER};

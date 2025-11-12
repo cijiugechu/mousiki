@@ -8,9 +8,5 @@
 pub mod state;
 
 pub use state::{
-    Encoder,
-    EncoderChannelState,
-    EncoderStateCommon,
-    ENCODER_NUM_CHANNELS,
-    VAD_N_BANDS,
+    ENCODER_NUM_CHANNELS, Encoder, EncoderChannelState, EncoderStateCommon, VAD_N_BANDS,
 };
