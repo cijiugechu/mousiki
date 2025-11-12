@@ -207,6 +207,8 @@ pub struct EncoderStateCommon {
     pub speech_activity_q8: i32,
     /// Smoothed logarithmic cut-off frequency in Q15.
     pub variable_hp_smth1_q15: i32,
+    /// Secondary smoother used by the adaptive high-pass controller.
+    pub variable_hp_smth2_q15: i32,
     /// Packet size in milliseconds.
     pub packet_size_ms: i32,
     /// Downlink packet loss percentage.
@@ -245,6 +247,8 @@ pub struct EncoderStateCommon {
     pub lbrr_enabled: bool,
     /// Gain increase applied when coding LBRR frames.
     pub lbrr_gain_increases: i32,
+    /// Architecture flag used to select specialised kernels.
+    pub arch: i32,
 }
 
 impl Default for EncoderStateCommon {
@@ -294,6 +298,7 @@ impl Default for EncoderStateCommon {
             input_tilt_q15: 0,
             speech_activity_q8: 0,
             variable_hp_smth1_q15: lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8,
+            variable_hp_smth2_q15: lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8,
             packet_size_ms: MAX_FRAME_LENGTH_MS as i32,
             packet_loss_perc: 0,
             n_frames_per_packet: 1,
@@ -313,6 +318,7 @@ impl Default for EncoderStateCommon {
             complexity: 0,
             lbrr_enabled: false,
             lbrr_gain_increases: 0,
+            arch: 0,
         }
     }
 }
@@ -526,6 +532,10 @@ mod tests {
             common.variable_hp_smth1_q15,
             lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
         );
+        assert_eq!(
+            common.variable_hp_smth2_q15,
+            lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
+        );
         assert_eq!(common.packet_size_ms, MAX_FRAME_LENGTH_MS as i32);
         assert_eq!(common.packet_loss_perc, 0);
         assert_eq!(common.n_frames_per_packet, 1);
@@ -536,6 +546,7 @@ mod tests {
         assert!(!common.prefill_flag);
         assert!(!common.lbrr_enabled);
         assert_eq!(common.lbrr_gain_increases, 0);
+        assert_eq!(common.arch, 0);
     }
 
     #[test]
@@ -578,10 +589,12 @@ mod tests {
     fn encoder_super_state_defaults_cover_channels() {
         let encoder = Encoder::default();
         assert_eq!(encoder.state_fxx.len(), ENCODER_NUM_CHANNELS);
-        assert!(encoder
-            .state_fxx
-            .iter()
-            .all(|channel| *channel.common() == EncoderStateCommon::default()));
+        assert!(
+            encoder
+                .state_fxx
+                .iter()
+                .all(|channel| *channel.common() == EncoderStateCommon::default())
+        );
         assert_eq!(encoder.n_channels_api, 1);
         assert_eq!(encoder.n_channels_internal, 1);
         assert_eq!(encoder.n_prev_channels_internal, 1);

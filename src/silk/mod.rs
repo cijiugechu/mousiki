@@ -31,6 +31,7 @@ pub mod get_encoder_size;
 pub mod hp_variable_cutoff;
 pub mod icdf;
 pub mod init_decoder;
+pub mod init_encoder;
 pub mod inner_prod_aligned;
 pub mod interpolate;
 pub mod k2a;
