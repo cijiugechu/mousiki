@@ -32,12 +32,16 @@ const NLSF_STAGE2_SYMBOLS: usize = (NLSF_QUANT_MAX_AMPLITUDE as usize * 2) + 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionalCoding {
     Independent,
+    IndependentNoLtpScaling,
     Conditional,
 }
 
 impl ConditionalCoding {
     fn is_independent(self) -> bool {
-        matches!(self, ConditionalCoding::Independent)
+        matches!(
+            self,
+            ConditionalCoding::Independent | ConditionalCoding::IndependentNoLtpScaling
+        )
     }
 }
 
@@ -252,7 +256,7 @@ impl DecoderIndicesState {
             indices.ltp_index[k] = range_decoder.decode_icdf(gain_icdf, 8) as i8;
         }
 
-        indices.ltp_scale_index = if coding.is_independent() {
+        indices.ltp_scale_index = if matches!(coding, ConditionalCoding::Independent) {
             range_decoder.decode_icdf(&SILK_LTPSCALE_ICDF, 8) as i8
         } else {
             0

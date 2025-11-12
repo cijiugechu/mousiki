@@ -133,7 +133,10 @@ impl EncoderIndicesState {
         indices: &SideInfoIndices,
         coding: ConditionalCoding,
     ) {
-        if matches!(coding, ConditionalCoding::Independent) {
+        if matches!(
+            coding,
+            ConditionalCoding::Independent | ConditionalCoding::IndependentNoLtpScaling
+        ) {
             let gain_index = i32::from(indices.gains_indices[0]);
             assert!(
                 (0..N_LEVELS_QGAIN as i32).contains(&gain_index),
@@ -234,7 +237,7 @@ impl EncoderIndicesState {
         }
 
         let mut encode_absolute_lag = true;
-        if !matches!(coding, ConditionalCoding::Independent)
+        if matches!(coding, ConditionalCoding::Conditional)
             && self.prev_signal_type == FrameSignalType::Voiced
         {
             let delta = i32::from(indices.lag_index) - i32::from(self.prev_lag_index);

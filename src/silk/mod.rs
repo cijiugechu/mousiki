@@ -15,6 +15,7 @@ pub mod control_snr;
 pub mod corr_matrix;
 pub mod debug;
 pub mod decode_core;
+pub mod decode_frame;
 pub mod decode_indices;
 pub mod decode_parameters;
 pub mod decode_pitch;
@@ -92,6 +93,7 @@ pub mod vq_wmat_ec;
 pub mod warped_autocorrelation;
 
 pub use check_control_input::EncControl;
+pub use decode_frame::{silk_decode_frame, DecodeFlag};
 pub use decoder_state::{DecoderState, PacketLossConcealmentState};
 pub use gain_quant::MAX_NB_SUBFR;
 pub use interpolate::MAX_LPC_ORDER;
