@@ -44,7 +44,7 @@ impl<'a> ResamplerStateDownFIR<'a> {
         fir_fracs: usize,
         coefs: &'a [i16],
     ) -> Self {
-        assert!(fir_order % 2 == 0, "FIR order must be even");
+        assert!(fir_order.is_multiple_of(2), "FIR order must be even");
         assert!(fir_fracs > 0, "at least one fractional table is required");
         assert!(batch_size > 0, "batch_size must be > 0");
         assert!(

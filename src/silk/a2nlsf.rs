@@ -25,7 +25,7 @@ const MAX_ITERATIONS_A2NLSF_FIX: usize = 16;
 pub fn a2nlsf(nlsf_q15: &mut [i16], a_q16: &mut [i32]) {
     let d = nlsf_q15.len();
     assert_eq!(d, a_q16.len(), "filter order mismatch");
-    assert!(d % 2 == 0, "SILK requires an even LPC order");
+    assert!(d.is_multiple_of(2), "SILK requires an even LPC order");
     assert!(d <= SILK_MAX_ORDER_LPC, "order exceeds SILK_MAX_ORDER_LPC");
 
     let dd = d / 2;

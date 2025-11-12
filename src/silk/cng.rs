@@ -167,14 +167,14 @@ pub fn apply_cng(
     validate_inputs(inputs, frame);
 
     if inputs.fs_khz != state.fs_khz {
-        if state.fs_khz != INVALID_FS_KHZ {
-            state.reset(inputs.lpc_order);
-        } else {
+        if state.fs_khz == INVALID_FS_KHZ {
             state
                 .synth_state
                 .iter_mut()
                 .take(inputs.lpc_order)
                 .for_each(|value| *value = 0);
+        } else {
+            state.reset(inputs.lpc_order);
         }
         state.smth_nlsf_q15[..inputs.lpc_order]
             .copy_from_slice(&inputs.prev_nlsf_q15[..inputs.lpc_order]);

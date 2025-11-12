@@ -800,8 +800,8 @@ impl Decoder {
         for sample_index in j..(j + n) {
             let mut res_sum = res[sample_index];
 
-            for tap in 0..LTP_FILTER_TAP_COUNT {
-                let res_index = sample_index as isize - pitch + 2 - tap as isize;
+            for (tap_index, coeff) in b_q7[subframe_index].iter().enumerate() {
+                let res_index = sample_index as isize - pitch + 2 - tap_index as isize;
                 let value = if res_index < 0 {
                     let lag_index = res_lag_len + res_index;
                     if lag_index >= 0 && lag_index < res_lag_len {
@@ -815,7 +815,7 @@ impl Decoder {
                     0.0
                 };
 
-                res_sum += value * (f32::from(b_q7[subframe_index][tap]) / 128.0);
+                res_sum += value * (f32::from(*coeff) / 128.0);
             }
 
             res[sample_index] = res_sum;

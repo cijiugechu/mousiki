@@ -27,7 +27,7 @@ pub fn lpc_analysis_filter(
     assert!(len <= input.len(), "input buffer too small");
     assert!(order <= coeffs_q12.len(), "coefficient slice too short");
     assert!(order >= 6, "filter order must be at least six taps");
-    assert!(order % 2 == 0, "filter order must be even");
+    assert!(order.is_multiple_of(2), "filter order must be even");
     assert!(order <= len, "filter order cannot exceed len");
 
     for ix in order..len {
