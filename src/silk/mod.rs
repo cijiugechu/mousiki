@@ -68,6 +68,7 @@ pub mod resampler_private_up2_hq;
 pub mod resampler_rom;
 pub mod residual_energy16;
 pub mod schur;
+pub mod schur64;
 pub mod shell_coder;
 pub mod sigm_q15;
 pub mod sort;
@@ -93,7 +94,7 @@ pub mod vq_wmat_ec;
 pub mod warped_autocorrelation;
 
 pub use check_control_input::EncControl;
-pub use decode_frame::{silk_decode_frame, DecodeFlag};
+pub use decode_frame::{DecodeFlag, silk_decode_frame};
 pub use decoder_state::{DecoderState, PacketLossConcealmentState};
 pub use gain_quant::MAX_NB_SUBFR;
 pub use interpolate::MAX_LPC_ORDER;

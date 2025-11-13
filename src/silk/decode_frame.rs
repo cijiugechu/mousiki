@@ -8,10 +8,10 @@
 use alloc::vec;
 
 use crate::range::RangeDecoder;
-use crate::silk::cng::{apply_cng, ComfortNoiseInputs, DecoderControl, PlcState};
+use crate::silk::cng::{ComfortNoiseInputs, DecoderControl, PlcState, apply_cng};
 use crate::silk::decode_core::silk_decode_core;
 use crate::silk::decode_indices::{ConditionalCoding, DecoderIndicesState, SideInfoIndices};
-use crate::silk::decode_parameters::{silk_decode_parameters, DecoderParametersState};
+use crate::silk::decode_parameters::{DecoderParametersState, silk_decode_parameters};
 use crate::silk::decode_pulses::silk_decode_pulses;
 use crate::silk::decoder_set_fs::MAX_FRAME_LENGTH;
 use crate::silk::decoder_state::DecoderState;
@@ -69,8 +69,8 @@ pub fn silk_decode_frame(
         "output buffer shorter than frame"
     );
 
-    let frame_index = usize::try_from(state.n_frames_decoded)
-        .expect("frame counter must not be negative");
+    let frame_index =
+        usize::try_from(state.n_frames_decoded).expect("frame counter must not be negative");
     assert!(
         frame_index < MAX_FRAMES_PER_PACKET,
         "frame index {} exceeds MAX_FRAMES_PER_PACKET",
@@ -113,7 +113,13 @@ pub fn silk_decode_frame(
             &pulses[..frame_length],
             arch,
         );
-        silk_plc(state, &mut control, &mut output[..frame_length], false, arch);
+        silk_plc(
+            state,
+            &mut control,
+            &mut output[..frame_length],
+            false,
+            arch,
+        );
         state.loss_count = 0;
         state.sample_rate.first_frame_after_reset = false;
     } else {
@@ -223,8 +229,7 @@ fn refresh_output_buffer(state: &mut DecoderState, frame: &[i16]) {
     if mv_len > 0 {
         let src_start = frame_length;
         let src_end = frame_length + mv_len;
-        sr.out_buf
-            .copy_within(src_start..src_end, 0);
+        sr.out_buf.copy_within(src_start..src_end, 0);
     }
 
     sr.out_buf[mv_len..mv_len + frame_length].copy_from_slice(frame);
@@ -254,12 +259,12 @@ fn plc_summary(state: &DecoderState) -> PlcState {
 
 #[cfg(test)]
 mod tests {
-    use super::{silk_decode_frame, DecodeFlag};
+    use super::{DecodeFlag, silk_decode_frame};
     use crate::range::{RangeDecoder, RangeEncoder};
     use crate::silk::decode_indices::{ConditionalCoding, SideInfoIndices};
+    use crate::silk::decoder_state::DecoderState;
     use crate::silk::encode_indices::EncoderIndicesState;
     use crate::silk::encode_pulses::silk_encode_pulses;
-    use crate::silk::decoder_state::DecoderState;
     use crate::silk::{FrameQuantizationOffsetType, FrameSignalType};
     use alloc::vec;
 
@@ -305,7 +310,12 @@ mod tests {
         indices.nlsf_interp_coef_q2 = 4;
         indices.gains_indices = [10, 6, 6, 6];
         indices.seed = 3;
-        indices_state.encode_indices(&mut encoder, &indices, ConditionalCoding::Independent, false);
+        indices_state.encode_indices(
+            &mut encoder,
+            &indices,
+            ConditionalCoding::Independent,
+            false,
+        );
 
         let mut pulses = vec![0i8; frame_length];
         for (i, sample) in pulses.iter_mut().enumerate() {
@@ -341,7 +351,10 @@ mod tests {
         assert_eq!(produced, frame_length);
         assert_eq!(state.loss_count, 0);
         assert!(!state.sample_rate.first_frame_after_reset);
-        assert_eq!(state.sample_rate.prev_signal_type, FrameSignalType::Unvoiced);
+        assert_eq!(
+            state.sample_rate.prev_signal_type,
+            FrameSignalType::Unvoiced
+        );
         assert!(output.iter().any(|&sample| sample != 0));
     }
 }
