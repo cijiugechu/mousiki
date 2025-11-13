@@ -5,7 +5,7 @@
 //! support, so the helper mirrors the reference behaviour in non-OSCE builds
 //! by simply reporting success.
 
-use super::decoder::Decoder;
+use super::dec_api::Decoder;
 use super::errors::SilkError;
 
 /// Mirrors `silk_LoadOSCEModels`.
@@ -20,17 +20,17 @@ pub fn load_osce_models(_decoder: &mut Decoder, _data: Option<&[u8]>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::load_osce_models;
-    use crate::silk::decoder::DecoderBuilder;
+    use crate::silk::dec_api::Decoder;
 
     #[test]
     fn succeeds_without_payload() {
-        let mut decoder = DecoderBuilder::new().build();
+        let mut decoder = Decoder::default();
         assert_eq!(load_osce_models(&mut decoder, None), Ok(()));
     }
 
     #[test]
     fn accepts_inline_payloads() {
-        let mut decoder = DecoderBuilder::new().build();
+        let mut decoder = Decoder::default();
         let blob = [1_u8, 2, 3, 4];
         assert_eq!(load_osce_models(&mut decoder, Some(&blob)), Ok(()));
     }

@@ -3,12 +3,12 @@
 //! The original helper simply reports the number of bytes needed to hold the
 //! decoder super-structure so callers can preallocate memory before calling
 //! `silk_InitDecoder`. The Rust port mirrors that behaviour by measuring the
-//! [`Decoder`](crate::silk::decoder::Decoder) type that backs the current SILK
+//! [`Decoder`](crate::silk::dec_api::Decoder) type that backs the translated SILK
 //! decoder implementation.
 
 use core::mem;
 
-use super::decoder::Decoder;
+use super::dec_api::Decoder;
 use super::errors::SilkError;
 
 /// Mirrors `silk_Get_Decoder_Size`.
@@ -24,7 +24,7 @@ pub fn get_decoder_size(size_bytes: &mut usize) -> Result<(), SilkError> {
 #[cfg(test)]
 mod tests {
     use super::get_decoder_size;
-    use crate::silk::decoder::Decoder;
+    use crate::silk::dec_api::Decoder;
 
     #[test]
     fn reports_decoder_size_in_bytes() {
