@@ -25,7 +25,7 @@ const NB_SUBFR_10_MS: usize = PE_MAX_NB_SUBFR / 2;
 pub fn silk_decode_pitch(
     lag_index: i16,
     contour_index: i8,
-    pitch_lags: &mut [i16],
+    pitch_lags: &mut [i32],
     fs_khz: i32,
     nb_subfr: usize,
 ) {
@@ -44,7 +44,7 @@ pub fn silk_decode_pitch(
     for (subframe_idx, lag) in pitch_lags.iter_mut().enumerate().take(nb_subfr) {
         let offset = codebook_entry(fs_khz, nb_subfr, subframe_idx, contour);
         let candidate = (base_lag + offset).clamp(min_lag, max_lag);
-        *lag = candidate as i16;
+        *lag = candidate;
     }
 
     for lag in pitch_lags.iter_mut().skip(nb_subfr) {
@@ -95,28 +95,28 @@ mod tests {
 
     #[test]
     fn decode_pitch_wideband_stage3() {
-        let mut lags = [0i16; MAX_NB_SUBFR];
+        let mut lags = [0i32; MAX_NB_SUBFR];
         silk_decode_pitch(0, 1, &mut lags, 16, MAX_NB_SUBFR);
         assert_eq!(&lags, &[32, 32, 33, 33]);
     }
 
     #[test]
     fn decode_pitch_narrowband_stage2() {
-        let mut lags = [0i16; MAX_NB_SUBFR];
+        let mut lags = [0i32; MAX_NB_SUBFR];
         silk_decode_pitch(5, 2, &mut lags, 8, MAX_NB_SUBFR);
         assert_eq!(&lags, &[20, 21, 22, 23]);
     }
 
     #[test]
     fn decode_pitch_stage3_10ms() {
-        let mut lags = [0i16; MAX_NB_SUBFR];
+        let mut lags = [0i32; MAX_NB_SUBFR];
         silk_decode_pitch(3, 5, &mut lags, 16, MAX_NB_SUBFR / 2);
         assert_eq!(&lags, &[34, 37, 0, 0]);
     }
 
     #[test]
     fn decode_pitch_stage2_10ms() {
-        let mut lags = [0i16; MAX_NB_SUBFR];
+        let mut lags = [0i32; MAX_NB_SUBFR];
         silk_decode_pitch(2, 1, &mut lags, 8, MAX_NB_SUBFR / 2);
         assert_eq!(&lags, &[19, 18, 0, 0]);
     }

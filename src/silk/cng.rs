@@ -8,8 +8,8 @@
 use alloc::vec;
 use core::cmp::Ordering;
 
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::nlsf2a::nlsf2a;
-use crate::silk::vq_wmat_ec::LTP_ORDER;
 use crate::silk::{FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR};
 
 const SUBFRAME_MS: usize = 5;
@@ -118,21 +118,6 @@ impl CngState {
 pub struct PlcState {
     pub rand_scale_q14: i32,
     pub prev_gain_q16: [i32; 2],
-}
-
-/// Minimal decoder control stub containing the per-subframe decoder parameters.
-#[derive(Clone, Debug, Default)]
-pub struct DecoderControl {
-    /// Q16 gains per subframe.
-    pub gains_q16: [i32; MAX_NB_SUBFR],
-    /// LPC predictor coefficients for each half-frame (Q12).
-    pub pred_coef_q12: [[i16; MAX_LPC_ORDER]; 2],
-    /// Pitch lags per subframe (samples).
-    pub pitch_l: [i16; MAX_NB_SUBFR],
-    /// LTP coefficients for each subframe (Q14).
-    pub ltp_coef_q14: [i16; MAX_NB_SUBFR * LTP_ORDER],
-    /// LTP scaling factor (Q14).
-    pub ltp_scale_q14: i16,
 }
 
 /// Parameters required to update the comfort-noise state.

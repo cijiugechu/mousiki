@@ -23,6 +23,7 @@ pub mod decode_parameters;
 pub mod decode_pitch;
 pub mod decode_pulses;
 pub mod decoder;
+pub mod decoder_control;
 pub mod decoder_set_fs;
 pub mod decoder_state;
 pub mod encode_indices;
@@ -98,6 +99,7 @@ pub mod vq_wmat_ec;
 pub mod warped_autocorrelation;
 
 pub use check_control_input::EncControl;
+pub use decoder_control::DecoderControl;
 pub use decode_frame::{DecodeFlag, silk_decode_frame};
 pub use decoder_state::{DecoderState, PacketLossConcealmentState};
 pub use gain_quant::MAX_NB_SUBFR;

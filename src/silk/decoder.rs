@@ -105,7 +105,7 @@ const NANOSECONDS_20_MS: u32 = 20_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PitchLagInfo {
     pub lag_max: u32,
-    pub pitch_lags: [i16; SUBFRAME_COUNT],
+    pub pitch_lags: [i32; SUBFRAME_COUNT],
 }
 
 #[derive(Debug, Clone)]
@@ -594,7 +594,7 @@ impl Decoder {
 
         let contour_index = range_decoder.decode_symbol_with_icdf(lag_icdf) as i8;
 
-        let mut pitch_lags = [0i16; SUBFRAME_COUNT];
+        let mut pitch_lags = [0i32; SUBFRAME_COUNT];
         let lag_index = (lag - lag_min) as i16;
         let fs_khz = match bandwidth {
             Bandwidth::Narrow => 8,
@@ -687,7 +687,7 @@ impl Decoder {
         &mut self,
         out: &mut [f32],
         b_q7: &[[i8; LTP_FILTER_TAP_COUNT]; SUBFRAME_COUNT],
-        pitch_lags: &[i16; SUBFRAME_COUNT],
+        pitch_lags: &[i32; SUBFRAME_COUNT],
         n: usize,
         j: usize,
         subframe_index: usize,
@@ -890,7 +890,7 @@ impl Decoder {
         d_lpc: usize,
         lag_max: u32,
         b_q7: Option<&[[i8; LTP_FILTER_TAP_COUNT]; SUBFRAME_COUNT]>,
-        pitch_lags: Option<&[i16; SUBFRAME_COUNT]>,
+        pitch_lags: Option<&[i32; SUBFRAME_COUNT]>,
         excitation: &ExcitationQ23,
         ltp_scale_q14: f32,
         w_q2: i16,
@@ -1074,7 +1074,7 @@ impl Decoder {
             .map_err(DecodeError::PitchLags)?;
         let has_pitch_info = pitch_info.is_some();
         let lag_max = pitch_info.as_ref().map(|info| info.lag_max).unwrap_or(0);
-        let pitch_lags_ref: Option<&[i16; SUBFRAME_COUNT]> =
+        let pitch_lags_ref: Option<&[i32; SUBFRAME_COUNT]> =
             pitch_info.as_ref().map(|info| &info.pitch_lags);
         trace!(
             "silk::Decoder::decode: pitch info present={} lag_max={}",

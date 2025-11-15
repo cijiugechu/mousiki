@@ -7,7 +7,8 @@
 
 use core::convert::TryFrom;
 
-use crate::silk::cng::{DecoderControl, silk_rand};
+use crate::silk::cng::silk_rand;
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::decoder_set_fs::{MAX_FRAME_LENGTH, MAX_SUB_FRAME_LENGTH};
 use crate::silk::decoder_state::DecoderState;
@@ -163,12 +164,12 @@ pub fn silk_decode_core(
             b_q14.fill(0);
             b_q14[LTP_ORDER / 2] = VOICED_TRANSITION_Q14;
             signal_type = FrameSignalType::Voiced;
-            control.pitch_l[k] = clamp_to_i16(lag_prev);
+            control.pitch_l[k] = lag_prev;
         }
 
         let pres_q14_slice: &[i32];
         if matches!(signal_type, FrameSignalType::Voiced) {
-            let lag = i32::from(control.pitch_l[k]);
+            let lag = control.pitch_l[k];
             assert!(lag > 0, "voiced subframes require a positive pitch lag");
             let lag_usize = usize::try_from(lag).expect("pitch lag must fit usize");
 
@@ -206,8 +207,7 @@ pub fn silk_decode_core(
                 );
 
                 if k == 0 {
-                    inv_gain_q31 =
-                        lshift(smulwb(inv_gain_q31, i32::from(control.ltp_scale_q14)), 2);
+                    inv_gain_q31 = lshift(smulwb(inv_gain_q31, control.ltp_scale_q14), 2);
                 }
 
                 let span = lag_usize + LTP_ORDER / 2;

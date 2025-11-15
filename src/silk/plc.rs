@@ -10,7 +10,8 @@
 use core::cmp::{max, min};
 
 use crate::silk::bwexpander::bwexpander;
-use crate::silk::cng::{DecoderControl, silk_rand};
+use crate::silk::cng::silk_rand;
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::decoder_set_fs::{MAX_FRAME_LENGTH, MAX_SUB_FRAME_LENGTH};
 use crate::silk::decoder_state::DecoderState;
 use crate::silk::lpc_analysis_filter::lpc_analysis_filter;
@@ -131,7 +132,7 @@ fn silk_plc_update(state: &mut DecoderState, control: &DecoderControl) {
 
     let mut ltp_gain_q14 = 0;
     if matches!(state.indices.signal_type, FrameSignalType::Voiced) {
-        let target_pitch = i32::from(control.pitch_l[nb_subfr - 1]);
+        let target_pitch = control.pitch_l[nb_subfr - 1];
         let mut j = 0usize;
         while j < nb_subfr && (j as i32) * subfr_length < target_pitch {
             let subframe = nb_subfr - 1 - j;
@@ -142,7 +143,7 @@ fn silk_plc_update(state: &mut DecoderState, control: &DecoderControl) {
             }
             if temp_gain > ltp_gain_q14 {
                 ltp_gain_q14 = temp_gain;
-                plc.pitch_l_q8 = i32::from(control.pitch_l[subframe]) << 8;
+                plc.pitch_l_q8 = control.pitch_l[subframe] << 8;
             }
             j += 1;
         }
@@ -173,7 +174,7 @@ fn silk_plc_update(state: &mut DecoderState, control: &DecoderControl) {
     let order = lpc_order.min(MAX_LPC_ORDER);
     plc.prev_lpc_q12[..order].copy_from_slice(&control.pred_coef_q12[1][..order]);
     plc.prev_lpc_q12[order..].fill(0);
-    plc.prev_ltp_scale_q14 = control.ltp_scale_q14;
+    plc.prev_ltp_scale_q14 = clamp_to_i16(control.ltp_scale_q14);
 
     plc.prev_gain_q16[0] = control.gains_q16[nb_subfr - 2];
     plc.prev_gain_q16[1] = control.gains_q16[nb_subfr - 1];
@@ -344,7 +345,7 @@ fn silk_plc_conceal(
     control
         .pitch_l
         .iter_mut()
-        .for_each(|lag_slot| *lag_slot = clamp_to_i16(lag));
+        .for_each(|lag_slot| *lag_slot = lag);
 }
 
 fn silk_plc_energy(
@@ -474,7 +475,7 @@ fn sqrt_approx(x: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{silk_plc_glue_frames, silk_plc_reset, silk_plc_update};
-    use crate::silk::cng::DecoderControl;
+    use crate::silk::decoder_control::DecoderControl;
     use crate::silk::decoder_state::DecoderState;
     use crate::silk::vq_wmat_ec::LTP_ORDER;
     use crate::silk::{FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR};

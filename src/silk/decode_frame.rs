@@ -8,13 +8,14 @@
 use alloc::vec;
 
 use crate::range::RangeDecoder;
-use crate::silk::cng::{ComfortNoiseInputs, DecoderControl, PlcState, apply_cng};
+use crate::silk::cng::{ComfortNoiseInputs, PlcState, apply_cng};
 use crate::silk::decode_core::silk_decode_core;
 use crate::silk::decode_indices::{ConditionalCoding, DecoderIndicesState, SideInfoIndices};
 use crate::silk::decode_parameters::{DecoderParametersState, silk_decode_parameters};
 use crate::silk::decode_pulses::silk_decode_pulses;
 use crate::silk::decoder_set_fs::MAX_FRAME_LENGTH;
 use crate::silk::decoder_state::DecoderState;
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::plc::{silk_plc, silk_plc_glue_frames};
 use crate::silk::{FrameQuantizationOffsetType, MAX_FRAMES_PER_PACKET};
 
@@ -150,7 +151,7 @@ pub fn silk_decode_frame(
     silk_plc_glue_frames(state, &mut output[..frame_length]);
 
     let nb_subfr = state.sample_rate.nb_subfr;
-    state.sample_rate.lag_prev = i32::from(control.pitch_l[nb_subfr - 1]);
+    state.sample_rate.lag_prev = control.pitch_l[nb_subfr - 1];
 
     frame_length
 }
