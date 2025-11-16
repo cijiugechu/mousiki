@@ -10,10 +10,10 @@ use core::convert::TryFrom;
 use crate::silk::bwexpander::bwexpander;
 use crate::silk::decode_indices::{ConditionalCoding, SideInfoIndices};
 use crate::silk::decode_pitch::silk_decode_pitch;
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::gain_quant::silk_gains_dequant;
 use crate::silk::nlsf_decode::nlsf_decode;
 use crate::silk::nlsf2a::nlsf2a;
-use crate::silk::decoder_control::DecoderControl;
 use crate::silk::tables_ltp::SILK_LTP_GAIN_VQ_Q7;
 use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
 use crate::silk::tables_other::SILK_LTPSCALES_TABLE_Q14;
@@ -188,9 +188,11 @@ pub fn silk_decode_parameters(
 
         let ltp_scale_index = usize::try_from(state.indices.ltp_scale_index)
             .expect("LTP scale index must be non-negative");
-        control.ltp_scale_q14 = i32::from(*SILK_LTPSCALES_TABLE_Q14
-            .get(ltp_scale_index)
-            .expect("LTP scale index out of range"));
+        control.ltp_scale_q14 = i32::from(
+            *SILK_LTPSCALES_TABLE_Q14
+                .get(ltp_scale_index)
+                .expect("LTP scale index out of range"),
+        );
     } else {
         state.indices.per_index = 0;
     }
@@ -267,8 +269,7 @@ mod tests {
         assert_eq!(
             control.ltp_scale_q14,
             i32::from(
-                SILK_LTPSCALES_TABLE_Q14
-                    [usize::try_from(state.indices.ltp_scale_index).unwrap()]
+                SILK_LTPSCALES_TABLE_Q14[usize::try_from(state.indices.ltp_scale_index).unwrap()]
             )
         );
     }

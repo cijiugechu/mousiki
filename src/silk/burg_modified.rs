@@ -11,10 +11,10 @@
     clippy::too_many_arguments
 )]
 
+use crate::silk::MAX_LPC_ORDER;
 use crate::silk::inner_prod_aligned::inner_prod_aligned;
 use crate::silk::stereo_find_predictor::div32_varq;
 use crate::silk::vector_ops::inner_prod16;
-use crate::silk::MAX_LPC_ORDER;
 
 const MAX_FRAME_SIZE: usize = 384;
 const QA: i32 = 25;
@@ -35,15 +35,30 @@ pub fn silk_burg_modified(
     order: usize,
     arch: i32,
 ) {
-    assert!(order <= MAX_LPC_ORDER, "predictor order exceeds MAX_LPC_ORDER");
-    assert!(a_q16.len() >= order, "output buffer too small for LPC order");
-    assert!(subfr_length >= order, "subframe length must cover the predictor order");
+    assert!(
+        order <= MAX_LPC_ORDER,
+        "predictor order exceeds MAX_LPC_ORDER"
+    );
+    assert!(
+        a_q16.len() >= order,
+        "output buffer too small for LPC order"
+    );
+    assert!(
+        subfr_length >= order,
+        "subframe length must cover the predictor order"
+    );
 
     let total_length = subfr_length
         .checked_mul(nb_subfr)
         .expect("subframe length overflow");
-    assert!(total_length <= x.len(), "input buffer shorter than requested frame");
-    assert!(total_length <= MAX_FRAME_SIZE, "frame longer than MAX_FRAME_SIZE");
+    assert!(
+        total_length <= x.len(),
+        "input buffer shorter than requested frame"
+    );
+    assert!(
+        total_length <= MAX_FRAME_SIZE,
+        "frame longer than MAX_FRAME_SIZE"
+    );
 
     if order == 0 {
         *res_nrg = 0;
@@ -113,8 +128,8 @@ pub fn silk_burg_modified(
             }
             let shift = (-rshifts) as u32;
             for n in 1..=order {
-                c_first_row[n - 1] = c_first_row[n - 1]
-                    .wrapping_add(xcorr[n - 1].wrapping_shl(shift));
+                c_first_row[n - 1] =
+                    c_first_row[n - 1].wrapping_add(xcorr[n - 1].wrapping_shl(shift));
             }
         }
     }
@@ -159,8 +174,7 @@ pub fn silk_burg_modified(
                 let mut tmp2 = i32::from(frame[subfr_length - n - 1]) << 17;
                 for k in 0..n {
                     c_first_row[k] = mla(c_first_row[k], x1, i32::from(frame[n - k - 1]));
-                    c_last_row[k] =
-                        mla(c_last_row[k], x2, i32::from(frame[subfr_length - n + k]));
+                    c_last_row[k] = mla(c_last_row[k], x2, i32::from(frame[subfr_length - n + k]));
                     let atmp = rshift_round(af_qa[k], QA - 17);
                     tmp1 = mla_ovflw(tmp1, i32::from(frame[n - k - 1]), atmp);
                     tmp2 = mla_ovflw(tmp2, i32::from(frame[subfr_length - n + k]), atmp);
@@ -213,8 +227,7 @@ pub fn silk_burg_modified(
         let mut tmp_gain = (1_i32 << 30).wrapping_sub(smmul(rc_q31, rc_q31));
         tmp_gain = lshift32(smmul(inv_gain_q30, tmp_gain), 2);
         if tmp_gain <= min_inv_gain_q30 {
-            let limit = (1_i32 << 30)
-                .wrapping_sub(div32_varq(min_inv_gain_q30, inv_gain_q30, 30));
+            let limit = (1_i32 << 30).wrapping_sub(div32_varq(min_inv_gain_q30, inv_gain_q30, 30));
             rc_q31 = sqrt_approx(limit);
             if rc_q31 > 0 {
                 rc_q31 = rshift_round(rc_q31 + div32(limit, rc_q31), 1);

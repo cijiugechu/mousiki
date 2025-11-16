@@ -13,9 +13,9 @@ use crate::silk::decode_core::silk_decode_core;
 use crate::silk::decode_indices::{ConditionalCoding, DecoderIndicesState, SideInfoIndices};
 use crate::silk::decode_parameters::{DecoderParametersState, silk_decode_parameters};
 use crate::silk::decode_pulses::silk_decode_pulses;
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::decoder_set_fs::MAX_FRAME_LENGTH;
 use crate::silk::decoder_state::DecoderState;
-use crate::silk::decoder_control::DecoderControl;
 use crate::silk::plc::{silk_plc, silk_plc_glue_frames};
 use crate::silk::{FrameQuantizationOffsetType, MAX_FRAMES_PER_PACKET};
 

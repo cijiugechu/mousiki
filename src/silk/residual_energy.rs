@@ -137,7 +137,10 @@ mod tests {
             0,
         );
 
-        assert_eq!(nrgs[..NB_SUBFR], [123_386_601, 283_447_072, 85_303_613, 347_417_940]);
+        assert_eq!(
+            nrgs[..NB_SUBFR],
+            [123_386_601, 283_447_072, 85_303_613, 347_417_940]
+        );
         assert_eq!(nrgs_q[..NB_SUBFR], [-40, -40, -43, -42]);
     }
 
@@ -149,7 +152,14 @@ mod tests {
 
         let mut nrgs = [0; MAX_NB_SUBFR];
         let mut nrgs_q = [0; MAX_NB_SUBFR];
-        let input = test_input(NB_SUBFR, LPC_ORDER, SUBFR, 123_456_789, 1_664_525, 1_013_904_223);
+        let input = test_input(
+            NB_SUBFR,
+            LPC_ORDER,
+            SUBFR,
+            123_456_789,
+            1_664_525,
+            1_013_904_223,
+        );
         let coeffs = test_coeffs(321, 2);
         let gains = [65_536, 131_072, 98_304, 81_920];
 

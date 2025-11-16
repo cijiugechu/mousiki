@@ -31,9 +31,7 @@ pub fn ltp_scale_ctrl(
             i32::try_from(common.n_frames_per_packet).expect("frames per packet fits in i32");
         debug_assert!(frames_per_packet > 0, "frames per packet must be positive");
 
-        let mut round_loss = common
-            .packet_loss_perc
-            .saturating_mul(frames_per_packet);
+        let mut round_loss = common.packet_loss_perc.saturating_mul(frames_per_packet);
         if common.lbrr_enabled {
             // LBRR reduces the effective packet loss by roughly squaring the loss rate.
             let squared = round_loss.saturating_mul(round_loss);
@@ -69,12 +67,7 @@ mod tests {
         let common = common_state();
         let mut indices = SideInfoIndices::default();
         indices.ltp_scale_index = 2;
-        let scale = ltp_scale_ctrl(
-            &common,
-            &mut indices,
-            ConditionalCoding::Conditional,
-            250,
-        );
+        let scale = ltp_scale_ctrl(&common, &mut indices, ConditionalCoding::Conditional, 250);
         assert_eq!(indices.ltp_scale_index, 0);
         assert_eq!(scale, i32::from(SILK_LTPSCALES_TABLE_Q14[0]));
 
@@ -96,12 +89,7 @@ mod tests {
         common.snr_db_q7 = 0;
         let mut indices = SideInfoIndices::default();
 
-        let scale = ltp_scale_ctrl(
-            &common,
-            &mut indices,
-            ConditionalCoding::Independent,
-            120,
-        );
+        let scale = ltp_scale_ctrl(&common, &mut indices, ConditionalCoding::Independent, 120);
         assert_eq!(indices.ltp_scale_index, 0);
         assert_eq!(scale, i32::from(SILK_LTPSCALES_TABLE_Q14[0]));
     }
@@ -114,12 +102,7 @@ mod tests {
         common.snr_db_q7 = 3000;
         let mut indices = SideInfoIndices::default();
 
-        let scale = ltp_scale_ctrl(
-            &common,
-            &mut indices,
-            ConditionalCoding::Independent,
-            100,
-        );
+        let scale = ltp_scale_ctrl(&common, &mut indices, ConditionalCoding::Independent, 100);
         assert_eq!(indices.ltp_scale_index, 1);
         assert_eq!(scale, i32::from(SILK_LTPSCALES_TABLE_Q14[1]));
     }
@@ -133,12 +116,7 @@ mod tests {
         common.snr_db_q7 = 6000;
         let mut indices = SideInfoIndices::default();
 
-        let scale = ltp_scale_ctrl(
-            &common,
-            &mut indices,
-            ConditionalCoding::Independent,
-            500,
-        );
+        let scale = ltp_scale_ctrl(&common, &mut indices, ConditionalCoding::Independent, 500);
         assert_eq!(indices.ltp_scale_index, 2);
         assert_eq!(scale, i32::from(SILK_LTPSCALES_TABLE_Q14[2]));
     }

@@ -8,8 +8,8 @@
 use core::convert::TryFrom;
 
 use crate::silk::cng::silk_rand;
-use crate::silk::decoder_control::DecoderControl;
 use crate::silk::decode_indices::SideInfoIndices;
+use crate::silk::decoder_control::DecoderControl;
 use crate::silk::decoder_set_fs::{MAX_FRAME_LENGTH, MAX_SUB_FRAME_LENGTH};
 use crate::silk::decoder_state::DecoderState;
 use crate::silk::lpc_analysis_filter::lpc_analysis_filter;
