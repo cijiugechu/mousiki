@@ -11,10 +11,10 @@
     clippy::too_many_arguments
 )]
 
+use crate::silk::MAX_LPC_ORDER;
 use crate::silk::inner_prod_aligned::inner_prod_aligned;
 use crate::silk::stereo_find_predictor::div32_varq;
 use crate::silk::vector_ops::inner_prod16;
-use crate::silk::MAX_LPC_ORDER;
 
 const MAX_FRAME_SIZE: usize = 384;
 const QA: i32 = 25;
@@ -35,9 +35,18 @@ pub fn silk_burg_modified(
     order: usize,
     arch: i32,
 ) {
-    assert!(order <= MAX_LPC_ORDER, "predictor order exceeds MAX_LPC_ORDER");
-    assert!(a_q16.len() >= order, "output buffer too small for LPC order");
-    assert!(subfr_length >= order, "subframe length must cover the predictor order");
+    assert!(
+        order <= MAX_LPC_ORDER,
+        "predictor order exceeds MAX_LPC_ORDER"
+    );
+    assert!(
+        a_q16.len() >= order,
+        "output buffer too small for LPC order"
+    );
+    assert!(
+        subfr_length >= order,
+        "subframe length must cover the predictor order"
+    );
 
     if order == 0 {
         *res_nrg = 0;
@@ -90,8 +99,7 @@ pub fn silk_burg_modified(
             for n in 1..=order {
                 let len = subfr_length - n;
                 let prod = inner_prod16(&frame[..len], &frame[n..n + len]);
-                c_first_row[n - 1] =
-                    c_first_row[n - 1].wrapping_add((prod >> rshifts) as i32);
+                c_first_row[n - 1] = c_first_row[n - 1].wrapping_add((prod >> rshifts) as i32);
             }
         }
     } else {
@@ -134,13 +142,9 @@ pub fn silk_burg_modified(
                 let mut tmp1 = i32::from(frame[n]) << (QA - 16);
                 let mut tmp2 = i32::from(frame[subfr_length - n - 1]) << (QA - 16);
                 for k in 0..n {
-                    c_first_row[k] =
-                        smlawb(c_first_row[k], x1, i32::from(frame[n - k - 1]));
-                    c_last_row[k] = smlawb(
-                        c_last_row[k],
-                        x2,
-                        i32::from(frame[subfr_length - n + k]),
-                    );
+                    c_first_row[k] = smlawb(c_first_row[k], x1, i32::from(frame[n - k - 1]));
+                    c_last_row[k] =
+                        smlawb(c_last_row[k], x2, i32::from(frame[subfr_length - n + k]));
                     let atmp = af_qa[k];
                     tmp1 = smlawb(tmp1, atmp, i32::from(frame[n - k - 1]));
                     tmp2 = smlawb(tmp2, atmp, i32::from(frame[subfr_length - n + k]));
@@ -150,11 +154,7 @@ pub fn silk_burg_modified(
                 tmp2 = (-tmp2).wrapping_shl(shift);
                 for k in 0..=n {
                     caf[k] = smlawb(caf[k], tmp1, i32::from(frame[n - k]));
-                    cab[k] = smlawb(
-                        cab[k],
-                        tmp2,
-                        i32::from(frame[subfr_length - n + k - 1]),
-                    );
+                    cab[k] = smlawb(cab[k], tmp2, i32::from(frame[subfr_length - n + k - 1]));
                 }
             }
         } else {
@@ -165,13 +165,8 @@ pub fn silk_burg_modified(
                 let mut tmp1 = i32::from(frame[n]) << 17;
                 let mut tmp2 = i32::from(frame[subfr_length - n - 1]) << 17;
                 for k in 0..n {
-                    c_first_row[k] =
-                        mla(c_first_row[k], x1, i32::from(frame[n - k - 1]));
-                    c_last_row[k] = mla(
-                        c_last_row[k],
-                        x2,
-                        i32::from(frame[subfr_length - n + k]),
-                    );
+                    c_first_row[k] = mla(c_first_row[k], x1, i32::from(frame[n - k - 1]));
+                    c_last_row[k] = mla(c_last_row[k], x2, i32::from(frame[subfr_length - n + k]));
                     let atmp = rshift_round(af_qa[k], QA - 17);
                     tmp1 = mla_ovflw(tmp1, i32::from(frame[n - k - 1]), atmp);
                     tmp2 = mla_ovflw(tmp2, i32::from(frame[subfr_length - n + k]), atmp);
@@ -219,8 +214,7 @@ pub fn silk_burg_modified(
         let mut tmp_gain = (1_i32 << 30).wrapping_sub(smmul(rc_q31, rc_q31));
         tmp_gain = lshift32(smmul(inv_gain_q30, tmp_gain), 2);
         if tmp_gain <= min_inv_gain_q30 {
-            let limit =
-                (1_i32 << 30).wrapping_sub(div32_varq(min_inv_gain_q30, inv_gain_q30, 30));
+            let limit = (1_i32 << 30).wrapping_sub(div32_varq(min_inv_gain_q30, inv_gain_q30, 30));
             rc_q31 = sqrt_approx(limit);
             if rc_q31 > 0 {
                 rc_q31 = rshift_round(rc_q31 + div32(limit, rc_q31), 1);

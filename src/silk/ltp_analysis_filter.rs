@@ -32,9 +32,18 @@ pub fn ltp_analysis_filter(
         .checked_mul(chunk)
         .expect("ltp_res length overflow");
     assert!(ltp_res.len() >= total_samples, "ltp_res buffer too small");
-    assert!(pitch_l.len() >= nb_subfr, "pitchL slice must cover nb_subfr");
-    assert!(inv_gains_q16.len() >= nb_subfr, "invGains slice must cover nb_subfr");
-    assert!(ltp_coef_q14.len() >= nb_subfr * LTP_ORDER, "LTP coefficients slice too short");
+    assert!(
+        pitch_l.len() >= nb_subfr,
+        "pitchL slice must cover nb_subfr"
+    );
+    assert!(
+        inv_gains_q16.len() >= nb_subfr,
+        "invGains slice must cover nb_subfr"
+    );
+    assert!(
+        ltp_coef_q14.len() >= nb_subfr * LTP_ORDER,
+        "LTP coefficients slice too short"
+    );
 
     let mut res_offset = 0;
     let mut x_ptr_idx = x_ptr_offset;
@@ -44,15 +53,19 @@ pub fn ltp_analysis_filter(
         assert!(pitch > 0, "pitch lag must be positive");
         let pitch_usize = pitch as usize;
 
-        let chunk_end = x_ptr_idx
-            .checked_add(chunk)
-            .expect("x_ptr index overflow");
-        assert!(chunk_end <= x.len(), "x buffer too short for subframe {subfr}");
+        let chunk_end = x_ptr_idx.checked_add(chunk).expect("x_ptr index overflow");
+        assert!(
+            chunk_end <= x.len(),
+            "x buffer too short for subframe {subfr}"
+        );
 
         let lag_base = x_ptr_idx
             .checked_sub(pitch_usize)
             .expect("insufficient pitch history");
-        assert!(lag_base >= 2, "pitch history must include two guard samples");
+        assert!(
+            lag_base >= 2,
+            "pitch history must include two guard samples"
+        );
 
         let lag_max = lag_base
             .checked_add(chunk - 1 + LTP_CENTER)
@@ -123,8 +136,8 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::ltp_analysis_filter;
     use super::LTP_ORDER;
+    use super::ltp_analysis_filter;
 
     #[test]
     fn copies_when_no_prediction() {

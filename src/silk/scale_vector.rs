@@ -66,10 +66,7 @@ mod tests {
     #[test]
     fn scale_vector_matches_reference_loop() {
         let mut data = [0.25f32, -0.5, 1.0, -1.75, 0.0];
-        let expected = data
-            .iter()
-            .map(|value| value * 2.0)
-            .collect::<Vec<f32>>();
+        let expected = data.iter().map(|value| value * 2.0).collect::<Vec<f32>>();
 
         scale_vector(&mut data, 2.0);
 
@@ -80,10 +77,7 @@ mod tests {
     fn scale_copy_vector_scales_into_output() {
         let input = [1.0f32, -0.25, 0.5, -2.0, 4.0, -8.0];
         let mut output = [0.0f32; 6];
-        let expected = input
-            .iter()
-            .map(|value| value * -0.5)
-            .collect::<Vec<f32>>();
+        let expected = input.iter().map(|value| value * -0.5).collect::<Vec<f32>>();
 
         scale_copy_vector(&mut output, &input, -0.5);
 

@@ -29,8 +29,14 @@ pub fn find_lpc(
     min_inv_gain_q30: i32,
 ) {
     let order = state.predict_lpc_order;
-    assert!(order <= MAX_LPC_ORDER, "predictor order exceeds MAX_LPC_ORDER");
-    assert!(nlsf_q15.len() >= order, "NLSF buffer shorter than LPC order");
+    assert!(
+        order <= MAX_LPC_ORDER,
+        "predictor order exceeds MAX_LPC_ORDER"
+    );
+    assert!(
+        nlsf_q15.len() >= order,
+        "NLSF buffer shorter than LPC order"
+    );
 
     let subfr_length = state.subfr_length + order;
     assert!(
@@ -62,10 +68,7 @@ pub fn find_lpc(
         state.arch,
     );
 
-    if state.use_interpolated_nlsfs
-        && !state.first_frame_after_reset
-        && nb_subfr == MAX_NB_SUBFR
-    {
+    if state.use_interpolated_nlsfs && !state.first_frame_after_reset && nb_subfr == MAX_NB_SUBFR {
         run_interpolated_search(
             state,
             nlsf_q15,
@@ -169,10 +172,7 @@ fn subtract_energy(res_nrg: i32, res_q: i32, remove: i32, remove_q: i32) -> (i32
     let shift = remove_q - res_q;
     if shift >= 0 {
         if shift < 32 {
-            (
-                res_nrg.wrapping_sub(rshift_unsigned(remove, shift)),
-                res_q,
-            )
+            (res_nrg.wrapping_sub(rshift_unsigned(remove, shift)), res_q)
         } else {
             (res_nrg, res_q)
         }
@@ -224,8 +224,8 @@ fn rshift_unsigned(value: i32, shift: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::silk::encoder::state::EncoderStateCommon;
+    use alloc::vec;
 
     #[test]
     fn computes_full_frame_nlsf_when_interpolation_disabled() {

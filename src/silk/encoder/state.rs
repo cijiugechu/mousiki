@@ -6,10 +6,10 @@
 //! porting that hierarchy by exposing the common fields required by the Rust
 //! translation of `silk_HP_variable_cutoff`.
 
-use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::FrameSignalType;
 use crate::silk::SilkNlsfCb;
 use crate::silk::StereoEncState;
+use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::lin2log::lin2log;
 use crate::silk::lp_variable_cutoff::LpState;
 use crate::silk::resampler::Resampler;
