@@ -32,6 +32,7 @@
 - `src/silk/lpc_analysis_filter.rs` mirrors the MA prediction filter that whitens input signals prior to LPC analysis, matching `silk_LPC_analysis_filter` while preserving the fixed-point wraparound semantics.【src/silk/lpc_analysis_filter.rs†L1-L96】【opus-main/silk/LPC_analysis_filter.c†L33-L108】
 - `src/silk/lpc_inv_pred_gain.rs` ports the fixed-point LPC stability check and inverse prediction gain helper used across the SILK pipeline, mirroring `silk/LPC_inv_pred_gain.c` and converting Q12 inputs to a Q30 gain output.【src/silk/lpc_inv_pred_gain.rs†L1-L209】【opus-main/silk/LPC_inv_pred_gain.c†L1-L112】
 - `src/silk/a2nlsf.rs` mirrors the conversion from Q16 LPC prediction filter coefficients to Q15 NLSF vectors using polynomial root searches and iterative bandwidth expansion, matching `silk/A2NLSF.c`.【src/silk/a2nlsf.rs†L1-L198】
+- `src/silk/find_lpc.rs` mirrors `silk_find_LPC_FIX`, running Burg analysis over the buffered frame, evaluating the interpolated NLSF candidates, and updating the encoder indices before NLSF quantisation.【src/silk/find_lpc.rs†L1-L210】【opus-c/silk/fixed/find_LPC_FIX.c†L33-L131】
 - `src/silk/lpc_fit.rs` ports the coefficient scaling helper that compresses 32-bit LPC predictors into Q12 while iteratively chirping them to avoid overflow, mirroring `silk/LPC_fit.c`.【src/silk/lpc_fit.rs†L1-L123】【opus-main/silk/LPC_fit.c†L1-L86】
 - `src/silk/interpolate.rs` ports the fixed-point helper that interpolates between LPC parameter vectors using a Q2 factor, mirroring `silk_interpolate` from the reference C sources.【src/silk/interpolate.rs†L1-L74】
 - `src/silk/k2a.rs` mirrors the fixed-point step-up routine that transforms reflection coefficients into LPC prediction coefficients, matching the behaviour of `silk/fixed/k2a_FIX.c`.【src/silk/k2a.rs†L1-L101】【opus-main/silk/fixed/k2a_FIX.c†L1-L57】
@@ -139,7 +140,7 @@ Rust currently mirrors only selected encoder-side helpers (`check_control_input.
 - The `float/` directory mirrors these routines with floating-point implementations used in certain build configurations.【c56351†L1-L88】
 - Platform-specific optimisations under `arm/`, `x86/`, `mips/`, and `xtensa/` provide SIMD kernels and specialised math headers.【c0a208†L1-L80】【4e0c2f†L1-L96】【cbc6a2†L1-L120】【880630†L1-L80】
 
-These support libraries are prerequisites for a full port; while helpers like `vector_ops`, `regularize_correlations`, and `warped_autocorrelation` now exist in Rust, most LPC/LTP analysis kernels remain C-only.
+These support libraries are prerequisites for a full port; while helpers like `vector_ops`, `regularize_correlations`, `warped_autocorrelation`, and the LPC finder (`src/silk/find_lpc.rs`) now exist in Rust, the remaining LPC/LTP analysis kernels remain C-only.
 
 ### Resampling and Utility Modules
 - `resampler.c`, `resampler_private_*.c`, `resampler_rom.c`, and `resampler_structs.h` implement the multi-stage resamplers used on the encoder side and for decoder bandwidth transitions.【77a597†L1-L120】【723e57†L1-L100】

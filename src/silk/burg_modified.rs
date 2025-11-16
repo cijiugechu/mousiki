@@ -11,10 +11,10 @@
     clippy::too_many_arguments
 )]
 
-use crate::silk::MAX_LPC_ORDER;
 use crate::silk::inner_prod_aligned::inner_prod_aligned;
 use crate::silk::stereo_find_predictor::div32_varq;
 use crate::silk::vector_ops::inner_prod16;
+use crate::silk::MAX_LPC_ORDER;
 
 const MAX_FRAME_SIZE: usize = 384;
 const QA: i32 = 25;
@@ -35,36 +35,22 @@ pub fn silk_burg_modified(
     order: usize,
     arch: i32,
 ) {
-    assert!(
-        order <= MAX_LPC_ORDER,
-        "predictor order exceeds MAX_LPC_ORDER"
-    );
-    assert!(
-        a_q16.len() >= order,
-        "output buffer too small for LPC order"
-    );
-    assert!(
-        subfr_length >= order,
-        "subframe length must cover the predictor order"
-    );
-
-    let total_length = subfr_length
-        .checked_mul(nb_subfr)
-        .expect("subframe length overflow");
-    assert!(
-        total_length <= x.len(),
-        "input buffer shorter than requested frame"
-    );
-    assert!(
-        total_length <= MAX_FRAME_SIZE,
-        "frame longer than MAX_FRAME_SIZE"
-    );
+    assert!(order <= MAX_LPC_ORDER, "predictor order exceeds MAX_LPC_ORDER");
+    assert!(a_q16.len() >= order, "output buffer too small for LPC order");
+    assert!(subfr_length >= order, "subframe length must cover the predictor order");
 
     if order == 0 {
         *res_nrg = 0;
         *res_nrg_q = 0;
         return;
     }
+
+    let frame_len = subfr_length
+        .checked_mul(nb_subfr)
+        .expect("frame length overflow");
+    assert!(frame_len <= x.len(), "input shorter than frame length");
+    assert!(frame_len <= MAX_FRAME_SIZE, "frame exceeds MAX_FRAME_SIZE");
+    let x = &x[..frame_len];
 
     let mut c_first_row = [0i32; MAX_LPC_ORDER];
     let mut c_last_row = [0i32; MAX_LPC_ORDER];
@@ -73,15 +59,14 @@ pub fn silk_burg_modified(
     let mut cab = [0i32; MAX_LPC_ORDER + 1];
     let mut xcorr = [0i32; MAX_LPC_ORDER];
 
-    let c0_64 = inner_prod16(&x[..total_length], &x[..total_length]);
+    let c0_64 = inner_prod16(x, x);
     if c0_64 == 0 {
-        // Skip the Burg loop entirely when the frame has no energy to avoid
-        // introducing the +1 bias from the reference's noise floor term.
         a_q16[..order].fill(0);
         *res_nrg = 0;
         *res_nrg_q = 0;
         return;
     }
+
     let lz = clz64(c0_64);
     let mut rshifts = 32 + 1 + N_BITS_HEAD_ROOM - lz;
     rshifts = rshifts.clamp(MIN_RSHIFTS, MAX_RSHIFTS);
@@ -98,13 +83,15 @@ pub fn silk_burg_modified(
     caf[0] = base;
     cab[0] = base;
 
+    c_first_row.fill(0);
     if rshifts > 0 {
         for s in 0..nb_subfr {
             let frame = &x[s * subfr_length..(s + 1) * subfr_length];
             for n in 1..=order {
                 let len = subfr_length - n;
                 let prod = inner_prod16(&frame[..len], &frame[n..n + len]);
-                c_first_row[n - 1] = c_first_row[n - 1].wrapping_add((prod >> rshifts) as i32);
+                c_first_row[n - 1] =
+                    c_first_row[n - 1].wrapping_add((prod >> rshifts) as i32);
             }
         }
     } else {
@@ -133,10 +120,7 @@ pub fn silk_burg_modified(
             }
         }
     }
-
     c_last_row[..order].copy_from_slice(&c_first_row[..order]);
-    caf[0] = base;
-    cab[0] = base;
 
     let mut inv_gain_q30 = 1 << 30;
     let mut reached_max_gain = false;
@@ -150,9 +134,13 @@ pub fn silk_burg_modified(
                 let mut tmp1 = i32::from(frame[n]) << (QA - 16);
                 let mut tmp2 = i32::from(frame[subfr_length - n - 1]) << (QA - 16);
                 for k in 0..n {
-                    c_first_row[k] = smlawb(c_first_row[k], x1, i32::from(frame[n - k - 1]));
-                    c_last_row[k] =
-                        smlawb(c_last_row[k], x2, i32::from(frame[subfr_length - n + k]));
+                    c_first_row[k] =
+                        smlawb(c_first_row[k], x1, i32::from(frame[n - k - 1]));
+                    c_last_row[k] = smlawb(
+                        c_last_row[k],
+                        x2,
+                        i32::from(frame[subfr_length - n + k]),
+                    );
                     let atmp = af_qa[k];
                     tmp1 = smlawb(tmp1, atmp, i32::from(frame[n - k - 1]));
                     tmp2 = smlawb(tmp2, atmp, i32::from(frame[subfr_length - n + k]));
@@ -162,7 +150,11 @@ pub fn silk_burg_modified(
                 tmp2 = (-tmp2).wrapping_shl(shift);
                 for k in 0..=n {
                     caf[k] = smlawb(caf[k], tmp1, i32::from(frame[n - k]));
-                    cab[k] = smlawb(cab[k], tmp2, i32::from(frame[subfr_length - n + k - 1]));
+                    cab[k] = smlawb(
+                        cab[k],
+                        tmp2,
+                        i32::from(frame[subfr_length - n + k - 1]),
+                    );
                 }
             }
         } else {
@@ -173,8 +165,13 @@ pub fn silk_burg_modified(
                 let mut tmp1 = i32::from(frame[n]) << 17;
                 let mut tmp2 = i32::from(frame[subfr_length - n - 1]) << 17;
                 for k in 0..n {
-                    c_first_row[k] = mla(c_first_row[k], x1, i32::from(frame[n - k - 1]));
-                    c_last_row[k] = mla(c_last_row[k], x2, i32::from(frame[subfr_length - n + k]));
+                    c_first_row[k] =
+                        mla(c_first_row[k], x1, i32::from(frame[n - k - 1]));
+                    c_last_row[k] = mla(
+                        c_last_row[k],
+                        x2,
+                        i32::from(frame[subfr_length - n + k]),
+                    );
                     let atmp = rshift_round(af_qa[k], QA - 17);
                     tmp1 = mla_ovflw(tmp1, i32::from(frame[n - k - 1]), atmp);
                     tmp2 = mla_ovflw(tmp2, i32::from(frame[subfr_length - n + k]), atmp);
@@ -184,8 +181,8 @@ pub fn silk_burg_modified(
                 let shift = (-rshifts - 1) as u32;
                 for k in 0..=n {
                     let head = i32::from(frame[n - k]).wrapping_shl(shift);
-                    let tail = i32::from(frame[subfr_length - n + k - 1]).wrapping_shl(shift);
                     caf[k] = smla_w_w(caf[k], tmp1, head);
+                    let tail = i32::from(frame[subfr_length - n + k - 1]).wrapping_shl(shift);
                     cab[k] = smla_w_w(cab[k], tmp2, tail);
                 }
             }
@@ -195,26 +192,21 @@ pub fn silk_burg_modified(
         let mut tmp2 = c_last_row[n];
         let mut num = 0;
         let mut nrg = cab[0].wrapping_add(caf[0]);
-
         for k in 0..n {
             let atmp = af_qa[k];
-            let mut shift = clz32(atmp.abs()) - 1;
-            if shift > 32 - QA {
-                shift = 32 - QA;
-            }
-            let atmp1 = atmp.wrapping_shl(shift as u32);
-            let adjust = (32 - QA - shift) as u32;
-            tmp1 = add_lshift(tmp1, smmul(c_last_row[n - k - 1], atmp1), adjust);
-            tmp2 = add_lshift(tmp2, smmul(c_first_row[n - k - 1], atmp1), adjust);
-            num = add_lshift(num, smmul(cab[n - k], atmp1), adjust);
+            let lz = (clz32(atmp.abs()) - 1).min(32 - QA);
+            let atmp1 = atmp.wrapping_shl(lz as u32);
+            let shift = (32 - QA - lz) as u32;
+            tmp1 = add_lshift(tmp1, smmul(c_last_row[n - k - 1], atmp1), shift);
+            tmp2 = add_lshift(tmp2, smmul(c_first_row[n - k - 1], atmp1), shift);
+            num = add_lshift(num, smmul(cab[n - k], atmp1), shift);
             let sum = cab[k + 1].wrapping_add(caf[k + 1]);
-            nrg = add_lshift(nrg, smmul(sum, atmp1), adjust);
+            nrg = add_lshift(nrg, smmul(sum, atmp1), shift);
         }
-
         caf[n + 1] = tmp1;
         cab[n + 1] = tmp2;
         num = num.wrapping_add(tmp2);
-        num = num.wrapping_shl(1).wrapping_neg();
+        num = num.wrapping_neg().wrapping_shl(1);
 
         let mut rc_q31 = if num.abs() < nrg {
             div32_varq(num, nrg, 31)
@@ -227,7 +219,8 @@ pub fn silk_burg_modified(
         let mut tmp_gain = (1_i32 << 30).wrapping_sub(smmul(rc_q31, rc_q31));
         tmp_gain = lshift32(smmul(inv_gain_q30, tmp_gain), 2);
         if tmp_gain <= min_inv_gain_q30 {
-            let limit = (1_i32 << 30).wrapping_sub(div32_varq(min_inv_gain_q30, inv_gain_q30, 30));
+            let limit =
+                (1_i32 << 30).wrapping_sub(div32_varq(min_inv_gain_q30, inv_gain_q30, 30));
             rc_q31 = sqrt_approx(limit);
             if rc_q31 > 0 {
                 rc_q31 = rshift_round(rc_q31 + div32(limit, rc_q31), 1);
@@ -255,34 +248,38 @@ pub fn silk_burg_modified(
             for slot in &mut af_qa[n + 1..order] {
                 *slot = 0;
             }
-            for k in 0..order {
-                a_q16[k] = -rshift_round(af_qa[k], QA - 16);
-            }
-            if rshifts > 0 {
-                for s in 0..nb_subfr {
-                    let frame = &x[s * subfr_length..(s + 1) * subfr_length];
-                    let prod = inner_prod16(&frame[..order], &frame[..order]);
-                    c0 = c0.wrapping_sub((prod >> rshifts) as i32);
-                }
-            } else {
-                for s in 0..nb_subfr {
-                    let frame = &x[s * subfr_length..(s + 1) * subfr_length];
-                    let prod = inner_prod_aligned(&frame[..order], &frame[..order], arch);
-                    c0 = c0.wrapping_sub(prod.wrapping_shl((-rshifts) as u32));
-                }
-            }
-            *res_nrg = lshift32(smmul(inv_gain_q30, c0), 2);
-            *res_nrg_q = -rshifts;
-            return;
+            break;
         }
 
-        for (k, caf_slot) in caf.iter_mut().take(n + 2).enumerate() {
+        for (k, caf_slot) in caf.iter_mut().enumerate().take(n + 2) {
             let tmp_l = *caf_slot;
             let idx = n + 1 - k;
             let tmp_r = cab[idx];
             *caf_slot = add_lshift(tmp_l, smmul(tmp_r, rc_q31), 1);
             cab[idx] = add_lshift(tmp_r, smmul(tmp_l, rc_q31), 1);
         }
+    }
+
+    if reached_max_gain {
+        for (dst, &coef) in a_q16.iter_mut().zip(af_qa.iter()) {
+            *dst = -rshift_round(coef, QA - 16);
+        }
+        if rshifts > 0 {
+            for s in 0..nb_subfr {
+                let frame = &x[s * subfr_length..(s + 1) * subfr_length];
+                let prod = inner_prod16(&frame[..order], &frame[..order]);
+                c0 = c0.wrapping_sub((prod >> rshifts) as i32);
+            }
+        } else {
+            for s in 0..nb_subfr {
+                let frame = &x[s * subfr_length..(s + 1) * subfr_length];
+                let prod = inner_prod_aligned(&frame[..order], &frame[..order], arch);
+                c0 = c0.wrapping_sub(prod.wrapping_shl((-rshifts) as u32));
+            }
+        }
+        *res_nrg = lshift32(smmul(inv_gain_q30, c0), 2);
+        *res_nrg_q = -rshifts;
+        return;
     }
 
     let mut nrg = caf[0];
@@ -381,8 +378,7 @@ fn sqrt_approx(x: i32) -> i32 {
     let (lz, frac_q7) = clz_frac(x);
     let mut y = if lz & 1 == 1 { 32_768 } else { 46_214 };
     y >>= lz >> 1;
-    y = smlawb(y, y, smulbb(213, frac_q7));
-    y
+    smlawb(y, y, smulbb(213, frac_q7))
 }
 
 fn clz_frac(x: i32) -> (i32, i32) {

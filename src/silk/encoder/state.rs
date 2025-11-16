@@ -6,6 +6,7 @@
 //! porting that hierarchy by exposing the common fields required by the Rust
 //! translation of `silk_HP_variable_cutoff`.
 
+use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::FrameSignalType;
 use crate::silk::SilkNlsfCb;
 use crate::silk::StereoEncState;
@@ -217,6 +218,8 @@ pub struct EncoderStateCommon {
     pub n_frames_per_packet: usize,
     /// Number of frames encoded so far in the current packet.
     pub n_frames_encoded: usize,
+    /// Quantisation indices for the current frame.
+    pub indices: SideInfoIndices,
     /// Write index into the input buffer.
     pub input_buf_ix: usize,
     /// Flag indicating the first frame after a reset.
@@ -303,6 +306,7 @@ impl Default for EncoderStateCommon {
             packet_loss_perc: 0,
             n_frames_per_packet: 1,
             n_frames_encoded: 0,
+            indices: SideInfoIndices::default(),
             input_buf_ix: 0,
             first_frame_after_reset: true,
             controlled_since_last_payload: false,
@@ -540,6 +544,7 @@ mod tests {
         assert_eq!(common.packet_loss_perc, 0);
         assert_eq!(common.n_frames_per_packet, 1);
         assert_eq!(common.n_frames_encoded, 0);
+        assert_eq!(common.indices, SideInfoIndices::default());
         assert_eq!(common.input_buf_ix, 0);
         assert!(common.first_frame_after_reset);
         assert!(!common.controlled_since_last_payload);
