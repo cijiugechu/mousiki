@@ -50,6 +50,7 @@ pub mod lpc_analysis_filter;
 pub mod lpc_fit;
 pub mod lpc_inv_pred_gain;
 pub mod ltp_scale_ctrl;
+pub mod ltp_analysis_filter;
 pub mod nlsf2a;
 pub mod nlsf_decode;
 pub mod nlsf_del_dec_quant;
