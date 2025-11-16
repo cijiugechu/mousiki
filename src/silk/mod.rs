@@ -29,6 +29,7 @@ pub mod decoder_state;
 pub mod encode_indices;
 pub mod encode_pulses;
 pub mod encoder;
+pub mod energy_flp;
 pub mod errors;
 pub mod find_lpc;
 pub mod gain_quant;
