@@ -96,6 +96,49 @@ pub fn insertion_sort_decreasing_int16(a: &mut [i16], idx: &mut [i32], k: usize)
     }
 }
 
+/// Float equivalent of `insertion_sort_decreasing_int16`.
+///
+/// Mirrors `silk_insertion_sort_decreasing_FLP` from `silk/float/sort_FLP.c`
+/// so the FLP analysis helpers can reuse the same top-`k` selection logic
+/// without dipping into the C sources.
+pub fn insertion_sort_decreasing_f32(a: &mut [f32], idx: &mut [i32], k: usize) {
+    debug_assert!(!a.is_empty());
+    debug_assert!(!idx.is_empty());
+    debug_assert!(k > 0);
+    debug_assert!(k <= a.len());
+    debug_assert!(k <= idx.len());
+
+    for (i, slot) in idx.iter_mut().enumerate().take(k) {
+        *slot = i as i32;
+    }
+
+    for i in 1..k {
+        let value = a[i];
+        let mut j = i;
+        while j > 0 && value > a[j - 1] {
+            a[j] = a[j - 1];
+            idx[j] = idx[j - 1];
+            j -= 1;
+        }
+        a[j] = value;
+        idx[j] = i as i32;
+    }
+
+    for i in k..a.len() {
+        let value = a[i];
+        if value > a[k - 1] {
+            let mut j = k - 1;
+            while j > 0 && value > a[j - 1] {
+                a[j] = a[j - 1];
+                idx[j] = idx[j - 1];
+                j -= 1;
+            }
+            a[j] = value;
+            idx[j] = i as i32;
+        }
+    }
+}
+
 /// Sorts the entire slice `a` in increasing order.
 ///
 /// This mirrors the behaviour of `silk_insertion_sort_increasing_all_values_int16`
@@ -119,8 +162,8 @@ pub fn insertion_sort_increasing_all_values_int16(a: &mut [i16]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        insertion_sort_decreasing_int16, insertion_sort_increasing,
-        insertion_sort_increasing_all_values_int16,
+        insertion_sort_decreasing_f32, insertion_sort_decreasing_int16,
+        insertion_sort_increasing, insertion_sort_increasing_all_values_int16,
     };
 
     #[test]
@@ -163,5 +206,16 @@ mod tests {
         let mut values = [5i16, -3, 9, 0, 1];
         insertion_sort_increasing_all_values_int16(&mut values);
         assert_eq!(values, [-3, 0, 1, 5, 9]);
+    }
+
+    #[test]
+    fn decreasing_sort_flp_matches_reference() {
+        let mut values = [0.25f32, -3.0, 1.5, 7.0, -2.0, 9.5, 0.0];
+        let mut idx = [0i32; 4];
+
+        insertion_sort_decreasing_f32(&mut values, &mut idx, 4);
+
+        assert_eq!(&values[..4], &[9.5, 7.0, 1.5, 0.25]);
+        assert_eq!(idx, [5, 3, 2, 0]);
     }
 }
