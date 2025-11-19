@@ -200,6 +200,8 @@ pub struct EncoderStateCommon {
     pub target_rate_bps: i32,
     /// Encoder-side SNR tuning value in Q7.
     pub snr_db_q7: i32,
+    /// Cumulative logarithmic LTP gain used to bound the predictor power.
+    pub sum_log_gain_q7: i32,
     /// Per-band input quality metrics in Q15.
     pub input_quality_bands_q15: [i32; VAD_N_BANDS],
     /// Smoothed tilt estimate in Q15.
@@ -297,6 +299,7 @@ impl Default for EncoderStateCommon {
             prev_nlsf_q15: [0; MAX_LPC_ORDER],
             target_rate_bps: 0,
             snr_db_q7: 0,
+            sum_log_gain_q7: 0,
             input_quality_bands_q15: [0; VAD_N_BANDS],
             input_tilt_q15: 0,
             speech_activity_q8: 0,
