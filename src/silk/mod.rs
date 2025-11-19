@@ -32,6 +32,7 @@ pub mod encoder;
 pub mod energy_flp;
 pub mod errors;
 pub mod find_lpc;
+pub mod find_ltp;
 pub mod gain_quant;
 pub mod get_decoder_size;
 pub mod get_encoder_size;

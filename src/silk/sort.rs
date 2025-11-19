@@ -162,8 +162,8 @@ pub fn insertion_sort_increasing_all_values_int16(a: &mut [i16]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        insertion_sort_decreasing_f32, insertion_sort_decreasing_int16,
-        insertion_sort_increasing, insertion_sort_increasing_all_values_int16,
+        insertion_sort_decreasing_f32, insertion_sort_decreasing_int16, insertion_sort_increasing,
+        insertion_sort_increasing_all_values_int16,
     };
 
     #[test]

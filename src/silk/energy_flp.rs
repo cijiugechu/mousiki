@@ -19,10 +19,7 @@ pub fn energy(data: &[f32]) -> f64 {
         let sample2 = f64::from(data[i + 2]);
         let sample3 = f64::from(data[i + 3]);
 
-        result += sample0 * sample0
-            + sample1 * sample1
-            + sample2 * sample2
-            + sample3 * sample3;
+        result += sample0 * sample0 + sample1 * sample1 + sample2 * sample2 + sample3 * sample3;
         i += 4;
     }
 
