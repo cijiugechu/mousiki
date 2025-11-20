@@ -89,6 +89,7 @@ pub mod resampler_private_up2_hq;
 pub mod resampler_rom;
 pub mod residual_energy;
 pub mod residual_energy16;
+pub mod residual_energy_flp;
 pub mod scale_vector;
 pub mod schur;
 pub mod schur64;
