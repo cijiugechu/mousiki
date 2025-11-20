@@ -57,6 +57,7 @@ pub mod lpc_analysis_filter;
 pub mod lpc_analysis_filter_flp;
 pub mod lpc_fit;
 pub mod lpc_inv_pred_gain;
+pub mod lpc_inv_pred_gain_flp;
 pub mod ltp_analysis_filter;
 pub mod ltp_scale_ctrl;
 pub mod nlsf2a;
