@@ -73,6 +73,7 @@ pub mod process_gains;
 pub mod process_nlsfs;
 pub mod quant_ltp_gains;
 pub mod regularize_correlations;
+pub mod regularize_correlations_flp;
 pub mod resampler;
 pub mod resampler_down2;
 pub mod resampler_down2_3;
