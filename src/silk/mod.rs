@@ -50,6 +50,7 @@ pub mod inner_product_flp;
 pub mod interpolate;
 pub mod k2a;
 pub mod k2a_q16;
+pub mod k2a_flp;
 pub mod lin2log;
 pub mod load_osce_models;
 pub mod log2lin;
