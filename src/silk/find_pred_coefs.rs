@@ -246,9 +246,9 @@ fn smulww(a: i32, b: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::convert::TryFrom;
     use crate::silk::tables_other::SILK_LTPSCALES_TABLE_Q14;
     use alloc::vec::Vec;
+    use core::convert::TryFrom;
 
     fn mock_encoder(signal_type: FrameSignalType, first_after_reset: bool) -> EncoderChannelState {
         let mut encoder = EncoderChannelState::default();
@@ -279,7 +279,8 @@ mod tests {
         let nb_subfr = encoder.common.nb_subfr;
         let frame_length = encoder.common.frame_length;
         let ltp_history = encoder.common.ltp_mem_length;
-        let la_pitch = usize::try_from(encoder.common.la_pitch).expect("la_pitch must be non-negative");
+        let la_pitch =
+            usize::try_from(encoder.common.la_pitch).expect("la_pitch must be non-negative");
         let order = encoder.common.predict_lpc_order;
 
         let res_pitch = mock_residual(ltp_history + frame_length + la_pitch);
@@ -321,7 +322,8 @@ mod tests {
         let nb_subfr = encoder.common.nb_subfr;
         let frame_length = encoder.common.frame_length;
         let ltp_history = encoder.common.ltp_mem_length;
-        let la_pitch = usize::try_from(encoder.common.la_pitch).expect("la_pitch must be non-negative");
+        let la_pitch =
+            usize::try_from(encoder.common.la_pitch).expect("la_pitch must be non-negative");
         let order = encoder.common.predict_lpc_order;
 
         let res_pitch = mock_residual(ltp_history + frame_length + la_pitch);
