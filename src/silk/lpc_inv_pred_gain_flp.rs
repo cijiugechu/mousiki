@@ -87,10 +87,7 @@ mod tests {
         let coeffs = [0.2, -0.1, 0.05];
         let flp_gain = lpc_inverse_pred_gain_flp(&coeffs);
 
-        let q12: Vec<i16> = coeffs
-            .iter()
-            .map(|c| (c * 4096.0).round() as i16)
-            .collect();
+        let q12: Vec<i16> = coeffs.iter().map(|c| (c * 4096.0).round() as i16).collect();
         let fixed_gain_q30 = lpc_inverse_pred_gain(&q12);
         let fixed_gain = fixed_gain_q30 as f32 / (1u64 << 30) as f32;
 

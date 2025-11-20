@@ -11,15 +11,7 @@ use crate::silk::inner_product_flp::inner_product_flp;
 /// Computes the correlation vector `X' * t` used by the floating-point
 /// least-squares solvers.
 #[allow(clippy::too_many_arguments)]
-pub fn corr_vector_flp(
-    xt: &mut [f32],
-    x: &[f32],
-    t: &[f32],
-    l: usize,
-    order: usize,
-    _arch: i32,
-)
-{
+pub fn corr_vector_flp(xt: &mut [f32], x: &[f32], t: &[f32], l: usize, order: usize, _arch: i32) {
     assert!(order > 0, "order must be positive");
     assert!(l > 0, "vector length must be positive");
     assert!(

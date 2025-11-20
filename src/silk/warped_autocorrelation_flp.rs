@@ -7,12 +7,7 @@
 use crate::silk::MAX_SHAPE_LPC_ORDER;
 
 /// Mirrors `silk_warped_autocorrelation_FLP`.
-pub fn warped_autocorrelation_flp(
-    corr: &mut [f32],
-    input: &[f32],
-    warping: f32,
-    order: usize,
-) {
+pub fn warped_autocorrelation_flp(corr: &mut [f32], input: &[f32], warping: f32, order: usize) {
     assert!(
         order <= MAX_SHAPE_LPC_ORDER,
         "order must be <= {MAX_SHAPE_LPC_ORDER}"
@@ -76,10 +71,7 @@ mod tests {
             0.09137232601642609,
         ];
         for (got, exp) in corr.iter().take(order + 1).zip(expected.iter()) {
-            assert!(
-                (got - exp).abs() < 1e-6,
-                "expected {exp}, got {got}"
-            );
+            assert!((got - exp).abs() < 1e-6, "expected {exp}, got {got}");
         }
     }
 
@@ -93,10 +85,7 @@ mod tests {
 
         let expected = [0.14, 0.08, 0.03];
         for (got, exp) in corr.iter().take(order + 1).zip(expected.iter()) {
-            assert!(
-                (got - exp).abs() < 1e-6,
-                "expected {exp}, got {got}"
-            );
+            assert!((got - exp).abs() < 1e-6, "expected {exp}, got {got}");
         }
     }
 
