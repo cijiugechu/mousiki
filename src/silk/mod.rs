@@ -17,6 +17,7 @@ pub mod control_audio_bandwidth;
 pub mod control_codec;
 pub mod control_snr;
 pub mod corr_matrix;
+pub mod corr_matrix_flp;
 pub mod debug;
 pub mod dec_api;
 pub mod decode_core;
