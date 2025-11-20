@@ -1,6 +1,7 @@
 pub mod a2nlsf;
 pub mod ana_filt_bank_1;
 pub mod apply_sine_window;
+pub mod apply_sine_window_flp;
 pub mod autocorr;
 pub mod autocorrelation_flp;
 pub mod biquad_alt;
