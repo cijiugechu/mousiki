@@ -89,6 +89,7 @@ pub mod residual_energy16;
 pub mod scale_vector;
 pub mod schur;
 pub mod schur64;
+pub mod schur_flp;
 pub mod shell_coder;
 pub mod sigm_q15;
 pub mod sort;
