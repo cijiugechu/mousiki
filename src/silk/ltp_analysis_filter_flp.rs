@@ -52,9 +52,7 @@ pub fn ltp_analysis_filter_flp(
         assert!(pitch > 0, "pitch lag must be positive");
         let pitch_usize = pitch as usize;
 
-        let chunk_end = x_ptr_idx
-            .checked_add(chunk)
-            .expect("x_ptr index overflow");
+        let chunk_end = x_ptr_idx.checked_add(chunk).expect("x_ptr index overflow");
         assert!(
             chunk_end <= x.len(),
             "x buffer too short for subframe {subfr}"
@@ -83,18 +81,15 @@ pub fn ltp_analysis_filter_flp(
 
         for (i, sample_out) in res_slice.iter_mut().enumerate() {
             let lag = lag_base + i;
-            let prediction = taps
-                .iter()
-                .enumerate()
-                .fold(0.0f32, |acc, (tap_idx, tap)| {
-                    let offset = tap_idx.abs_diff(LTP_CENTER);
-                    let sample_index = if tap_idx <= LTP_CENTER {
-                        lag + offset
-                    } else {
-                        lag - offset
-                    };
-                    acc + tap * x[sample_index]
-                });
+            let prediction = taps.iter().enumerate().fold(0.0f32, |acc, (tap_idx, tap)| {
+                let offset = tap_idx.abs_diff(LTP_CENTER);
+                let sample_index = if tap_idx <= LTP_CENTER {
+                    lag + offset
+                } else {
+                    lag - offset
+                };
+                acc + tap * x[sample_index]
+            });
 
             let residual = x[x_ptr_idx + i] - prediction;
             *sample_out = residual * inv_gain;
@@ -107,7 +102,7 @@ pub fn ltp_analysis_filter_flp(
 
 #[cfg(test)]
 mod tests {
-    use super::{ltp_analysis_filter_flp, LTP_CENTER, LTP_ORDER};
+    use super::{LTP_CENTER, LTP_ORDER, ltp_analysis_filter_flp};
     use alloc::vec;
     use alloc::vec::Vec;
 

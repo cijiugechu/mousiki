@@ -12,8 +12,7 @@ use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR};
 const MAX_ITERATIONS_RESIDUAL_NRG: usize = 10;
 const REGULARIZATION_FACTOR: f32 = 1e-8;
 const HALF_MAX_SUBFR: usize = MAX_NB_SUBFR / 2;
-const MAX_RESIDUAL: usize =
-    (MAX_FRAME_LENGTH / 2) + ((MAX_NB_SUBFR * MAX_LPC_ORDER) / 2);
+const MAX_RESIDUAL: usize = (MAX_FRAME_LENGTH / 2) + ((MAX_NB_SUBFR * MAX_LPC_ORDER) / 2);
 
 /// Mirrors `silk_residual_energy_covar_FLP`.
 pub fn residual_energy_covar_flp(
@@ -24,10 +23,7 @@ pub fn residual_energy_covar_flp(
     dim: usize,
 ) -> f32 {
     assert!(dim > 0, "dimension must be positive");
-    assert!(
-        w_xx.len() >= dim * dim,
-        "wXX must hold dim × dim entries"
-    );
+    assert!(w_xx.len() >= dim * dim, "wXX must hold dim × dim entries");
     assert!(c.len() >= dim, "coefficient slice too short");
     assert!(w_xx_vec.len() >= dim, "correlation vector too short");
 
@@ -98,9 +94,7 @@ pub fn residual_energy_flp(
     let shift = lpc_order
         .checked_add(subfr_length)
         .expect("subframe length overflow");
-    let block_len = shift
-        .checked_mul(2)
-        .expect("block length overflow");
+    let block_len = shift.checked_mul(2).expect("block length overflow");
     assert!(
         block_len <= MAX_RESIDUAL,
         "block length exceeds scratch buffer"
@@ -122,14 +116,11 @@ pub fn residual_energy_flp(
     );
 
     let lpc_res_ptr = lpc_order;
-    nrgs[0] = gains[0]
-        * gains[0]
-        * (energy(&lpc_res[lpc_res_ptr..lpc_res_ptr + subfr_length]) as f32);
+    nrgs[0] =
+        gains[0] * gains[0] * (energy(&lpc_res[lpc_res_ptr..lpc_res_ptr + subfr_length]) as f32);
     nrgs[1] = gains[1]
         * gains[1]
-        * (energy(
-            &lpc_res[lpc_res_ptr + shift..lpc_res_ptr + shift + subfr_length],
-        ) as f32);
+        * (energy(&lpc_res[lpc_res_ptr + shift..lpc_res_ptr + shift + subfr_length]) as f32);
 
     if nb_subfr == MAX_NB_SUBFR {
         let start = block_len;
@@ -146,9 +137,7 @@ pub fn residual_energy_flp(
             * (energy(&lpc_res[lpc_res_ptr..lpc_res_ptr + subfr_length]) as f32);
         nrgs[3] = gains[3]
             * gains[3]
-            * (energy(
-                &lpc_res[lpc_res_ptr + shift..lpc_res_ptr + shift + subfr_length],
-            ) as f32);
+            * (energy(&lpc_res[lpc_res_ptr + shift..lpc_res_ptr + shift + subfr_length]) as f32);
     }
 }
 
@@ -195,15 +184,7 @@ mod tests {
         let a = [[0.0f32; MAX_LPC_ORDER]; 2];
         let gains = [1.0f32, 1.0];
 
-        residual_energy_flp(
-            &mut nrgs,
-            &x,
-            &a,
-            &gains,
-            SUBFR,
-            NB_SUBFR,
-            LPC_ORDER,
-        );
+        residual_energy_flp(&mut nrgs, &x, &a, &gains, SUBFR, NB_SUBFR, LPC_ORDER);
 
         assert_close(nrgs[0], 230.0);
         assert_close(nrgs[1], 1230.0);
@@ -220,15 +201,7 @@ mod tests {
         let a = [[0.0f32; MAX_LPC_ORDER]; 2];
         let gains = [1.0f32, 0.5, 0.25, 0.75];
 
-        residual_energy_flp(
-            &mut nrgs,
-            &x,
-            &a,
-            &gains,
-            SUBFR,
-            NB_SUBFR,
-            LPC_ORDER,
-        );
+        residual_energy_flp(&mut nrgs, &x, &a, &gains, SUBFR, NB_SUBFR, LPC_ORDER);
 
         assert_close(nrgs[0], 230.0);
         assert_close(nrgs[1], 307.5);
