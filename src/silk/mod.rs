@@ -111,6 +111,7 @@ pub mod vad;
 pub mod vector_ops;
 pub mod vq_wmat_ec;
 pub mod warped_autocorrelation;
+pub mod warped_autocorrelation_flp;
 
 pub use check_control_input::EncControl;
 pub use decode_frame::{DecodeFlag, silk_decode_frame};
