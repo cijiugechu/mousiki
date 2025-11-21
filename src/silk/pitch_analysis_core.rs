@@ -332,11 +332,8 @@ pub fn pitch_analysis_core(
             .unwrap();
 
         let lag_log2_q7 = lin2log(d);
-        let mut ccmax_new_b = ccmax_new
-            - rshift(
-                smulbb(nb_subfr * PE_SHORTLAG_BIAS_Q13, lag_log2_q7),
-                7,
-            );
+        let mut ccmax_new_b =
+            ccmax_new - rshift(smulbb(nb_subfr * PE_SHORTLAG_BIAS_Q13, lag_log2_q7), 7);
 
         if prev_lag > 0 {
             let mut delta_q7 = lag_log2_q7 - prev_lag_log2_q7;
@@ -571,8 +568,7 @@ fn p_ana_calc_energy_st3(
     let mut target_idx = sf_length << 2;
 
     for k in 0..nb_subfr {
-        let basis_ptr =
-            (target_idx as i32 - (start_lag + i32::from(lag_range[k][0]))) as usize;
+        let basis_ptr = (target_idx as i32 - (start_lag + i32::from(lag_range[k][0]))) as usize;
         let mut energy = inner_prod_aligned(
             &frame[basis_ptr..basis_ptr + sf_length],
             &frame[basis_ptr..basis_ptr + sf_length],

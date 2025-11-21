@@ -349,6 +349,8 @@ pub struct EncoderChannelState {
     pub input_buf: [i16; INPUT_BUFFER_LENGTH],
     /// Pitch-analysis buffer mirrored from `x_buf`.
     pub x_buf: [i16; X_BUFFER_LENGTH],
+    /// Normalised correlation from the pitch-lag estimator (Q15).
+    pub ltp_corr_q15: i32,
 }
 
 impl Default for EncoderChannelState {
@@ -362,6 +364,7 @@ impl Default for EncoderChannelState {
             resampler_state: Resampler::default(),
             input_buf: [0; INPUT_BUFFER_LENGTH],
             x_buf: [0; X_BUFFER_LENGTH],
+            ltp_corr_q15: 0,
         }
     }
 }
@@ -385,6 +388,7 @@ impl EncoderChannelState {
             resampler_state: Resampler::default(),
             input_buf: [0; INPUT_BUFFER_LENGTH],
             x_buf: [0; X_BUFFER_LENGTH],
+            ltp_corr_q15: 0,
         }
     }
 
