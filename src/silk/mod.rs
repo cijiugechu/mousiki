@@ -66,6 +66,7 @@ pub mod lpc_inv_pred_gain_flp;
 pub mod ltp_analysis_filter;
 pub mod ltp_analysis_filter_flp;
 pub mod ltp_scale_ctrl;
+pub mod ltp_scale_ctrl_flp;
 pub mod nlsf2a;
 pub mod nlsf_decode;
 pub mod nlsf_del_dec_quant;
