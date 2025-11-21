@@ -74,6 +74,7 @@ pub mod nlsf_stabilize;
 pub mod nlsf_unpack;
 pub mod nlsf_vq;
 pub mod nlsf_vq_weights_laroia;
+pub mod noise_shape_analysis;
 pub mod pitch_analysis_core;
 pub mod pitch_est_tables;
 pub mod plc;
