@@ -102,6 +102,7 @@ pub mod schur64;
 pub mod schur_flp;
 pub mod shell_coder;
 pub mod sigm_q15;
+pub mod sigproc_flp;
 pub mod sort;
 pub mod stereo_decode_pred;
 pub mod stereo_encode_pred;
