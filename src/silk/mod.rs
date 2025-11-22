@@ -37,6 +37,7 @@ pub mod encoder;
 pub mod energy_flp;
 pub mod errors;
 pub mod find_lpc;
+pub mod find_lpc_flp;
 pub mod find_ltp;
 pub mod find_ltp_flp;
 pub mod find_pitch_lags;
