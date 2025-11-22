@@ -28,9 +28,7 @@ pub fn ltp_scale_ctrl_flp(
             i32::try_from(common.n_frames_per_packet).expect("frames per packet fits in i32");
         debug_assert!(frames_per_packet > 0, "frames per packet must be positive");
 
-        let mut round_loss = common
-            .packet_loss_perc
-            .saturating_mul(frames_per_packet);
+        let mut round_loss = common.packet_loss_perc.saturating_mul(frames_per_packet);
         if common.lbrr_enabled {
             // LBRR reduces the effective loss rate by roughly squaring the percentage.
             let squared = round_loss.saturating_mul(round_loss);
@@ -80,8 +78,7 @@ mod tests {
         common.snr_db_q7 = 3000;
         let mut indices = SideInfoIndices::default();
 
-        let scale =
-            ltp_scale_ctrl_flp(&common, &mut indices, ConditionalCoding::Independent, 10.4);
+        let scale = ltp_scale_ctrl_flp(&common, &mut indices, ConditionalCoding::Independent, 10.4);
 
         assert_eq!(indices.ltp_scale_index, 1);
         assert!((scale - expected_scale(1)).abs() < 1e-6);
@@ -95,8 +92,7 @@ mod tests {
         common.snr_db_q7 = 5000;
         let mut indices = SideInfoIndices::default();
 
-        let scale =
-            ltp_scale_ctrl_flp(&common, &mut indices, ConditionalCoding::Independent, 5.0);
+        let scale = ltp_scale_ctrl_flp(&common, &mut indices, ConditionalCoding::Independent, 5.0);
 
         assert_eq!(indices.ltp_scale_index, 2);
         assert!((scale - expected_scale(2)).abs() < 1e-6);

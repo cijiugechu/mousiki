@@ -1,4 +1,4 @@
-use mousiki::silk::lpc_inv_pred_gain::{lpc_inverse_pred_gain, SILK_MAX_ORDER_LPC};
+use mousiki::silk::lpc_inv_pred_gain::{SILK_MAX_ORDER_LPC, lpc_inverse_pred_gain};
 
 // The C harness in `silk/tests/test_unit_LPC_inv_pred_gain.c` runs 10,000
 // iterations; we scale that back to keep the Rust test suite quick while still

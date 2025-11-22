@@ -59,9 +59,7 @@ pub fn silk_float2short_array(out: &mut [i16], input: &[f32]) {
 
     for (dst, &src) in out.iter_mut().zip(input.iter()) {
         let rounded = silk_float2int(src);
-        *dst = rounded
-            .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
-            as i16;
+        *dst = rounded.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     }
 }
 
@@ -94,11 +92,7 @@ mod tests {
     #[test]
     fn sigmoid_matches_reference_points() {
         let expected = [0.5f32, 0.880_797_1, 0.119_202_92];
-        let actual = [
-            silk_sigmoid(0.0),
-            silk_sigmoid(2.0),
-            silk_sigmoid(-2.0),
-        ];
+        let actual = [silk_sigmoid(0.0), silk_sigmoid(2.0), silk_sigmoid(-2.0)];
         for (a, e) in actual.iter().zip(expected.iter()) {
             assert!((a - e).abs() < 1e-6);
         }

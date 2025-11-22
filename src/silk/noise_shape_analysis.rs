@@ -9,19 +9,19 @@ use crate::silk::bwexpander_32::bwexpander_32;
 use crate::silk::encoder::control::EncoderControl;
 use crate::silk::encoder::state::{EncoderChannelState, SHAPE_LPC_WIN_MAX};
 use crate::silk::k2a_q16::k2a_q16;
-use crate::silk::lpc_fit::lpc_fit;
-use crate::silk::lpc_inv_pred_gain::inverse32_varq;
 use crate::silk::lin2log::lin2log;
 use crate::silk::log2lin::log2lin;
+use crate::silk::lpc_fit::lpc_fit;
+use crate::silk::lpc_inv_pred_gain::inverse32_varq;
 use crate::silk::schur64::schur64;
 use crate::silk::sum_sqr_shift::sum_sqr_shift;
 use crate::silk::tuning_parameters::{
     BANDWIDTH_EXPANSION, BG_SNR_DECR_DB, ENERGY_VARIATION_THRESHOLD_QNT_OFFSET,
-    FIND_PITCH_WHITE_NOISE_FRACTION, HARMONIC_SHAPING, HARM_HP_NOISE_COEF, HARM_SNR_INCR_DB,
+    FIND_PITCH_WHITE_NOISE_FRACTION, HARM_HP_NOISE_COEF, HARM_SNR_INCR_DB, HARMONIC_SHAPING,
     HIGH_RATE_OR_LOW_QUALITY_HARMONIC_SHAPING, HP_NOISE_COEF, LOW_FREQ_SHAPING,
     LOW_QUALITY_LOW_FREQ_SHAPING_DECR, SHAPE_WHITE_NOISE_FRACTION, SUBFR_SMTH_COEF,
 };
-use crate::silk::warped_autocorrelation::{warped_autocorrelation, MAX_SHAPE_LPC_ORDER};
+use crate::silk::warped_autocorrelation::{MAX_SHAPE_LPC_ORDER, warped_autocorrelation};
 use crate::silk::{FrameQuantizationOffsetType, FrameSignalType, MAX_NB_SUBFR};
 
 const MIN_QGAIN_DB: i32 = 2;
@@ -86,15 +86,19 @@ pub fn noise_shape_analysis(
 
     let mut snr_adj_db_q7 = encoder.common.snr_db_q7;
 
-    control.input_quality_q14 = rshift(encoder.common.input_quality_bands_q15[0]
-        + encoder.common.input_quality_bands_q15[1], 2);
-    control.coding_quality_q14 =
-        rshift(sigm_q15(rshift_round(snr_adj_db_q7 - (20 << 7), 4)), 1);
+    control.input_quality_q14 = rshift(
+        encoder.common.input_quality_bands_q15[0] + encoder.common.input_quality_bands_q15[1],
+        2,
+    );
+    control.coding_quality_q14 = rshift(sigm_q15(rshift_round(snr_adj_db_q7 - (20 << 7), 4)), 1);
 
     if !encoder.common.use_cbr {
         let mut b_q8 = ONE_Q8 - encoder.common.speech_activity_q8;
         b_q8 = smulwb(b_q8 << 8, b_q8);
-        let quality_mul = smulwb(ONE_Q14 + control.input_quality_q14, control.coding_quality_q14);
+        let quality_mul = smulwb(
+            ONE_Q14 + control.input_quality_q14,
+            control.coding_quality_q14,
+        );
         let snr_term = smulbb(-(BG_SNR_DECR_DB_Q7) >> 5, b_q8);
         snr_adj_db_q7 = smlawb(snr_adj_db_q7, snr_term, quality_mul);
     }
@@ -108,11 +112,7 @@ pub fn noise_shape_analysis(
             -(0.4_f32 * (1 << 18) as f32 + 0.5) as i32,
             encoder.common.snr_db_q7,
         );
-        snr_adj_db_q7 = smlawb(
-            snr_adj_db_q7,
-            tmp,
-            ONE_Q14 - control.input_quality_q14,
-        );
+        snr_adj_db_q7 = smlawb(snr_adj_db_q7, tmp, ONE_Q14 - control.input_quality_q14);
 
         let n_samples = (encoder.common.fs_khz << 1) as usize;
         let n_segs = nb_subframes * crate::silk::encoder::state::SUB_FRAME_LENGTH_MS / 2;
@@ -140,8 +140,7 @@ pub fn noise_shape_analysis(
         }
     }
 
-    let strength_q16 =
-        smulwb(control.pred_gain_q16, FIND_PITCH_WHITE_NOISE_FRACTION_Q16);
+    let strength_q16 = smulwb(control.pred_gain_q16, FIND_PITCH_WHITE_NOISE_FRACTION_Q16);
     let bwexp_q16 = div32_varq(
         BANDWIDTH_EXPANSION_Q16,
         smlaww(ONE_Q16, strength_q16, strength_q16),
@@ -169,15 +168,10 @@ pub fn noise_shape_analysis(
         let slope_part = (encoder.common.shape_win_length - flat_part) >> 1;
 
         let slope = slope_part as usize;
-        apply_sine_window(
-            &mut x_windowed[..slope],
-            &x[x_ptr..x_ptr + slope],
-            1,
-        );
+        apply_sine_window(&mut x_windowed[..slope], &x[x_ptr..x_ptr + slope], 1);
         let mut shift = slope;
         let flat = flat_part as usize;
-        x_windowed[shift..shift + flat]
-            .copy_from_slice(&x[x_ptr + shift..x_ptr + shift + flat]);
+        x_windowed[shift..shift + flat].copy_from_slice(&x[x_ptr + shift..x_ptr + shift + flat]);
         shift += flat;
         apply_sine_window(
             &mut x_windowed[shift..shift + slope],
@@ -203,9 +197,8 @@ pub fn noise_shape_analysis(
             )
         };
 
-        auto_corr[0] = auto_corr[0].wrapping_add(
-            smulwb(auto_corr[0] >> 4, SHAPE_WHITE_NOISE_FRACTION_Q20).max(1),
-        );
+        auto_corr[0] = auto_corr[0]
+            .wrapping_add(smulwb(auto_corr[0] >> 4, SHAPE_WHITE_NOISE_FRACTION_Q20).max(1));
 
         let mut nrg = schur64(&mut refl_coef_q16[..lpc_order], &auto_corr, lpc_order);
 
@@ -243,8 +236,8 @@ pub fn noise_shape_analysis(
                 (3.999_f32 * (1 << 24) as f32 + 0.5) as i32,
                 lpc_order,
             );
-            for (dst, &coef) in control.ar_q13[k * MAX_SHAPE_LPC_ORDER
-                ..k * MAX_SHAPE_LPC_ORDER + lpc_order]
+            for (dst, &coef) in control.ar_q13
+                [k * MAX_SHAPE_LPC_ORDER..k * MAX_SHAPE_LPC_ORDER + lpc_order]
                 .iter_mut()
                 .zip(&ar_q24[..lpc_order])
             {
@@ -252,8 +245,7 @@ pub fn noise_shape_analysis(
             }
         } else {
             lpc_fit(
-                &mut control.ar_q13[k * MAX_SHAPE_LPC_ORDER
-                    ..k * MAX_SHAPE_LPC_ORDER + lpc_order],
+                &mut control.ar_q13[k * MAX_SHAPE_LPC_ORDER..k * MAX_SHAPE_LPC_ORDER + lpc_order],
                 &mut ar_q24[..lpc_order],
                 13,
                 24,
@@ -261,9 +253,16 @@ pub fn noise_shape_analysis(
         }
     }
 
-    let gain_mult_q16 = log2lin(-smlawb(-(16 << 7), snr_adj_db_q7, (0.16_f32 * (1 << 16) as f32 + 0.5) as i32));
-    let gain_add_q16 =
-        log2lin(smlawb(16 << 7, MIN_QGAIN_DB << 7, (0.16_f32 * (1 << 16) as f32 + 0.5) as i32));
+    let gain_mult_q16 = log2lin(-smlawb(
+        -(16 << 7),
+        snr_adj_db_q7,
+        (0.16_f32 * (1 << 16) as f32 + 0.5) as i32,
+    ));
+    let gain_add_q16 = log2lin(smlawb(
+        16 << 7,
+        MIN_QGAIN_DB << 7,
+        (0.16_f32 * (1 << 16) as f32 + 0.5) as i32,
+    ));
     for gain in control.gains_q16.iter_mut().take(nb_subframes) {
         *gain = smulww(*gain, gain_mult_q16);
         *gain = add_pos_sat32(*gain, gain_add_q16);
@@ -280,8 +279,10 @@ pub fn noise_shape_analysis(
     strength_q16 = rshift(strength_q16 * encoder.common.speech_activity_q8, 8);
 
     let (tilt_q16, lf_shp_q14) = if encoder.common.indices.signal_type == FrameSignalType::Voiced {
-        let fs_khz_inv =
-            div32_16((0.2_f32 * (1 << 14) as f32 + 0.5) as i32, encoder.common.fs_khz);
+        let fs_khz_inv = div32_16(
+            (0.2_f32 * (1 << 14) as f32 + 0.5) as i32,
+            encoder.common.fs_khz,
+        );
         let mut lf = [0i32; MAX_NB_SUBFR];
         for (k, lf_slot) in lf.iter_mut().take(nb_subframes).enumerate() {
             let b_q14 = fs_khz_inv
@@ -460,11 +461,7 @@ fn div32_varq(a32: i32, b32: i32, q_res: i32) -> i32 {
 }
 
 fn rshift(value: i32, shift: i32) -> i32 {
-    if shift <= 0 {
-        value
-    } else {
-        value >> shift
-    }
+    if shift <= 0 { value } else { value >> shift }
 }
 
 fn rshift_round(value: i32, shift: i32) -> i32 {
@@ -591,8 +588,7 @@ mod tests {
         for (i, slot) in pitch_res.iter_mut().enumerate() {
             *slot = (i as i16).wrapping_mul(3);
         }
-        let mut x =
-            vec![0i16; encoder.common.frame_length + 2 * encoder.common.la_shape as usize];
+        let mut x = vec![0i16; encoder.common.frame_length + 2 * encoder.common.la_shape as usize];
         for (i, slot) in x.iter_mut().enumerate() {
             *slot = (i as i16).wrapping_sub(50);
         }
@@ -605,9 +601,7 @@ mod tests {
             "warped analysis should generate non-zero AR coefficients"
         );
         assert!(
-            first_band
-                .iter()
-                .all(|&c| c != i16::MAX && c != i16::MIN),
+            first_band.iter().all(|&c| c != i16::MAX && c != i16::MIN),
             "AR coefficients should stay away from saturation"
         );
     }

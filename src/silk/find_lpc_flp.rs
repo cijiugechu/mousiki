@@ -37,7 +37,10 @@ pub fn find_lpc_flp(
         matches!(order, 6 | 8 | 10 | 12 | 16),
         "unsupported LPC order: {order}"
     );
-    assert!(nlsf_q15.len() >= order, "NLSF buffer shorter than LPC order");
+    assert!(
+        nlsf_q15.len() >= order,
+        "NLSF buffer shorter than LPC order"
+    );
     assert!(
         state.nb_subfr > 0 && state.nb_subfr <= MAX_NB_SUBFR,
         "invalid subframe count"
@@ -95,7 +98,10 @@ pub fn find_lpc_flp(
         assert!(valid_len > 0, "subframe length must exceed LPC order");
 
         let head_len = 2 * subfr_length;
-        assert!(head_len <= frame_length, "frame too short for interpolation");
+        assert!(
+            head_len <= frame_length,
+            "frame too short for interpolation"
+        );
 
         for k in (0..=3).rev() {
             interpolate(
@@ -104,7 +110,12 @@ pub fn find_lpc_flp(
                 &nlsf_q15[..order],
                 k,
             );
-            nlsf2a_flp(&mut a_interp[..order], &interp_nlsf[..order], order, state.arch);
+            nlsf2a_flp(
+                &mut a_interp[..order],
+                &interp_nlsf[..order],
+                order,
+                state.arch,
+            );
 
             lpc_analysis_filter_flp(
                 &mut lpc_res[..head_len],
@@ -182,10 +193,10 @@ mod tests {
     extern crate alloc;
 
     use super::find_lpc_flp;
+    use crate::silk::MAX_LPC_ORDER;
+    use crate::silk::encoder::state::EncoderStateCommon;
     use alloc::vec;
     use alloc::vec::Vec;
-    use crate::silk::encoder::state::EncoderStateCommon;
-    use crate::silk::MAX_LPC_ORDER;
 
     fn monotonic(nlsf: &[i16]) -> bool {
         nlsf.windows(2).all(|pair| pair[0] <= pair[1])
@@ -205,9 +216,11 @@ mod tests {
 
         assert_eq!(state.indices.nlsf_interp_coef_q2, 4);
         assert!(monotonic(&nlsf_q15[..state.predict_lpc_order]));
-        assert!(nlsf_q15[..state.predict_lpc_order]
-            .iter()
-            .any(|&value| value != 0));
+        assert!(
+            nlsf_q15[..state.predict_lpc_order]
+                .iter()
+                .any(|&value| value != 0)
+        );
     }
 
     #[test]
