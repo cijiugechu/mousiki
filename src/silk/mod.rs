@@ -43,6 +43,7 @@ pub mod find_ltp_flp;
 pub mod find_pitch_lags;
 pub mod find_pitch_lags_flp;
 pub mod find_pred_coefs;
+pub mod find_pred_coefs_flp;
 pub mod gain_quant;
 pub mod get_decoder_size;
 pub mod get_encoder_size;
