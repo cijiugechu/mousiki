@@ -6,9 +6,13 @@
 //! counterparts.
 
 pub mod control;
+pub mod control_flp;
 pub mod state;
+pub mod state_flp;
 
 pub use control::EncoderControl;
+pub use control_flp::EncoderControlFlp;
 pub use state::{
     ENCODER_NUM_CHANNELS, Encoder, EncoderChannelState, EncoderStateCommon, VAD_N_BANDS,
 };
+pub use state_flp::{EncoderShapeStateFlp, EncoderStateFlp};
