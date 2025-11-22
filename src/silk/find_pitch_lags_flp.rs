@@ -17,9 +17,7 @@ use crate::silk::apply_sine_window_flp::apply_sine_window_flp;
 use crate::silk::autocorrelation_flp::autocorrelation;
 use crate::silk::bwexpander_flp::bwexpander;
 use crate::silk::encoder::control_flp::EncoderControlFlp;
-use crate::silk::encoder::state::{
-    FIND_PITCH_LPC_WIN_MS, MAX_FIND_PITCH_LPC_ORDER, MAX_FS_KHZ,
-};
+use crate::silk::encoder::state::{FIND_PITCH_LPC_WIN_MS, MAX_FIND_PITCH_LPC_ORDER, MAX_FS_KHZ};
 use crate::silk::encoder::state_flp::EncoderStateFlp;
 use crate::silk::k2a_flp::k2a_flp;
 use crate::silk::lpc_analysis_filter_flp::lpc_analysis_filter_flp;

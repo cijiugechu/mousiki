@@ -83,6 +83,7 @@ pub mod pitch_analysis_core_flp;
 pub mod pitch_est_tables;
 pub mod plc;
 pub mod process_gains;
+pub mod process_gains_flp;
 pub mod process_nlsfs;
 pub mod quant_ltp_gains;
 pub mod regularize_correlations;
