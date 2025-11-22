@@ -5,13 +5,12 @@
 //! implementation.
 
 #![allow(clippy::too_many_arguments)]
-
-use alloc::vec;
 use core::convert::TryFrom;
 use core::ptr;
 
 use crate::silk::decode_indices::ConditionalCoding;
 use crate::silk::encoder::control_flp::EncoderControlFlp;
+use crate::silk::encoder::state::MAX_FRAME_LENGTH;
 use crate::silk::encoder::state_flp::EncoderStateFlp;
 use crate::silk::find_lpc_flp::find_lpc_flp;
 use crate::silk::find_ltp_flp::find_ltp_flp;
@@ -32,6 +31,7 @@ const Q17_SCALE: f32 = 131_072.0;
 const INV_Q14_SCALE: f32 = 1.0 / 16_384.0;
 const INV_Q12_SCALE: f32 = 1.0 / 4096.0;
 const INV_LOG_GAIN_SCALE: f32 = 1.0 / 128.0;
+const MAX_LPC_IN_PRE: usize = MAX_NB_SUBFR * MAX_LPC_ORDER + MAX_FRAME_LENGTH;
 
 /// Mirrors `silk_find_pred_coefs_FLP`.
 ///
@@ -94,22 +94,26 @@ pub fn find_pred_coefs_flp(
     }
 
     let chunk = subfr_length + order;
-    let mut lpc_in_pre = vec![0.0f32; nb_subfr * chunk];
+    let lpc_in_pre_len = nb_subfr
+        .checked_mul(chunk)
+        .expect("nb_subfr × chunk overflow");
+    debug_assert!(
+        lpc_in_pre_len <= MAX_LPC_IN_PRE,
+        "LPC_in_pre exceeds stack buffer"
+    );
+    let mut lpc_in_pre_buf = [0.0f32; MAX_LPC_IN_PRE];
+    let lpc_in_pre = &mut lpc_in_pre_buf[..lpc_in_pre_len];
     let taps_len = nb_subfr * LTP_ORDER;
 
     if matches!(encoder.common.indices.signal_type, FrameSignalType::Voiced) {
-        ensure_pitch_history(
-            encoder.common.ltp_mem_length,
-            order,
-            control.pitch_l[0],
-        );
+        ensure_pitch_history(encoder.common.ltp_mem_length, order, control.pitch_l[0]);
 
-        let mut xx_ltp = vec![0.0f32; taps_len * LTP_ORDER];
-        let mut x_ltp = vec![0.0f32; taps_len];
+        let mut xx_ltp = [0.0f32; MAX_NB_SUBFR * LTP_ORDER * LTP_ORDER];
+        let mut x_ltp = [0.0f32; MAX_NB_SUBFR * LTP_ORDER];
 
         find_ltp_flp(
-            &mut xx_ltp,
-            &mut x_ltp,
+            &mut xx_ltp[..taps_len * LTP_ORDER],
+            &mut x_ltp[..taps_len],
             res_pitch,
             encoder.common.ltp_mem_length,
             &control.pitch_l[..nb_subfr],
@@ -148,7 +152,7 @@ pub fn find_pred_coefs_flp(
 
         let x_ptr_offset = encoder.common.ltp_mem_length - order;
         ltp_analysis_filter_flp(
-            &mut lpc_in_pre,
+            lpc_in_pre,
             x,
             x_ptr_offset,
             &control.ltp_coef[..taps_len],
@@ -190,7 +194,7 @@ pub fn find_pred_coefs_flp(
     find_lpc_flp(
         &mut encoder.common,
         &mut nlsf_q15[..order],
-        &lpc_in_pre,
+        lpc_in_pre,
         min_inv_gain,
     );
 
@@ -198,7 +202,7 @@ pub fn find_pred_coefs_flp(
 
     residual_energy_flp(
         &mut control.res_nrg,
-        &lpc_in_pre,
+        lpc_in_pre,
         &control.pred_coef,
         &control.gains,
         subfr_length,
@@ -254,31 +258,31 @@ fn quant_ltp_gains_flp(
         "xX slice must contain nb_subfr correlation vectors"
     );
 
-    let mut xx_q17 = vec![0i32; taps_len * LTP_ORDER];
+    let mut xx_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER * LTP_ORDER];
     for (dst, &src) in xx_q17.iter_mut().zip(xx.iter()) {
         *dst = silk_float2int(src * Q17_SCALE);
     }
 
-    let mut x_x_q17 = vec![0i32; taps_len];
+    let mut x_x_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER];
     for (dst, &src) in x_x_q17.iter_mut().zip(x_x.iter()) {
         *dst = silk_float2int(src * Q17_SCALE);
     }
 
-    let mut b_q14 = vec![0i16; taps_len];
+    let mut b_q14 = [0i16; MAX_NB_SUBFR * LTP_ORDER];
     let mut pred_gain_db_q7 = 0;
     silk_quant_ltp_gains(
-        &mut b_q14,
+        &mut b_q14[..taps_len],
         cbk_index,
         periodicity_index,
         sum_log_gain_q7,
         &mut pred_gain_db_q7,
-        &xx_q17,
-        &x_x_q17,
+        &xx_q17[..taps_len * LTP_ORDER],
+        &x_x_q17[..taps_len],
         subfr_len as i32,
         nb_subfr,
     );
 
-    for (dst, &src) in b.iter_mut().zip(b_q14.iter()) {
+    for (dst, &src) in b.iter_mut().zip(b_q14.iter().take(taps_len)) {
         *dst = f32::from(src) * INV_Q14_SCALE;
     }
     *pred_gain_db = (pred_gain_db_q7 as f32) * INV_LOG_GAIN_SCALE;
@@ -295,8 +299,8 @@ fn process_nlsfs_flp(
         "NLSF buffer shorter than LPC order"
     );
 
-    let survivors = usize::try_from(encoder.nlsf_msvq_survivors)
-        .expect("survivor count must be non-negative");
+    let survivors =
+        usize::try_from(encoder.nlsf_msvq_survivors).expect("survivor count must be non-negative");
     let cfg = ProcessNlsfConfig {
         speech_activity_q8: encoder.speech_activity_q8,
         nb_subframes: encoder.nb_subfr,
@@ -326,6 +330,7 @@ fn process_nlsfs_flp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn unvoiced_path_resets_ltp_state() {
@@ -358,14 +363,21 @@ mod tests {
             ConditionalCoding::Independent,
         );
 
-        assert!(control.ltp_coef[..nb_subfr * LTP_ORDER]
-            .iter()
-            .all(|&c| c == 0.0));
+        assert!(
+            control.ltp_coef[..nb_subfr * LTP_ORDER]
+                .iter()
+                .all(|&c| c == 0.0)
+        );
         assert_eq!(control.lt_pred_cod_gain, 0.0);
         assert_eq!(encoder.common.sum_log_gain_q7, 0);
         assert_eq!(encoder.common.indices.ltp_scale_index, 0);
         assert_eq!(control.ltp_scale, 0.0);
         assert!(control.res_nrg[..nb_subfr].iter().all(|v| v.is_finite()));
-        assert!(control.pred_coef.iter().all(|row| row[..order].iter().all(|v| v.is_finite())));
+        assert!(
+            control
+                .pred_coef
+                .iter()
+                .all(|row| row[..order].iter().all(|v| v.is_finite()))
+        );
     }
 }
