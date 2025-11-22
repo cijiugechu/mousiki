@@ -82,8 +82,8 @@ fn warped_true2monic_coefs(coefs: &mut [f32], lambda: f32, limit: f32, order: us
             *coef *= gain;
         }
 
-        let chirp = 0.99 - (0.8 + 0.1 * iter as f32) * (maxabs - limit)
-            / (maxabs * (ind as f32 + 1.0));
+        let chirp =
+            0.99 - (0.8 + 0.1 * iter as f32) * (maxabs - limit) / (maxabs * (ind as f32 + 1.0));
         bwexpander(&mut coefs[..order], chirp);
 
         for i in (1..order).rev() {
@@ -118,8 +118,8 @@ fn limit_coefs(coefs: &mut [f32], limit: f32, order: usize) {
             return;
         }
 
-        let chirp = 0.99 - (0.8 + 0.1 * iter as f32) * (maxabs - limit)
-            / (maxabs * (ind as f32 + 1.0));
+        let chirp =
+            0.99 - (0.8 + 0.1 * iter as f32) * (maxabs - limit) / (maxabs * (ind as f32 + 1.0));
         bwexpander(&mut coefs[..order], chirp);
     }
     panic!("failed to clamp coefficients within the expected iteration budget");
@@ -170,11 +170,8 @@ pub fn noise_shape_analysis_flp(
 
     if !encoder.common.use_cbr {
         let b = 1.0 - encoder.common.speech_activity_q8 as f32 * (1.0 / 256.0);
-        snr_adj_db -= BG_SNR_DECR_DB
-            * control.coding_quality
-            * (0.5 + 0.5 * control.input_quality)
-            * b
-            * b;
+        snr_adj_db -=
+            BG_SNR_DECR_DB * control.coding_quality * (0.5 + 0.5 * control.input_quality) * b * b;
     }
 
     if matches!(encoder.common.indices.signal_type, FrameSignalType::Voiced) {
@@ -225,8 +222,8 @@ pub fn noise_shape_analysis_flp(
 
     for k in 0..nb_subframes {
         let flat_part = (encoder.common.fs_khz * 3) as usize;
-        let slope_part = ((encoder.common.shape_win_length - encoder.common.fs_khz * 3) / 2)
-            as usize;
+        let slope_part =
+            ((encoder.common.shape_win_length - encoder.common.fs_khz * 3) / 2) as usize;
 
         apply_sine_window_flp(
             &mut x_windowed[..slope_part],
@@ -280,12 +277,7 @@ pub fn noise_shape_analysis_flp(
         bwexpander(&mut control.ar[ar_offset..ar_offset + lpc_order], bwexp);
 
         if encoder.common.warping_q16 > 0 {
-            warped_true2monic_coefs(
-                &mut control.ar[ar_offset..],
-                warping,
-                3.999,
-                lpc_order,
-            );
+            warped_true2monic_coefs(&mut control.ar[ar_offset..], warping, 3.999, lpc_order);
         } else {
             limit_coefs(&mut control.ar[ar_offset..], 3.999, lpc_order);
         }
@@ -303,8 +295,7 @@ pub fn noise_shape_analysis_flp(
                 * (encoder.common.input_quality_bands_q15[0] as f32 * (1.0 / 32768.0) - 1.0));
     strength *= encoder.common.speech_activity_q8 as f32 * (1.0 / 256.0);
 
-    let tilt: f32;
-    if matches!(encoder.common.indices.signal_type, FrameSignalType::Voiced) {
+    let tilt: f32 = if matches!(encoder.common.indices.signal_type, FrameSignalType::Voiced) {
         for (k, pitch_lag) in control
             .pitch_l
             .iter()
@@ -318,11 +309,11 @@ pub fn noise_shape_analysis_flp(
             control.lf_ar_shp[k] = 1.0 - b - b * strength;
         }
 
-        tilt = -HP_NOISE_COEF
+        -HP_NOISE_COEF
             - (1.0 - HP_NOISE_COEF)
                 * HARM_HP_NOISE_COEF
                 * encoder.common.speech_activity_q8 as f32
-                * (1.0 / 256.0);
+                * (1.0 / 256.0)
     } else {
         let b = 1.3 / encoder.common.fs_khz as f32;
         control.lf_ma_shp[0] = -1.0 + b;
@@ -331,8 +322,8 @@ pub fn noise_shape_analysis_flp(
             control.lf_ma_shp[k] = control.lf_ma_shp[0];
             control.lf_ar_shp[k] = control.lf_ar_shp[0];
         }
-        tilt = -HP_NOISE_COEF;
-    }
+        -HP_NOISE_COEF
+    };
 
     let harmonic_shape_gain = if USE_HARM_SHAPING
         && matches!(encoder.common.indices.signal_type, FrameSignalType::Voiced)
@@ -359,16 +350,16 @@ pub fn noise_shape_analysis_flp(
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
     use super::noise_shape_analysis_flp;
     use crate::silk::encoder::control_flp::EncoderControlFlp;
     use crate::silk::encoder::state_flp::EncoderStateFlp;
     use crate::silk::sigproc_flp::silk_sigmoid;
     use crate::silk::tuning_parameters::{
-        HARMONIC_SHAPING, HARM_SNR_INCR_DB, HIGH_RATE_OR_LOW_QUALITY_HARMONIC_SHAPING,
+        HARM_SNR_INCR_DB, HARMONIC_SHAPING, HIGH_RATE_OR_LOW_QUALITY_HARMONIC_SHAPING,
         HP_NOISE_COEF, SUBFR_SMTH_COEF,
     };
     use crate::silk::{FrameSignalType, MAX_NB_SUBFR};
+    use alloc::vec;
     use libm::{powf, sqrtf};
 
     #[test]
@@ -448,13 +439,16 @@ mod tests {
         }
 
         assert!(
-            encoder.shape_state.harm_shape_gain_smth == control.harm_shape_gain[encoder.common.nb_subfr - 1]
+            encoder.shape_state.harm_shape_gain_smth
+                == control.harm_shape_gain[encoder.common.nb_subfr - 1]
         );
-        assert!(
-            encoder.shape_state.tilt_smth == control.tilt[encoder.common.nb_subfr - 1]
-        );
+        assert!(encoder.shape_state.tilt_smth == control.tilt[encoder.common.nb_subfr - 1]);
 
-        for coef in control.ar.iter().take(MAX_NB_SUBFR * super::MAX_SHAPE_LPC_ORDER) {
+        for coef in control
+            .ar
+            .iter()
+            .take(MAX_NB_SUBFR * super::MAX_SHAPE_LPC_ORDER)
+        {
             assert!(coef.abs() <= 3.999);
         }
     }
