@@ -46,6 +46,31 @@ pub fn compute_speech_activity_q8(channel: &mut EncoderChannelState, input: &[i1
     analyse_frame(common, vad_state, fs_khz, frame_length, input)
 }
 
+/// Updates speech-activity probability for a standalone encoder state.
+pub fn compute_speech_activity_q8_common(common: &mut EncoderStateCommon, input: &[i16]) -> u8 {
+    let frame_length = common.frame_length;
+    assert!(
+        frame_length <= MAX_FRAME_LENGTH,
+        "unexpected frame length {frame_length}"
+    );
+    assert_eq!(
+        frame_length,
+        (frame_length >> 3) << 3,
+        "frame length must be divisible by 8"
+    );
+    assert_eq!(
+        input.len(),
+        frame_length,
+        "input length does not match the configured frame length"
+    );
+
+    let fs_khz = common.fs_khz;
+    let common_ptr: *mut EncoderStateCommon = common;
+    // Split the mutable borrow of `common` to hand matching lifetimes to `analyse_frame`.
+    let vad_state = unsafe { &mut (*common_ptr).vad_state };
+    analyse_frame(common, vad_state, fs_khz, frame_length, input)
+}
+
 fn analyse_frame(
     common: &mut EncoderStateCommon,
     vad_state: &mut VadState,

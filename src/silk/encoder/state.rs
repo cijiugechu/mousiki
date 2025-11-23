@@ -17,7 +17,7 @@ use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
 use crate::silk::tables_other::SILK_UNIFORM8_ICDF;
 use crate::silk::tables_pitch_lag::PITCH_CONTOUR_ICDF;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
-use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR, MAX_SHAPE_LPC_ORDER};
+use crate::silk::{MAX_FRAMES_PER_PACKET, MAX_LPC_ORDER, MAX_NB_SUBFR, MAX_SHAPE_LPC_ORDER};
 use core::array::from_fn;
 
 /// Number of VAD bands tracked per SILK channel.
@@ -237,16 +237,42 @@ pub struct EncoderStateCommon {
     pub snr_db_q7: i32,
     /// Cumulative logarithmic LTP gain used to bound the predictor power.
     pub sum_log_gain_q7: i32,
+    /// Voice activity detector state.
+    pub vad_state: VadState,
+    /// Variable low-pass filter state used during bandwidth transitions.
+    pub lp_state: LpState,
+    /// Noise-shaping quantiser state.
+    pub nsq_state: NoiseShapingQuantizerState,
+    /// Running frame counter used for the entropy seed.
+    pub frame_counter: i32,
+    /// Buffered input samples preserved across frames.
+    pub input_buf: [i16; INPUT_BUFFER_LENGTH],
     /// Per-band input quality metrics in Q15.
     pub input_quality_bands_q15: [i32; VAD_N_BANDS],
     /// Smoothed tilt estimate in Q15.
     pub input_tilt_q15: i32,
     /// Smoothed speech-activity estimate in Q8.
     pub speech_activity_q8: i32,
+    /// Counts consecutive non-active frames for DTX handling.
+    pub no_speech_counter: i32,
     /// Smoothed logarithmic cut-off frequency in Q15.
     pub variable_hp_smth1_q15: i32,
     /// Secondary smoother used by the adaptive high-pass controller.
     pub variable_hp_smth2_q15: i32,
+    /// VAD decisions per frame within the current packet.
+    pub vad_flags: [bool; MAX_FRAMES_PER_PACKET],
+    /// Flag indicating LBRR data is present in the current packet.
+    pub lbrr_flag: bool,
+    /// Per-frame LBRR presence flags.
+    pub lbrr_flags: [bool; MAX_FRAMES_PER_PACKET],
+    /// Previous gain index used when coding LBRR frames.
+    pub lbrr_prev_last_gain_index: i8,
+    /// In-band LBRR side information per frame.
+    pub indices_lbrr: [SideInfoIndices; MAX_FRAMES_PER_PACKET],
+    /// Pulse buffers for the main signal.
+    pub pulses: [i8; MAX_FRAME_LENGTH],
+    /// Pulse buffers for the LBRR side channel.
+    pub pulses_lbrr: [[i8; MAX_FRAME_LENGTH]; MAX_FRAMES_PER_PACKET],
     /// Packet size in milliseconds.
     pub packet_size_ms: i32,
     /// Downlink packet loss percentage.
@@ -283,6 +309,12 @@ pub struct EncoderStateCommon {
     pub warping_q16: i32,
     /// Complexity setting (0-10).
     pub complexity: i32,
+    /// Tracks the previous signal type for entropy coding.
+    pub ec_prev_signal_type: FrameSignalType,
+    /// Tracks the previous lag index for entropy coding.
+    pub ec_prev_lag_index: i16,
+    /// Indicates whether the encoder is currently inside a DTX stretch.
+    pub in_dtx: bool,
     /// Tracks whether low-bit-rate redundancy is enabled.
     pub lbrr_enabled: bool,
     /// Gain increase applied when coding LBRR frames.
@@ -335,11 +367,24 @@ impl Default for EncoderStateCommon {
             target_rate_bps: 0,
             snr_db_q7: 0,
             sum_log_gain_q7: 0,
+            vad_state: VadState::default(),
+            lp_state: LpState::default(),
+            nsq_state: NoiseShapingQuantizerState::default(),
+            frame_counter: 0,
+            input_buf: [0; INPUT_BUFFER_LENGTH],
             input_quality_bands_q15: [0; VAD_N_BANDS],
             input_tilt_q15: 0,
             speech_activity_q8: 0,
+            no_speech_counter: 0,
             variable_hp_smth1_q15: lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8,
             variable_hp_smth2_q15: lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8,
+            vad_flags: [false; MAX_FRAMES_PER_PACKET],
+            lbrr_flag: false,
+            lbrr_flags: [false; MAX_FRAMES_PER_PACKET],
+            lbrr_prev_last_gain_index: 0,
+            indices_lbrr: from_fn(|_| SideInfoIndices::default()),
+            pulses: [0; MAX_FRAME_LENGTH],
+            pulses_lbrr: from_fn(|_| [0; MAX_FRAME_LENGTH]),
             packet_size_ms: MAX_FRAME_LENGTH_MS as i32,
             packet_loss_perc: 0,
             n_frames_per_packet: 1,
@@ -358,6 +403,9 @@ impl Default for EncoderStateCommon {
             nlsf_msvq_survivors: 0,
             warping_q16: 0,
             complexity: 0,
+            ec_prev_signal_type: FrameSignalType::Inactive,
+            ec_prev_lag_index: 0,
+            in_dtx: false,
             lbrr_enabled: false,
             lbrr_gain_increases: 0,
             arch: 0,
@@ -370,18 +418,10 @@ impl Default for EncoderStateCommon {
 pub struct EncoderChannelState {
     /// Common fields shared with the floating-point build.
     pub common: EncoderStateCommon,
-    /// Voice activity detector state.
-    pub vad: VadState,
-    /// Variable low-pass filter state used during bandwidth transitions.
-    pub lp_state: LpState,
     /// Noise-shaping analysis state.
     pub shape_state: EncoderShapeState,
-    /// Noise-shaping quantiser state.
-    pub nsq_state: NoiseShapingQuantizerState,
     /// High-level SILK resampler state used by the API wrapper.
     pub resampler_state: Resampler,
-    /// Buffered input samples preserved across frames.
-    pub input_buf: [i16; INPUT_BUFFER_LENGTH],
     /// Pitch-analysis buffer mirrored from `x_buf`.
     pub x_buf: [i16; X_BUFFER_LENGTH],
     /// Normalised correlation from the pitch-lag estimator (Q15).
@@ -392,12 +432,8 @@ impl Default for EncoderChannelState {
     fn default() -> Self {
         Self {
             common: EncoderStateCommon::default(),
-            vad: VadState::default(),
-            lp_state: LpState::default(),
             shape_state: EncoderShapeState::default(),
-            nsq_state: NoiseShapingQuantizerState::default(),
             resampler_state: Resampler::default(),
-            input_buf: [0; INPUT_BUFFER_LENGTH],
             x_buf: [0; X_BUFFER_LENGTH],
             ltp_corr_q15: 0,
         }
@@ -416,12 +452,8 @@ impl EncoderChannelState {
     pub fn with_common(common: EncoderStateCommon) -> Self {
         Self {
             common,
-            vad: VadState::default(),
-            lp_state: LpState::default(),
             shape_state: EncoderShapeState::default(),
-            nsq_state: NoiseShapingQuantizerState::default(),
             resampler_state: Resampler::default(),
-            input_buf: [0; INPUT_BUFFER_LENGTH],
             x_buf: [0; X_BUFFER_LENGTH],
             ltp_corr_q15: 0,
         }
@@ -442,37 +474,37 @@ impl EncoderChannelState {
     /// Borrow the VAD state.
     #[must_use]
     pub fn vad(&self) -> &VadState {
-        &self.vad
+        &self.common.vad_state
     }
 
     /// Mutably borrow the VAD state.
     #[must_use]
     pub fn vad_mut(&mut self) -> &mut VadState {
-        &mut self.vad
+        &mut self.common.vad_state
     }
 
     /// Simultaneously borrow the common encoder fields and VAD state.
     pub(crate) fn parts_mut(&mut self) -> (&mut EncoderStateCommon, &mut VadState) {
-        let ptr = self as *mut Self;
-        unsafe { (&mut (*ptr).common, &mut (*ptr).vad) }
+        let ptr = &mut self.common as *mut EncoderStateCommon;
+        unsafe { (&mut *ptr, &mut (*ptr).vad_state) }
     }
 
     /// Simultaneously borrow the common encoder fields and low-pass transition state.
     pub(crate) fn common_and_lp_mut(&mut self) -> (&mut EncoderStateCommon, &mut LpState) {
-        let ptr = self as *mut Self;
-        unsafe { (&mut (*ptr).common, &mut (*ptr).lp_state) }
+        let ptr = &mut self.common as *mut EncoderStateCommon;
+        unsafe { (&mut *ptr, &mut (*ptr).lp_state) }
     }
 
     /// Borrow the bandwidth-transition low-pass state.
     #[must_use]
     pub fn low_pass_state(&self) -> &LpState {
-        &self.lp_state
+        &self.common.lp_state
     }
 
     /// Mutably borrow the bandwidth-transition low-pass state.
     #[must_use]
     pub fn low_pass_state_mut(&mut self) -> &mut LpState {
-        &mut self.lp_state
+        &mut self.common.lp_state
     }
 
     /// Update the adaptive high-pass smoother using the current channel statistics.
@@ -571,9 +603,15 @@ mod tests {
         assert_eq!(common.prev_nlsf_q15, [0; MAX_LPC_ORDER]);
         assert_eq!(common.target_rate_bps, 0);
         assert_eq!(common.snr_db_q7, 0);
+        assert_eq!(common.vad_state, VadState::default());
+        assert_eq!(common.lp_state, LpState::default());
+        assert_eq!(common.nsq_state, NoiseShapingQuantizerState::default());
+        assert_eq!(common.frame_counter, 0);
+        assert_eq!(common.input_buf, [0; INPUT_BUFFER_LENGTH]);
         assert_eq!(common.input_quality_bands_q15, [0; VAD_N_BANDS]);
         assert_eq!(common.input_tilt_q15, 0);
         assert_eq!(common.speech_activity_q8, 0);
+        assert_eq!(common.no_speech_counter, 0);
         assert_eq!(
             common.variable_hp_smth1_q15,
             lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
@@ -581,6 +619,23 @@ mod tests {
         assert_eq!(
             common.variable_hp_smth2_q15,
             lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
+        );
+        assert_eq!(common.vad_flags, [false; MAX_FRAMES_PER_PACKET]);
+        assert!(!common.lbrr_flag);
+        assert_eq!(common.lbrr_flags, [false; MAX_FRAMES_PER_PACKET]);
+        assert_eq!(common.lbrr_prev_last_gain_index, 0);
+        assert!(
+            common
+                .indices_lbrr
+                .iter()
+                .all(|indices| *indices == SideInfoIndices::default())
+        );
+        assert_eq!(common.pulses, [0; MAX_FRAME_LENGTH]);
+        assert!(
+            common
+                .pulses_lbrr
+                .iter()
+                .all(|pulses| *pulses == [0; MAX_FRAME_LENGTH])
         );
         assert_eq!(common.packet_size_ms, MAX_FRAME_LENGTH_MS as i32);
         assert_eq!(common.packet_loss_perc, 0);
@@ -591,6 +646,9 @@ mod tests {
         assert!(common.first_frame_after_reset);
         assert!(!common.controlled_since_last_payload);
         assert!(!common.prefill_flag);
+        assert_eq!(common.ec_prev_signal_type, FrameSignalType::Inactive);
+        assert_eq!(common.ec_prev_lag_index, 0);
+        assert!(!common.in_dtx);
         assert!(!common.lbrr_enabled);
         assert_eq!(common.lbrr_gain_increases, 0);
         assert_eq!(common.arch, 0);
@@ -603,10 +661,8 @@ mod tests {
         assert_eq!(channel.vad(), &VadState::default());
         assert_eq!(channel.low_pass_state(), &LpState::default());
         assert_eq!(channel.shape_state, EncoderShapeState::default());
-        assert_eq!(channel.nsq_state, NoiseShapingQuantizerState::default());
         assert_eq!(channel.resampler_state.fs_in_khz(), 0);
         assert_eq!(channel.resampler_state.fs_out_khz(), 0);
-        assert_eq!(channel.input_buf, [0; INPUT_BUFFER_LENGTH]);
         assert_eq!(channel.x_buf, [0; X_BUFFER_LENGTH]);
     }
 

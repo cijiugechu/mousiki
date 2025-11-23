@@ -186,10 +186,10 @@ fn setup_fs(
     if encoder.common().fs_khz != fs_khz {
         encoder.shape_state = EncoderShapeState::default();
         encoder.shape_state.last_gain_index = 10;
-        encoder.nsq_state = NoiseShapingQuantizerState::default();
-        encoder.nsq_state.lag_prev = 100;
-        encoder.nsq_state.prev_gain_q16 = 65_536;
-        encoder.lp_state = LpState::default();
+        encoder.common.nsq_state = NoiseShapingQuantizerState::default();
+        encoder.common.nsq_state.lag_prev = 100;
+        encoder.common.nsq_state.prev_gain_q16 = 65_536;
+        encoder.common.lp_state = LpState::default();
 
         let nb_subfr = encoder.common().nb_subfr;
         {

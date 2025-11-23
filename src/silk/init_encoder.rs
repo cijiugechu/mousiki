@@ -44,8 +44,8 @@ mod tests {
             common.variable_hp_smth2_q15 = 0;
             common.first_frame_after_reset = false;
         }
-        state.input_buf[0] = 123;
-        state.vad.counter = -5;
+        state.common_mut().input_buf[0] = 123;
+        state.vad_mut().counter = -5;
 
         init_encoder(&mut state, 7).unwrap();
 
@@ -55,7 +55,7 @@ mod tests {
         expected_common.variable_hp_smth2_q15 = lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8;
         assert_eq!(state.common(), &expected_common);
         assert_eq!(state.vad(), &VadState::default());
-        assert!(state.input_buf.iter().all(|&sample| sample == 0));
+        assert!(state.common().input_buf.iter().all(|&sample| sample == 0));
     }
 
     #[test]

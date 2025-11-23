@@ -8,13 +8,12 @@ use crate::silk::a2nlsf::a2nlsf;
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::encoder::control_flp::EncoderControlFlp;
 use crate::silk::encoder::state::{
-    EncoderStateCommon, NoiseShapingQuantizerState, MAX_FRAME_LENGTH,
+    EncoderStateCommon, MAX_FRAME_LENGTH, NoiseShapingQuantizerState,
 };
-use crate::silk::encoder::state_flp::EncoderStateFlp;
+use crate::silk::nlsf2a::nlsf2a;
 use crate::silk::nsq::silk_nsq;
 use crate::silk::nsq_del_dec::silk_nsq_del_dec;
-use crate::silk::nlsf2a::nlsf2a;
-use crate::silk::process_nlsfs::{process_nlsfs, ProcessNlsfConfig};
+use crate::silk::process_nlsfs::{ProcessNlsfConfig, process_nlsfs};
 use crate::silk::quant_ltp_gains::silk_quant_ltp_gains;
 use crate::silk::sigproc_flp::silk_float2int;
 use crate::silk::tables_other::SILK_LTPSCALES_TABLE_Q14;
@@ -30,7 +29,10 @@ const Q16_SCALE: f32 = 1.0 / 65536.0;
 #[allow(clippy::cast_possible_truncation)]
 pub fn silk_a2nlsf_flp(nlsf_q15: &mut [i16], ar: &[f32], lpc_order: usize) {
     assert!(lpc_order.is_multiple_of(2), "LPC order must be even");
-    assert!(lpc_order <= MAX_LPC_ORDER, "LPC order exceeds MAX_LPC_ORDER");
+    assert!(
+        lpc_order <= MAX_LPC_ORDER,
+        "LPC order exceeds MAX_LPC_ORDER"
+    );
     assert!(
         ar.len() >= lpc_order,
         "input LPC slice shorter than requested order"
@@ -51,7 +53,10 @@ pub fn silk_a2nlsf_flp(nlsf_q15: &mut [i16], ar: &[f32], lpc_order: usize) {
 /// Convert NLSF Q15 vectors back to floating-point LPC coefficients.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn silk_nlsf2a_flp(p_ar: &mut [f32], nlsf_q15: &[i16], lpc_order: usize, arch: i32) {
-    assert!(lpc_order <= MAX_LPC_ORDER, "LPC order exceeds MAX_LPC_ORDER");
+    assert!(
+        lpc_order <= MAX_LPC_ORDER,
+        "LPC order exceeds MAX_LPC_ORDER"
+    );
     assert!(
         nlsf_q15.len() >= lpc_order,
         "input NLSF slice shorter than requested order"
@@ -62,11 +67,7 @@ pub fn silk_nlsf2a_flp(p_ar: &mut [f32], nlsf_q15: &[i16], lpc_order: usize, arc
     );
 
     let mut a_q12 = [0i16; MAX_LPC_ORDER];
-    nlsf2a(
-        &mut a_q12[..lpc_order],
-        &nlsf_q15[..lpc_order],
-        arch,
-    );
+    nlsf2a(&mut a_q12[..lpc_order], &nlsf_q15[..lpc_order], arch);
 
     for (dst, &src) in p_ar.iter_mut().zip(a_q12.iter()).take(lpc_order) {
         *dst = f32::from(src) * Q12_SCALE;
@@ -125,14 +126,13 @@ pub fn silk_process_nlsfs_flp(
     clippy::cast_sign_loss
 )]
 pub fn silk_nsq_wrapper_flp(
-    enc: &EncoderStateFlp,
+    common: &EncoderStateCommon,
     enc_ctrl: &EncoderControlFlp,
     indices: &mut SideInfoIndices,
     nsq: &mut NoiseShapingQuantizerState,
     pulses: &mut [i8],
     x: &[f32],
 ) {
-    let common = &enc.common;
     let nb_subfr = common.nb_subfr;
     let frame_length = common.frame_length;
     let shaping_order = common.shaping_lpc_order as usize;
@@ -157,16 +157,17 @@ pub fn silk_nsq_wrapper_flp(
     }
 
     let mut gains_q16 = [0i32; MAX_NB_SUBFR];
-    for (dst, &src) in gains_q16.iter_mut().zip(enc_ctrl.gains.iter()).take(nb_subfr) {
+    for (dst, &src) in gains_q16
+        .iter_mut()
+        .zip(enc_ctrl.gains.iter())
+        .take(nb_subfr)
+    {
         *dst = silk_float2int(src * Q16_SCALE.recip());
         assert!(*dst > 0, "quantiser gain must stay positive");
     }
 
     let mut pred_coef_q12 = [[0i16; MAX_LPC_ORDER]; 2];
-    for (dst_row, src_row) in pred_coef_q12
-        .iter_mut()
-        .zip(enc_ctrl.pred_coef.iter())
-    {
+    for (dst_row, src_row) in pred_coef_q12.iter_mut().zip(enc_ctrl.pred_coef.iter()) {
         for (dst, &src) in dst_row.iter_mut().zip(src_row.iter()).take(predict_order) {
             *dst = silk_float2int(src * Q12_SCALE.recip()) as i16;
         }
@@ -199,8 +200,7 @@ pub fn silk_nsq_wrapper_flp(
         let ma_q14 = silk_float2int(enc_ctrl.lf_ma_shp[i] * Q14_SCALE.recip());
         lf_shp_q14[i] = (ar_q14 << 16) | (ma_q14 & 0xFFFF);
         tilt_q14[i] = silk_float2int(enc_ctrl.tilt[i] * Q14_SCALE.recip());
-        harm_shape_gain_q14[i] =
-            silk_float2int(enc_ctrl.harm_shape_gain[i] * Q14_SCALE.recip());
+        harm_shape_gain_q14[i] = silk_float2int(enc_ctrl.harm_shape_gain[i] * Q14_SCALE.recip());
     }
 
     let lambda_q10 = silk_float2int(enc_ctrl.lambda * 1024.0);
@@ -272,10 +272,7 @@ pub fn silk_quant_ltp_gains_flp(
     assert_eq!(cbk_index.len(), nb_subfr);
     assert_eq!(xx.len(), nb_subfr * LTP_ORDER * LTP_ORDER);
     assert_eq!(x_x.len(), nb_subfr * LTP_ORDER);
-    assert!(
-        nb_subfr <= MAX_NB_SUBFR,
-        "nb_subfr exceeds MAX_NB_SUBFR"
-    );
+    assert!(nb_subfr <= MAX_NB_SUBFR, "nb_subfr exceeds MAX_NB_SUBFR");
 
     let mut b_q14 = [0i16; MAX_NB_SUBFR * LTP_ORDER];
     let mut xx_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER * LTP_ORDER];

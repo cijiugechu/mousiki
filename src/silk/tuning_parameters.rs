@@ -37,6 +37,12 @@ pub const VARIABLE_HP_MAX_CUTOFF_HZ: i32 = 100;
 
 /// Voice activity detection threshold.
 pub const SPEECH_ACTIVITY_DTX_THRES: f32 = 0.05;
+/// Number of speech frames required before entering discontinuous transmission.
+pub const NB_SPEECH_FRAMES_BEFORE_DTX: i32 = 10;
+/// Maximum number of consecutive DTX frames.
+pub const MAX_CONSECUTIVE_DTX: i32 = 20;
+/// External VAD flag indicating inactivity.
+pub const VAD_NO_ACTIVITY: i32 = 0;
 
 /// Speech activity threshold for enabling low bit-rate redundancy (LBRR).
 pub const LBRR_SPEECH_ACTIVITY_THRES: f32 = 0.3;

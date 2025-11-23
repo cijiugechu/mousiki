@@ -347,6 +347,12 @@ impl RangeEncoder {
         }
     }
 
+    /// Returns the number of whole bits emitted so far.
+    #[must_use]
+    pub fn tell(&self) -> i32 {
+        self.nbits_total - ec_ilog(self.range_size)
+    }
+
     pub fn encode_bin(&mut self, low: u32, high: u32, bits: u32) {
         let r = self.range_size >> bits;
         let total = 1u32 << bits;
