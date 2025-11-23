@@ -137,6 +137,7 @@ pub mod vq_wmat_ec;
 pub mod warped_autocorrelation;
 pub mod warped_autocorrelation_flp;
 pub mod wrappers_flp;
+pub mod x86_silk_map;
 
 pub use check_control_input::EncControl;
 pub use decode_frame::{DecodeFlag, silk_decode_frame};
