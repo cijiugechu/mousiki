@@ -31,6 +31,7 @@ pub mod decoder;
 pub mod decoder_control;
 pub mod decoder_set_fs;
 pub mod decoder_state;
+pub mod encode_frame;
 pub mod encode_frame_flp;
 pub mod encode_indices;
 pub mod encode_pulses;
