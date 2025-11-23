@@ -27,6 +27,7 @@ silk_tic_toc = []
 [dependencies]
 libm = "0.2"
 log = { version = "0.4", default-features = false }
+bitflags = "2"
 
 
 [lints.clippy]
