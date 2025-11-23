@@ -17,7 +17,7 @@ use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
 use crate::silk::tables_other::SILK_UNIFORM8_ICDF;
 use crate::silk::tables_pitch_lag::PITCH_CONTOUR_ICDF;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
-use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR};
+use crate::silk::{MAX_LPC_ORDER, MAX_NB_SUBFR, MAX_SHAPE_LPC_ORDER};
 use core::array::from_fn;
 
 /// Number of VAD bands tracked per SILK channel.
@@ -28,6 +28,8 @@ pub const ENCODER_NUM_CHANNELS: usize = 2;
 pub(crate) const MAX_FS_KHZ: usize = 16;
 /// Sub-frame duration in milliseconds.
 pub(crate) const SUB_FRAME_LENGTH_MS: usize = 5;
+/// Maximum number of samples per 5 ms subframe.
+pub(crate) const MAX_SUB_FRAME_LENGTH: usize = SUB_FRAME_LENGTH_MS * MAX_FS_KHZ;
 /// Default number of milliseconds per frame.
 pub(crate) const MAX_FRAME_LENGTH_MS: usize = SUB_FRAME_LENGTH_MS * MAX_NB_SUBFR;
 /// Default internal sampling rate in kHz used when initialising the encoder state.
@@ -59,6 +61,10 @@ pub(crate) const MAX_DEL_DEC_STATES: i32 = 4;
 pub(crate) const MAX_FIND_PITCH_LPC_ORDER: i32 = 16;
 /// Upper bound on the noise-shaping analysis window (samples).
 pub(crate) const SHAPE_LPC_WIN_MAX: i32 = 15 * MAX_FS_KHZ as i32;
+/// Length of the NSQ LPC history buffer.
+pub(crate) const NSQ_LPC_BUF_LENGTH: usize = MAX_LPC_ORDER;
+/// Maximum number of samples kept in the LTP state buffer.
+pub(crate) const MAX_LTP_MEM_LENGTH: usize = 4 * MAX_SUB_FRAME_LENGTH;
 /// Bias used by the VAD noise estimator.
 pub(crate) const VAD_NOISE_LEVELS_BIAS: i32 = 50;
 /// Initial smoothed SNR per VAD band (100 * 256 -> 20 dB).
@@ -128,11 +134,40 @@ pub struct EncoderShapeState {
     pub tilt_smth_q16: i32,
 }
 
-/// Minimal mirror of `silk_nsq_state` used by the Rust ports so far.
-#[derive(Clone, Debug, PartialEq, Default)]
+/// Fixed-point NSQ state (`silk_nsq_state`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct NoiseShapingQuantizerState {
+    pub xq: [i16; 2 * MAX_FRAME_LENGTH],
+    pub s_ltp_shp_q14: [i32; 2 * MAX_FRAME_LENGTH],
+    pub s_lpc_q14: [i32; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
+    pub s_ar2_q14: [i32; MAX_SHAPE_LPC_ORDER],
+    pub s_lf_ar_shp_q14: i32,
+    pub s_diff_shp_q14: i32,
     pub lag_prev: i32,
+    pub s_ltp_buf_idx: usize,
+    pub s_ltp_shp_buf_idx: usize,
+    pub rand_seed: i32,
     pub prev_gain_q16: i32,
+    pub rewhite_flag: bool,
+}
+
+impl Default for NoiseShapingQuantizerState {
+    fn default() -> Self {
+        Self {
+            xq: [0; 2 * MAX_FRAME_LENGTH],
+            s_ltp_shp_q14: [0; 2 * MAX_FRAME_LENGTH],
+            s_lpc_q14: [0; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
+            s_ar2_q14: [0; MAX_SHAPE_LPC_ORDER],
+            s_lf_ar_shp_q14: 0,
+            s_diff_shp_q14: 0,
+            lag_prev: 0,
+            s_ltp_buf_idx: 0,
+            s_ltp_shp_buf_idx: 0,
+            rand_seed: 0,
+            prev_gain_q16: 1 << 16,
+            rewhite_flag: false,
+        }
+    }
 }
 
 /// Minimal subset of the encoder common state needed by the Rust ports.
