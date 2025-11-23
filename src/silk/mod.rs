@@ -81,6 +81,7 @@ pub mod nlsf_vq_weights_laroia;
 pub mod noise_shape_analysis;
 pub mod noise_shape_analysis_flp;
 pub mod nsq;
+pub mod nsq_del_dec;
 pub mod pitch_analysis_core;
 pub mod pitch_analysis_core_flp;
 pub mod pitch_est_tables;

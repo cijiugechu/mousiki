@@ -10,8 +10,8 @@ use core::cmp::max;
 
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::encoder::state::{
-    EncoderStateCommon, NoiseShapingQuantizerState, MAX_FRAME_LENGTH, MAX_LTP_MEM_LENGTH,
-    MAX_SUB_FRAME_LENGTH, NSQ_LPC_BUF_LENGTH,
+    EncoderStateCommon, MAX_FRAME_LENGTH, MAX_LTP_MEM_LENGTH, MAX_SUB_FRAME_LENGTH,
+    NSQ_LPC_BUF_LENGTH, NoiseShapingQuantizerState,
 };
 use crate::silk::lpc_analysis_filter::lpc_analysis_filter;
 use crate::silk::lpc_inv_pred_gain::inverse32_varq;
@@ -22,10 +22,10 @@ use crate::silk::{
     FrameQuantizationOffsetType, FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR, MAX_SHAPE_LPC_ORDER,
 };
 
-const HARM_SHAPE_FIR_TAPS: usize = 3;
-const QUANT_LEVEL_ADJUST_Q10: i32 = 80;
-const RAND_MULTIPLIER: i32 = 196_314_165;
-const RAND_INCREMENT: i32 = 907_633_515;
+pub(crate) const HARM_SHAPE_FIR_TAPS: usize = 3;
+pub(crate) const QUANT_LEVEL_ADJUST_Q10: i32 = 80;
+pub(crate) const RAND_MULTIPLIER: i32 = 196_314_165;
+pub(crate) const RAND_INCREMENT: i32 = 907_633_515;
 
 /// Fixed-point noise-shaping quantiser (`silk_NSQ`).
 #[allow(clippy::too_many_lines)]
@@ -75,7 +75,11 @@ pub fn silk_nsq(
 
     let mut lag = nsq.lag_prev;
     let offset_q10 = quantization_offset(indices.signal_type, indices.quant_offset_type);
-    let lsf_interpolation_flag = if indices.nlsf_interp_coef_q2 == 4 { 0 } else { 1 };
+    let lsf_interpolation_flag = if indices.nlsf_interp_coef_q2 == 4 {
+        0
+    } else {
+        1
+    };
 
     nsq.s_ltp_shp_buf_idx = ltp_mem_length;
     nsq.s_ltp_buf_idx = ltp_mem_length;
@@ -272,12 +276,8 @@ fn silk_noise_shape_quantizer(
     for i in 0..length {
         nsq.rand_seed = rand(nsq.rand_seed);
 
-        let lpc_pred_q10 = noise_shape_short_prediction(
-            &nsq.s_lpc_q14,
-            lpc_q14_offset,
-            a_q12,
-            predict_lpc_order,
-        );
+        let lpc_pred_q10 =
+            noise_shape_short_prediction(&nsq.s_lpc_q14, lpc_q14_offset, a_q12, predict_lpc_order);
 
         let ltp_pred_q13 = if signal_type == FrameSignalType::Voiced {
             let base = pred_lag_ptr;
@@ -310,8 +310,7 @@ fn silk_noise_shape_quantizer(
 
         let n_ar_q12 = smlawb(n_ar_q12, nsq.s_lf_ar_shp_q14, tilt_q14);
 
-        let n_lf_q12 =
-            smulwb(nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx - 1], lf_shp_q14);
+        let n_lf_q12 = smulwb(nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx - 1], lf_shp_q14);
         let n_lf_q12 = smlawt(n_lf_q12, nsq.s_lf_ar_shp_q14, lf_shp_q14);
 
         assert!(lag > 0 || signal_type != FrameSignalType::Voiced);
@@ -323,13 +322,14 @@ fn silk_noise_shape_quantizer(
             assert!(shp_lag_ptr >= 2);
             let lag_base = shp_lag_ptr;
             let mut n_ltp_q13 = smulwb(
-                add_sat32(
-                    nsq.s_ltp_shp_q14[lag_base],
-                    nsq.s_ltp_shp_q14[lag_base - 2],
-                ),
+                add_sat32(nsq.s_ltp_shp_q14[lag_base], nsq.s_ltp_shp_q14[lag_base - 2]),
                 harm_shape_fir_packed_q14,
             );
-            n_ltp_q13 = smlawt(n_ltp_q13, nsq.s_ltp_shp_q14[lag_base - 1], harm_shape_fir_packed_q14);
+            n_ltp_q13 = smlawt(
+                n_ltp_q13,
+                nsq.s_ltp_shp_q14[lag_base - 1],
+                harm_shape_fir_packed_q14,
+            );
             n_ltp_q13 = lshift(n_ltp_q13, 1);
             shp_lag_ptr += 1;
 
@@ -415,8 +415,7 @@ fn silk_noise_shape_quantizer(
         lpc_q14_offset += 1;
         nsq.s_lpc_q14[lpc_q14_offset] = xq_q14;
         nsq.s_diff_shp_q14 = sub32_ovflw(xq_q14, lshift(x_sc_q10[i], 4));
-        let s_lf_ar_shp_q14 =
-            sub32_ovflw(nsq.s_diff_shp_q14, lshift(n_ar_q12, 2));
+        let s_lf_ar_shp_q14 = sub32_ovflw(nsq.s_diff_shp_q14, lshift(n_ar_q12, 2));
         nsq.s_lf_ar_shp_q14 = s_lf_ar_shp_q14;
 
         nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx] =
@@ -432,7 +431,7 @@ fn silk_noise_shape_quantizer(
         .copy_within(length..length + NSQ_LPC_BUF_LENGTH, 0);
 }
 
-fn noise_shape_short_prediction(
+pub(crate) fn noise_shape_short_prediction(
     s_lpc_q14: &[i32],
     offset: usize,
     coef_q12: &[i16],
@@ -449,7 +448,7 @@ fn noise_shape_short_prediction(
     out
 }
 
-fn nsq_noise_shape_feedback_loop(
+pub(crate) fn nsq_noise_shape_feedback_loop(
     s_diff_shp_q14: i32,
     ar2_q14: &mut [i32],
     coef_q13: &[i16],
@@ -477,7 +476,7 @@ fn nsq_noise_shape_feedback_loop(
     lshift(out, 1)
 }
 
-fn quantization_offset(
+pub(crate) fn quantization_offset(
     signal_type: FrameSignalType,
     quant_offset_type: FrameQuantizationOffsetType,
 ) -> i32 {
@@ -493,73 +492,72 @@ fn quantization_offset(
 }
 
 #[inline]
-fn rand(seed: i32) -> i32 {
+pub(crate) fn rand(seed: i32) -> i32 {
     RAND_INCREMENT.wrapping_add(seed.wrapping_mul(RAND_MULTIPLIER))
 }
 
 #[inline]
-fn add_sat32(a: i32, b: i32) -> i32 {
-    (i64::from(a) + i64::from(b))
-        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+pub(crate) fn add_sat32(a: i32, b: i32) -> i32 {
+    (i64::from(a) + i64::from(b)).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[inline]
-fn add_lshift32(a: i32, b: i32, shift: i32) -> i32 {
+pub(crate) fn add_lshift32(a: i32, b: i32, shift: i32) -> i32 {
     a.wrapping_add(b.wrapping_shl(shift as u32))
 }
 
 #[inline]
-fn add32_ovflw(a: i32, b: i32) -> i32 {
+pub(crate) fn add32_ovflw(a: i32, b: i32) -> i32 {
     a.wrapping_add(b)
 }
 
 #[inline]
-fn sub32_ovflw(a: i32, b: i32) -> i32 {
+pub(crate) fn sub32_ovflw(a: i32, b: i32) -> i32 {
     a.wrapping_sub(b)
 }
 
 #[inline]
-fn smulbb(a: i32, b: i32) -> i32 {
+pub(crate) fn smulbb(a: i32, b: i32) -> i32 {
     i32::from(a as i16).wrapping_mul(i32::from(b as i16))
 }
 
 #[inline]
-fn smulwb(a: i32, b: i32) -> i32 {
+pub(crate) fn smulwb(a: i32, b: i32) -> i32 {
     ((i64::from(a) * i64::from(b as i16)) >> 16) as i32
 }
 
 #[inline]
-fn smulwt(a: i32, b: i32) -> i32 {
+pub(crate) fn smulwt(a: i32, b: i32) -> i32 {
     ((i64::from(a) * i64::from(b >> 16)) >> 16) as i32
 }
 
 #[inline]
-fn smulww(a: i32, b: i32) -> i32 {
+pub(crate) fn smulww(a: i32, b: i32) -> i32 {
     ((i64::from(a) * i64::from(b)) >> 16) as i32
 }
 
 #[inline]
-fn smlabb(a: i32, b: i32, c: i32) -> i32 {
+pub(crate) fn smlabb(a: i32, b: i32, c: i32) -> i32 {
     a.wrapping_add(smulbb(b, c))
 }
 
 #[inline]
-fn smlawb(a: i32, b: i32, c: i32) -> i32 {
+pub(crate) fn smlawb(a: i32, b: i32, c: i32) -> i32 {
     a.wrapping_add(smulwb(b, c))
 }
 
 #[inline]
-fn smlawt(a: i32, b: i32, c: i32) -> i32 {
+pub(crate) fn smlawt(a: i32, b: i32, c: i32) -> i32 {
     a.wrapping_add(smulwt(b, c))
 }
 
 #[inline]
-fn lshift(value: i32, shift: i32) -> i32 {
+pub(crate) fn lshift(value: i32, shift: i32) -> i32 {
     value.wrapping_shl(shift as u32)
 }
 
 #[inline]
-fn rshift_round(value: i32, shift: i32) -> i32 {
+pub(crate) fn rshift_round(value: i32, shift: i32) -> i32 {
     assert!(shift > 0);
     if shift == 1 {
         (value >> 1) + (value & 1)
@@ -569,11 +567,11 @@ fn rshift_round(value: i32, shift: i32) -> i32 {
 }
 
 #[inline]
-fn sat16(value: i32) -> i16 {
+pub(crate) fn sat16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 #[inline]
-fn limit_32(value: i32, min_val: i32, max_val: i32) -> i32 {
+pub(crate) fn limit_32(value: i32, min_val: i32, max_val: i32) -> i32 {
     value.clamp(min_val, max_val)
 }
