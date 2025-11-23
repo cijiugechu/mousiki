@@ -432,6 +432,33 @@ impl RangeEncoder {
         self.normalize();
     }
 
+    /// Patches bits at the start of the encoded stream.
+    ///
+    /// Mirrors `ec_enc_patch_initial_bits`, allowing callers to reserve space
+    /// for header bits and fill them in once the final values are known.
+    pub fn patch_initial_bits(&mut self, value: u32, nbits: u32) {
+        assert!(nbits <= EC_SYM_BITS);
+        if nbits == 0 {
+            return;
+        }
+
+        let shift = EC_SYM_BITS - nbits;
+        let mask = ((1u32 << nbits) - 1) << shift;
+        let val_masked = (value & ((1u32 << nbits) - 1)) << shift;
+
+        if let Some(first) = self.data.first_mut() {
+            *first = ((u32::from(*first) & !mask) | val_masked) as u8;
+        } else if self.rem >= 0 {
+            let rem = self.rem as u32;
+            self.rem = ((rem & !mask) | val_masked) as i32;
+        } else if self.range_size <= (EC_CODE_TOP >> nbits) {
+            let mask_shifted = mask << EC_CODE_SHIFT;
+            self.low_value = (self.low_value & !mask_shifted) | (val_masked << EC_CODE_SHIFT);
+        } else {
+            panic!("cannot patch initial bits before any output was produced");
+        }
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
         let mut l = EC_CODE_BITS as i32 - ec_ilog(self.range_size);
         let mut mask = (EC_CODE_TOP - 1) >> l;

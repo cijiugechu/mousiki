@@ -21,6 +21,7 @@ pub mod corr_matrix;
 pub mod corr_matrix_flp;
 pub mod debug;
 pub mod dec_api;
+pub mod enc_api;
 pub mod decode_core;
 pub mod decode_frame;
 pub mod decode_indices;

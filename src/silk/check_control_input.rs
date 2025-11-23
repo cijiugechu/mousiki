@@ -5,6 +5,7 @@
 //! configurations yield the same error codes as the original library.
 
 use crate::silk::errors::SilkError;
+use crate::silk::FrameSignalType;
 
 /// Maximum number of channels supported by the SILK encoder.
 const ENCODER_NUM_CHANNELS: i32 = 2;
@@ -44,6 +45,8 @@ pub struct EncControl {
     pub complexity: i32,
     /// Enables in-band forward error correction when set to 1.
     pub use_in_band_fec: i32,
+    /// Enables in-band Deep REDundancy when set to 1.
+    pub use_dred: i32,
     /// Forces the encoder to emit low-bit-rate redundancy for the current packet.
     pub lbrr_coded: i32,
     /// Enables discontinuous transmission when set to 1.
@@ -52,10 +55,26 @@ pub struct EncControl {
     pub use_cbr: i32,
     /// Maximum number of bits the encoder may spend on the current frame.
     pub max_bits: i32,
+    /// Enables the smooth down-mix to mono path when set.
+    pub to_mono: bool,
     /// Flag indicating that the Opus wrapper allows SILK to switch bandwidth this frame.
     pub opus_can_switch: bool,
+    /// Request to make frames as independent as possible.
+    pub reduced_dependency: bool,
+    /// Internal sample rate used by the encoder (Hz).
+    pub internal_sample_rate: i32,
+    /// Flag set by SILK when low speech activity allows a bandwidth switch.
+    pub allow_bandwidth_switch: bool,
+    /// Tracks whether SILK is running in WB mode without the variable LP filter enabled.
+    pub in_wb_mode_without_variable_lp: bool,
+    /// Smoothed stereo width reported by the encoder (Q14).
+    pub stereo_width_q14: i32,
     /// Flag set by SILK when it is ready to switch bandwidth.
     pub switch_ready: bool,
+    /// Encoded signal type for the last frame.
+    pub signal_type: FrameSignalType,
+    /// Quantisation offset (Q10) used for the last frame.
+    pub offset: i32,
 }
 
 impl Default for EncControl {
@@ -72,12 +91,21 @@ impl Default for EncControl {
             packet_loss_percentage: 0,
             complexity: 10,
             use_in_band_fec: 0,
+            use_dred: 0,
             lbrr_coded: 0,
             use_dtx: 0,
             use_cbr: 0,
             max_bits: 0,
+            to_mono: false,
             opus_can_switch: false,
+            reduced_dependency: false,
+            internal_sample_rate: 16_000,
+            allow_bandwidth_switch: false,
+            in_wb_mode_without_variable_lp: false,
+            stereo_width_q14: 0,
             switch_ready: false,
+            signal_type: FrameSignalType::Inactive,
+            offset: 0,
         }
     }
 }
