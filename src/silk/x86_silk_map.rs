@@ -14,7 +14,10 @@ use crate::silk::nsq::silk_nsq;
 use crate::silk::nsq_del_dec::silk_nsq_del_dec;
 use crate::silk::vad::compute_speech_activity_q8_common;
 use crate::silk::vector_ops::inner_prod16;
-use crate::silk::vq_wmat_ec::{vq_wmat_ec, VqWMatEcResult, LTP_ORDER};
+use crate::silk::vq_wmat_ec::{VqWMatEcResult, LTP_ORDER};
+use crate::silk::vq_wmat_ec_sse4_1::vq_wmat_ec_sse4_1;
+#[cfg(test)]
+use crate::silk::vq_wmat_ec::vq_wmat_ec;
 
 const ARCH_IMPL_COUNT: usize = (OPUS_ARCHMASK as usize) + 1;
 
@@ -55,7 +58,7 @@ pub type SilkVqWMatEcImpl = fn(
     i32,
 ) -> VqWMatEcResult;
 pub const SILK_VQ_WMAT_EC_IMPL: [SilkVqWMatEcImpl; ARCH_IMPL_COUNT] =
-    [vq_wmat_ec; ARCH_IMPL_COUNT];
+    [vq_wmat_ec_sse4_1; ARCH_IMPL_COUNT];
 
 pub type SilkNsqDelDecImpl = fn(
     &EncoderStateCommon,

@@ -72,6 +72,7 @@
 - `src/silk/sort.rs` ports the insertion-sort helpers that maintain partially ordered fixed-point vectors and their indices, mirroring `silk/sort.c` alongside the floating-point variant in `silk/float/sort_FLP.c`.【src/silk/sort.rs†L1-L221】【opus-c/silk/sort.c†L40-L135】【opus-c/silk/float/sort_FLP.c†L39-L83】
 - `src/silk/stereo_quant_pred.rs` ports the mid/side predictor quantisation helper that searches the stereo predictor table and emits entropy indices, mirroring `silk/stereo_quant_pred.c`.【src/silk/stereo_quant_pred.rs†L1-L139】【opus-main/silk/stereo_quant_pred.c†L34-L78】
 - `src/silk/vq_wmat_ec.rs` mirrors the entropy-constrained matrix-weighted VQ search (`silk_VQ_WMat_EC_c`) that evaluates 5-tap LTP codebook rows and returns the best index, residual energy, and rate/distortion score for the encoder pipeline.【src/silk/vq_wmat_ec.rs†L1-L142】【opus-main/silk/VQ_WMat_EC.c†L29-L115】
+- `src/silk/vq_wmat_ec_sse4_1.rs` keeps the SSE4.1 fast-path entry point (`silk_VQ_WMat_EC_sse4_1`) available for the x86 dispatch table, delegating to the scalar helper until runtime CPU detection is re-enabled in the Rust port.【src/silk/vq_wmat_ec_sse4_1.rs†L1-L35】【opus-c/silk/x86/VQ_WMat_EC_sse4_1.c†L1-L132】
 - `src/silk/gain_quant.rs` ports the scalar gain quantisation/dequantisation routines and gain identifier helper from `silk/gain_quant.c`, preserving the encoder's hysteresis logic and delta-index bounds in Rust.【src/silk/gain_quant.rs†L1-L170】【opus-main/silk/gain_quant.c†L34-L147】
 - `src/silk/stereo_ms_to_lr.rs` mirrors the adaptive mid/side to left/right conversion used during stereo decoding, porting the decoder-side state (`StereoDecState`) and exposing `StereoDecState::ms_to_lr`, a Rust translation of `silk_stereo_MS_to_LR`.【src/silk/stereo_ms_to_lr.rs†L1-L225】【opus-main/silk/stereo_MS_to_LR.c†L31-L89】
 - `src/silk/stereo_decode_pred.rs` reproduces the entropy decoding of stereo predictor indices and the reconstruction of quantised mid/side predictors, mirroring `silk/stereo_decode_pred.c`.【src/silk/stereo_decode_pred.rs†L1-L118】【opus-main/silk/stereo_decode_pred.c†L28-L75】
@@ -146,7 +147,7 @@
 - `src/silk/debug.rs` mirrors the optional timing and debug-data helpers from `silk/debug.c`/`debug.h`, exposing timer snapshots and data sinks behind the `silk_tic_toc` and `silk_debug` Cargo features so instrumentation can be toggled just like the reference macros.【src/silk/debug.rs†L1-L396】【opus-c/silk/debug.c†L36-L165】【opus-c/silk/debug.h†L34-L261】
 - `src/silk/x86_silk_map.rs` mirrors the x86 runtime dispatch table, exposing the SILK encoder’s VAD, NSQ, Burg, VQ, and inner-product function-pointer arrays while currently defaulting each slot to the scalar Rust implementations because the `OPUS_ARCHMASK` stub still disables SIMD selection.【src/silk/x86_silk_map.rs†L1-L235】【opus-c/silk/x86/x86_silk_map.c†L1-L175】
 
-The existing Rust implementation now mirrors the decoder and encoder API layers and provides the x86 RTCD table, but the architecture-specific SIMD fast paths behind these dispatch slots remain unported.
+The existing Rust implementation now mirrors the decoder and encoder API layers, provides the x86 RTCD table, and exposes the SSE4.1 VQ search entry point, but the remaining architecture-specific SIMD fast paths stay unported until runtime dispatch is wired up.
 
 ## C Module Inventory
 
@@ -196,4 +197,4 @@ These stereo/bandwidth-extension paths remain largely unported despite the new h
 
 No outstanding API functions remain unported; the remaining gaps centre on architecture-specific optimisations (SIMD/RTCD) and optional Deep PLC/OSCE hooks.
 
-This inventory highlights that the Rust port still lacks the encoder orchestration layer and noise-shaping quantiser that drive `silk_Encode`; those pieces must land before the Rust crate can expose a complete encoder API.
+Remaining work focuses on wiring CPU detection and porting the other SIMD kernels (NSQ, VAD, inner-product) alongside the optional Deep PLC/OSCE hooks.

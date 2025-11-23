@@ -134,6 +134,7 @@ pub mod tuning_parameters;
 pub mod vad;
 pub mod vector_ops;
 pub mod vq_wmat_ec;
+pub mod vq_wmat_ec_sse4_1;
 pub mod warped_autocorrelation;
 pub mod warped_autocorrelation_flp;
 pub mod wrappers_flp;
