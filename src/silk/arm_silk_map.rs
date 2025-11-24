@@ -6,6 +6,8 @@
 //! `arch & OPUS_ARCHMASK` indexing scheme.
 
 use crate::celt::OPUS_ARCHMASK;
+use crate::silk::biquad_alt_neon_intr::biquad_alt_stride2_neon;
+#[cfg(test)]
 use crate::silk::biquad_alt::biquad_alt_stride2;
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState};
@@ -19,7 +21,7 @@ const ARCH_IMPL_COUNT: usize = (OPUS_ARCHMASK as usize) + 1;
 pub type SilkBiquadAltStride2Impl =
     fn(&[i16], &[i32; 3], &[i32; 2], &mut [i32; 4], &mut [i16]);
 pub const SILK_BIQUAD_ALT_STRIDE2_IMPL: [SilkBiquadAltStride2Impl; ARCH_IMPL_COUNT] =
-    [biquad_alt_stride2; ARCH_IMPL_COUNT];
+    [biquad_alt_stride2_neon; ARCH_IMPL_COUNT];
 
 pub type SilkLpcInversePredGainImpl = fn(&[i16]) -> i32;
 pub const SILK_LPC_INVERSE_PRED_GAIN_IMPL: [SilkLpcInversePredGainImpl; ARCH_IMPL_COUNT] =

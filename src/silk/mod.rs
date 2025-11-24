@@ -6,6 +6,7 @@ pub mod autocorr;
 pub mod autocorrelation_flp;
 pub mod arm_silk_map;
 pub mod biquad_alt;
+pub mod biquad_alt_neon_intr;
 pub mod burg_modified;
 pub mod burg_modified_flp;
 pub mod bwexpander;
