@@ -135,6 +135,7 @@ pub mod tables_pulses_per_block;
 pub mod tuning_parameters;
 pub mod vad;
 pub mod vector_ops;
+pub mod vector_ops_fix_sse4_1;
 pub mod vq_wmat_ec;
 pub mod vq_wmat_ec_sse4_1;
 pub mod warped_autocorrelation;
