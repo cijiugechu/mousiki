@@ -4,6 +4,7 @@ pub mod apply_sine_window;
 pub mod apply_sine_window_flp;
 pub mod autocorr;
 pub mod autocorrelation_flp;
+pub mod arm_silk_map;
 pub mod biquad_alt;
 pub mod burg_modified;
 pub mod burg_modified_flp;
