@@ -325,7 +325,7 @@ pub fn silk_nsq_del_dec(
         let shp_idx = nsq.s_ltp_shp_buf_idx - decision_delay + i;
         nsq.s_ltp_shp_q14[shp_idx] = winner.shape_q14[last_smple_idx];
     }
-    nsq.s_lpc_q14.copy_from_slice(
+    nsq.s_lpc_q14[..NSQ_LPC_BUF_LENGTH].copy_from_slice(
         &winner.s_lpc_q14[encoder.subfr_length..encoder.subfr_length + NSQ_LPC_BUF_LENGTH],
     );
     nsq.s_ar2_q14.copy_from_slice(&winner.s_ar2_q14);
