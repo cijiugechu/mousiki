@@ -57,6 +57,7 @@ pub mod init_decoder;
 pub mod init_encoder;
 pub mod inner_prod_aligned;
 pub mod inner_product_flp;
+pub mod inner_product_flp_avx2;
 pub mod interpolate;
 pub mod k2a;
 pub mod k2a_flp;

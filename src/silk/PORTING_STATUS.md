@@ -146,8 +146,9 @@
 - `src/silk/control_codec.rs` mirrors `silk/control_codec.c`, wiring together resampler resets, bandwidth selection, complexity tuning, packet-loss handling, and low-bit-rate redundancy so the Rust encoder follows the same control flow as the reference `silk_control_encoder`.【src/silk/control_codec.rs†L1-L346】【opus-c/silk/control_codec.c†L33-L418】
 - `src/silk/debug.rs` mirrors the optional timing and debug-data helpers from `silk/debug.c`/`debug.h`, exposing timer snapshots and data sinks behind the `silk_tic_toc` and `silk_debug` Cargo features so instrumentation can be toggled just like the reference macros.【src/silk/debug.rs†L1-L396】【opus-c/silk/debug.c†L36-L165】【opus-c/silk/debug.h†L34-L261】
 - `src/silk/x86_silk_map.rs` mirrors the x86 runtime dispatch table, exposing the SILK encoder’s VAD, NSQ, Burg, VQ, and inner-product function-pointer arrays while currently defaulting each slot to the scalar Rust implementations because the `OPUS_ARCHMASK` stub still disables SIMD selection.【src/silk/x86_silk_map.rs†L1-L235】【opus-c/silk/x86/x86_silk_map.c†L1-L175】
+- `src/silk/inner_product_flp_avx2.rs` mirrors the AVX2 inner-product fast path from `silk/float/x86/inner_product_FLP_avx2.c`, keeping the dedicated entry point while delegating to the scalar helper until runtime CPU dispatch is enabled.【src/silk/inner_product_flp_avx2.rs†L1-L49】【opus-c/silk/float/x86/inner_product_FLP_avx2.c†L1-L85】
 
-The existing Rust implementation now mirrors the decoder and encoder API layers, provides the x86 RTCD table, and exposes the SSE4.1 VQ search entry point, but the remaining architecture-specific SIMD fast paths stay unported until runtime dispatch is wired up.
+The existing Rust implementation now mirrors the decoder and encoder API layers, provides the x86 RTCD table, exposes the SSE4.1 VQ search entry point, and stubs the AVX2 inner-product fast path, but the remaining architecture-specific SIMD fast paths stay unported until runtime dispatch is wired up.
 
 ## C Module Inventory
 
@@ -197,4 +198,4 @@ These stereo/bandwidth-extension paths remain largely unported despite the new h
 
 No outstanding API functions remain unported; the remaining gaps centre on architecture-specific optimisations (SIMD/RTCD) and optional Deep PLC/OSCE hooks.
 
-Remaining work focuses on wiring CPU detection and porting the other SIMD kernels (NSQ, VAD, inner-product) alongside the optional Deep PLC/OSCE hooks.
+Remaining work focuses on wiring CPU detection and porting the remaining SIMD kernels (NSQ, VAD) alongside the optional Deep PLC/OSCE hooks; the AVX2 inner-product entry point now mirrors the C fast path while deferring to the scalar Rust implementation until dispatch is enabled.

@@ -9,7 +9,7 @@ use crate::celt::OPUS_ARCHMASK;
 use crate::silk::burg_modified::silk_burg_modified;
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState};
-use crate::silk::inner_product_flp::inner_product_flp;
+use crate::silk::inner_product_flp_avx2::inner_product_flp_avx2;
 use crate::silk::nsq::silk_nsq;
 use crate::silk::nsq_del_dec::silk_nsq_del_dec;
 use crate::silk::vad::compute_speech_activity_q8_common;
@@ -96,7 +96,7 @@ pub const SILK_BURG_MODIFIED_IMPL: [SilkBurgModifiedImpl; ARCH_IMPL_COUNT] =
 
 pub type SilkInnerProductFlpImpl = fn(&[f32], &[f32]) -> f64;
 pub const SILK_INNER_PRODUCT_FLP_IMPL: [SilkInnerProductFlpImpl; ARCH_IMPL_COUNT] =
-    [inner_product_flp; ARCH_IMPL_COUNT];
+    [inner_product_flp_avx2; ARCH_IMPL_COUNT];
 
 #[inline]
 fn dispatch_index(arch: i32) -> usize {
@@ -148,6 +148,7 @@ pub fn select_inner_product_flp_impl(arch: i32) -> SilkInnerProductFlpImpl {
 mod tests {
     use super::*;
     use crate::silk::encoder::state::EncoderStateCommon;
+    use crate::silk::inner_product_flp::inner_product_flp;
     use alloc::vec;
 
     #[test]
