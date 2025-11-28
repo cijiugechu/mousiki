@@ -12,7 +12,7 @@ use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState
 use crate::silk::inner_product_flp_avx2::inner_product_flp_avx2;
 use crate::silk::nsq::silk_nsq;
 use crate::silk::nsq_del_dec::silk_nsq_del_dec;
-use crate::silk::vad::compute_speech_activity_q8_common;
+use crate::silk::vad_sse4_1::silk_vad_get_sa_q8_sse4_1;
 use crate::silk::vector_ops_fix_sse4_1::inner_prod16_sse4_1;
 use crate::silk::vq_wmat_ec::{VqWMatEcResult, LTP_ORDER};
 use crate::silk::vq_wmat_ec_sse4_1::vq_wmat_ec_sse4_1;
@@ -27,7 +27,7 @@ pub const SILK_INNER_PROD16_IMPL: [SilkInnerProd16Impl; ARCH_IMPL_COUNT] =
 
 pub type SilkVadGetSaQ8Impl = fn(&mut EncoderStateCommon, &[i16]) -> u8;
 pub const SILK_VAD_GETSA_Q8_IMPL: [SilkVadGetSaQ8Impl; ARCH_IMPL_COUNT] =
-    [compute_speech_activity_q8_common; ARCH_IMPL_COUNT];
+    [silk_vad_get_sa_q8_sse4_1; ARCH_IMPL_COUNT];
 
 pub type SilkNsqImpl = fn(
     &EncoderStateCommon,
@@ -150,6 +150,7 @@ mod tests {
     use crate::silk::encoder::state::EncoderStateCommon;
     use crate::silk::inner_product_flp::inner_product_flp;
     use crate::silk::vector_ops::inner_prod16;
+    use crate::silk::vad::compute_speech_activity_q8_common;
     use alloc::vec;
 
     #[test]
