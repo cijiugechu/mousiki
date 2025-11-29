@@ -4,11 +4,16 @@
 //! determine how much memory the combined SILK/CELT decoder requires.
 
 use crate::celt::{
-    OwnedCeltDecoder, canonical_mode, celt_decoder_get_size, opus_custom_decoder_create,
+    canonical_mode, celt_decoder_get_size, opus_custom_decoder_create, opus_custom_decoder_ctl,
+    opus_select_arch, CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest,
+    OwnedCeltDecoder,
 };
-use crate::packet::{PacketError, opus_packet_get_nb_samples};
-use crate::silk::dec_api::{DECODER_NUM_CHANNELS, Decoder as SilkDecoder};
+use crate::packet::{opus_packet_get_nb_samples, PacketError};
+use crate::silk::dec_api::{
+    reset_decoder as silk_reset_decoder, Decoder as SilkDecoder, DECODER_NUM_CHANNELS,
+};
 use crate::silk::decoder_state::DecoderState;
+use crate::silk::errors::SilkError;
 use crate::silk::get_decoder_size::get_decoder_size;
 use crate::silk::init_decoder::init_decoder as silk_init_channel;
 
@@ -105,6 +110,31 @@ pub struct OpusDecoder<'mode> {
     pub(crate) fs: i32,
     /// Number of channels (1 or 2).
     pub(crate) channels: i32,
+    /// Decoder gain offset applied in quarter-dB steps.
+    decode_gain: i32,
+    /// Complexity hint mirrored from the C reference state.
+    complexity: i32,
+    /// Architecture selection hint propagated to CELT helpers.
+    arch: i32,
+    /// Number of coded channels in the current stream.
+    stream_channels: i32,
+    /// Decoder bandwidth advertised by the most recent packet.
+    bandwidth: i32,
+    /// Mode signalled by the most recent packet.
+    mode: i32,
+    /// Previous decode mode used for PLC decisions.
+    prev_mode: i32,
+    /// Frame size in samples per channel for the last decoded packet.
+    frame_size: i32,
+    /// Tracks whether the previous frame carried redundancy.
+    prev_redundancy: i32,
+    /// Duration in samples of the last decoded packet.
+    last_packet_duration: i32,
+    /// Soft-clipping memory when decoding to floating-point PCM.
+    #[cfg(not(feature = "fixed_point"))]
+    softclip_mem: [f32; 2],
+    /// Final range of the last decoded packet.
+    range_final: u32,
 }
 
 /// Error codes reported by the top-level decoder helpers.
@@ -118,6 +148,42 @@ pub enum OpusDecoderInitError {
     SilkInit,
 }
 
+/// Errors that can be emitted by [`opus_decoder_ctl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpusDecoderCtlError {
+    /// The provided argument is outside the range accepted by the request.
+    BadArgument,
+    /// The requested operation is not implemented by the decoder.
+    Unimplemented,
+    /// The request failed inside the SILK decoder.
+    Silk(SilkError),
+}
+
+impl From<CeltDecoderCtlError> for OpusDecoderCtlError {
+    fn from(value: CeltDecoderCtlError) -> Self {
+        match value {
+            CeltDecoderCtlError::InvalidArgument => Self::BadArgument,
+            CeltDecoderCtlError::Unimplemented => Self::Unimplemented,
+        }
+    }
+}
+
+impl From<SilkError> for OpusDecoderCtlError {
+    fn from(value: SilkError) -> Self {
+        Self::Silk(value)
+    }
+}
+
+/// Strongly-typed replacement for the decoder-side varargs CTL dispatcher.
+pub enum OpusDecoderCtlRequest<'req> {
+    SetGain(i32),
+    GetGain(&'req mut i32),
+    ResetState,
+    GetLastPacketDuration(&'req mut i32),
+    SetPhaseInversionDisabled(bool),
+    GetPhaseInversionDisabled(&'req mut bool),
+}
+
 impl<'mode> OpusDecoder<'mode> {
     /// Mirrors `opus_decoder_init` by preparing both the SILK and CELT decoders.
     pub fn init(&mut self, fs: i32, channels: i32) -> Result<(), OpusDecoderInitError> {
@@ -127,6 +193,18 @@ impl<'mode> OpusDecoder<'mode> {
 
         self.fs = fs;
         self.channels = channels;
+        self.decode_gain = 0;
+        self.complexity = 0;
+        self.bandwidth = 0;
+        self.mode = 0;
+        self.prev_mode = 0;
+        self.prev_redundancy = 0;
+        self.last_packet_duration = 0;
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            self.softclip_mem = [0.0; 2];
+        }
+        self.range_final = 0;
 
         // Reset SILK decoder.
         for (idx, state) in self
@@ -149,6 +227,9 @@ impl<'mode> OpusDecoder<'mode> {
         self.celt = opus_custom_decoder_create(mode, channels as usize)
             .map_err(|_| OpusDecoderInitError::CeltInit)?;
 
+        self.arch = opus_select_arch();
+        self.reset_runtime_fields();
+
         Ok(())
     }
 
@@ -157,6 +238,30 @@ impl<'mode> OpusDecoder<'mode> {
     pub fn get_nb_samples(&self, packet: &[u8], len: usize) -> Result<usize, PacketError> {
         debug_assert!(matches!(self.fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000));
         opus_packet_get_nb_samples(packet, len, self.fs as u32)
+    }
+
+    /// Clears runtime decoder fields that are reset by both `opus_decoder_init` and `OPUS_RESET_STATE`.
+    fn reset_runtime_fields(&mut self) {
+        self.stream_channels = self.channels;
+        self.bandwidth = 0;
+        self.mode = 0;
+        self.prev_mode = 0;
+        self.frame_size = self.fs / 400;
+        self.prev_redundancy = 0;
+        self.last_packet_duration = 0;
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            self.softclip_mem = [0.0; 2];
+        }
+        self.range_final = 0;
+    }
+
+    /// Mirrors `OPUS_RESET_STATE` by clearing runtime fields and resetting the component decoders.
+    fn reset_state(&mut self) -> Result<(), OpusDecoderCtlError> {
+        opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::ResetState)?;
+        silk_reset_decoder(&mut self.silk)?;
+        self.reset_runtime_fields();
+        Ok(())
     }
 }
 
@@ -179,6 +284,19 @@ pub fn opus_decoder_create(
         silk,
         fs,
         channels,
+        decode_gain: 0,
+        complexity: 0,
+        arch: 0,
+        stream_channels: 0,
+        bandwidth: 0,
+        mode: 0,
+        prev_mode: 0,
+        frame_size: 0,
+        prev_redundancy: 0,
+        last_packet_duration: 0,
+        #[cfg(not(feature = "fixed_point"))]
+        softclip_mem: [0.0; 2],
+        range_final: 0,
     };
 
     decoder.init(fs, channels)?;
@@ -196,9 +314,48 @@ pub fn opus_decoder_get_nb_samples(
     decoder.get_nb_samples(packet, len)
 }
 
+/// Applies a control request to the provided decoder state.
+pub fn opus_decoder_ctl<'req>(
+    decoder: &mut OpusDecoder<'_>,
+    request: OpusDecoderCtlRequest<'req>,
+) -> Result<(), OpusDecoderCtlError> {
+    match request {
+        OpusDecoderCtlRequest::SetGain(value) => {
+            if !(-32_768..=32_767).contains(&value) {
+                return Err(OpusDecoderCtlError::BadArgument);
+            }
+            decoder.decode_gain = value;
+        }
+        OpusDecoderCtlRequest::GetGain(slot) => {
+            *slot = decoder.decode_gain;
+        }
+        OpusDecoderCtlRequest::ResetState => decoder.reset_state()?,
+        OpusDecoderCtlRequest::GetLastPacketDuration(slot) => {
+            *slot = decoder.last_packet_duration;
+        }
+        OpusDecoderCtlRequest::SetPhaseInversionDisabled(value) => {
+            opus_custom_decoder_ctl(
+                decoder.celt.decoder(),
+                CeltDecoderCtlRequest::SetPhaseInversionDisabled(value),
+            )?;
+        }
+        OpusDecoderCtlRequest::GetPhaseInversionDisabled(slot) => {
+            opus_custom_decoder_ctl(
+                decoder.celt.decoder(),
+                CeltDecoderCtlRequest::GetPhaseInversionDisabled(slot),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::opus_decoder_get_size;
+    use super::{
+        opus_decoder_create, opus_decoder_get_size, opus_decoder_ctl, OpusDecoderCtlError,
+        OpusDecoderCtlRequest,
+    };
     use crate::celt::{canonical_mode, celt_decoder_get_size, opus_custom_decoder_create};
     use crate::silk::dec_api::Decoder as SilkDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
@@ -233,6 +390,19 @@ mod tests {
             silk,
             fs: 48_000,
             channels: 1,
+            decode_gain: 0,
+            complexity: 0,
+            arch: 0,
+            stream_channels: 0,
+            bandwidth: 0,
+            mode: 0,
+            prev_mode: 0,
+            frame_size: 0,
+            prev_redundancy: 0,
+            last_packet_duration: 0,
+            #[cfg(not(feature = "fixed_point"))]
+            softclip_mem: [0.0; 2],
+            range_final: 0,
         };
 
         decoder.init(48_000, 1).expect("init succeeds");
@@ -244,5 +414,95 @@ mod tests {
     fn create_rejects_invalid_arguments() {
         assert!(super::opus_decoder_create(44_100, 1).is_err());
         assert!(super::opus_decoder_create(48_000, 3).is_err());
+    }
+
+    #[test]
+    fn decoder_gain_round_trips_and_validates_range() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetGain(-15)).unwrap();
+        let mut gain = 0;
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::GetGain(&mut gain)).unwrap();
+        assert_eq!(gain, -15);
+
+        let err = opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetGain(40_000))
+            .unwrap_err();
+        assert_eq!(err, OpusDecoderCtlError::BadArgument);
+
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::GetGain(&mut gain)).unwrap();
+        assert_eq!(gain, -15);
+    }
+
+    #[test]
+    fn reset_state_preserves_gain_and_resets_runtime_fields() {
+        let mut decoder = opus_decoder_create(48_000, 2).expect("decoder should initialise");
+
+        decoder.decode_gain = 123;
+        decoder.stream_channels = 1;
+        decoder.prev_mode = 1;
+        decoder.prev_redundancy = 1;
+        decoder.last_packet_duration = 960;
+        decoder.range_final = 42;
+        decoder.silk.prev_decode_only_middle = true;
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            decoder.softclip_mem = [0.5, -0.25];
+        }
+
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::ResetState).unwrap();
+
+        assert_eq!(decoder.decode_gain, 123);
+        assert_eq!(decoder.stream_channels, decoder.channels);
+        assert_eq!(decoder.prev_mode, 0);
+        assert_eq!(decoder.prev_redundancy, 0);
+        assert_eq!(decoder.last_packet_duration, 0);
+        assert_eq!(decoder.range_final, 0);
+        assert_eq!(decoder.frame_size, decoder.fs / 400);
+        assert!(!decoder.silk.prev_decode_only_middle);
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            assert_eq!(decoder.softclip_mem, [0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn reports_last_packet_duration() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.last_packet_duration = 960;
+
+        let mut duration = 0;
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetLastPacketDuration(&mut duration),
+        )
+        .unwrap();
+        assert_eq!(duration, 960);
+
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::ResetState).unwrap();
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetLastPacketDuration(&mut duration),
+        )
+        .unwrap();
+        assert_eq!(duration, 0);
+    }
+
+    #[test]
+    fn phase_inversion_ctl_forwards_to_celt() {
+        let mut decoder = opus_decoder_create(48_000, 2).expect("decoder should initialise");
+
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::SetPhaseInversionDisabled(true),
+        )
+        .unwrap();
+
+        let mut disabled = false;
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetPhaseInversionDisabled(&mut disabled),
+        )
+        .unwrap();
+        assert!(disabled);
     }
 }
