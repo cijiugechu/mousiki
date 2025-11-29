@@ -197,10 +197,10 @@ Rust now mirrors the resampler orchestration, high-quality upsampler, fractional
 
 ### Stereo, Bandwidth Extension, and Optional Features
 - Stereo prediction, MS/LR transforms, and predictor quantisation from `stereo_*.c` now live in Rust via `src/silk/stereo_decode_pred.rs`, `src/silk/stereo_encode_pred.rs`, `src/silk/stereo_find_predictor.rs`, `src/silk/stereo_lr_to_ms.rs`, `src/silk/stereo_ms_to_lr.rs`, and `src/silk/stereo_quant_pred.rs`, mirroring the C helpers while keeping the runtime dispatch as scalar-only for now.【src/silk/stereo_decode_pred.rs†L1-L118】【src/silk/stereo_encode_pred.rs†L1-L58】【src/silk/stereo_find_predictor.rs†L1-L199】【src/silk/stereo_lr_to_ms.rs†L1-L349】【src/silk/stereo_ms_to_lr.rs†L1-L225】【src/silk/stereo_quant_pred.rs†L1-L139】
-- The remaining bandwidth extension logic relies on files such as `LP_variable_cutoff.c` and `tuning_parameters.h`. Optional OSCE support is wired through additional headers referenced by the decoder API. The adaptive high-pass smoother from `HP_variable_cutoff.c` is already mirrored by `src/silk/hp_variable_cutoff.rs`, but the other bandwidth-extension helpers still reside in C.【6e5ae6†L1-L44】【03d532†L1-L60】【src/silk/hp_variable_cutoff.rs†L1-L162】
+- Bandwidth transition helpers now live in Rust: `src/silk/lp_variable_cutoff.rs` mirrors `silk/LP_variable_cutoff.c`, `src/silk/hp_variable_cutoff.rs` ports the adaptive high-pass smoother, and `src/silk/tuning_parameters.rs` exposes the shared encoder tuning constants originally declared in `silk/tuning_parameters.h`. Optional OSCE support is still wired through C-only headers referenced by the decoder API.【src/silk/lp_variable_cutoff.rs†L1-L113】【opus-c/silk/LP_variable_cutoff.c†L32-L134】【src/silk/hp_variable_cutoff.rs†L1-L139】【src/silk/tuning_parameters.rs†L1-L120】【opus-c/silk/tuning_parameters.h†L36-L149】
 - Architecture-specific noise-shaping and vectorisation code extends many of these features for NEON, SSE4.1, AVX2, and other targets.【cbc6a2†L1-L160】
 
-Stereo predictor glue is now fully ported; remaining work in this area centres on the bandwidth-extension helpers and optional OSCE hooks.
+Stereo predictor glue and the bandwidth cut-off controllers are now ported; remaining work in this area centres on the optional OSCE hooks.
 
 ## Missing Functions and Types
 
