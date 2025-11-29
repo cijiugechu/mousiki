@@ -695,7 +695,7 @@ static CANONICAL_MODE: CanonicalModeCell = CanonicalModeCell {
     value: UnsafeCell::new(None),
 };
 
-fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
+pub(crate) fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
     loop {
         match CANONICAL_MODE.state.load(AtomicOrdering::Acquire) {
             MODE_READY => unsafe {
