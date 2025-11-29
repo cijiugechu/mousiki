@@ -6,6 +6,7 @@ pub mod bitdepth;
 mod celt;
 pub mod decoder;
 mod math;
+pub mod opus;
 pub mod oggreader;
 pub mod packet;
 pub mod range;
