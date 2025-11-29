@@ -17,7 +17,7 @@ pub struct MappingMatrix {
     data: Box<[i16]>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MappingMatrixView<'a> {
     pub rows: usize,
     pub cols: usize,

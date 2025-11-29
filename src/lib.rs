@@ -10,6 +10,7 @@ mod math;
 pub mod oggreader;
 pub mod opus;
 pub mod opus_decoder;
+pub mod projection;
 pub mod packet;
 pub mod range;
 pub mod resample;

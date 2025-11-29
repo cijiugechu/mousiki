@@ -63,6 +63,7 @@ pub(crate) use laplace::*;
 pub(crate) use lpc::*;
 #[allow(unused_imports)]
 pub(crate) use math::*;
+pub(crate) use math::isqrt32;
 #[allow(unused_imports)]
 pub(crate) use mdct::*;
 #[allow(unused_imports)]
