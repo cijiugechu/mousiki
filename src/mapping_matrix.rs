@@ -1,6 +1,7 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec};
 #[cfg(test)]
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
+use core::{mem, slice};
 
 use crate::celt::{float2int, float2int16, OpusRes};
 
@@ -11,10 +12,7 @@ const RES_SCALE_24: f32 = RES_SCALE * 256.0;
 
 #[derive(Debug, Clone)]
 pub struct MappingMatrix {
-    rows: usize,
-    cols: usize,
-    gain_db: i32,
-    data: Box<[i16]>,
+    storage: Box<[u8]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +24,7 @@ pub struct MappingMatrixView<'a> {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 struct MappingMatrixHeader {
     rows: i32,
     cols: i32,
@@ -33,37 +32,57 @@ struct MappingMatrixHeader {
 }
 
 impl MappingMatrix {
-    pub fn new(rows: usize, cols: usize, gain_db: i32, data: &[i16]) -> Self {
+    pub fn new(
+        rows: usize,
+        cols: usize,
+        gain_db: i32,
+        data: &[i16],
+        data_size_bytes: usize,
+    ) -> Self {
         assert!(rows <= MAX_CHANNELS && cols <= MAX_CHANNELS);
-        let cell_count = rows
-            .checked_mul(cols)
-            .expect("rows * cols would overflow");
-        assert_eq!(cell_count, data.len(), "matrix data length must match rows * cols");
+        let cell_count = matrix_cell_count(rows, cols);
+        assert!(
+            data.len() >= cell_count,
+            "matrix data length must cover rows * cols"
+        );
 
-        let data_bytes = cell_count
-            .checked_mul(core::mem::size_of::<i16>())
+        let expected_bytes = cell_count
+            .checked_mul(mem::size_of::<i16>())
             .expect("matrix size overflow");
         assert_eq!(
-            align(data_bytes),
-            align(core::mem::size_of_val(data)),
+            align(expected_bytes),
+            align(data_size_bytes),
             "aligned data size must match expected layout",
         );
 
-        Self {
-            rows,
-            cols,
-            gain_db,
-            data: data.to_vec().into_boxed_slice(),
+        let storage_len =
+            mapping_matrix_get_size(rows, cols).expect("matrix dimensions must fit serialized form");
+        let mut storage = vec![0u8; storage_len].into_boxed_slice();
+
+        // Fill the header.
+        let header_ptr = storage.as_mut_ptr() as *mut MappingMatrixHeader;
+        // SAFETY: storage has enough space and is aligned for the header by construction.
+        unsafe {
+            *header_ptr = MappingMatrixHeader {
+                rows: rows as i32,
+                cols: cols as i32,
+                gain_db,
+            };
         }
+
+        // Copy the data payload.
+        let data_offset = align(mem::size_of::<MappingMatrixHeader>());
+        let dst_bytes = &mut storage[data_offset..data_offset + expected_bytes];
+        let src_bytes = unsafe {
+            slice::from_raw_parts(data.as_ptr() as *const u8, expected_bytes)
+        };
+        dst_bytes.copy_from_slice(src_bytes);
+
+        Self { storage }
     }
 
     pub fn as_view(&self) -> MappingMatrixView<'_> {
-        MappingMatrixView {
-            rows: self.rows,
-            cols: self.cols,
-            gain_db: self.gain_db,
-            data: &self.data,
-        }
+        mapping_matrix_view_from_bytes(&self.storage)
     }
 }
 
@@ -74,13 +93,23 @@ impl<'a> MappingMatrixView<'a> {
     }
 
     pub fn to_owned(self) -> MappingMatrix {
-        MappingMatrix::new(self.rows, self.cols, self.gain_db, self.data)
+        let data_size = self
+            .data
+            .len()
+            .checked_mul(mem::size_of::<i16>())
+            .expect("matrix data size overflow");
+        MappingMatrix::new(self.rows, self.cols, self.gain_db, self.data, data_size)
     }
 }
 
 #[inline]
 fn matrix_index(rows: usize, row: usize, col: usize) -> usize {
     rows * col + row
+}
+
+#[inline]
+fn matrix_cell_count(rows: usize, cols: usize) -> usize {
+    rows.checked_mul(cols).expect("rows * cols would overflow")
 }
 
 #[inline]
@@ -98,8 +127,45 @@ fn align(value: usize) -> usize {
         _f32: f32,
     }
 
-    let alignment = core::mem::align_of::<AlignProbe>();
+    let alignment = mem::align_of::<AlignProbe>();
     value.div_ceil(alignment) * alignment
+}
+
+fn mapping_matrix_view_from_bytes(bytes: &[u8]) -> MappingMatrixView<'_> {
+    let header_size = align(mem::size_of::<MappingMatrixHeader>());
+    assert!(
+        bytes.len() >= header_size,
+        "matrix buffer too small for header"
+    );
+
+    let header = unsafe { &*(bytes.as_ptr() as *const MappingMatrixHeader) };
+    assert!(
+        header.rows >= 0 && header.cols >= 0,
+        "matrix header contains negative dimensions"
+    );
+    let rows = header.rows as usize;
+    let cols = header.cols as usize;
+    let cell_count = matrix_cell_count(rows, cols);
+    let cell_bytes = cell_count
+        .checked_mul(mem::size_of::<i16>())
+        .expect("matrix data size overflow");
+
+    let data_start = header_size;
+    assert!(
+        bytes.len() >= data_start + cell_bytes,
+        "matrix buffer too small for payload"
+    );
+
+    let data = unsafe {
+        slice::from_raw_parts(bytes[data_start..].as_ptr() as *const i16, cell_count)
+    };
+
+    MappingMatrixView {
+        rows,
+        cols,
+        gain_db: header.gain_db,
+        data,
+    }
 }
 
 pub fn mapping_matrix_get_size(rows: usize, cols: usize) -> Option<usize> {
@@ -109,13 +175,13 @@ pub fn mapping_matrix_get_size(rows: usize, cols: usize) -> Option<usize> {
 
     let cell_bytes = rows
         .checked_mul(cols)?
-        .checked_mul(core::mem::size_of::<i16>())?;
+        .checked_mul(mem::size_of::<i16>())?;
 
     if cell_bytes > MAX_CELL_BYTES {
         return None;
     }
 
-    Some(align(core::mem::size_of::<MappingMatrixHeader>()) + align(cell_bytes))
+    Some(align(mem::size_of::<MappingMatrixHeader>()) + align(cell_bytes))
 }
 
 pub fn mapping_matrix_get_data(matrix: MappingMatrixView<'_>) -> &[i16] {
@@ -127,8 +193,9 @@ pub fn mapping_matrix_init(
     cols: usize,
     gain_db: i32,
     data: &[i16],
+    data_size_bytes: usize,
 ) -> MappingMatrix {
-    MappingMatrix::new(rows, cols, gain_db, data)
+    MappingMatrix::new(rows, cols, gain_db, data, data_size_bytes)
 }
 
 pub fn mapping_matrix_multiply_channel_in_float(
@@ -146,7 +213,8 @@ pub fn mapping_matrix_multiply_channel_in_float(
         .checked_mul(frame_size)
         .expect("input stride overflow");
     let expected_output = output_rows
-        .checked_mul(frame_size)
+        .checked_mul(frame_size.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
         .expect("output stride overflow");
     assert!(input.len() >= expected_input);
     assert!(output.len() >= expected_output);
@@ -158,7 +226,7 @@ pub fn mapping_matrix_multiply_channel_in_float(
             let sample = input[matrix_index(input_rows, col, frame)];
             tmp += coeff * sample;
         }
-        output[matrix_index(output_rows, output_row, frame)] = tmp / RES_SCALE;
+        output[matrix_index(output_rows, 0, frame)] = tmp / RES_SCALE;
     }
 }
 
@@ -174,7 +242,8 @@ pub fn mapping_matrix_multiply_channel_out_float(
     assert!(input_rows <= matrix.cols && output_rows <= matrix.rows);
     assert!(input_row < input_rows);
     let expected_input = input_rows
-        .checked_mul(frame_size)
+        .checked_mul(frame_size.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
         .expect("input stride overflow");
     let expected_output = output_rows
         .checked_mul(frame_size)
@@ -183,7 +252,7 @@ pub fn mapping_matrix_multiply_channel_out_float(
     assert!(output.len() >= expected_output);
 
     for frame in 0..frame_size {
-        let input_sample = input[matrix_index(input_rows, input_row, frame)];
+        let input_sample = input[matrix_index(input_rows, 0, frame)];
         for row in 0..output_rows {
             let coeff = f32::from(matrix.cell(row, input_row)) / RES_SCALE;
             let idx = matrix_index(output_rows, row, frame);
@@ -207,7 +276,8 @@ pub fn mapping_matrix_multiply_channel_in_short(
         .checked_mul(frame_size)
         .expect("input stride overflow");
     let expected_output = output_rows
-        .checked_mul(frame_size)
+        .checked_mul(frame_size.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
         .expect("output stride overflow");
     assert!(input.len() >= expected_input);
     assert!(output.len() >= expected_output);
@@ -219,7 +289,7 @@ pub fn mapping_matrix_multiply_channel_in_short(
             let sample = f32::from(input[matrix_index(input_rows, col, frame)]);
             tmp += coeff * sample;
         }
-        output[matrix_index(output_rows, output_row, frame)] = tmp / (RES_SCALE * RES_SCALE);
+        output[matrix_index(output_rows, 0, frame)] = tmp / (RES_SCALE * RES_SCALE);
     }
 }
 
@@ -235,7 +305,8 @@ pub fn mapping_matrix_multiply_channel_out_short(
     assert!(input_rows <= matrix.cols && output_rows <= matrix.rows);
     assert!(input_row < input_rows);
     let expected_input = input_rows
-        .checked_mul(frame_size)
+        .checked_mul(frame_size.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
         .expect("input stride overflow");
     let expected_output = output_rows
         .checked_mul(frame_size)
@@ -244,7 +315,7 @@ pub fn mapping_matrix_multiply_channel_out_short(
     assert!(output.len() >= expected_output);
 
     for frame in 0..frame_size {
-        let input_sample = res_to_int16(input[matrix_index(input_rows, input_row, frame)]);
+        let input_sample = res_to_int16(input[matrix_index(input_rows, 0, frame)]);
         for row in 0..output_rows {
             let tmp = i32::from(matrix.cell(row, input_row)) * i32::from(input_sample);
             let delta = (tmp + 16_384) >> 15;
@@ -270,7 +341,8 @@ pub fn mapping_matrix_multiply_channel_in_int24(
         .checked_mul(frame_size)
         .expect("input stride overflow");
     let expected_output = output_rows
-        .checked_mul(frame_size)
+        .checked_mul(frame_size.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
         .expect("output stride overflow");
     assert!(input.len() >= expected_input);
     assert!(output.len() >= expected_output);
@@ -282,7 +354,7 @@ pub fn mapping_matrix_multiply_channel_in_int24(
             let sample = f64::from(input[matrix_index(input_rows, col, frame)]);
             tmp += coeff * sample;
         }
-        output[matrix_index(output_rows, output_row, frame)] =
+        output[matrix_index(output_rows, 0, frame)] =
             (tmp / (f64::from(RES_SCALE) * f64::from(RES_SCALE_24))) as OpusRes;
     }
 }
@@ -299,7 +371,8 @@ pub fn mapping_matrix_multiply_channel_out_int24(
     assert!(input_rows <= matrix.cols && output_rows <= matrix.rows);
     assert!(input_row < input_rows);
     let expected_input = input_rows
-        .checked_mul(frame_size)
+        .checked_mul(frame_size.saturating_sub(1))
+        .and_then(|v| v.checked_add(1))
         .expect("input stride overflow");
     let expected_output = output_rows
         .checked_mul(frame_size)
@@ -308,7 +381,7 @@ pub fn mapping_matrix_multiply_channel_out_int24(
     assert!(output.len() >= expected_output);
 
     for frame in 0..frame_size {
-        let input_sample = res_to_int24(input[matrix_index(input_rows, input_row, frame)]);
+        let input_sample = res_to_int24(input[matrix_index(input_rows, 0, frame)]);
         for row in 0..output_rows {
             let coeff = i64::from(matrix.cell(row, input_row));
             let tmp = coeff * i64::from(input_sample);
@@ -338,6 +411,7 @@ fn int16_to_res(value: i16) -> OpusRes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::mem;
 
     const SIMPLE_MATRIX_DATA: [i16; 12] = [
         0, 32_767, 0, 0, 32_767, 0, 0, 0, 0, 0, 0, 32_767,
@@ -375,11 +449,28 @@ mod tests {
         }
     }
 
+    fn assert_i24_matches(actual: &[i32], expected: &[i16]) {
+        assert_eq!(actual.len(), expected.len());
+        for (i, (&got, &want)) in actual.iter().zip(expected.iter()).enumerate() {
+            let want_i24 = i32::from(want) * 256;
+            assert!(
+                (got - want_i24).abs() <= 256,
+                "mismatch at {i}: {got} vs {want_i24}"
+            );
+        }
+    }
+
     #[test]
     fn simple_matrix_operations_follow_reference() {
         let matrix_size = mapping_matrix_get_size(4, 3).expect("valid matrix dimensions");
         assert!(matrix_size > 0);
-        let matrix = mapping_matrix_init(4, 3, 0, &SIMPLE_MATRIX_DATA);
+        let matrix = mapping_matrix_init(
+            4,
+            3,
+            0,
+            &SIMPLE_MATRIX_DATA,
+            SIMPLE_MATRIX_DATA.len() * mem::size_of::<i16>(),
+        );
         let view = matrix.as_view();
 
         let input_pcm: Vec<OpusRes> = SIMPLE_MATRIX_INPUT.iter().map(|&v| int16_to_res(v)).collect();
@@ -392,7 +483,7 @@ mod tests {
                 view,
                 &SIMPLE_MATRIX_INPUT,
                 view.cols,
-                &mut output_res,
+                &mut output_res[row..],
                 row,
                 view.rows,
                 frame_size,
@@ -405,7 +496,7 @@ mod tests {
         for input_row in 0..view.cols {
             mapping_matrix_multiply_channel_out_short(
                 view,
-                &input_pcm,
+                &input_pcm[input_row..],
                 input_row,
                 view.cols,
                 &mut output_int16,
@@ -422,7 +513,7 @@ mod tests {
                 view,
                 &input_pcm,
                 view.cols,
-                &mut output_res,
+                &mut output_res[row..],
                 row,
                 view.rows,
                 frame_size,
@@ -435,7 +526,7 @@ mod tests {
         for input_row in 0..view.cols {
             mapping_matrix_multiply_channel_out_float(
                 view,
-                &input_pcm,
+                &input_pcm[input_row..],
                 input_row,
                 view.cols,
                 &mut output_res,
@@ -444,6 +535,40 @@ mod tests {
             );
         }
         assert_res_matches_i16(&output_res, &SIMPLE_MATRIX_EXPECTED);
+
+        // _in_int24
+        output_res.fill(0.0);
+        let input_int24: Vec<i32> = SIMPLE_MATRIX_INPUT
+            .iter()
+            .map(|&v| i32::from(v) << 8)
+            .collect();
+        for row in 0..view.rows {
+            mapping_matrix_multiply_channel_in_int24(
+                view,
+                &input_int24,
+                view.cols,
+                &mut output_res[row..],
+                row,
+                view.rows,
+                frame_size,
+            );
+        }
+        assert_res_matches_i16(&output_res, &SIMPLE_MATRIX_EXPECTED);
+
+        // _out_int24
+        let mut output_int24 = vec![0i32; SIMPLE_MATRIX_EXPECTED.len()];
+        for input_row in 0..view.cols {
+            mapping_matrix_multiply_channel_out_int24(
+                view,
+                &input_pcm[input_row..],
+                input_row,
+                view.cols,
+                &mut output_int24,
+                view.rows,
+                frame_size,
+            );
+        }
+        assert_i24_matches(&output_int24, &SIMPLE_MATRIX_EXPECTED);
     }
 }
 
