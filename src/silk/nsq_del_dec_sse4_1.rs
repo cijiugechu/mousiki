@@ -57,9 +57,7 @@ mod tests {
     use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState};
     use crate::silk::nsq_del_dec::silk_nsq_del_dec;
     use crate::silk::vq_wmat_ec::LTP_ORDER;
-    use crate::silk::{
-        FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR, MAX_SHAPE_LPC_ORDER,
-    };
+    use crate::silk::{FrameSignalType, MAX_LPC_ORDER, MAX_NB_SUBFR, MAX_SHAPE_LPC_ORDER};
     use alloc::vec;
 
     #[test]
@@ -140,8 +138,14 @@ mod tests {
         assert_eq!(indices_scalar.lag_index, indices_sse.lag_index);
         assert_eq!(indices_scalar.contour_index, indices_sse.contour_index);
         assert_eq!(indices_scalar.signal_type, indices_sse.signal_type);
-        assert_eq!(indices_scalar.quant_offset_type, indices_sse.quant_offset_type);
-        assert_eq!(indices_scalar.nlsf_interp_coef_q2, indices_sse.nlsf_interp_coef_q2);
+        assert_eq!(
+            indices_scalar.quant_offset_type,
+            indices_sse.quant_offset_type
+        );
+        assert_eq!(
+            indices_scalar.nlsf_interp_coef_q2,
+            indices_sse.nlsf_interp_coef_q2
+        );
         assert_eq!(indices_scalar.per_index, indices_sse.per_index);
         assert_eq!(indices_scalar.ltp_scale_index, indices_sse.ltp_scale_index);
         assert_eq!(indices_scalar.seed, indices_sse.seed);

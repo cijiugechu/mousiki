@@ -6,9 +6,9 @@
 //! `arch & OPUS_ARCHMASK` indexing scheme.
 
 use crate::celt::OPUS_ARCHMASK;
-use crate::silk::biquad_alt_neon_intr::biquad_alt_stride2_neon;
 #[cfg(test)]
 use crate::silk::biquad_alt::biquad_alt_stride2;
+use crate::silk::biquad_alt_neon_intr::biquad_alt_stride2_neon;
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState};
 use crate::silk::lpc_inv_pred_gain::lpc_inverse_pred_gain;
@@ -18,8 +18,7 @@ use crate::silk::warped_autocorrelation::warped_autocorrelation;
 
 const ARCH_IMPL_COUNT: usize = (OPUS_ARCHMASK as usize) + 1;
 
-pub type SilkBiquadAltStride2Impl =
-    fn(&[i16], &[i32; 3], &[i32; 2], &mut [i32; 4], &mut [i16]);
+pub type SilkBiquadAltStride2Impl = fn(&[i16], &[i32; 3], &[i32; 2], &mut [i32; 4], &mut [i16]);
 pub const SILK_BIQUAD_ALT_STRIDE2_IMPL: [SilkBiquadAltStride2Impl; ARCH_IMPL_COUNT] =
     [biquad_alt_stride2_neon; ARCH_IMPL_COUNT];
 
@@ -49,18 +48,21 @@ pub const SILK_NSQ_DEL_DEC_IMPL: [SilkNsqDelDecImpl; ARCH_IMPL_COUNT] =
     [silk_nsq_del_dec; ARCH_IMPL_COUNT];
 
 pub type SilkNsqNoiseShapeFeedbackLoopImpl = fn(i32, &mut [i32], &[i16], usize) -> i32;
-pub const SILK_NSQ_NOISE_SHAPE_FEEDBACK_LOOP_IMPL:
-    [SilkNsqNoiseShapeFeedbackLoopImpl; ARCH_IMPL_COUNT] =
-    [nsq_noise_shape_feedback_loop; ARCH_IMPL_COUNT];
+pub const SILK_NSQ_NOISE_SHAPE_FEEDBACK_LOOP_IMPL: [SilkNsqNoiseShapeFeedbackLoopImpl;
+    ARCH_IMPL_COUNT] = [nsq_noise_shape_feedback_loop; ARCH_IMPL_COUNT];
 
 pub type SilkWarpedAutocorrelationFixImpl = fn(&mut [i32], &[i16], i32, usize) -> i32;
-pub const SILK_WARPED_AUTOCORRELATION_FIX_IMPL: [SilkWarpedAutocorrelationFixImpl; ARCH_IMPL_COUNT] =
-    [warped_autocorrelation; ARCH_IMPL_COUNT];
+pub const SILK_WARPED_AUTOCORRELATION_FIX_IMPL: [SilkWarpedAutocorrelationFixImpl;
+    ARCH_IMPL_COUNT] = [warped_autocorrelation; ARCH_IMPL_COUNT];
 
 #[inline]
 fn dispatch_index(arch: i32) -> usize {
     assert!(arch >= 0, "arch must be non-negative");
-    assert_eq!(arch & OPUS_ARCHMASK, arch, "arch {arch} exceeds OPUS_ARCHMASK {OPUS_ARCHMASK}");
+    assert_eq!(
+        arch & OPUS_ARCHMASK,
+        arch,
+        "arch {arch} exceeds OPUS_ARCHMASK {OPUS_ARCHMASK}"
+    );
     arch as usize
 }
 
@@ -80,9 +82,7 @@ pub fn select_silk_nsq_del_dec_impl(arch: i32) -> SilkNsqDelDecImpl {
 }
 
 #[inline]
-pub fn select_nsq_noise_shape_feedback_loop_impl(
-    arch: i32,
-) -> SilkNsqNoiseShapeFeedbackLoopImpl {
+pub fn select_nsq_noise_shape_feedback_loop_impl(arch: i32) -> SilkNsqNoiseShapeFeedbackLoopImpl {
     SILK_NSQ_NOISE_SHAPE_FEEDBACK_LOOP_IMPL[dispatch_index(arch)]
 }
 
@@ -141,7 +141,8 @@ mod tests {
         let coef_q13 = [12i16, -34, 56, -78, 90, -12, 34, -56, 78, -90];
         let fn_ptr = select_nsq_noise_shape_feedback_loop_impl(0);
         let arch_value = fn_ptr(1234, &mut ar2_q14, &coef_q13, coef_q13.len());
-        let scalar_value = nsq_noise_shape_feedback_loop(1234, &mut expected_ar2, &coef_q13, coef_q13.len());
+        let scalar_value =
+            nsq_noise_shape_feedback_loop(1234, &mut expected_ar2, &coef_q13, coef_q13.len());
 
         assert_eq!(arch_value, scalar_value);
         assert_eq!(ar2_q14, expected_ar2);

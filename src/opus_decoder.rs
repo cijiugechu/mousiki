@@ -3,9 +3,12 @@
 //! Ports the size helper from `opus_decoder_get_size()` so callers can
 //! determine how much memory the combined SILK/CELT decoder requires.
 
-use crate::celt::{OwnedCeltDecoder, canonical_mode, celt_decoder_get_size, opus_custom_decoder_create};
+use crate::celt::{
+    OwnedCeltDecoder, canonical_mode, celt_decoder_get_size, opus_custom_decoder_create,
+};
+use crate::packet::{PacketError, opus_packet_get_nb_samples};
+use crate::silk::dec_api::{DECODER_NUM_CHANNELS, Decoder as SilkDecoder};
 use crate::silk::decoder_state::DecoderState;
-use crate::silk::dec_api::{Decoder as SilkDecoder, DECODER_NUM_CHANNELS};
 use crate::silk::get_decoder_size::get_decoder_size;
 use crate::silk::init_decoder::init_decoder as silk_init_channel;
 
@@ -118,8 +121,7 @@ pub enum OpusDecoderInitError {
 impl<'mode> OpusDecoder<'mode> {
     /// Mirrors `opus_decoder_init` by preparing both the SILK and CELT decoders.
     pub fn init(&mut self, fs: i32, channels: i32) -> Result<(), OpusDecoderInitError> {
-        if !matches!(fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000) || !matches!(channels, 1 | 2)
-        {
+        if !matches!(fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000) || !matches!(channels, 1 | 2) {
             return Err(OpusDecoderInitError::BadArgument);
         }
 
@@ -149,10 +151,20 @@ impl<'mode> OpusDecoder<'mode> {
 
         Ok(())
     }
+
+    /// Returns the number of PCM samples in the provided packet for this decoder's sample rate.
+    #[inline]
+    pub fn get_nb_samples(&self, packet: &[u8], len: usize) -> Result<usize, PacketError> {
+        debug_assert!(matches!(self.fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000));
+        opus_packet_get_nb_samples(packet, len, self.fs as u32)
+    }
 }
 
 /// Mirrors `opus_decoder_create` by allocating and initialising a decoder.
-pub fn opus_decoder_create(fs: i32, channels: i32) -> Result<OpusDecoder<'static>, OpusDecoderInitError> {
+pub fn opus_decoder_create(
+    fs: i32,
+    channels: i32,
+) -> Result<OpusDecoder<'static>, OpusDecoderInitError> {
     if !matches!(fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000) || !matches!(channels, 1 | 2) {
         return Err(OpusDecoderInitError::BadArgument);
     }
@@ -174,10 +186,20 @@ pub fn opus_decoder_create(fs: i32, channels: i32) -> Result<OpusDecoder<'static
     Ok(decoder)
 }
 
+/// Mirrors `opus_decoder_get_nb_samples` by delegating to the packet helper with the decoder's Fs.
+#[inline]
+pub fn opus_decoder_get_nb_samples(
+    decoder: &OpusDecoder<'_>,
+    packet: &[u8],
+    len: usize,
+) -> Result<usize, PacketError> {
+    decoder.get_nb_samples(packet, len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::opus_decoder_get_size;
-    use crate::celt::{celt_decoder_get_size, canonical_mode, opus_custom_decoder_create};
+    use crate::celt::{canonical_mode, celt_decoder_get_size, opus_custom_decoder_create};
     use crate::silk::dec_api::Decoder as SilkDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
 

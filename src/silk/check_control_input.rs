@@ -4,8 +4,8 @@
 //! encoder. The checks mirror the reference C implementation so that invalid
 //! configurations yield the same error codes as the original library.
 
-use crate::silk::errors::SilkError;
 use crate::silk::FrameSignalType;
+use crate::silk::errors::SilkError;
 
 /// Maximum number of channels supported by the SILK encoder.
 const ENCODER_NUM_CHANNELS: i32 = 2;

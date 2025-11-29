@@ -14,10 +14,10 @@ use crate::silk::nsq_del_dec_sse4_1::silk_nsq_del_dec_sse4_1;
 use crate::silk::nsq_sse4_1::silk_nsq_sse4_1;
 use crate::silk::vad_sse4_1::silk_vad_get_sa_q8_sse4_1;
 use crate::silk::vector_ops_fix_sse4_1::inner_prod16_sse4_1;
-use crate::silk::vq_wmat_ec::{VqWMatEcResult, LTP_ORDER};
-use crate::silk::vq_wmat_ec_sse4_1::vq_wmat_ec_sse4_1;
 #[cfg(test)]
 use crate::silk::vq_wmat_ec::vq_wmat_ec;
+use crate::silk::vq_wmat_ec::{LTP_ORDER, VqWMatEcResult};
+use crate::silk::vq_wmat_ec_sse4_1::vq_wmat_ec_sse4_1;
 
 const ARCH_IMPL_COUNT: usize = (OPUS_ARCHMASK as usize) + 1;
 
@@ -46,8 +46,7 @@ pub type SilkNsqImpl = fn(
     i32,
     i32,
 );
-pub const SILK_NSQ_IMPL: [SilkNsqImpl; ARCH_IMPL_COUNT] =
-    [silk_nsq_sse4_1; ARCH_IMPL_COUNT];
+pub const SILK_NSQ_IMPL: [SilkNsqImpl; ARCH_IMPL_COUNT] = [silk_nsq_sse4_1; ARCH_IMPL_COUNT];
 
 pub type SilkVqWMatEcImpl = fn(
     &[i32; LTP_ORDER * LTP_ORDER],
@@ -81,17 +80,8 @@ pub type SilkNsqDelDecImpl = fn(
 pub const SILK_NSQ_DEL_DEC_IMPL: [SilkNsqDelDecImpl; ARCH_IMPL_COUNT] =
     [silk_nsq_del_dec_sse4_1; ARCH_IMPL_COUNT];
 
-pub type SilkBurgModifiedImpl = fn(
-    &mut i32,
-    &mut i32,
-    &mut [i32],
-    &[i16],
-    i32,
-    usize,
-    usize,
-    usize,
-    i32,
-);
+pub type SilkBurgModifiedImpl =
+    fn(&mut i32, &mut i32, &mut [i32], &[i16], i32, usize, usize, usize, i32);
 pub const SILK_BURG_MODIFIED_IMPL: [SilkBurgModifiedImpl; ARCH_IMPL_COUNT] =
     [silk_burg_modified; ARCH_IMPL_COUNT];
 
@@ -150,8 +140,8 @@ mod tests {
     use super::*;
     use crate::silk::encoder::state::EncoderStateCommon;
     use crate::silk::inner_product_flp::inner_product_flp;
-    use crate::silk::vector_ops::inner_prod16;
     use crate::silk::vad::compute_speech_activity_q8_common;
+    use crate::silk::vector_ops::inner_prod16;
     use alloc::vec;
 
     #[test]

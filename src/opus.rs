@@ -85,17 +85,13 @@ pub fn opus_pcm_soft_clip_impl(
             let mut maxval = clipped_sample.abs();
 
             // Look for the first zero crossing before clipping.
-            while start > 0
-                && clipped_sample * samples[(start - 1) * channels + channel] >= 0.0
-            {
+            while start > 0 && clipped_sample * samples[(start - 1) * channels + channel] >= 0.0 {
                 start -= 1;
             }
 
             // Look for the first zero crossing after clipping while tracking
             // the highest magnitude in the region.
-            while end < frame_size
-                && clipped_sample * samples[end * channels + channel] >= 0.0
-            {
+            while end < frame_size && clipped_sample * samples[end * channels + channel] >= 0.0 {
                 let abs_val = samples[end * channels + channel].abs();
                 if abs_val > maxval {
                     maxval = abs_val;
@@ -145,7 +141,12 @@ pub fn opus_pcm_soft_clip_impl(
 
 /// Public wrapper that ignores the architecture hint.
 #[inline]
-pub fn opus_pcm_soft_clip(pcm: &mut [f32], frame_size: usize, channels: usize, softclip_mem: &mut [f32]) {
+pub fn opus_pcm_soft_clip(
+    pcm: &mut [f32],
+    frame_size: usize,
+    channels: usize,
+    softclip_mem: &mut [f32],
+) {
     opus_pcm_soft_clip_impl(pcm, frame_size, channels, softclip_mem, 0);
 }
 

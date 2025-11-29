@@ -39,6 +39,29 @@ pub enum Bandwidth {
 
 impl Bandwidth {
     #[inline]
+    pub const fn from_opus_int(value: i32) -> Option<Self> {
+        match value {
+            1101 => Some(Self::Narrow),
+            1102 => Some(Self::Medium),
+            1103 => Some(Self::Wide),
+            1104 => Some(Self::SuperWide),
+            1105 => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub const fn to_opus_int(&self) -> i32 {
+        match self {
+            Bandwidth::Narrow => 1101,
+            Bandwidth::Medium => 1102,
+            Bandwidth::Wide => 1103,
+            Bandwidth::SuperWide => 1104,
+            Bandwidth::Full => 1105,
+        }
+    }
+
+    #[inline]
     pub const fn audio_band_width(&self) -> u16 {
         match self {
             Bandwidth::Narrow => 4000,
@@ -116,4 +139,122 @@ pub struct Packet<'a> {
     bandwidth: Bandwidth,
     frame_duration: FrameDuration,
     raw_data: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketError {
+    BadArgument,
+    InvalidPacket,
+}
+
+impl PacketError {
+    #[inline]
+    pub const fn code(self) -> i32 {
+        match self {
+            PacketError::BadArgument => -1,
+            PacketError::InvalidPacket => -4,
+        }
+    }
+}
+
+#[inline]
+pub fn opus_packet_get_bandwidth(data: &[u8]) -> Result<Bandwidth, PacketError> {
+    let toc = *data.first().ok_or(PacketError::BadArgument)?;
+
+    let bandwidth = if toc & 0x80 != 0 {
+        match (toc >> 5) & 0x03 {
+            0 => Bandwidth::Narrow,
+            1 => Bandwidth::Wide,
+            2 => Bandwidth::SuperWide,
+            _ => Bandwidth::Full,
+        }
+    } else if toc & 0x60 == 0x60 {
+        if toc & 0x10 != 0 {
+            Bandwidth::Full
+        } else {
+            Bandwidth::SuperWide
+        }
+    } else {
+        match (toc >> 5) & 0x03 {
+            0 => Bandwidth::Narrow,
+            1 => Bandwidth::Medium,
+            2 => Bandwidth::Wide,
+            _ => Bandwidth::SuperWide,
+        }
+    };
+
+    Ok(bandwidth)
+}
+
+#[inline]
+pub fn opus_packet_get_nb_channels(data: &[u8]) -> Result<usize, PacketError> {
+    let toc = *data.first().ok_or(PacketError::BadArgument)?;
+    Ok(if toc & 0x04 != 0 { 2 } else { 1 })
+}
+
+#[inline]
+pub fn opus_packet_get_samples_per_frame(data: &[u8], fs_hz: u32) -> Result<usize, PacketError> {
+    let toc = *data.first().ok_or(PacketError::BadArgument)?;
+
+    let audiosize = if toc & 0x80 != 0 {
+        let shift = u32::from((toc >> 3) & 0x03);
+        fs_hz.checked_shl(shift).map(|value| value / 400)
+    } else if toc & 0x60 == 0x60 {
+        Some(if toc & 0x08 != 0 {
+            fs_hz / 50
+        } else {
+            fs_hz / 100
+        })
+    } else {
+        let size_code = (toc >> 3) & 0x03;
+        if size_code == 3 {
+            fs_hz.checked_mul(60).map(|value| value / 1000)
+        } else {
+            fs_hz.checked_shl(size_code.into()).map(|value| value / 100)
+        }
+    }
+    .ok_or(PacketError::BadArgument)?;
+
+    Ok(audiosize as usize)
+}
+
+#[inline]
+pub fn opus_packet_get_nb_frames(packet: &[u8], len: usize) -> Result<usize, PacketError> {
+    if len == 0 || len > packet.len() {
+        return Err(PacketError::BadArgument);
+    }
+
+    let count = packet[0] & 0x03;
+    if count == 0 {
+        return Ok(1);
+    }
+    if count != 3 {
+        return Ok(2);
+    }
+    if len < 2 {
+        return Err(PacketError::InvalidPacket);
+    }
+
+    Ok((packet[1] & 0x3F) as usize)
+}
+
+#[inline]
+pub fn opus_packet_get_nb_samples(
+    packet: &[u8],
+    len: usize,
+    fs_hz: u32,
+) -> Result<usize, PacketError> {
+    let count = opus_packet_get_nb_frames(packet, len)?;
+    let samples_per_frame = opus_packet_get_samples_per_frame(packet, fs_hz)?;
+    let samples = count
+        .checked_mul(samples_per_frame)
+        .ok_or(PacketError::InvalidPacket)?;
+
+    let max_samples = u64::from(fs_hz).saturating_mul(3);
+    let scaled = (samples as u64).saturating_mul(25);
+    if scaled > max_samples {
+        Err(PacketError::InvalidPacket)
+    } else {
+        Ok(samples)
+    }
 }

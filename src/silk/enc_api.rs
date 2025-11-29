@@ -25,8 +25,8 @@ use crate::silk::encode_frame::{silk_encode_do_vad, silk_encode_frame};
 use crate::silk::encode_indices::EncoderIndicesState;
 use crate::silk::encode_pulses::silk_encode_pulses;
 use crate::silk::encoder::state::{
-    Encoder, EncoderChannelState, EncoderShapeState, NoiseShapingQuantizerState,
-    ENCODER_NUM_CHANNELS,
+    ENCODER_NUM_CHANNELS, Encoder, EncoderChannelState, EncoderShapeState,
+    NoiseShapingQuantizerState,
 };
 use crate::silk::errors::SilkError;
 use crate::silk::hp_variable_cutoff::hp_variable_cutoff;
@@ -38,7 +38,9 @@ use crate::silk::tables_other::{SILK_LBRR_FLAGS_ICDF_PTR, SILK_QUANTIZATION_OFFS
 use crate::silk::tuning_parameters::{
     BITRESERVOIR_DECAY_TIME_MS, MAX_BANDWIDTH_SWITCH_DELAY_MS, SPEECH_ACTIVITY_DTX_THRES,
 };
-use crate::silk::{FrameQuantizationOffsetType, FrameSignalType, MAX_FRAMES_PER_PACKET, MAX_LPC_ORDER};
+use crate::silk::{
+    FrameQuantizationOffsetType, FrameSignalType, MAX_FRAMES_PER_PACKET, MAX_LPC_ORDER,
+};
 
 /// Prefill behaviour used by [`silk_encode`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,13 +97,11 @@ fn query_encoder(encoder: &Encoder, status: &mut EncControl) {
     status.use_cbr = i32::from(common.use_cbr);
     status.internal_sample_rate = common.fs_khz * 1000;
     status.allow_bandwidth_switch = common.allow_bandwidth_switch;
-    status.in_wb_mode_without_variable_lp =
-        common.fs_khz == 16 && common.lp_state.mode == 0;
+    status.in_wb_mode_without_variable_lp = common.fs_khz == 16 && common.lp_state.mode == 0;
     status.stereo_width_q14 = i32::from(encoder.stereo_state.smth_width_q14);
     status.signal_type = common.indices.signal_type;
     status.offset = i32::from(
-        SILK_QUANTIZATION_OFFSETS_Q10
-            [common.indices.signal_type as usize >> 1]
+        SILK_QUANTIZATION_OFFSETS_Q10[common.indices.signal_type as usize >> 1]
             [quant_offset_as_i32(common.indices.quant_offset_type) as usize],
     );
 }
@@ -119,8 +119,8 @@ pub fn silk_encode(
 ) -> Result<(), SilkError> {
     *n_bytes_out = 0;
 
-    let mut remaining_samples = i32::try_from(samples_in.len())
-        .map_err(|_| SilkError::EncInputInvalidNoOfSamples)?;
+    let mut remaining_samples =
+        i32::try_from(samples_in.len()).map_err(|_| SilkError::EncInputInvalidNoOfSamples)?;
 
     if control.reduced_dependency {
         for channel in encoder.state_fxx.iter_mut() {
@@ -229,7 +229,8 @@ pub fn silk_encode(
     let frame_length = encoder.state_fxx[0].common.frame_length;
 
     let n_samples_to_buffer_max = (10 * n_blocks_of_10ms * fs_khz) as usize;
-    let n_samples_from_input_max = (n_samples_to_buffer_max * encoder.state_fxx[0].common.api_sample_rate_hz as usize)
+    let n_samples_from_input_max = (n_samples_to_buffer_max
+        * encoder.state_fxx[0].common.api_sample_rate_hz as usize)
         / ((fs_khz * 1000) as usize);
     let mut buf = vec![0i16; n_samples_from_input_max];
     let mut input_offset = 0usize;
@@ -242,7 +243,8 @@ pub fn silk_encode(
             .frame_length
             .saturating_sub(encoder.state_fxx[0].common.input_buf_ix)
             .min(n_samples_to_buffer_max);
-        let samples_from_input = (samples_to_buffer * encoder.state_fxx[0].common.api_sample_rate_hz as usize)
+        let samples_from_input = (samples_to_buffer
+            * encoder.state_fxx[0].common.api_sample_rate_hz as usize)
             / ((fs_khz * 1000) as usize);
 
         if control.n_channels_api == 2 && control.n_channels_internal == 2 {
@@ -300,9 +302,11 @@ pub fn silk_encode(
             {
                 let produced = silk_resampler(
                     &mut encoder.state_fxx[1].resampler_state,
-                    &mut encoder.state_fxx[1].common.input_buf
-                        [encoder.state_fxx[1].common.input_buf_ix + 2
-                            ..encoder.state_fxx[1].common.input_buf_ix + 2 + samples_to_buffer],
+                    &mut encoder.state_fxx[1].common.input_buf[encoder.state_fxx[1]
+                        .common
+                        .input_buf_ix
+                        + 2
+                        ..encoder.state_fxx[1].common.input_buf_ix + 2 + samples_to_buffer],
                     &buf[..samples_from_input],
                 );
                 debug_assert_eq!(produced, samples_to_buffer);
@@ -377,13 +381,12 @@ pub fn silk_encode(
                 for i in 0..frames_per_packet {
                     for n in 0..internal_channels {
                         if encoder.state_fxx[n].common.lbrr_flags[i] {
-                            let cond_coding = if i > 0
-                                && encoder.state_fxx[n].common.lbrr_flags[i - 1]
-                            {
-                                ConditionalCoding::Conditional
-                            } else {
-                                ConditionalCoding::Independent
-                            };
+                            let cond_coding =
+                                if i > 0 && encoder.state_fxx[n].common.lbrr_flags[i - 1] {
+                                    ConditionalCoding::Conditional
+                                } else {
+                                    ConditionalCoding::Independent
+                                };
                             let mut indices_state =
                                 encoder_indices_state_from_common(&encoder.state_fxx[n]);
                             indices_state.encode_indices(
@@ -399,9 +402,7 @@ pub fn silk_encode(
 
                             silk_encode_pulses(
                                 range_encoder,
-                                i32::from(
-                                    encoder.state_fxx[n].common.indices_lbrr[i].signal_type,
-                                ),
+                                i32::from(encoder.state_fxx[n].common.indices_lbrr[i].signal_type),
                                 quant_offset_as_i32(
                                     encoder.state_fxx[n].common.indices_lbrr[i].quant_offset_type,
                                 ),
@@ -441,12 +442,10 @@ pub fn silk_encode(
             } else {
                 n_bits * 50
             };
-            target_rate_bps -=
-                (encoder.n_bits_exceeded * 1000) / BITRESERVOIR_DECAY_TIME_MS;
+            target_rate_bps -= (encoder.n_bits_exceeded * 1000) / BITRESERVOIR_DECAY_TIME_MS;
             if !prefill.is_active() && frames_encoded > 0 {
-                let bits_balance = range_encoder.tell()
-                    - encoder.n_bits_used_lbrr
-                    - n_bits * frames_encoded_i32;
+                let bits_balance =
+                    range_encoder.tell() - encoder.n_bits_used_lbrr - n_bits * frames_encoded_i32;
                 target_rate_bps -= (bits_balance * 1000) / BITRESERVOIR_DECAY_TIME_MS;
             }
 
@@ -462,9 +461,14 @@ pub fn silk_encode(
                     let (left_state, right_state) = encoder.state_fxx.split_at_mut(1);
                     let left_buf = &mut left_state[0].common.input_buf[2..frame_length + 2];
                     let right_buf = &mut right_state[0].common.input_buf[2..frame_length + 2];
-                    encoder
-                        .stereo_state
-                        .lr_to_ms(left_buf, right_buf, target_rate_bps, speech_activity_q8, control.to_mono, fs_khz_internal)
+                    encoder.stereo_state.lr_to_ms(
+                        left_buf,
+                        right_buf,
+                        target_rate_bps,
+                        speech_activity_q8,
+                        control.to_mono,
+                        fs_khz_internal,
+                    )
                 };
                 store_stereo_result(&mut encoder.stereo_state, frame_idx, &result);
                 ms_target_rates_bps = result.mid_side_rates_bps;
@@ -478,10 +482,7 @@ pub fn silk_encode(
                     silk_encode_do_vad(&mut encoder.state_fxx[1], activity);
                 }
                 if !prefill.is_active() {
-                    stereo_encode_pred(
-                        range_encoder,
-                        &encoder.stereo_state.pred_ix[frame_idx],
-                    );
+                    stereo_encode_pred(range_encoder, &encoder.stereo_state.pred_ix[frame_idx]);
                     if !encoder.state_fxx[1].common.vad_flags[frame_idx] {
                         stereo_encode_mid_only(
                             range_encoder,
@@ -490,17 +491,11 @@ pub fn silk_encode(
                     }
                 }
             } else {
-                encoder.state_fxx[0]
-                    .common
-                    .input_buf[..2]
+                encoder.state_fxx[0].common.input_buf[..2]
                     .copy_from_slice(&encoder.stereo_state.s_mid);
-                encoder
-                    .stereo_state
-                    .s_mid
-                    .copy_from_slice(
-                        &encoder.state_fxx[0].common.input_buf
-                            [frame_length..frame_length + 2],
-                    );
+                encoder.stereo_state.s_mid.copy_from_slice(
+                    &encoder.state_fxx[0].common.input_buf[frame_length..frame_length + 2],
+                );
             }
 
             silk_encode_do_vad(&mut encoder.state_fxx[0], activity);
@@ -562,7 +557,8 @@ pub fn silk_encode(
             encoder.prev_decode_only_middle =
                 encoder.stereo_state.mid_only_flags[current_flag_idx] != 0;
 
-            if *n_bytes_out > 0 && encoder.state_fxx[0].common.n_frames_encoded == frames_per_packet {
+            if *n_bytes_out > 0 && encoder.state_fxx[0].common.n_frames_encoded == frames_per_packet
+            {
                 let mut flags = 0u32;
                 for n in 0..internal_channels {
                     for i in 0..frames_per_packet {
@@ -578,15 +574,13 @@ pub fn silk_encode(
                 }
 
                 if encoder.state_fxx[0].common.in_dtx
-                    && (control.n_channels_internal == 1
-                        || encoder.state_fxx[1].common.in_dtx)
+                    && (control.n_channels_internal == 1 || encoder.state_fxx[1].common.in_dtx)
                 {
                     *n_bytes_out = 0;
                 }
 
                 encoder.n_bits_exceeded += *n_bytes_out * 8;
-                encoder.n_bits_exceeded -=
-                    (control.bit_rate * control.payload_size_ms) / 1000;
+                encoder.n_bits_exceeded -= (control.bit_rate * control.payload_size_ms) / 1000;
                 encoder.n_bits_exceeded = encoder.n_bits_exceeded.clamp(0, 10_000);
 
                 let base_q8 = ((SPEECH_ACTIVITY_DTX_THRES * 256.0) + 0.5) as i32;
@@ -595,8 +589,7 @@ pub fn silk_encode(
                     * (1u32 << 24) as f32
                     + 0.5) as i32;
                 let speech_thr_q8 = base_q8
-                    + (((i64::from(coef_q24)
-                        * i64::from(encoder.time_since_switch_allowed_ms))
+                    + (((i64::from(coef_q24) * i64::from(encoder.time_since_switch_allowed_ms))
                         + (1 << 15))
                         >> 16) as i32;
                 if encoder.state_fxx[0].common.speech_activity_q8 < speech_thr_q8 {
@@ -685,7 +678,11 @@ fn reset_side_channel(channel: &mut EncoderChannelState) {
     channel.common.first_frame_after_reset = true;
 }
 
-fn store_stereo_result(state: &mut StereoEncState, frame_idx: usize, result: &StereoConversionResult) {
+fn store_stereo_result(
+    state: &mut StereoEncState,
+    frame_idx: usize,
+    result: &StereoConversionResult,
+) {
     let idx = frame_idx.min(MAX_FRAMES_PER_PACKET - 1);
     state.pred_ix[idx] = result.indices;
     state.mid_only_flags[idx] = if result.mid_only_flag { 1 } else { 0 };

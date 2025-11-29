@@ -7,7 +7,7 @@
 //! `OPUS_ARCHMASK`, so this Rust version delegates to the safe scalar helper
 //! while keeping the dedicated entry point that the x86 dispatch table expects.
 
-use crate::silk::vq_wmat_ec::{vq_wmat_ec, VqWMatEcResult, LTP_ORDER};
+use crate::silk::vq_wmat_ec::{LTP_ORDER, VqWMatEcResult, vq_wmat_ec};
 
 /// Mirrors `silk_VQ_WMat_EC_sse4_1`.
 #[inline]

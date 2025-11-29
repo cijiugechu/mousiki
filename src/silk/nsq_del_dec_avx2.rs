@@ -137,8 +137,14 @@ mod tests {
         assert_eq!(indices_scalar.lag_index, indices_avx2.lag_index);
         assert_eq!(indices_scalar.contour_index, indices_avx2.contour_index);
         assert_eq!(indices_scalar.signal_type, indices_avx2.signal_type);
-        assert_eq!(indices_scalar.quant_offset_type, indices_avx2.quant_offset_type);
-        assert_eq!(indices_scalar.nlsf_interp_coef_q2, indices_avx2.nlsf_interp_coef_q2);
+        assert_eq!(
+            indices_scalar.quant_offset_type,
+            indices_avx2.quant_offset_type
+        );
+        assert_eq!(
+            indices_scalar.nlsf_interp_coef_q2,
+            indices_avx2.nlsf_interp_coef_q2
+        );
         assert_eq!(indices_scalar.per_index, indices_avx2.per_index);
         assert_eq!(indices_scalar.ltp_scale_index, indices_avx2.ltp_scale_index);
         assert_eq!(indices_scalar.seed, indices_avx2.seed);

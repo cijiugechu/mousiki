@@ -8,8 +8,8 @@
 
 use bitflags::bitflags;
 
-use crate::silk::errors::SilkError;
 use crate::silk::MAX_FRAMES_PER_PACKET;
+use crate::silk::errors::SilkError;
 
 bitflags! {
     /// Bitflags that encode the per-frame VAD bits plus the in-band FEC flag.
@@ -85,7 +85,8 @@ pub fn silk_get_toc(payload: &[u8], frames_per_payload: usize) -> Result<Toc, Si
         frames_per_payload,
         flags: TocFlags::empty(),
     };
-    let mut flags = (payload[0] >> (7 - frames_per_payload)) & ((1 << (frames_per_payload + 1)) - 1);
+    let mut flags =
+        (payload[0] >> (7 - frames_per_payload)) & ((1 << (frames_per_payload + 1)) - 1);
 
     if flags & 1 != 0 {
         toc.flags.insert(TocFlags::INBAND_FEC);
@@ -109,9 +110,9 @@ pub fn silk_get_toc(payload: &[u8], frames_per_payload: usize) -> Result<Toc, Si
 
 #[cfg(test)]
 mod tests {
-    use super::{silk_get_toc, Toc, TocFlags};
-    use crate::silk::errors::SilkError;
+    use super::{Toc, TocFlags, silk_get_toc};
     use crate::silk::MAX_FRAMES_PER_PACKET;
+    use crate::silk::errors::SilkError;
 
     #[test]
     fn rejects_empty_payloads() {
