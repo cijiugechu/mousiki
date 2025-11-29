@@ -128,6 +128,16 @@ pub fn write_demixing_matrix_subset(
     Ok(())
 }
 
+/// Returns the exposed demixing submatrix size in bytes.
+pub fn demixing_matrix_size(layout: &ProjectionLayout) -> Result<usize, ProjectionError> {
+    layout.demixing_subset_size_bytes()
+}
+
+/// Returns the demixing matrix gain in 7.8 fixed-point dB.
+pub fn demixing_matrix_gain(layout: &ProjectionLayout) -> i32 {
+    layout.demixing.gain_db
+}
+
 fn get_order_plus_one_from_channels(channels: usize) -> Option<usize> {
     // Allowed channel counts: (1 + n)^2 + 2j for n = 0..14 and j = 0 or 1.
     if !(1..=227).contains(&channels) {
@@ -227,5 +237,49 @@ mod tests {
         }
 
         assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn demixing_helpers_export_metadata_and_matrix() {
+        let layout = projection_layout(9, 3).expect("layout");
+
+        let size = demixing_matrix_size(&layout).expect("size");
+        let expected_size = layout.demixing_subset_size_bytes().unwrap();
+        assert_eq!(size, expected_size);
+
+        let gain = demixing_matrix_gain(&layout);
+        assert_eq!(gain, layout.demixing.gain_db);
+
+        let mut buffer = vec![0u8; size];
+        write_demixing_matrix_subset(&layout, &mut buffer).expect("matrix");
+
+        let decoded: Vec<i16> = buffer
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+
+        let nb_input_streams = layout.streams + layout.coupled_streams;
+        let mut expected = Vec::new();
+        for input_stream in 0..nb_input_streams {
+            for channel in 0..layout.channels {
+                expected.push(
+                    layout
+                        .demixing
+                        .data[layout.demixing.rows * input_stream + channel],
+                );
+            }
+        }
+
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn demixing_matrix_rejects_mismatched_buffer_size() {
+        let layout = projection_layout(4, 3).expect("layout");
+        let size = layout.demixing_subset_size_bytes().unwrap();
+        let mut buffer = vec![0u8; size - 1];
+
+        let err = write_demixing_matrix_subset(&layout, &mut buffer).unwrap_err();
+        assert_eq!(err, ProjectionError::BadArgument);
     }
 }
