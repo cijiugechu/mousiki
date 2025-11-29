@@ -1,4 +1,6 @@
-use crate::bitdepth::{BitDepthError, convert_float32_le_to_signed16_le};
+use crate::bitdepth::{
+    BitDepthError, convert_float32_le_to_signed16_le, convert_float32_to_signed24,
+};
 use crate::packet::{Bandwidth, Mode};
 use crate::resample;
 use crate::silk::decoder as silk_decoder;
@@ -246,6 +248,18 @@ impl Decoder {
         );
         Ok((bandwidth, stereo))
     }
+
+    /// Mirrors the 24-bit output wrapper `opus_decode24`, converting the decoded
+    /// SILK frame to signed 24-bit samples stored in `i32`.
+    pub fn decode_int24(
+        &mut self,
+        input: &[u8],
+        out: &mut [i32],
+    ) -> Result<(Bandwidth, bool), DecoderError> {
+        let (bandwidth, stereo) = self.decode_internal(input)?;
+        convert_float32_to_signed24(&self.silk_buffer, out, UPSAMPLE_FACTOR)?;
+        Ok((bandwidth, stereo))
+    }
 }
 
 impl Default for Decoder {
@@ -307,6 +321,28 @@ mod tests {
             .zip(EXPECTED_FLOATS_PREFIX.iter())
         {
             assert!((chunk[0] - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn decode_int24_matches_expected_prefix() {
+        let mut decoder = Decoder::new();
+        let mut out = [0_i32; SILK_FRAME_SAMPLES * UPSAMPLE_FACTOR];
+        let (bandwidth, stereo) = decoder
+            .decode_int24(TEST_PACKET, &mut out)
+            .expect("decoding should succeed");
+
+        assert_eq!(bandwidth, Bandwidth::Wide);
+        assert!(!stereo);
+
+        const SCALE_FACTOR: f64 = 8_388_608.0;
+        for (sample, chunk) in decoder
+            .silk_buffer
+            .iter()
+            .zip(out.chunks_exact(UPSAMPLE_FACTOR))
+        {
+            let expected_scaled = libm::rint(f64::from(*sample) * SCALE_FACTOR) as i32;
+            assert_eq!(chunk, [expected_scaled; UPSAMPLE_FACTOR]);
         }
     }
 

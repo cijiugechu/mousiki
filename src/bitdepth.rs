@@ -1,7 +1,7 @@
 /// Utilities for converting audio sample bit depths without heap allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitDepthError {
-    /// The provided output buffer is smaller than the bytes required for the conversion.
+    /// The provided output buffer is smaller than the length required for the conversion.
     OutputBufferTooSmall { required: usize, provided: usize },
     /// The required output length overflows `usize` during calculation.
     RequiredSizeOverflow,
@@ -51,6 +51,44 @@ pub fn convert_float32_le_to_signed16_le(
     Ok(())
 }
 
+/// Converts 32-bit floating point samples to signed 24-bit integers stored in `i32`.
+///
+/// The conversion mirrors the reference `RES2INT24` macro by rounding to the
+/// nearest integer (matching `lrint`) after scaling by 32768*256. The `out`
+/// slice must be large enough to hold `in.len() * resample_count` samples.
+pub fn convert_float32_to_signed24(
+    input: &[f32],
+    output: &mut [i32],
+    resample_count: usize,
+) -> Result<(), BitDepthError> {
+    const SCALE_FACTOR: f64 = 8_388_608.0;
+
+    let required_samples = input
+        .len()
+        .checked_mul(resample_count)
+        .ok_or(BitDepthError::RequiredSizeOverflow)?;
+
+    if output.len() < required_samples {
+        return Err(BitDepthError::OutputBufferTooSmall {
+            required: required_samples,
+            provided: output.len(),
+        });
+    }
+
+    let mut index = 0;
+    for &sample in input {
+        let scaled = f64::from(sample) * SCALE_FACTOR;
+        let converted = libm::rint(scaled) as i32;
+
+        for _ in 0..resample_count {
+            output[index] = converted;
+            index += 1;
+        }
+    }
+
+    Ok(())
+}
+
 fn floor_to_i32(value: f32) -> i32 {
     let truncated = value as i32;
     if value >= 0.0 || (truncated as f32) == value {
@@ -82,6 +120,30 @@ mod tests {
         let mut output = [0_u8; 3];
 
         let err = convert_float32_le_to_signed16_le(&input, &mut output, 1).unwrap_err();
+        assert_eq!(
+            err,
+            BitDepthError::OutputBufferTooSmall {
+                required: 4,
+                provided: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn convert_float32_to_signed24_repeats_and_rounds() {
+        let input = [0.25_f32, -0.5];
+        let mut output = [0_i32; 4];
+
+        convert_float32_to_signed24(&input, &mut output, 2).unwrap();
+        assert_eq!(output, [2_097_152, 2_097_152, -4_194_304, -4_194_304]);
+    }
+
+    #[test]
+    fn convert_float32_to_signed24_checks_buffer_size() {
+        let input = [0.25_f32, -0.5];
+        let mut output = [0_i32; 3];
+
+        let err = convert_float32_to_signed24(&input, &mut output, 2).unwrap_err();
         assert_eq!(
             err,
             BitDepthError::OutputBufferTooSmall {
