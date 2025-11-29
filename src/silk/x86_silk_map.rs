@@ -10,8 +10,8 @@ use crate::silk::burg_modified::silk_burg_modified;
 use crate::silk::decode_indices::SideInfoIndices;
 use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState};
 use crate::silk::inner_product_flp_avx2::inner_product_flp_avx2;
-use crate::silk::nsq::silk_nsq;
-use crate::silk::nsq_del_dec::silk_nsq_del_dec;
+use crate::silk::nsq_del_dec_sse4_1::silk_nsq_del_dec_sse4_1;
+use crate::silk::nsq_sse4_1::silk_nsq_sse4_1;
 use crate::silk::vad_sse4_1::silk_vad_get_sa_q8_sse4_1;
 use crate::silk::vector_ops_fix_sse4_1::inner_prod16_sse4_1;
 use crate::silk::vq_wmat_ec::{VqWMatEcResult, LTP_ORDER};
@@ -46,7 +46,8 @@ pub type SilkNsqImpl = fn(
     i32,
     i32,
 );
-pub const SILK_NSQ_IMPL: [SilkNsqImpl; ARCH_IMPL_COUNT] = [silk_nsq; ARCH_IMPL_COUNT];
+pub const SILK_NSQ_IMPL: [SilkNsqImpl; ARCH_IMPL_COUNT] =
+    [silk_nsq_sse4_1; ARCH_IMPL_COUNT];
 
 pub type SilkVqWMatEcImpl = fn(
     &[i32; LTP_ORDER * LTP_ORDER],
@@ -78,7 +79,7 @@ pub type SilkNsqDelDecImpl = fn(
     i32,
 );
 pub const SILK_NSQ_DEL_DEC_IMPL: [SilkNsqDelDecImpl; ARCH_IMPL_COUNT] =
-    [silk_nsq_del_dec; ARCH_IMPL_COUNT];
+    [silk_nsq_del_dec_sse4_1; ARCH_IMPL_COUNT];
 
 pub type SilkBurgModifiedImpl = fn(
     &mut i32,
