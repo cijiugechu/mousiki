@@ -1,7 +1,8 @@
 use mousiki::opus_decoder::{opus_decoder_create, opus_decoder_get_nb_samples};
 use mousiki::packet::{
-    Bandwidth, PacketError, opus_packet_get_bandwidth, opus_packet_get_nb_channels,
-    opus_packet_get_nb_frames, opus_packet_get_nb_samples, opus_packet_get_samples_per_frame,
+    Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_mode,
+    opus_packet_get_nb_channels, opus_packet_get_nb_frames, opus_packet_get_nb_samples,
+    opus_packet_get_samples_per_frame, opus_packet_parse_impl,
 };
 
 const SAMPLE_RATES: [u32; 5] = [8000, 12_000, 16_000, 24_000, 48_000];
@@ -158,4 +159,60 @@ fn sample_count_matches_reference_api_expectations() {
         opus_decoder_get_nb_samples(&decoder, &packet[..], 2),
         Err(PacketError::InvalidPacket)
     );
+}
+
+#[test]
+fn packet_mode_matches_bit_layout() {
+    assert_eq!(opus_packet_get_mode(&[0x00]).unwrap(), Mode::SILK);
+    assert_eq!(opus_packet_get_mode(&[0x60]).unwrap(), Mode::HYBRID);
+    assert_eq!(opus_packet_get_mode(&[0x80]).unwrap(), Mode::CELT);
+
+    assert_eq!(opus_packet_get_mode(&[]), Err(PacketError::BadArgument));
+}
+
+#[test]
+fn parses_self_delimited_single_frame() {
+    let packet: [u8; 7] = [0x00, 0x05, 1, 2, 3, 4, 5];
+    let parsed = opus_packet_parse_impl(&packet, packet.len(), true).unwrap();
+
+    assert_eq!(parsed.toc, 0x00);
+    assert_eq!(parsed.frame_count, 1);
+    assert_eq!(parsed.frame_sizes[0], 5);
+    assert_eq!(parsed.payload_offset, 2);
+    assert_eq!(parsed.packet_offset, packet.len());
+    assert_eq!(parsed.frames[0], &packet[2..]);
+    assert!(parsed.padding.is_empty());
+}
+
+#[test]
+fn parses_self_delimited_cbr_with_padding() {
+    let packet: [u8; 12] = [
+        0x03, // toc: code 3 -> arbitrary frames
+        0x42, // padding flag set, 2 frames, CBR
+        0x02, // padding length
+        0x03, // self-delimited size for both frames
+        0xAA, 0xAB, 0xAC, // frame 0
+        0xBA, 0xBB, 0xBC, // frame 1
+        0xEE, 0xEF, // padding bytes
+    ];
+
+    let parsed = opus_packet_parse_impl(&packet, packet.len(), true).unwrap();
+
+    assert_eq!(parsed.frame_count, 2);
+    assert_eq!(parsed.frame_sizes[0], 3);
+    assert_eq!(parsed.frame_sizes[1], 3);
+    assert_eq!(parsed.payload_offset, 4);
+    assert_eq!(parsed.packet_offset, packet.len());
+    assert_eq!(parsed.frames[0], &packet[4..7]);
+    assert_eq!(parsed.frames[1], &packet[7..10]);
+    assert_eq!(parsed.padding, &packet[10..]);
+}
+
+#[test]
+fn rejects_oversized_self_delimited_frame() {
+    // Frame size claims four bytes but only two bytes of payload remain.
+    let packet: [u8; 5] = [0x01, 0x04, 0xAA, 0xBB, 0xCC];
+
+    let err = opus_packet_parse_impl(&packet, packet.len(), true).unwrap_err();
+    assert_eq!(err, PacketError::InvalidPacket);
 }

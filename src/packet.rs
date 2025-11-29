@@ -25,6 +25,22 @@ pub enum Mode {
     HYBRID,
 }
 
+/// Derives the coding mode from the TOC byte.
+#[inline]
+pub fn opus_packet_get_mode(data: &[u8]) -> Result<Mode, PacketError> {
+    let toc = *data.first().ok_or(PacketError::BadArgument)?;
+
+    let mode = if toc & 0x80 != 0 {
+        Mode::CELT
+    } else if toc & 0x60 == 0x60 {
+        Mode::HYBRID
+    } else {
+        Mode::SILK
+    };
+
+    Ok(mode)
+}
+
 /// Bandwidth
 ///
 /// See [section-2](https://datatracker.ietf.org/doc/html/rfc6716#section-2)
@@ -257,4 +273,235 @@ pub fn opus_packet_get_nb_samples(
     } else {
         Ok(samples)
     }
+}
+
+/// Maximum number of frames allowed in a single Opus packet.
+pub const MAX_FRAMES_PER_PACKET: usize = 48;
+
+/// Maximum encoded size in bytes for a single frame when not explicitly delimited.
+const MAX_FRAME_BYTES: usize = 1275;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedPacket<'a> {
+    pub toc: u8,
+    pub frame_count: usize,
+    pub frames: [&'a [u8]; MAX_FRAMES_PER_PACKET],
+    pub frame_sizes: [u16; MAX_FRAMES_PER_PACKET],
+    pub payload_offset: usize,
+    pub packet_offset: usize,
+    pub padding: &'a [u8],
+}
+
+#[inline]
+fn parse_size(data: &[u8]) -> Result<(usize, usize), PacketError> {
+    let Some(&first) = data.first() else {
+        return Err(PacketError::InvalidPacket);
+    };
+
+    if first < 252 {
+        Ok((1, usize::from(first)))
+    } else {
+        let Some(&second) = data.get(1) else {
+            return Err(PacketError::InvalidPacket);
+        };
+        Ok((2, 4 * usize::from(second) + usize::from(first)))
+    }
+}
+
+/// Parses an Opus packet, optionally treating it as self-delimited.
+///
+/// Mirrors `opus_packet_parse_impl` from the reference C implementation. On
+/// success, returns the number of frames plus their sizes and slices, along
+/// with bookkeeping offsets used by the multistream decode path.
+pub fn opus_packet_parse_impl<'a>(
+    packet: &'a [u8],
+    len: usize,
+    self_delimited: bool,
+) -> Result<ParsedPacket<'a>, PacketError> {
+    if len > packet.len() {
+        return Err(PacketError::BadArgument);
+    }
+    if len == 0 {
+        return Err(PacketError::InvalidPacket);
+    }
+
+    let mut frame_sizes = [0u16; MAX_FRAMES_PER_PACKET];
+    let mut frames = [&packet[..0]; MAX_FRAMES_PER_PACKET];
+
+    let mut idx = 0usize;
+    let mut remaining = len;
+
+    let toc = packet[0];
+    idx += 1;
+    remaining -= 1;
+
+    let framesize = opus_packet_get_samples_per_frame(packet, 48_000)?;
+
+    let mut cbr = false;
+    let frame_count: usize;
+    let mut last_size: isize = remaining as isize;
+    let mut pad = 0usize;
+
+    match toc & 0x03 {
+        0 => {
+            frame_count = 1;
+        }
+        1 => {
+            frame_count = 2;
+            cbr = true;
+            if !self_delimited {
+                if remaining & 0x1 != 0 {
+                    return Err(PacketError::InvalidPacket);
+                }
+                last_size = (remaining / 2) as isize;
+                frame_sizes[0] = last_size as u16;
+            }
+        }
+        2 => {
+            frame_count = 2;
+            let (size_bytes, size) = parse_size(&packet[idx..len])?;
+            if size > remaining.saturating_sub(size_bytes) {
+                return Err(PacketError::InvalidPacket);
+            }
+            idx += size_bytes;
+            remaining -= size_bytes;
+            frame_sizes[0] = size as u16;
+            last_size = remaining
+                .checked_sub(size)
+                .ok_or(PacketError::InvalidPacket)? as isize;
+        }
+        _ => {
+            if remaining == 0 {
+                return Err(PacketError::InvalidPacket);
+            }
+            let ch = packet[idx];
+            idx += 1;
+            remaining -= 1;
+
+            frame_count = usize::from(ch & 0x3F);
+            if frame_count == 0
+                || frame_count > MAX_FRAMES_PER_PACKET
+                || framesize
+                    .checked_mul(frame_count)
+                    .is_none_or(|total| total > 5760)
+            {
+                return Err(PacketError::InvalidPacket);
+            }
+
+            if ch & 0x40 != 0 {
+                loop {
+                    if remaining == 0 {
+                        return Err(PacketError::InvalidPacket);
+                    }
+                    let p = packet[idx];
+                    idx += 1;
+                    remaining -= 1;
+
+                    let tmp = if p == 255 { 254usize } else { usize::from(p) };
+                    pad = pad.checked_add(tmp).ok_or(PacketError::InvalidPacket)?;
+                    if remaining < tmp {
+                        return Err(PacketError::InvalidPacket);
+                    }
+                    remaining -= tmp;
+                    if p != 255 {
+                        break;
+                    }
+                }
+            }
+
+            cbr = (ch & 0x80) == 0;
+            if !cbr {
+                last_size = remaining as isize;
+                for slot in frame_sizes.iter_mut().take(frame_count - 1) {
+                    let (size_bytes, size) = parse_size(&packet[idx..len])?;
+                    if size > remaining.saturating_sub(size_bytes) {
+                        return Err(PacketError::InvalidPacket);
+                    }
+                    idx += size_bytes;
+                    remaining -= size_bytes;
+
+                    *slot = size as u16;
+                    last_size -= (size_bytes + size) as isize;
+                    if last_size < 0 {
+                        return Err(PacketError::InvalidPacket);
+                    }
+                }
+            } else if !self_delimited {
+                let per_frame = remaining / frame_count;
+                if per_frame * frame_count != remaining {
+                    return Err(PacketError::InvalidPacket);
+                }
+                last_size = per_frame as isize;
+                for slot in frame_sizes.iter_mut().take(frame_count - 1) {
+                    *slot = per_frame as u16;
+                }
+            }
+        }
+    }
+
+    if self_delimited {
+        let (size_bytes, size) = parse_size(&packet[idx..len])?;
+        if size > remaining.saturating_sub(size_bytes) {
+            return Err(PacketError::InvalidPacket);
+        }
+        idx += size_bytes;
+        remaining -= size_bytes;
+        frame_sizes[frame_count - 1] = size as u16;
+
+        if cbr {
+            let total = size
+                .checked_mul(frame_count)
+                .ok_or(PacketError::InvalidPacket)?;
+            if total > remaining {
+                return Err(PacketError::InvalidPacket);
+            }
+            for slot in frame_sizes.iter_mut().take(frame_count - 1) {
+                *slot = size as u16;
+            }
+        } else if size_bytes + size > last_size as usize {
+            return Err(PacketError::InvalidPacket);
+        }
+    } else {
+        if last_size < 0 || last_size as usize > MAX_FRAME_BYTES {
+            return Err(PacketError::InvalidPacket);
+        }
+        frame_sizes[frame_count - 1] = last_size as u16;
+    }
+
+    let payload_offset = idx;
+    let mut cursor = idx;
+
+    for (frame_slot, &size) in frames.iter_mut().zip(frame_sizes.iter()).take(frame_count) {
+        let sz = usize::from(size);
+        let end = cursor.checked_add(sz).ok_or(PacketError::InvalidPacket)?;
+        if end > len {
+            return Err(PacketError::InvalidPacket);
+        }
+        *frame_slot = &packet[cursor..end];
+        cursor = end;
+    }
+
+    let padding_end = cursor.checked_add(pad).ok_or(PacketError::InvalidPacket)?;
+    if padding_end > len {
+        return Err(PacketError::InvalidPacket);
+    }
+
+    Ok(ParsedPacket {
+        toc,
+        frame_count,
+        frames,
+        frame_sizes,
+        payload_offset,
+        packet_offset: padding_end,
+        padding: &packet[cursor..padding_end],
+    })
+}
+
+/// Convenience wrapper for non-self-delimited packets.
+#[inline]
+pub fn opus_packet_parse<'a>(
+    packet: &'a [u8],
+    len: usize,
+) -> Result<ParsedPacket<'a>, PacketError> {
+    opus_packet_parse_impl(packet, len, false)
 }

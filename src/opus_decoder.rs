@@ -4,13 +4,13 @@
 //! determine how much memory the combined SILK/CELT decoder requires.
 
 use crate::celt::{
+    CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OwnedCeltDecoder,
     canonical_mode, celt_decoder_get_size, opus_custom_decoder_create, opus_custom_decoder_ctl,
-    opus_select_arch, CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest,
-    OwnedCeltDecoder,
+    opus_select_arch,
 };
-use crate::packet::{opus_packet_get_nb_samples, PacketError};
+use crate::packet::{PacketError, opus_packet_get_nb_samples};
 use crate::silk::dec_api::{
-    reset_decoder as silk_reset_decoder, Decoder as SilkDecoder, DECODER_NUM_CHANNELS,
+    DECODER_NUM_CHANNELS, Decoder as SilkDecoder, reset_decoder as silk_reset_decoder,
 };
 use crate::silk::decoder_state::DecoderState;
 use crate::silk::errors::SilkError;
@@ -353,8 +353,8 @@ pub fn opus_decoder_ctl<'req>(
 #[cfg(test)]
 mod tests {
     use super::{
-        opus_decoder_create, opus_decoder_get_size, opus_decoder_ctl, OpusDecoderCtlError,
-        OpusDecoderCtlRequest,
+        OpusDecoderCtlError, OpusDecoderCtlRequest, opus_decoder_create, opus_decoder_ctl,
+        opus_decoder_get_size,
     };
     use crate::celt::{canonical_mode, celt_decoder_get_size, opus_custom_decoder_create};
     use crate::silk::dec_api::Decoder as SilkDecoder;
@@ -425,8 +425,8 @@ mod tests {
         opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::GetGain(&mut gain)).unwrap();
         assert_eq!(gain, -15);
 
-        let err = opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetGain(40_000))
-            .unwrap_err();
+        let err =
+            opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetGain(40_000)).unwrap_err();
         assert_eq!(err, OpusDecoderCtlError::BadArgument);
 
         opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::GetGain(&mut gain)).unwrap();
