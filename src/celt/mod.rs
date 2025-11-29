@@ -61,9 +61,9 @@ pub(crate) use kiss_fft::*;
 pub(crate) use laplace::*;
 #[allow(unused_imports)]
 pub(crate) use lpc::*;
+pub(crate) use math::isqrt32;
 #[allow(unused_imports)]
 pub(crate) use math::*;
-pub(crate) use math::isqrt32;
 #[allow(unused_imports)]
 pub(crate) use mdct::*;
 #[allow(unused_imports)]

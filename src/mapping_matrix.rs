@@ -1,9 +1,9 @@
-use alloc::{boxed::Box, vec};
 #[cfg(test)]
 use alloc::vec::Vec;
+use alloc::{boxed::Box, vec};
 use core::{mem, slice};
 
-use crate::celt::{float2int, float2int16, OpusRes};
+use crate::celt::{OpusRes, float2int, float2int16};
 
 const MAX_CHANNELS: usize = 255;
 const MAX_CELL_BYTES: usize = 65_004;
@@ -55,8 +55,8 @@ impl MappingMatrix {
             "aligned data size must match expected layout",
         );
 
-        let storage_len =
-            mapping_matrix_get_size(rows, cols).expect("matrix dimensions must fit serialized form");
+        let storage_len = mapping_matrix_get_size(rows, cols)
+            .expect("matrix dimensions must fit serialized form");
         let mut storage = vec![0u8; storage_len].into_boxed_slice();
 
         // Fill the header.
@@ -73,9 +73,8 @@ impl MappingMatrix {
         // Copy the data payload.
         let data_offset = align(mem::size_of::<MappingMatrixHeader>());
         let dst_bytes = &mut storage[data_offset..data_offset + expected_bytes];
-        let src_bytes = unsafe {
-            slice::from_raw_parts(data.as_ptr() as *const u8, expected_bytes)
-        };
+        let src_bytes =
+            unsafe { slice::from_raw_parts(data.as_ptr() as *const u8, expected_bytes) };
         dst_bytes.copy_from_slice(src_bytes);
 
         Self { storage }
@@ -156,9 +155,8 @@ fn mapping_matrix_view_from_bytes(bytes: &[u8]) -> MappingMatrixView<'_> {
         "matrix buffer too small for payload"
     );
 
-    let data = unsafe {
-        slice::from_raw_parts(bytes[data_start..].as_ptr() as *const i16, cell_count)
-    };
+    let data =
+        unsafe { slice::from_raw_parts(bytes[data_start..].as_ptr() as *const i16, cell_count) };
 
     MappingMatrixView {
         rows,
@@ -173,9 +171,7 @@ pub fn mapping_matrix_get_size(rows: usize, cols: usize) -> Option<usize> {
         return None;
     }
 
-    let cell_bytes = rows
-        .checked_mul(cols)?
-        .checked_mul(mem::size_of::<i16>())?;
+    let cell_bytes = rows.checked_mul(cols)?.checked_mul(mem::size_of::<i16>())?;
 
     if cell_bytes > MAX_CELL_BYTES {
         return None;
@@ -413,22 +409,19 @@ mod tests {
     use super::*;
     use core::mem;
 
-    const SIMPLE_MATRIX_DATA: [i16; 12] = [
-        0, 32_767, 0, 0, 32_767, 0, 0, 0, 0, 0, 0, 32_767,
-    ];
+    const SIMPLE_MATRIX_DATA: [i16; 12] = [0, 32_767, 0, 0, 32_767, 0, 0, 0, 0, 0, 0, 32_767];
 
     const SIMPLE_MATRIX_INPUT: [i16; 30] = [
-        32_767, 0, -32_768, 29_491, -3_277, -29_491, 26_214, -6_554, -26_214, 22_938,
-        -9_830, -22_938, 19_661, -13_107, -19_661, 16_384, -16_384, -16_384, 13_107,
-        -19_661, -13_107, 9_830, -22_938, -9_830, 6_554, -26_214, -6_554, 3_277, -29_491,
-        -3_277,
+        32_767, 0, -32_768, 29_491, -3_277, -29_491, 26_214, -6_554, -26_214, 22_938, -9_830,
+        -22_938, 19_661, -13_107, -19_661, 16_384, -16_384, -16_384, 13_107, -19_661, -13_107,
+        9_830, -22_938, -9_830, 6_554, -26_214, -6_554, 3_277, -29_491, -3_277,
     ];
 
     const SIMPLE_MATRIX_EXPECTED: [i16; 40] = [
-        0, 32_767, 0, -32_768, -3_277, 29_491, 0, -29_491, -6_554, 26_214, 0, -26_214,
-        -9_830, 22_938, 0, -22_938, -13_107, 19_661, 0, -19_661, -16_384, 16_384, 0,
-        -16_384, -19_661, 13_107, 0, -13_107, -22_938, 9_830, 0, -9_830, -26_214, 6_554,
-        0, -6_554, -29_491, 3_277, 0, -3_277,
+        0, 32_767, 0, -32_768, -3_277, 29_491, 0, -29_491, -6_554, 26_214, 0, -26_214, -9_830,
+        22_938, 0, -22_938, -13_107, 19_661, 0, -19_661, -16_384, 16_384, 0, -16_384, -19_661,
+        13_107, 0, -13_107, -22_938, 9_830, 0, -9_830, -26_214, 6_554, 0, -6_554, -29_491, 3_277,
+        0, -3_277,
     ];
 
     fn assert_res_matches_i16(actual: &[OpusRes], expected: &[i16]) {
@@ -473,7 +466,10 @@ mod tests {
         );
         let view = matrix.as_view();
 
-        let input_pcm: Vec<OpusRes> = SIMPLE_MATRIX_INPUT.iter().map(|&v| int16_to_res(v)).collect();
+        let input_pcm: Vec<OpusRes> = SIMPLE_MATRIX_INPUT
+            .iter()
+            .map(|&v| int16_to_res(v))
+            .collect();
         let frame_size = 10;
 
         // _in_short
@@ -574,7 +570,12 @@ mod tests {
 
 // Precomputed mapping matrices from the reference implementation live below.
 
-pub const MAPPING_MATRIX_FOA_MIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 6, cols: 6, gain_db: 0, data: &MAPPING_MATRIX_FOA_MIXING_DATA };
+pub const MAPPING_MATRIX_FOA_MIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 6,
+    cols: 6,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_FOA_MIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_FOA_MIXING_DATA: [i16; 36] = [
@@ -585,7 +586,12 @@ pub const MAPPING_MATRIX_FOA_MIXING_DATA: [i16; 36] = [
     0, 0, 0, 32767,
 ];
 
-pub const MAPPING_MATRIX_SOA_MIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 11, cols: 11, gain_db: 0, data: &MAPPING_MATRIX_SOA_MIXING_DATA };
+pub const MAPPING_MATRIX_SOA_MIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 11,
+    cols: 11,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_SOA_MIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_SOA_MIXING_DATA: [i16; 121] = [
@@ -607,7 +613,12 @@ pub const MAPPING_MATRIX_SOA_MIXING_DATA: [i16; 121] = [
     32767,
 ];
 
-pub const MAPPING_MATRIX_TOA_MIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 18, cols: 18, gain_db: 0, data: &MAPPING_MATRIX_TOA_MIXING_DATA };
+pub const MAPPING_MATRIX_TOA_MIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 18,
+    cols: 18,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_TOA_MIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_TOA_MIXING_DATA: [i16; 324] = [
@@ -654,7 +665,12 @@ pub const MAPPING_MATRIX_TOA_MIXING_DATA: [i16; 324] = [
     0, 0, 0, 32767,
 ];
 
-pub const MAPPING_MATRIX_FOURTHOA_MIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 27, cols: 27, gain_db: 0, data: &MAPPING_MATRIX_FOURTHOA_MIXING_DATA };
+pub const MAPPING_MATRIX_FOURTHOA_MIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 27,
+    cols: 27,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_FOURTHOA_MIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_FOURTHOA_MIXING_DATA: [i16; 729] = [
@@ -752,7 +768,12 @@ pub const MAPPING_MATRIX_FOURTHOA_MIXING_DATA: [i16; 729] = [
     32767,
 ];
 
-pub const MAPPING_MATRIX_FIFTHOA_MIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 38, cols: 38, gain_db: 0, data: &MAPPING_MATRIX_FIFTHOA_MIXING_DATA };
+pub const MAPPING_MATRIX_FIFTHOA_MIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 38,
+    cols: 38,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_FIFTHOA_MIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_FIFTHOA_MIXING_DATA: [i16; 1444] = [
@@ -939,7 +960,12 @@ pub const MAPPING_MATRIX_FIFTHOA_MIXING_DATA: [i16; 1444] = [
     0, 0, 0, 32767,
 ];
 
-pub const MAPPING_MATRIX_FOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 6, cols: 6, gain_db: 0, data: &MAPPING_MATRIX_FOA_DEMIXING_DATA };
+pub const MAPPING_MATRIX_FOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 6,
+    cols: 6,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_FOA_DEMIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_FOA_DEMIXING_DATA: [i16; 36] = [
@@ -950,7 +976,12 @@ pub const MAPPING_MATRIX_FOA_DEMIXING_DATA: [i16; 36] = [
     0, 0, 0, 32767,
 ];
 
-pub const MAPPING_MATRIX_SOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 11, cols: 11, gain_db: 3050, data: &MAPPING_MATRIX_SOA_DEMIXING_DATA };
+pub const MAPPING_MATRIX_SOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 11,
+    cols: 11,
+    gain_db: 3050,
+    data: &MAPPING_MATRIX_SOA_DEMIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_SOA_DEMIXING_DATA: [i16; 121] = [
@@ -972,7 +1003,12 @@ pub const MAPPING_MATRIX_SOA_DEMIXING_DATA: [i16; 121] = [
     8312,
 ];
 
-pub const MAPPING_MATRIX_TOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 18, cols: 18, gain_db: 0, data: &MAPPING_MATRIX_TOA_DEMIXING_DATA };
+pub const MAPPING_MATRIX_TOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 18,
+    cols: 18,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_TOA_DEMIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_TOA_DEMIXING_DATA: [i16; 324] = [
@@ -1019,7 +1055,12 @@ pub const MAPPING_MATRIX_TOA_DEMIXING_DATA: [i16; 324] = [
     0, 0, 0, 32767,
 ];
 
-pub const MAPPING_MATRIX_FOURTHOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 27, cols: 27, gain_db: 0, data: &MAPPING_MATRIX_FOURTHOA_DEMIXING_DATA };
+pub const MAPPING_MATRIX_FOURTHOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 27,
+    cols: 27,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_FOURTHOA_DEMIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_FOURTHOA_DEMIXING_DATA: [i16; 729] = [
@@ -1117,7 +1158,12 @@ pub const MAPPING_MATRIX_FOURTHOA_DEMIXING_DATA: [i16; 729] = [
     32767,
 ];
 
-pub const MAPPING_MATRIX_FIFTHOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView { rows: 38, cols: 38, gain_db: 0, data: &MAPPING_MATRIX_FIFTHOA_DEMIXING_DATA };
+pub const MAPPING_MATRIX_FIFTHOA_DEMIXING: MappingMatrixView<'static> = MappingMatrixView {
+    rows: 38,
+    cols: 38,
+    gain_db: 0,
+    data: &MAPPING_MATRIX_FIFTHOA_DEMIXING_DATA,
+};
 
 #[rustfmt::skip]
 pub const MAPPING_MATRIX_FIFTHOA_DEMIXING_DATA: [i16; 1444] = [

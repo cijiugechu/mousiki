@@ -8,11 +8,10 @@
 
 use crate::celt::isqrt32;
 use crate::mapping_matrix::{
-    mapping_matrix_get_size, MappingMatrixView, MAPPING_MATRIX_FIFTHOA_DEMIXING,
-    MAPPING_MATRIX_FIFTHOA_MIXING, MAPPING_MATRIX_FOA_DEMIXING, MAPPING_MATRIX_FOA_MIXING,
-    MAPPING_MATRIX_FOURTHOA_DEMIXING, MAPPING_MATRIX_FOURTHOA_MIXING,
+    MAPPING_MATRIX_FIFTHOA_DEMIXING, MAPPING_MATRIX_FIFTHOA_MIXING, MAPPING_MATRIX_FOA_DEMIXING,
+    MAPPING_MATRIX_FOA_MIXING, MAPPING_MATRIX_FOURTHOA_DEMIXING, MAPPING_MATRIX_FOURTHOA_MIXING,
     MAPPING_MATRIX_SOA_DEMIXING, MAPPING_MATRIX_SOA_MIXING, MAPPING_MATRIX_TOA_DEMIXING,
-    MAPPING_MATRIX_TOA_MIXING,
+    MAPPING_MATRIX_TOA_MIXING, MappingMatrixView, mapping_matrix_get_size,
 };
 
 /// Errors surfaced by the projection helper routines.
@@ -67,12 +66,12 @@ pub fn projection_layout(
         return Err(ProjectionError::Unimplemented);
     }
 
-    let order_plus_one = get_order_plus_one_from_channels(channels)
-        .ok_or(ProjectionError::BadArgument)?;
-    let (streams, coupled_streams) = get_streams_from_channels(channels, order_plus_one)
-        .ok_or(ProjectionError::BadArgument)?;
-    let (mixing, demixing) = select_matrices(order_plus_one)
-        .ok_or(ProjectionError::Unimplemented)?;
+    let order_plus_one =
+        get_order_plus_one_from_channels(channels).ok_or(ProjectionError::BadArgument)?;
+    let (streams, coupled_streams) =
+        get_streams_from_channels(channels, order_plus_one).ok_or(ProjectionError::BadArgument)?;
+    let (mixing, demixing) =
+        select_matrices(order_plus_one).ok_or(ProjectionError::Unimplemented)?;
 
     // Ensure the selected matrices can cover the requested layout.
     if streams + coupled_streams > mixing.rows
@@ -85,8 +84,8 @@ pub fn projection_layout(
 
     let mixing_matrix_size_bytes =
         mapping_matrix_get_size(mixing.rows, mixing.cols).ok_or(ProjectionError::BadArgument)?;
-    let demixing_matrix_size_bytes =
-        mapping_matrix_get_size(demixing.rows, demixing.cols).ok_or(ProjectionError::BadArgument)?;
+    let demixing_matrix_size_bytes = mapping_matrix_get_size(demixing.rows, demixing.cols)
+        .ok_or(ProjectionError::BadArgument)?;
 
     Ok(ProjectionLayout {
         channels,
@@ -154,10 +153,7 @@ fn get_order_plus_one_from_channels(channels: usize) -> Option<usize> {
     Some(order_plus_one)
 }
 
-fn get_streams_from_channels(
-    channels: usize,
-    order_plus_one: usize,
-) -> Option<(usize, usize)> {
+fn get_streams_from_channels(channels: usize, order_plus_one: usize) -> Option<(usize, usize)> {
     // Mapping family 3 only supports orders with precomputed matrices.
     if !(2..=6).contains(&order_plus_one) {
         return None;
@@ -168,7 +164,9 @@ fn get_streams_from_channels(
     Some((streams, coupled_streams))
 }
 
-fn select_matrices(order_plus_one: usize) -> Option<(MappingMatrixView<'static>, MappingMatrixView<'static>)> {
+fn select_matrices(
+    order_plus_one: usize,
+) -> Option<(MappingMatrixView<'static>, MappingMatrixView<'static>)> {
     match order_plus_one {
         2 => Some((MAPPING_MATRIX_FOA_MIXING, MAPPING_MATRIX_FOA_DEMIXING)),
         3 => Some((MAPPING_MATRIX_SOA_MIXING, MAPPING_MATRIX_SOA_DEMIXING)),
@@ -177,7 +175,10 @@ fn select_matrices(order_plus_one: usize) -> Option<(MappingMatrixView<'static>,
             MAPPING_MATRIX_FOURTHOA_MIXING,
             MAPPING_MATRIX_FOURTHOA_DEMIXING,
         )),
-        6 => Some((MAPPING_MATRIX_FIFTHOA_MIXING, MAPPING_MATRIX_FIFTHOA_DEMIXING)),
+        6 => Some((
+            MAPPING_MATRIX_FIFTHOA_MIXING,
+            MAPPING_MATRIX_FIFTHOA_DEMIXING,
+        )),
         _ => None,
     }
 }
@@ -228,11 +229,7 @@ mod tests {
         let mut expected = Vec::new();
         for input_stream in 0..nb_input_streams {
             for channel in 0..layout.channels {
-                expected.push(
-                    layout
-                        .demixing
-                        .data[layout.demixing.rows * input_stream + channel],
-                );
+                expected.push(layout.demixing.data[layout.demixing.rows * input_stream + channel]);
             }
         }
 
@@ -262,11 +259,7 @@ mod tests {
         let mut expected = Vec::new();
         for input_stream in 0..nb_input_streams {
             for channel in 0..layout.channels {
-                expected.push(
-                    layout
-                        .demixing
-                        .data[layout.demixing.rows * input_stream + channel],
-                );
+                expected.push(layout.demixing.data[layout.demixing.rows * input_stream + channel]);
             }
         }
 
