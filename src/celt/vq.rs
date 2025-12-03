@@ -168,7 +168,7 @@ pub(crate) fn normalise_residual(
 /// vector. The routine mirrors the reference implementation by performing a
 /// greedy search that maximises the correlation proxy `Rxy / sqrt(Ryy)` without
 /// taking expensive square roots inside the inner loop.
-fn op_pvq_search(
+pub(crate) fn op_pvq_search(
     x: &mut [OpusVal16],
     pulses: &mut [OpusInt32],
     n: usize,

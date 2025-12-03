@@ -129,6 +129,103 @@ pub(crate) fn dual_inner_prod(
     (xy0, xy1)
 }
 
+/// Accumulates four adjacent cross-correlations in a single pass.
+///
+/// Ports the scalar `xcorr_kernel_c()` helper from `celt/pitch.h`, which
+/// computes the dot products between `x` and four successive `y` windows
+/// starting at offsets `0..=3`. The `sum` buffer is updated in place so the
+/// caller can accumulate results across multiple invocations.
+pub(crate) fn xcorr_kernel(
+    x: &[OpusVal16],
+    y: &[OpusVal16],
+    sum: &mut [OpusVal32; 4],
+    len: usize,
+) {
+    assert!(len >= 3, "xcorr_kernel requires at least three samples");
+    assert!(x.len() >= len, "xcorr_kernel needs len samples from x");
+    assert!(
+        y.len() >= len + 3,
+        "xcorr_kernel needs len + 3 samples from y"
+    );
+
+    let mut y_index = 0usize;
+    let mut y0 = y[y_index];
+    y_index += 1;
+    let mut y1 = y[y_index];
+    y_index += 1;
+    let mut y2 = y[y_index];
+    y_index += 1;
+    let mut y3 = 0.0;
+
+    let mut j = 0usize;
+    while j + 3 < len {
+        let tmp0 = x[j];
+        y3 = y[y_index];
+        y_index += 1;
+        sum[0] += tmp0 * y0;
+        sum[1] += tmp0 * y1;
+        sum[2] += tmp0 * y2;
+        sum[3] += tmp0 * y3;
+
+        let tmp1 = x[j + 1];
+        y0 = y[y_index];
+        y_index += 1;
+        sum[0] += tmp1 * y1;
+        sum[1] += tmp1 * y2;
+        sum[2] += tmp1 * y3;
+        sum[3] += tmp1 * y0;
+
+        let tmp2 = x[j + 2];
+        y1 = y[y_index];
+        y_index += 1;
+        sum[0] += tmp2 * y2;
+        sum[1] += tmp2 * y3;
+        sum[2] += tmp2 * y0;
+        sum[3] += tmp2 * y1;
+
+        let tmp3 = x[j + 3];
+        y2 = y[y_index];
+        y_index += 1;
+        sum[0] += tmp3 * y3;
+        sum[1] += tmp3 * y0;
+        sum[2] += tmp3 * y1;
+        sum[3] += tmp3 * y2;
+
+        j += 4;
+    }
+
+    if j < len {
+        let tmp = x[j];
+        y3 = y[y_index];
+        y_index += 1;
+        sum[0] += tmp * y0;
+        sum[1] += tmp * y1;
+        sum[2] += tmp * y2;
+        sum[3] += tmp * y3;
+        j += 1;
+    }
+
+    if j < len {
+        let tmp = x[j];
+        y0 = y[y_index];
+        y_index += 1;
+        sum[0] += tmp * y1;
+        sum[1] += tmp * y2;
+        sum[2] += tmp * y3;
+        sum[3] += tmp * y0;
+        j += 1;
+    }
+
+    if j < len {
+        let tmp = x[j];
+        y1 = y[y_index];
+        sum[0] += tmp * y2;
+        sum[1] += tmp * y3;
+        sum[2] += tmp * y0;
+        sum[3] += tmp * y1;
+    }
+}
+
 /// Computes the normalised open-loop pitch gain.
 ///
 /// Mirrors the float version of `compute_pitch_gain()` in `celt/pitch.c`, which
@@ -558,6 +655,7 @@ mod tests {
     use super::{
         SECOND_CHECK, celt_fir5, celt_inner_prod, celt_pitch_xcorr, compute_pitch_gain,
         dual_inner_prod, find_best_pitch, pitch_downsample, pitch_search, remove_doubling,
+        xcorr_kernel,
     };
     use crate::celt::math::celt_sqrt;
     use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
@@ -600,6 +698,25 @@ mod tests {
 
         assert!((dot0 - expected0).abs() < 1e-6);
         assert!((dot1 - expected1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn xcorr_kernel_matches_four_delays() {
+        let len = 12usize;
+        let x = generate_sequence(len, 0xfeed_face);
+        let y = generate_sequence(len + 3, 0xdead_beef);
+
+        let mut sums = [0.0f32; 4];
+        xcorr_kernel(&x, &y, &mut sums, len);
+
+        for delay in 0..4 {
+            let expected: f32 = (0..len).map(|i| x[i] * y[i + delay]).sum();
+            assert!(
+                (sums[delay] - expected).abs() < 1e-6,
+                "delay {delay} mismatch: expected {expected}, got {}",
+                sums[delay]
+            );
+        }
     }
 
     #[test]

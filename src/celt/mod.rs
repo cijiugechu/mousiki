@@ -10,6 +10,7 @@ mod bands;
 mod celt;
 mod celt_decoder;
 mod celt_encoder;
+mod arm_celt_map;
 mod cpu_support;
 mod cwrs;
 #[cfg(feature = "deep_plc")]
@@ -31,7 +32,10 @@ mod quant_bands;
 mod rate;
 mod types;
 mod vq;
+mod x86_celt_map;
 
+#[allow(unused_imports)]
+pub(crate) use arm_celt_map::*;
 #[allow(unused_imports)]
 pub(crate) use bands::*;
 #[allow(unused_imports)]
@@ -80,3 +84,5 @@ pub(crate) use rate::*;
 pub(crate) use types::*;
 #[allow(unused_imports)]
 pub(crate) use vq::*;
+#[allow(unused_imports)]
+pub(crate) use x86_celt_map::*;

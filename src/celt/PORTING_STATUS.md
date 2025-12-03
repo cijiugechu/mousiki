@@ -531,7 +531,9 @@ safely.
 The scalar decoder and encoder paths from the reference tree now have Rust
 equivalents. Remaining work is limited to the architecture-specific
 optimisations in `arm/`, `mips/`, and `x86/`, which build on top of the scalar
-implementations documented above.
+implementations documented above. The ARM and x86 dispatch tables now live in
+`arm_celt_map.rs` and `x86_celt_map.rs`, still defaulting to the scalar helpers
+until runtime detection and SIMD back-ends are wired up.
 
 ## Modules intentionally left unported
 
