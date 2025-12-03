@@ -508,11 +508,12 @@ safely.
 
 ### `kiss_fft.rs`
 - `KissFftState` &rarr; safe Rust wrapper around the scalar KISS FFT routines in
-  `celt/kiss_fft.c`, keeping the cached twiddle tables and scratch buffers
-  inside a reusable state object.
-- `opus_fft_alloc`, `opus_fft`, and `opus_ifft` &rarr; expose the allocation and
-  transform entry points required by the MDCT, matching the forward 1/`N`
-  normalisation and unscaled inverse behaviour of the reference code.
+  `celt/kiss_fft.c`, mirroring the factorisation, twiddle cache reuse, and
+  bit-reversal tables needed by the iterative butterflies.
+- `opus_fft_alloc`, `opus_fft_alloc_twiddles`, `opus_fft`, and `opus_ifft` &rarr;
+  expose the allocation and transform entry points required by the MDCT,
+  matching the forward 1/`N` normalisation and unscaled inverse behaviour of
+  the reference code.
 
 ### `mdct.rs`
 - `MdctLookup::new` &rarr; owns the per-shift FFT plans and twiddle tables used
