@@ -181,6 +181,29 @@ pub(crate) fn ec_laplace_decode_p0(dec: &mut RangeDecoder, p0: u16, decay: u16) 
 mod tests {
     use super::*;
 
+    struct Lcg(u32);
+
+    impl Lcg {
+        fn new(seed: u32) -> Self {
+            Self(seed)
+        }
+
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(1_103_515_245)
+                .wrapping_add(12_345);
+            self.0 >> 16
+        }
+    }
+
+    fn laplace_start_freq(decay: u32) -> u32 {
+        let ft = TOTAL_FREQ - LAPLACE_MINP * (2 * LAPLACE_NMIN + 1);
+        let numerator = u64::from(ft) * u64::from(16384 - decay);
+        let denominator = u64::from(16384 + decay);
+        (numerator / denominator) as u32 + LAPLACE_MINP
+    }
+
     #[test]
     fn laplace_encode_decode_roundtrip() {
         let mut encoder = RangeEncoder::new();
@@ -219,6 +242,41 @@ mod tests {
         for &expected in &values {
             let decoded = ec_laplace_decode_p0(&mut decoder, p0, decay);
             assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn laplace_reference_harness_roundtrip() {
+        const SAMPLES: usize = 10_000;
+        let mut values = [0i32; SAMPLES];
+        let mut decays = [0u32; SAMPLES];
+
+        values[0] = 3;
+        values[1] = 0;
+        values[2] = -1;
+        decays[0] = 6000;
+        decays[1] = 5800;
+        decays[2] = 5600;
+
+        let mut rng = Lcg::new(1);
+        for i in 3..SAMPLES {
+            values[i] = (rng.next() % 15) as i32 - 7;
+            decays[i] = (rng.next() % 11_000) + 5_000;
+        }
+
+        let mut encoder = RangeEncoder::new();
+        for i in 0..SAMPLES {
+            let fs = laplace_start_freq(decays[i]);
+            ec_laplace_encode(&mut encoder, &mut values[i], fs, decays[i]);
+        }
+
+        let data = encoder.finish();
+        let mut decoder = RangeDecoder::init(&data);
+
+        for i in 0..SAMPLES {
+            let fs = laplace_start_freq(decays[i]);
+            let decoded = ec_laplace_decode(&mut decoder, fs, decays[i]);
+            assert_eq!(decoded, values[i], "mismatch at sample {}", i);
         }
     }
 }
