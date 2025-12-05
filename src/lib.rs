@@ -2,11 +2,14 @@
 
 extern crate alloc;
 
+mod analysis;
 pub mod bitdepth;
 mod celt;
 pub mod decoder;
 pub mod mapping_matrix;
 mod math;
+mod mlp;
+mod mlp_data;
 pub mod oggreader;
 pub mod opus;
 pub mod opus_decoder;

@@ -12,6 +12,9 @@ Current Rust coverage
 - Packet parsing, repacketizer helpers, mapping matrices, and a subset of projection layout
   selection are available. The ambisonics helpers stop after matrix sizing/selection and
   explicitly defer multistream wiring.
+- Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
+  including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
+  extraction used by the encoder heuristics.
 - The public soft-clip helper from `opus.c` is ported as `opus_pcm_soft_clip{,_impl}`.
 - `opus_decoder_get_size` and related layout sizing helpers are ported; full decoding is not.
 
@@ -21,8 +24,6 @@ Remaining modules to port
   self-delimited parsing, decode-gain/soft-clip integration, FEC/PLC glue, CTL handling).
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
-- Tonality/analysis path: `analysis.c/h`, `mlp.c`, `mlp_data.c`, `tansig_table.h` (tonality MLP
-  and SM updates that feed the encoder bitrate/TF heuristics).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
 - Multistream: `opus_multistream.c`, `opus_multistream_encoder.c`, `opus_multistream_decoder.c`
   are not yet implemented; only packet padding/unpadding helpers exist.
