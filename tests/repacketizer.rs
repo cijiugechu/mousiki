@@ -99,6 +99,50 @@ fn pad_and_unpad_preserve_payload() {
 }
 
 #[test]
+fn pad_is_noop_when_lengths_match() {
+    let mut packet = [0u8, 1, 2, 3];
+    opus_packet_pad(&mut packet, 4, 4).expect("equal lengths should succeed");
+    assert_eq!(&packet[..4], &[0, 1, 2, 3]);
+}
+
+#[test]
+fn pad_rejects_invalid_lengths() {
+    let mut packet = [0u8; 5];
+    assert_eq!(
+        opus_packet_pad(&mut packet, 5, 4),
+        Err(RepacketizerError::BadArgument)
+    );
+    assert_eq!(
+        opus_packet_pad(&mut packet, 0, 5),
+        Err(RepacketizerError::BadArgument)
+    );
+}
+
+#[test]
+fn pad_rejects_invalid_packet() {
+    let mut packet = *b"Opus\0\0";
+    assert_eq!(
+        opus_packet_pad(&mut packet, 4, 5),
+        Err(RepacketizerError::InvalidPacket)
+    );
+}
+
+#[test]
+fn unpad_rejects_zero_length_and_invalid_packet() {
+    let mut packet = [0u8; 4];
+    assert_eq!(
+        opus_packet_unpad(&mut packet, 0),
+        Err(RepacketizerError::BadArgument)
+    );
+
+    let mut invalid = *b"Opus";
+    assert_eq!(
+        opus_packet_unpad(&mut invalid, 4),
+        Err(RepacketizerError::InvalidPacket)
+    );
+}
+
+#[test]
 fn multistream_pad_and_unpad_roundtrip() {
     let mut packet = [0u8, 0xAA, 0xBB, 0, 0];
     opus_multistream_packet_pad(&mut packet, 3, 5, 1).expect("pad should succeed");
@@ -106,5 +150,27 @@ fn multistream_pad_and_unpad_roundtrip() {
         opus_multistream_packet_unpad(&mut packet, 5, 1).expect("unpad should succeed");
     assert_eq!(new_len, 3);
     assert_eq!(&packet[..new_len], &[0, 0xAA, 0xBB]);
+}
+
+#[test]
+fn multistream_pad_rejects_invalid_lengths() {
+    let mut packet = [0u8; 5];
+    assert_eq!(
+        opus_multistream_packet_pad(&mut packet, 5, 4, 1),
+        Err(RepacketizerError::BadArgument)
+    );
+    assert_eq!(
+        opus_multistream_packet_pad(&mut packet, 0, 5, 1),
+        Err(RepacketizerError::BadArgument)
+    );
+}
+
+#[test]
+fn multistream_unpad_rejects_invalid_packet() {
+    let mut packet = *b"Opus";
+    assert_eq!(
+        opus_multistream_packet_unpad(&mut packet, 4, 1),
+        Err(RepacketizerError::InvalidPacket)
+    );
 }
 

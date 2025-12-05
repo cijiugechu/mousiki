@@ -468,7 +468,14 @@ pub fn opus_packet_unpad(data: &mut [u8], len: usize) -> Result<usize, Repacketi
         rp.padding_nb_frames[slot] = 0;
         rp.frames[slot].padding_start = None;
     }
-    rp.opus_repacketizer_out_range_impl(0, rp.nb_frames, data, len, false, false, &[])
+    let written =
+        rp.opus_repacketizer_out_range_impl(0, rp.nb_frames, data, len, false, false, &[])?;
+    debug_assert!(written > 0 && written <= len);
+    if written == 0 || written > len {
+        Err(RepacketizerError::InternalError)
+    } else {
+        Ok(written)
+    }
 }
 
 pub fn opus_multistream_packet_pad(
