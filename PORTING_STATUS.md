@@ -9,11 +9,12 @@ This file tracks how the reference C integration and end-to-end tests map onto t
 - `opus-c/celt/tests/test_unit_dft.c` — complex FFT accuracy harness; **Ported** as the `fft_matches_reference_across_sizes` unit test in `src/celt/kiss_fft.rs`, exercising the bit-reversal/stride planning and normalised forward transform.
 - `opus-c/tests/test_opus_projection.c` — mapping matrix helper coverage; **Ported (helpers only)** as the `simple_matrix_operations_follow_reference` unit test in `src/mapping_matrix.rs`, which now mirrors the short, float, and int24 helper paths with the reference stride semantics. Ambisonics projection layout validation and demixing matrix export live in `src/projection.rs`.
 - `opus-c/celt/tests/test_unit_laplace.c` — Laplace coder regression harness; **Ported** as the `laplace_reference_harness_roundtrip` unit test in `src/celt/laplace.rs`, covering the start-frequency helper and encode/decode round-trip over randomized decays.
+- `opus-c/celt/tests/test_unit_types.c` — integer width sanity check; **Ported** as the `types_match_reference_widths` unit test in `src/celt/types.rs`, confirming the 16-bit shift semantics and 16/32-bit sizing.
 
 ## Still unported from the C tree
 - `opus-c/tests/test_opus_api.c`, `test_opus_decode.c`, `test_opus_encode.c`, `test_opus_custom.c`, `test_opus_extensions.c`, `test_opus_projection.c`, `test_opus_dred.c`, and `opus_encode_regressions.c` — API compliance, encode/decode regressions, custom modes, SIMD extensions, ambisonics/projection, and DRED regression coverage remain C-only.
 - `opus-c/tests/run_vectors.sh`, `random_config.sh`, `dred_vectors.sh`, and `opus_build_test.sh` — shell harnesses that orchestrate vector/regression suites and randomized config sweeps are not mirrored.
-- `opus-c/celt/tests/test_unit_{mathops,entropy,types,mdct,cwrs32,rotation}.c` — CELT unit tests are not yet represented in Rust.
+- `opus-c/celt/tests/test_unit_{mathops,entropy,mdct,cwrs32,rotation}.c` — CELT unit tests are not yet represented in Rust.
 - `opus-c/dnn/adaconvtest.c`, `dnn/test_vec.c`, and `dnn/training_tf2/test_{lpcnet,plc}.py` — neural/PLC regression checks are not ported.
 
 ## Dependency gaps for the unported C tests

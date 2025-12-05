@@ -47,6 +47,28 @@ pub struct MdctLookup {
     pub twiddle_offsets: Vec<usize>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{OpusInt16, OpusInt32};
+    use core::mem::size_of;
+
+    #[test]
+    fn types_match_reference_widths() {
+        let mut sample: OpusInt16 = 1;
+        sample <<= 14;
+        assert_eq!(
+            sample >> 14,
+            1,
+            "OpusInt16 should preserve 16-bit shift semantics"
+        );
+        assert_eq!(
+            size_of::<OpusInt16>() * 2,
+            size_of::<OpusInt32>(),
+            "16-bit width times two must equal 32-bit width"
+        );
+    }
+}
+
 impl MdctLookup {
     #[must_use]
     pub fn new(len: usize, max_shift: usize) -> Self {
