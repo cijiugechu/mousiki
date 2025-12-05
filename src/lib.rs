@@ -14,6 +14,7 @@ pub mod packet;
 pub mod projection;
 pub mod range;
 pub mod resample;
+pub mod repacketizer;
 pub mod silk;
 
 /// Returns the textual version identifier for the library, matching
