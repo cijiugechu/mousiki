@@ -7,12 +7,12 @@
 //! layout but routes every entry to the scalar helpers because
 //! `OPUS_ARCHMASK` is stubbed to zero until runtime dispatch is implemented.
 
+use crate::celt::comb_filter_const;
 use crate::celt::cpu_support::OPUS_ARCHMASK;
 use crate::celt::lpc::celt_fir;
 use crate::celt::pitch::{celt_inner_prod, celt_pitch_xcorr, dual_inner_prod, xcorr_kernel};
 use crate::celt::types::{CeltCoef, OpusInt32, OpusVal16, OpusVal32};
 use crate::celt::vq::op_pvq_search;
-use crate::celt::comb_filter_const;
 
 const ARCH_IMPL_COUNT: usize = (OPUS_ARCHMASK as usize) + 1;
 
@@ -20,39 +20,27 @@ pub type CeltFirImpl = fn(&[OpusVal16], &[OpusVal16], &mut [OpusVal16]);
 pub const CELT_FIR_IMPL: [CeltFirImpl; ARCH_IMPL_COUNT] = [celt_fir; ARCH_IMPL_COUNT];
 
 pub type XcorrKernelImpl = fn(&[OpusVal16], &[OpusVal16], &mut [OpusVal32; 4], usize);
-pub const XCORR_KERNEL_IMPL: [XcorrKernelImpl; ARCH_IMPL_COUNT] =
-    [xcorr_kernel; ARCH_IMPL_COUNT];
+pub const XCORR_KERNEL_IMPL: [XcorrKernelImpl; ARCH_IMPL_COUNT] = [xcorr_kernel; ARCH_IMPL_COUNT];
 
 pub type CeltInnerProdImpl = fn(&[OpusVal16], &[OpusVal16]) -> OpusVal32;
 pub const CELT_INNER_PROD_IMPL: [CeltInnerProdImpl; ARCH_IMPL_COUNT] =
     [celt_inner_prod; ARCH_IMPL_COUNT];
 
-pub type CeltPitchXcorrImpl =
-    fn(&[OpusVal16], &[OpusVal16], usize, usize, &mut [OpusVal32]);
+pub type CeltPitchXcorrImpl = fn(&[OpusVal16], &[OpusVal16], usize, usize, &mut [OpusVal32]);
 pub const CELT_PITCH_XCORR_IMPL: [CeltPitchXcorrImpl; ARCH_IMPL_COUNT] =
     [celt_pitch_xcorr; ARCH_IMPL_COUNT];
 
-pub type DualInnerProdImpl =
-    fn(&[OpusVal16], &[OpusVal16], &[OpusVal16]) -> (OpusVal32, OpusVal32);
+pub type DualInnerProdImpl = fn(&[OpusVal16], &[OpusVal16], &[OpusVal16]) -> (OpusVal32, OpusVal32);
 pub const DUAL_INNER_PROD_IMPL: [DualInnerProdImpl; ARCH_IMPL_COUNT] =
     [dual_inner_prod; ARCH_IMPL_COUNT];
 
-pub type CombFilterConstImpl = fn(
-    &mut [OpusVal32],
-    &[OpusVal32],
-    usize,
-    usize,
-    CeltCoef,
-    CeltCoef,
-    CeltCoef,
-);
+pub type CombFilterConstImpl =
+    fn(&mut [OpusVal32], &[OpusVal32], usize, usize, CeltCoef, CeltCoef, CeltCoef);
 pub const COMB_FILTER_CONST_IMPL: [CombFilterConstImpl; ARCH_IMPL_COUNT] =
     [comb_filter_const; ARCH_IMPL_COUNT];
 
-pub type OpPvqSearchImpl =
-    fn(&mut [OpusVal16], &mut [OpusInt32], usize, i32, i32) -> OpusVal32;
-pub const OP_PVQ_SEARCH_IMPL: [OpPvqSearchImpl; ARCH_IMPL_COUNT] =
-    [op_pvq_search; ARCH_IMPL_COUNT];
+pub type OpPvqSearchImpl = fn(&mut [OpusVal16], &mut [OpusInt32], usize, i32, i32) -> OpusVal32;
+pub const OP_PVQ_SEARCH_IMPL: [OpPvqSearchImpl; ARCH_IMPL_COUNT] = [op_pvq_search; ARCH_IMPL_COUNT];
 
 #[inline]
 fn dispatch_index(arch: i32) -> usize {

@@ -135,12 +135,7 @@ pub(crate) fn dual_inner_prod(
 /// computes the dot products between `x` and four successive `y` windows
 /// starting at offsets `0..=3`. The `sum` buffer is updated in place so the
 /// caller can accumulate results across multiple invocations.
-pub(crate) fn xcorr_kernel(
-    x: &[OpusVal16],
-    y: &[OpusVal16],
-    sum: &mut [OpusVal32; 4],
-    len: usize,
-) {
+pub(crate) fn xcorr_kernel(x: &[OpusVal16], y: &[OpusVal16], sum: &mut [OpusVal32; 4], len: usize) {
     assert!(len >= 3, "xcorr_kernel requires at least three samples");
     assert!(x.len() >= len, "xcorr_kernel needs len samples from x");
     assert!(

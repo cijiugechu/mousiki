@@ -8,10 +8,12 @@ use core::f32::consts::{LOG2_E, PI};
 use libm::{floorf, log10f, logf, sqrtf};
 
 use crate::celt::{
-    celt_maxabs32, fast_atan2f, float2int, opus_fft, opus_select_arch, AnalysisInfo, KissFftCpx,
-    KissFftState, OpusCustomMode, CELT_SIG_SCALE,
+    AnalysisInfo, CELT_SIG_SCALE, KissFftCpx, KissFftState, OpusCustomMode, celt_maxabs32,
+    fast_atan2f, float2int, opus_fft, opus_select_arch,
 };
-use crate::mlp::{analysis_compute_dense, analysis_compute_gru, LAYER0, LAYER1, LAYER2, MAX_NEURONS};
+use crate::mlp::{
+    LAYER0, LAYER1, LAYER2, MAX_NEURONS, analysis_compute_dense, analysis_compute_gru,
+};
 
 const NB_FRAMES: usize = 8;
 const NB_TBANDS: usize = 18;
@@ -28,20 +30,19 @@ const DCT_TABLE: [f32; 128] = [
     0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000,
     0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000, 0.250_000,
     0.351_851, 0.338_330, 0.311_806, 0.273_300, 0.224_292, 0.166_664, 0.102_631, 0.034_654,
-    -0.034_654, -0.102_631, -0.166_664, -0.224_292, -0.273_300, -0.311_806, -0.338_330,
-    -0.351_851, 0.346_760, 0.293_969, 0.196_424, 0.068_975, -0.068_975, -0.196_424, -0.293_969,
-    -0.346_760, -0.346_760, -0.293_969, -0.196_424, -0.068_975, 0.068_975, 0.196_424, 0.293_969,
-    0.346_760, 0.338_330, 0.224_292, 0.034_654, -0.166_664, -0.311_806, -0.351_851, -0.273_300,
-    -0.102_631, 0.102_631, 0.273_300, 0.351_851, 0.311_806, 0.166_664, -0.034_654, -0.224_292,
-    -0.338_330, 0.326_641, 0.135_299, -0.135_299, -0.326_641, -0.326_641, -0.135_299, 0.135_299,
-    0.326_641, 0.326_641, 0.135_299, -0.135_299, -0.326_641, -0.326_641, -0.135_299, 0.135_299,
-    0.326_641, 0.311_806, 0.034_654, -0.273_300, -0.338_330, -0.102_631, 0.224_292, 0.351_851,
-    0.166_664, -0.166_664, -0.351_851, -0.224_292, 0.102_631, 0.338_330, 0.273_300, -0.034_654,
-    -0.311_806, 0.293_969, -0.068_975, -0.346_760, -0.196_424, 0.196_424, 0.346_760, 0.068_975,
-    -0.293_969, -0.293_969, 0.068_975, 0.346_760, 0.196_424, -0.196_424, -0.346_760, -0.068_975,
-    0.293_969, 0.273_300, -0.166_664, -0.338_330, 0.034_654, 0.351_851, 0.102_631, -0.311_806,
-    -0.224_292, 0.224_292, 0.311_806, -0.102_631, -0.351_851, -0.034_654, 0.338_330, 0.166_664,
-    -0.273_300,
+    -0.034_654, -0.102_631, -0.166_664, -0.224_292, -0.273_300, -0.311_806, -0.338_330, -0.351_851,
+    0.346_760, 0.293_969, 0.196_424, 0.068_975, -0.068_975, -0.196_424, -0.293_969, -0.346_760,
+    -0.346_760, -0.293_969, -0.196_424, -0.068_975, 0.068_975, 0.196_424, 0.293_969, 0.346_760,
+    0.338_330, 0.224_292, 0.034_654, -0.166_664, -0.311_806, -0.351_851, -0.273_300, -0.102_631,
+    0.102_631, 0.273_300, 0.351_851, 0.311_806, 0.166_664, -0.034_654, -0.224_292, -0.338_330,
+    0.326_641, 0.135_299, -0.135_299, -0.326_641, -0.326_641, -0.135_299, 0.135_299, 0.326_641,
+    0.326_641, 0.135_299, -0.135_299, -0.326_641, -0.326_641, -0.135_299, 0.135_299, 0.326_641,
+    0.311_806, 0.034_654, -0.273_300, -0.338_330, -0.102_631, 0.224_292, 0.351_851, 0.166_664,
+    -0.166_664, -0.351_851, -0.224_292, 0.102_631, 0.338_330, 0.273_300, -0.034_654, -0.311_806,
+    0.293_969, -0.068_975, -0.346_760, -0.196_424, 0.196_424, 0.346_760, 0.068_975, -0.293_969,
+    -0.293_969, 0.068_975, 0.346_760, 0.196_424, -0.196_424, -0.346_760, -0.068_975, 0.293_969,
+    0.273_300, -0.166_664, -0.338_330, 0.034_654, 0.351_851, 0.102_631, -0.311_806, -0.224_292,
+    0.224_292, 0.311_806, -0.102_631, -0.351_851, -0.034_654, 0.338_330, 0.166_664, -0.273_300,
 ];
 
 const ANALYSIS_WINDOW: [f32; 240] = [
@@ -84,14 +85,7 @@ const TBANDS: [usize; NB_TBANDS + 1] = [
 const LEAKAGE_OFFSET: f32 = 2.5;
 const LEAKAGE_SLOPE: f32 = 2.0;
 const STD_FEATURE_BIAS: [f32; 9] = [
-    5.684_947,
-    3.475_288,
-    1.770_634,
-    1.599_784,
-    3.773_215,
-    2.163_313,
-    1.260_756,
-    1.116_868,
+    5.684_947, 3.475_288, 1.770_634, 1.599_784, 3.773_215, 2.163_313, 1.260_756, 1.116_868,
     1.918_795,
 ];
 
@@ -394,7 +388,14 @@ fn downmix_and_resample<PCM: DownmixInput + ?Sized>(
 
     let mut tmp = [0.0f32; 960];
     debug_assert!(subframe <= tmp.len());
-    pcm.downmix(&mut tmp[..subframe], subframe, offset as usize, c1, c2, channels);
+    pcm.downmix(
+        &mut tmp[..subframe],
+        subframe,
+        offset as usize,
+        c1,
+        c2,
+        channels,
+    );
 
     if (c2 == -2 && channels == 2) || c2 > -1 {
         for value in tmp.iter_mut().take(subframe) {
@@ -510,8 +511,10 @@ pub(crate) fn tonality_get_info(
             break;
         }
         let pos_vad = tonal.info[vpos].activity_probability.max(0.0);
-        prob_min = prob_min.min((prob_avg - TRANSITION_PENALTY * (vad_prob - pos_vad)) / prob_count);
-        prob_max = prob_max.max((prob_avg + TRANSITION_PENALTY * (vad_prob - pos_vad)) / prob_count);
+        prob_min =
+            prob_min.min((prob_avg - TRANSITION_PENALTY * (vad_prob - pos_vad)) / prob_count);
+        prob_max =
+            prob_max.max((prob_avg + TRANSITION_PENALTY * (vad_prob - pos_vad)) / prob_count);
         prob_count += pos_vad.max(0.1);
         prob_avg += pos_vad.max(0.1) * tonal.info[mpos].music_prob;
     }
@@ -708,8 +711,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     }
 
     for i in 2..239 {
-        let tt = tonality2[i]
-            .min(tonality2[i - 1].max(tonality2[i + 1]));
+        let tt = tonality2[i].min(tonality2[i - 1].max(tonality2[i + 1]));
         tonality[i] = 0.9 * tonality[i].max(tt - 0.1);
     }
 
@@ -798,7 +800,8 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             let idx = b + NB_TONAL_SKIP_BANDS - NB_TBANDS;
             frame_tonality -= band_tonality[idx];
         }
-        max_frame_tonality = max_frame_tonality.max((1.0 + 0.03 * (b as f32 - NB_TBANDS as f32)) * frame_tonality);
+        max_frame_tonality =
+            max_frame_tonality.max((1.0 + 0.03 * (b as f32 - NB_TBANDS as f32)) * frame_tonality);
         slope += band_tonality[b] * (b as f32 - 8.0);
         tonal.prev_band_tonality[b] = band_tonality[b];
     }
@@ -824,8 +827,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             + (band_log2[b] - (leakage_from[b] + LEAKAGE_OFFSET)).max(0.0);
         info.leak_boost[b] = floorf(boost * 64.0 + 0.5).min(255.0) as u8;
     }
-    info
-        .leak_boost
+    info.leak_boost
         .iter_mut()
         .skip(NB_TBANDS + 1)
         .for_each(|value| *value = 0);
@@ -894,15 +896,24 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         if e_high < 0.0 {
             e_high = 0.0;
         }
-        let noise_ratio = if tonal.prev_bandwidth == 20 { 10.0 } else { 30.0 };
+        let noise_ratio = if tonal.prev_bandwidth == 20 {
+            10.0
+        } else {
+            30.0
+        };
         above_max_pitch += e_high;
-        tonal.mean_e[NB_TBANDS] =
-            ((1.0 - alpha_e2) * tonal.mean_e[NB_TBANDS]).max(e_high);
+        tonal.mean_e[NB_TBANDS] = ((1.0 - alpha_e2) * tonal.mean_e[NB_TBANDS]).max(e_high);
         let em = tonal.mean_e[NB_TBANDS].max(e_high);
-        if em > 3.0 * noise_ratio * noise_floor * 160.0 || e_high > noise_ratio * noise_floor * 160.0 {
+        if em > 3.0 * noise_ratio * noise_floor * 160.0
+            || e_high > noise_ratio * noise_floor * 160.0
+        {
             bandwidth = 20;
         }
-        let threshold = if tonal.prev_bandwidth == 20 { 0.01 } else { 0.05 } * bandwidth_mask;
+        let threshold = if tonal.prev_bandwidth == 20 {
+            0.01
+        } else {
+            0.05
+        } * bandwidth_mask;
         is_masked[NB_TBANDS] = e_high < threshold;
     }
 
@@ -972,13 +983,13 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     }
 
     for i in 0..4 {
-        features[4 + i] =
-            0.632_46 * (bfcc[i] - tonal.mem[i + 24]) + 0.316_23 * (tonal.mem[i] - tonal.mem[i + 16]);
+        features[4 + i] = 0.632_46 * (bfcc[i] - tonal.mem[i + 24])
+            + 0.316_23 * (tonal.mem[i] - tonal.mem[i + 16]);
     }
     for i in 0..3 {
-        features[8 + i] =
-            0.534_52 * (bfcc[i] + tonal.mem[i + 24]) - 0.267_26 * (tonal.mem[i] + tonal.mem[i + 16])
-                - 0.534_52 * tonal.mem[i + 8];
+        features[8 + i] = 0.534_52 * (bfcc[i] + tonal.mem[i + 24])
+            - 0.267_26 * (tonal.mem[i] + tonal.mem[i + 16])
+            - 0.534_52 * tonal.mem[i + 8];
     }
 
     if tonal.count > 5 {
@@ -1018,7 +1029,6 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     tonal.prev_bandwidth = bandwidth as i32;
     info.noisiness = frame_noisiness;
     info.valid = true;
-
 }
 
 pub(crate) fn run_analysis<PCM: DownmixInput + ?Sized>(
@@ -1066,9 +1076,9 @@ pub(crate) fn run_analysis<PCM: DownmixInput + ?Sized>(
 mod tests {
     use alloc::vec::Vec;
 
-    use crate::celt::{opus_custom_mode_find_static, AnalysisInfo};
+    use crate::celt::{AnalysisInfo, opus_custom_mode_find_static};
 
-    use super::{run_analysis, tonality_analysis_reset, TonalityAnalysisState};
+    use super::{TonalityAnalysisState, run_analysis, tonality_analysis_reset};
 
     #[test]
     fn run_analysis_without_pcm_keeps_info_invalid() {

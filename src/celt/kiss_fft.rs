@@ -168,30 +168,9 @@ impl KissFftState {
             };
             match p {
                 2 => kf_bfly2(fout, m, fstride[stage]),
-                3 => kf_bfly3(
-                    fout,
-                    fstride[stage] << shift,
-                    self,
-                    m,
-                    fstride[stage],
-                    m2,
-                ),
-                4 => kf_bfly4(
-                    fout,
-                    fstride[stage] << shift,
-                    self,
-                    m,
-                    fstride[stage],
-                    m2,
-                ),
-                5 => kf_bfly5(
-                    fout,
-                    fstride[stage] << shift,
-                    self,
-                    m,
-                    fstride[stage],
-                    m2,
-                ),
+                3 => kf_bfly3(fout, fstride[stage] << shift, self, m, fstride[stage], m2),
+                4 => kf_bfly4(fout, fstride[stage] << shift, self, m, fstride[stage], m2),
+                5 => kf_bfly5(fout, fstride[stage] << shift, self, m, fstride[stage], m2),
                 _ => panic!("unsupported radix {p} in factorisation"),
             }
             m = m2;
@@ -301,8 +280,10 @@ fn kf_bfly2(fout: &mut [KissFftCpx], m: usize, n: usize) {
             fout[base + 4] = c_sub(fout[base], t0);
             fout[base] = c_add(fout[base], t0);
 
-            let mut t1 =
-                KissFftCpx::new((fout[base + 5].r + fout[base + 5].i) * tw, (fout[base + 5].i - fout[base + 5].r) * tw);
+            let mut t1 = KissFftCpx::new(
+                (fout[base + 5].r + fout[base + 5].i) * tw,
+                (fout[base + 5].i - fout[base + 5].r) * tw,
+            );
             fout[base + 5] = c_sub(fout[base + 1], t1);
             fout[base + 1] = c_add(fout[base + 1], t1);
 
@@ -349,8 +330,7 @@ fn kf_bfly3(
             let scratch0 = c_mul_by_scalar(scratch0, epi3.i);
             let fout0 = c_add(fout[base + k], scratch3);
 
-            fout[base + m2 + k] =
-                KissFftCpx::new(fout_m.r + scratch0.i, fout_m.i - scratch0.r);
+            fout[base + m2 + k] = KissFftCpx::new(fout_m.r + scratch0.i, fout_m.i - scratch0.r);
             fout_m = KissFftCpx::new(fout_m.r - scratch0.i, fout_m.i + scratch0.r);
 
             fout[base + k] = fout0;
@@ -530,9 +510,7 @@ mod tests {
     }
 
     fn lcg(seed: &mut u32) -> u32 {
-        *seed = seed
-            .wrapping_mul(1664525)
-            .wrapping_add(1013904223);
+        *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         *seed
     }
 

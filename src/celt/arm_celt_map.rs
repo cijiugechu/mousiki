@@ -8,11 +8,11 @@
 //! architecture-indexed layout intact.
 
 use crate::celt::cpu_support::OPUS_ARCHMASK;
-use crate::celt::{opus_fft, opus_ifft, KissFftCpx, KissFftState};
 use crate::celt::math::{celt_float2int16, opus_limit2_checkwithin1};
 use crate::celt::mdct::{clt_mdct_backward, clt_mdct_forward};
 use crate::celt::pitch::{celt_inner_prod, celt_pitch_xcorr, dual_inner_prod, xcorr_kernel};
 use crate::celt::types::{CeltCoef, MdctLookup, OpusVal16, OpusVal32};
+use crate::celt::{KissFftCpx, KissFftState, opus_fft, opus_ifft};
 
 const ARCH_IMPL_COUNT: usize = (OPUS_ARCHMASK as usize) + 1;
 
@@ -28,19 +28,16 @@ pub type CeltInnerProdImpl = fn(&[OpusVal16], &[OpusVal16]) -> OpusVal32;
 pub const CELT_INNER_PROD_IMPL: [CeltInnerProdImpl; ARCH_IMPL_COUNT] =
     [celt_inner_prod; ARCH_IMPL_COUNT];
 
-pub type DualInnerProdImpl =
-    fn(&[OpusVal16], &[OpusVal16], &[OpusVal16]) -> (OpusVal32, OpusVal32);
+pub type DualInnerProdImpl = fn(&[OpusVal16], &[OpusVal16], &[OpusVal16]) -> (OpusVal32, OpusVal32);
 pub const DUAL_INNER_PROD_IMPL: [DualInnerProdImpl; ARCH_IMPL_COUNT] =
     [dual_inner_prod; ARCH_IMPL_COUNT];
 
-pub type CeltPitchXcorrImpl =
-    fn(&[OpusVal16], &[OpusVal16], usize, usize, &mut [OpusVal32]);
+pub type CeltPitchXcorrImpl = fn(&[OpusVal16], &[OpusVal16], usize, usize, &mut [OpusVal32]);
 pub const CELT_PITCH_XCORR_IMPL: [CeltPitchXcorrImpl; ARCH_IMPL_COUNT] =
     [celt_pitch_xcorr; ARCH_IMPL_COUNT];
 
 pub type XcorrKernelImpl = fn(&[OpusVal16], &[OpusVal16], &mut [OpusVal32; 4], usize);
-pub const XCORR_KERNEL_IMPL: [XcorrKernelImpl; ARCH_IMPL_COUNT] =
-    [xcorr_kernel; ARCH_IMPL_COUNT];
+pub const XCORR_KERNEL_IMPL: [XcorrKernelImpl; ARCH_IMPL_COUNT] = [xcorr_kernel; ARCH_IMPL_COUNT];
 
 fn opus_fft_alloc_arch_stub(_state: &mut KissFftState) -> i32 {
     0
@@ -60,27 +57,12 @@ pub type OpusFftImpl = fn(&KissFftState, &[KissFftCpx], &mut [KissFftCpx]);
 pub const OPUS_FFT: [OpusFftImpl; ARCH_IMPL_COUNT] = [opus_fft; ARCH_IMPL_COUNT];
 pub const OPUS_IFFT: [OpusFftImpl; ARCH_IMPL_COUNT] = [opus_ifft; ARCH_IMPL_COUNT];
 
-pub type CltMdctForwardImpl = fn(
-    &MdctLookup,
-    &[f32],
-    &mut [f32],
-    &[CeltCoef],
-    usize,
-    usize,
-    usize,
-);
+pub type CltMdctForwardImpl = fn(&MdctLookup, &[f32], &mut [f32], &[CeltCoef], usize, usize, usize);
 pub const CLT_MDCT_FORWARD_IMPL: [CltMdctForwardImpl; ARCH_IMPL_COUNT] =
     [clt_mdct_forward; ARCH_IMPL_COUNT];
 
-pub type CltMdctBackwardImpl = fn(
-    &MdctLookup,
-    &[f32],
-    &mut [f32],
-    &[CeltCoef],
-    usize,
-    usize,
-    usize,
-);
+pub type CltMdctBackwardImpl =
+    fn(&MdctLookup, &[f32], &mut [f32], &[CeltCoef], usize, usize, usize);
 pub const CLT_MDCT_BACKWARD_IMPL: [CltMdctBackwardImpl; ARCH_IMPL_COUNT] =
     [clt_mdct_backward; ARCH_IMPL_COUNT];
 
@@ -181,24 +163,8 @@ mod tests {
         let mut via_dispatch = vec![0.0f32; n >> 1];
         let mut expected = vec![0.0f32; n >> 1];
 
-        select_clt_mdct_forward_impl(0)(
-            &lookup,
-            &input,
-            &mut via_dispatch,
-            &window,
-            overlap,
-            0,
-            1,
-        );
-        clt_mdct_forward(
-            &lookup,
-            &input,
-            &mut expected,
-            &window,
-            overlap,
-            0,
-            1,
-        );
+        select_clt_mdct_forward_impl(0)(&lookup, &input, &mut via_dispatch, &window, overlap, 0, 1);
+        clt_mdct_forward(&lookup, &input, &mut expected, &window, overlap, 0, 1);
         assert_eq!(via_dispatch, expected);
     }
 

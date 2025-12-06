@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::mlp_data::{
-    LAYER0_BIAS, LAYER0_WEIGHTS, LAYER1_BIAS, LAYER1_RECUR_WEIGHTS, LAYER1_WEIGHTS,
-    LAYER2_BIAS, LAYER2_WEIGHTS,
+    LAYER0_BIAS, LAYER0_WEIGHTS, LAYER1_BIAS, LAYER1_RECUR_WEIGHTS, LAYER1_WEIGHTS, LAYER2_BIAS,
+    LAYER2_WEIGHTS,
 };
 
 /// Scaling factor applied to all dense and GRU outputs.
@@ -56,7 +56,14 @@ fn sigmoid_approx(x: f32) -> f32 {
     0.5 + 0.5 * tansig_approx(0.5 * x)
 }
 
-fn gemm_accum(out: &mut [f32], weights: &[i8], rows: usize, cols: usize, col_stride: usize, x: &[f32]) {
+fn gemm_accum(
+    out: &mut [f32],
+    weights: &[i8],
+    rows: usize,
+    cols: usize,
+    col_stride: usize,
+    x: &[f32],
+) {
     debug_assert!(out.len() >= rows);
     debug_assert!(x.len() >= cols);
     let required = rows + col_stride.saturating_mul(cols.saturating_sub(1));
@@ -71,7 +78,11 @@ fn gemm_accum(out: &mut [f32], weights: &[i8], rows: usize, cols: usize, col_str
     }
 }
 
-pub(crate) fn analysis_compute_dense(layer: &AnalysisDenseLayer, output: &mut [f32], input: &[f32]) {
+pub(crate) fn analysis_compute_dense(
+    layer: &AnalysisDenseLayer,
+    output: &mut [f32],
+    input: &[f32],
+) {
     let m = layer.nb_inputs;
     let n = layer.nb_neurons;
     assert!(input.len() >= m, "dense input shorter than expected");

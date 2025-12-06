@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::packet::{
-    opus_packet_get_nb_frames, opus_packet_get_samples_per_frame, opus_packet_parse_impl,
-    PacketError, MAX_FRAMES_PER_PACKET,
+    MAX_FRAMES_PER_PACKET, PacketError, opus_packet_get_nb_frames,
+    opus_packet_get_samples_per_frame, opus_packet_parse_impl,
 };
 
 /// Errors surfaced by the repacketizer helpers, mirroring the C API codes.
@@ -130,8 +130,8 @@ impl OpusRepacketizer {
         self.buffer.extend_from_slice(&data[..len]);
 
         let mut cursor = base + parsed.payload_offset;
-        for (slot, size) in (self.nb_frames..self.nb_frames + parsed.frame_count)
-            .zip(parsed.frame_sizes.iter())
+        for (slot, size) in
+            (self.nb_frames..self.nb_frames + parsed.frame_count).zip(parsed.frame_sizes.iter())
         {
             self.frames[slot] = Frame {
                 start: cursor,
@@ -438,15 +438,8 @@ fn opus_packet_pad_impl(
 
     let mut rp = OpusRepacketizer::new();
     rp.opus_repacketizer_cat(&copy, len)?;
-    let written = rp.opus_repacketizer_out_range_impl(
-        0,
-        rp.nb_frames,
-        data,
-        new_len,
-        false,
-        pad,
-        &[],
-    )?;
+    let written =
+        rp.opus_repacketizer_out_range_impl(0, rp.nb_frames, data, new_len, false, pad, &[])?;
 
     if written > 0 {
         Ok(())

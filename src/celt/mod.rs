@@ -5,12 +5,12 @@
 //! structures so that subsequent ports can translate field-by-field logic while
 //! relying on Rust's ownership and lifetime tracking for safety.
 
+mod arm_celt_map;
 mod bands;
 #[allow(clippy::module_inception)]
 mod celt;
 mod celt_decoder;
 mod celt_encoder;
-mod arm_celt_map;
 mod cpu_support;
 mod cwrs;
 #[cfg(feature = "deep_plc")]

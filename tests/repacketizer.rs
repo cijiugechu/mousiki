@@ -1,6 +1,6 @@
 use mousiki::repacketizer::{
-    opus_multistream_packet_pad, opus_multistream_packet_unpad, opus_packet_pad,
-    opus_packet_unpad, OpusRepacketizer, RepacketizerError,
+    OpusRepacketizer, RepacketizerError, opus_multistream_packet_pad,
+    opus_multistream_packet_unpad, opus_packet_pad, opus_packet_unpad,
 };
 
 #[test]
@@ -71,7 +71,10 @@ fn combines_two_equal_coded_frames_into_code1_packet() {
     assert_eq!(written, 10);
     assert_eq!(out[0] & 0x03, 3); // code 3 (arbitrary frames)
     assert_eq!(out[1] & 0x3F, 4); // frame count
-    assert_eq!(&out[2..written], &[0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xCC, 0xDD]);
+    assert_eq!(
+        &out[2..written],
+        &[0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xCC, 0xDD]
+    );
 }
 
 #[test]
@@ -146,8 +149,7 @@ fn unpad_rejects_zero_length_and_invalid_packet() {
 fn multistream_pad_and_unpad_roundtrip() {
     let mut packet = [0u8, 0xAA, 0xBB, 0, 0];
     opus_multistream_packet_pad(&mut packet, 3, 5, 1).expect("pad should succeed");
-    let new_len =
-        opus_multistream_packet_unpad(&mut packet, 5, 1).expect("unpad should succeed");
+    let new_len = opus_multistream_packet_unpad(&mut packet, 5, 1).expect("unpad should succeed");
     assert_eq!(new_len, 3);
     assert_eq!(&packet[..new_len], &[0, 0xAA, 0xBB]);
 }
@@ -173,4 +175,3 @@ fn multistream_unpad_rejects_invalid_packet() {
         Err(RepacketizerError::InvalidPacket)
     );
 }
-

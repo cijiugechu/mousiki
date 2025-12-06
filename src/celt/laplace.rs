@@ -189,10 +189,7 @@ mod tests {
         }
 
         fn next(&mut self) -> u32 {
-            self.0 = self
-                .0
-                .wrapping_mul(1_103_515_245)
-                .wrapping_add(12_345);
+            self.0 = self.0.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             self.0 >> 16
         }
     }
