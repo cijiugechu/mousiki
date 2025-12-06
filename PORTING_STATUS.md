@@ -25,8 +25,9 @@ Remaining modules to port
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
-- Multistream: `opus_multistream.c`, `opus_multistream_encoder.c`, `opus_multistream_decoder.c`
-  are not yet implemented; only packet padding/unpadding helpers exist.
+- Multistream: Channel layout helpers from `opus_multistream.c` are ported; the encoder/decoder
+  front-ends (`opus_multistream_encoder.c`, `opus_multistream_decoder.c`) remain unimplemented
+  aside from packet padding/unpadding helpers.
 - Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are missing;
   only mapping/matrix selection is present and still depends on multistream glue.
   ```4:10:src/projection.rs
