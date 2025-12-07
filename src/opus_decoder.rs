@@ -4,10 +4,12 @@
 //! determine how much memory the combined SILK/CELT decoder requires.
 
 use crate::celt::{
-    CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OwnedCeltDecoder,
-    canonical_mode, celt_decoder_get_size, opus_custom_decoder_create, opus_custom_decoder_ctl,
-    opus_select_arch,
+    canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
+    opus_custom_decoder_ctl, opus_select_arch, CeltDecoderCtlError,
+    DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::opus::opus_pcm_soft_clip_impl;
 use crate::packet::{
     Bandwidth, Mode, PacketError, ParsedPacket, opus_packet_get_bandwidth, opus_packet_get_mode,
     opus_packet_get_nb_channels, opus_packet_get_nb_samples, opus_packet_get_samples_per_frame,
@@ -23,6 +25,8 @@ use crate::silk::init_decoder::init_decoder as silk_init_channel;
 
 /// Maximum supported channel count for the canonical decoder.
 const MAX_CHANNELS: usize = 2;
+/// Scale factor that converts the quarter-dB decode gain to a base-2 exponent.
+const DECODE_GAIN_SCALE: f32 = core::f32::consts::LOG2_10 / 5120.0;
 
 /// Mirrors the alignment used by `opus_decoder_get_size` in the C code.
 #[inline]
@@ -295,6 +299,57 @@ impl<'mode> OpusDecoder<'mode> {
         })
     }
 
+    /// Applies the decoder gain and optional soft clipping to the decoded PCM.
+    ///
+    /// Mirrors the tail of `opus_decode_native`, scaling the interleaved `pcm`
+    /// samples by the quarter-dB decode gain before running the optional
+    /// floating-point soft clipper. The clipping state is reset when clipping
+    /// is disabled to match the reference behaviour.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_decode_gain_and_soft_clip(
+        &mut self,
+        pcm: &mut [OpusRes],
+        frame_size: usize,
+        soft_clip: bool,
+    ) {
+        let channels = usize::try_from(self.channels).unwrap_or_default();
+        debug_assert!(matches!(channels, 1 | 2));
+        let Some(total_samples) = frame_size.checked_mul(channels) else {
+            return;
+        };
+        debug_assert!(pcm.len() >= total_samples);
+        if pcm.len() < total_samples {
+            return;
+        }
+        let pcm = &mut pcm[..total_samples];
+
+        if self.decode_gain != 0 {
+            let gain = celt_exp2(DECODE_GAIN_SCALE * self.decode_gain as f32);
+            for sample in pcm.iter_mut() {
+                *sample *= gain;
+            }
+        }
+
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            if soft_clip {
+                opus_pcm_soft_clip_impl(
+                    pcm,
+                    frame_size,
+                    channels,
+                    &mut self.softclip_mem,
+                    self.arch,
+                );
+            } else {
+                self.softclip_mem = [0.0; 2];
+            }
+        }
+        #[cfg(feature = "fixed_point")]
+        {
+            let _ = soft_clip;
+        }
+    }
+
     /// Clears runtime decoder fields that are reset by both `opus_decoder_init` and `OPUS_RESET_STATE`.
     fn reset_runtime_fields(&mut self) {
         self.stream_channels = self.channels;
@@ -433,7 +488,9 @@ mod tests {
         OpusDecoderCtlError, OpusDecoderCtlRequest, opus_decoder_create, opus_decoder_ctl,
         opus_decoder_get_size,
     };
-    use crate::celt::{canonical_mode, celt_decoder_get_size, opus_custom_decoder_create};
+    use crate::celt::{
+        OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
+    };
     use crate::packet::{Bandwidth, Mode, PacketError};
     use crate::silk::dec_api::Decoder as SilkDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
@@ -567,6 +624,56 @@ mod tests {
         {
             assert_eq!(decoder.softclip_mem, [0.0, 0.0]);
         }
+    }
+
+    #[test]
+    #[cfg(not(feature = "fixed_point"))]
+    fn apply_decode_gain_scales_pcm_and_resets_softclip_mem_when_disabled() {
+        let mut decoder = opus_decoder_create(48_000, 2).expect("decoder should initialise");
+        decoder.decode_gain = 256; // +1 dB.
+        decoder.softclip_mem = [0.5, -0.25];
+
+        let mut pcm: [OpusRes; 4] = [0.5, -0.25, -0.75, 0.1];
+        decoder.apply_decode_gain_and_soft_clip(&mut pcm, 2, false);
+
+        let gain = celt_exp2(super::DECODE_GAIN_SCALE * 256.0);
+        assert!((pcm[0] - 0.5 * gain).abs() < 1e-6);
+        assert!((pcm[1] + 0.25 * gain).abs() < 1e-6);
+        assert!((pcm[2] + 0.75 * gain).abs() < 1e-6);
+        assert!((pcm[3] - 0.1 * gain).abs() < 1e-6);
+        assert_eq!(decoder.softclip_mem, [0.0, 0.0]);
+    }
+
+    #[test]
+    #[cfg(not(feature = "fixed_point"))]
+    fn apply_decode_gain_invokes_soft_clip_before_returning() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.decode_gain = 256; // +1 dB.
+
+        let mut pcm: [OpusRes; 1] = [0.9];
+        decoder.apply_decode_gain_and_soft_clip(&mut pcm, 1, true);
+
+        let gain = celt_exp2(super::DECODE_GAIN_SCALE * 256.0);
+        let mut expected = [0.9 * gain];
+        let mut softclip_mem = [0.0; 2];
+        crate::opus::opus_pcm_soft_clip_impl(&mut expected, 1, 1, &mut softclip_mem, decoder.arch);
+
+        assert!((pcm[0] - expected[0]).abs() < 1e-6);
+        assert!((decoder.softclip_mem[0] - softclip_mem[0]).abs() < 1e-6);
+        assert_eq!(decoder.softclip_mem[1], 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "fixed_point")]
+    fn apply_decode_gain_scales_pcm_in_fixed_point_builds() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.decode_gain = 128; // +0.5 dB.
+
+        let mut pcm: [OpusRes; 1] = [0.5];
+        decoder.apply_decode_gain_and_soft_clip(&mut pcm, 1, false);
+
+        let gain = celt_exp2(super::DECODE_GAIN_SCALE * 128.0);
+        assert!((pcm[0] - 0.5 * gain).abs() < 1e-6);
     }
 
     #[test]

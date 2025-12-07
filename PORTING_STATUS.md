@@ -21,6 +21,9 @@ Current Rust coverage
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
 - The public soft-clip helper from `opus.c` is ported as `opus_pcm_soft_clip{,_impl}`.
+- The decode-side gain and soft-clip tail from `opus_decode_native` is available as
+  `OpusDecoder::apply_decode_gain_and_soft_clip`, awaiting integration once the decode front-end
+  is wired.
 - `opus_decoder_get_size` and related layout sizing helpers are ported. Packet/header parsing,
   including the self-delimited variant used by multistream decode, is available via
   `OpusDecoder::parse_packet`, but full decoding is not.
@@ -28,7 +31,7 @@ Current Rust coverage
 Remaining modules to port
 -------------------------
 - Top-level decoder: `opus_decoder.c` (`opus_decode_native`, `opus_decode{,_float,_24}`,
-  decode-gain/soft-clip integration, FEC/PLC glue, CTL handling).
+  FEC/PLC glue, CTL handling).
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
