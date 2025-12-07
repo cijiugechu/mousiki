@@ -178,6 +178,11 @@ impl From<SilkError> for OpusDecoderCtlError {
 pub enum OpusDecoderCtlRequest<'req> {
     SetGain(i32),
     GetGain(&'req mut i32),
+    SetComplexity(i32),
+    GetComplexity(&'req mut i32),
+    GetBandwidth(&'req mut i32),
+    GetSampleRate(&'req mut i32),
+    GetFinalRange(&'req mut u32),
     ResetState,
     GetLastPacketDuration(&'req mut i32),
     SetPhaseInversionDisabled(bool),
@@ -320,6 +325,12 @@ pub fn opus_decoder_ctl<'req>(
     request: OpusDecoderCtlRequest<'req>,
 ) -> Result<(), OpusDecoderCtlError> {
     match request {
+        OpusDecoderCtlRequest::GetBandwidth(slot) => {
+            *slot = decoder.bandwidth;
+        }
+        OpusDecoderCtlRequest::GetSampleRate(slot) => {
+            *slot = decoder.fs;
+        }
         OpusDecoderCtlRequest::SetGain(value) => {
             if !(-32_768..=32_767).contains(&value) {
                 return Err(OpusDecoderCtlError::BadArgument);
@@ -329,9 +340,25 @@ pub fn opus_decoder_ctl<'req>(
         OpusDecoderCtlRequest::GetGain(slot) => {
             *slot = decoder.decode_gain;
         }
+        OpusDecoderCtlRequest::SetComplexity(value) => {
+            if !(0..=10).contains(&value) {
+                return Err(OpusDecoderCtlError::BadArgument);
+            }
+            opus_custom_decoder_ctl(
+                decoder.celt.decoder(),
+                CeltDecoderCtlRequest::SetComplexity(value),
+            )?;
+            decoder.complexity = value;
+        }
+        OpusDecoderCtlRequest::GetComplexity(slot) => {
+            *slot = decoder.complexity;
+        }
         OpusDecoderCtlRequest::ResetState => decoder.reset_state()?,
         OpusDecoderCtlRequest::GetLastPacketDuration(slot) => {
             *slot = decoder.last_packet_duration;
+        }
+        OpusDecoderCtlRequest::GetFinalRange(slot) => {
+            *slot = decoder.range_final;
         }
         OpusDecoderCtlRequest::SetPhaseInversionDisabled(value) => {
             opus_custom_decoder_ctl(
@@ -434,6 +461,32 @@ mod tests {
     }
 
     #[test]
+    fn complexity_ctl_round_trips_and_validates_range() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetComplexity(7)).unwrap();
+
+        let mut complexity = 0;
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetComplexity(&mut complexity),
+        )
+        .unwrap();
+        assert_eq!(complexity, 7);
+
+        let err =
+            opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetComplexity(11)).unwrap_err();
+        assert_eq!(err, OpusDecoderCtlError::BadArgument);
+
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetComplexity(&mut complexity),
+        )
+        .unwrap();
+        assert_eq!(complexity, 7);
+    }
+
+    #[test]
     fn reset_state_preserves_gain_and_resets_runtime_fields() {
         let mut decoder = opus_decoder_create(48_000, 2).expect("decoder should initialise");
 
@@ -463,6 +516,37 @@ mod tests {
         {
             assert_eq!(decoder.softclip_mem, [0.0, 0.0]);
         }
+    }
+
+    #[test]
+    fn exposes_sample_rate_bandwidth_and_final_range() {
+        let mut decoder = opus_decoder_create(48_000, 2).expect("decoder should initialise");
+        decoder.bandwidth = 1105;
+        decoder.range_final = 42;
+
+        let mut fs = 0;
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetSampleRate(&mut fs),
+        )
+        .unwrap();
+        assert_eq!(fs, 48_000);
+
+        let mut bandwidth = 0;
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetBandwidth(&mut bandwidth),
+        )
+        .unwrap();
+        assert_eq!(bandwidth, 1105);
+
+        let mut final_range = 0;
+        opus_decoder_ctl(
+            &mut decoder,
+            OpusDecoderCtlRequest::GetFinalRange(&mut final_range),
+        )
+        .unwrap();
+        assert_eq!(final_range, 42);
     }
 
     #[test]

@@ -13,8 +13,10 @@ Current Rust coverage
   selection are available. The ambisonics helpers stop after matrix sizing/selection and
   explicitly defer multistream wiring.
 - Multistream glue includes channel layout helpers plus ambisonics validation and
-  bitrate-allocation utilities from `opus_multistream_encoder.c`; the encoder/decoder
-  front-ends remain stubbed.
+  bitrate-allocation utilities from `opus_multistream_encoder.c`. Decoder sizing/init/CTL
+  dispatch and packet validation are ported; decode entry points exist but still return
+  `Unimplemented` pending the top-level `opus_decode_native` port. Encoder front-ends remain
+  stubbed.
 - Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
@@ -28,9 +30,9 @@ Remaining modules to port
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
-- Multistream: Encoder/decoder front-ends (`opus_multistream_encoder.c`,
-  `opus_multistream_decoder.c`) remain unimplemented aside from packet padding/unpadding
-  helpers; layout validation, ambisonics checks, and bitrate allocation helpers are ported.
+- Multistream: Encoder front-end (`opus_multistream_encoder.c`) remains unimplemented apart from
+  padding/unpadding helpers. Decoder side has size/init/CTL wiring and packet validation but still
+  lacks the per-stream decode/PCM routing that depends on `opus_decode_native`.
 - Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are missing;
   only mapping/matrix selection is present and still depends on multistream glue.
   ```4:10:src/projection.rs
