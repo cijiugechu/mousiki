@@ -6,7 +6,6 @@
 
 #![allow(clippy::too_many_arguments)]
 use core::convert::TryFrom;
-use core::ptr;
 
 use crate::silk::decode_indices::ConditionalCoding;
 use crate::silk::encoder::control_flp::EncoderControlFlp;
@@ -16,6 +15,7 @@ use crate::silk::find_lpc_flp::find_lpc_flp;
 use crate::silk::find_ltp_flp::find_ltp_flp;
 use crate::silk::ltp_analysis_filter_flp::ltp_analysis_filter_flp;
 use crate::silk::ltp_scale_ctrl_flp::ltp_scale_ctrl_flp;
+use crate::silk::ltp_scale_ctrl::LtpScaleCtrlParams;
 use crate::silk::process_nlsfs::{ProcessNlsfConfig, process_nlsfs};
 use crate::silk::quant_ltp_gains::silk_quant_ltp_gains;
 use crate::silk::residual_energy_flp::residual_energy_flp;
@@ -135,19 +135,19 @@ pub fn find_pred_coefs_flp(
             encoder.common.arch,
         );
 
-        let scale = unsafe {
-            // SAFETY: We create disjoint references to the encoder common state and
-            // its side-information indices for the duration of the call. The helper
-            // only reads from `common` and mutates `indices`, matching the C layout.
-            let common_ptr = ptr::addr_of!(encoder.common);
-            let indices_ptr = ptr::addr_of_mut!(encoder.common.indices);
-            ltp_scale_ctrl_flp(
-                &*common_ptr,
-                &mut *indices_ptr,
-                cond_coding,
-                control.lt_pred_cod_gain,
-            )
+        // Copy the LTP-scale inputs so we can borrow `indices` mutably without aliasing `common`.
+        let ltp_params = LtpScaleCtrlParams {
+            packet_loss_perc: encoder.common.packet_loss_perc,
+            frames_per_packet: encoder.common.n_frames_per_packet,
+            lbrr_enabled: encoder.common.lbrr_enabled,
+            snr_db_q7: encoder.common.snr_db_q7,
         };
+        let scale = ltp_scale_ctrl_flp(
+            &ltp_params,
+            &mut encoder.common.indices,
+            cond_coding,
+            control.lt_pred_cod_gain,
+        );
         control.ltp_scale = scale;
 
         let x_ptr_offset = encoder.common.ltp_mem_length - order;

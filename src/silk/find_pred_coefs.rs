@@ -9,7 +9,6 @@
 
 use alloc::vec;
 use core::convert::TryFrom;
-use core::ptr;
 
 use crate::silk::decode_indices::ConditionalCoding;
 use crate::silk::encoder::control::EncoderControl;
@@ -18,7 +17,7 @@ use crate::silk::find_lpc::find_lpc;
 use crate::silk::find_ltp::find_ltp_fix;
 use crate::silk::log2lin::log2lin;
 use crate::silk::ltp_analysis_filter::ltp_analysis_filter;
-use crate::silk::ltp_scale_ctrl::ltp_scale_ctrl;
+use crate::silk::ltp_scale_ctrl::{LtpScaleCtrlParams, ltp_scale_ctrl};
 use crate::silk::process_nlsfs::{ProcessNlsfConfig, process_nlsfs};
 use crate::silk::quant_ltp_gains::silk_quant_ltp_gains;
 use crate::silk::residual_energy::residual_energy;
@@ -121,19 +120,19 @@ pub fn find_pred_coefs(
             nb_subfr,
         );
 
-        let scale = unsafe {
-            // SAFETY: We create disjoint references to the encoder common state and
-            // its side-information indices for the duration of the call. The helper
-            // only reads from `common` and mutates `indices`, matching the C layout.
-            let common_ptr = ptr::addr_of!(encoder.common);
-            let indices_ptr = ptr::addr_of_mut!(encoder.common.indices);
-            ltp_scale_ctrl(
-                &*common_ptr,
-                &mut *indices_ptr,
-                cond_coding,
-                control.lt_pred_cod_gain_q7,
-            )
+        // Copy the LTP-scale inputs so we can borrow `indices` mutably without aliasing `common`.
+        let ltp_params = LtpScaleCtrlParams {
+            packet_loss_perc: encoder.common.packet_loss_perc,
+            frames_per_packet: encoder.common.n_frames_per_packet,
+            lbrr_enabled: encoder.common.lbrr_enabled,
+            snr_db_q7: encoder.common.snr_db_q7,
         };
+        let scale = ltp_scale_ctrl(
+            &ltp_params,
+            &mut encoder.common.indices,
+            cond_coding,
+            control.lt_pred_cod_gain_q7,
+        );
         control.ltp_scale_q14 = scale;
 
         let x_ptr_offset = encoder.common.ltp_mem_length - order;
