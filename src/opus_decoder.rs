@@ -27,6 +27,12 @@ use crate::silk::init_decoder::init_decoder as silk_init_channel;
 const MAX_CHANNELS: usize = 2;
 /// Scale factor that converts the quarter-dB decode gain to a base-2 exponent.
 const DECODE_GAIN_SCALE: f32 = core::f32::consts::LOG2_10 / 5120.0;
+/// Mode tag mirrored from `opus_private.h`.
+pub(crate) const MODE_SILK_ONLY: i32 = 1000;
+/// Mode tag mirrored from `opus_private.h`.
+pub(crate) const MODE_HYBRID: i32 = 1001;
+/// Mode tag mirrored from `opus_private.h`.
+pub(crate) const MODE_CELT_ONLY: i32 = 1002;
 
 /// Mirrors the alignment used by `opus_decoder_get_size` in the C code.
 #[inline]
@@ -46,6 +52,15 @@ fn align(value: usize) -> usize {
 
     let alignment = core::mem::align_of::<AlignProbe>();
     value.div_ceil(alignment) * alignment
+}
+
+#[inline]
+fn opus_mode_to_int(mode: Mode) -> i32 {
+    match mode {
+        Mode::SILK => MODE_SILK_ONLY,
+        Mode::HYBRID => MODE_HYBRID,
+        Mode::CELT => MODE_CELT_ONLY,
+    }
 }
 
 /// Minimal layout stub matching the prefix of `OpusDecoder` used by the size helper.
@@ -167,6 +182,29 @@ pub enum OpusDecoderCtlError {
     Silk(SilkError),
 }
 
+/// Errors surfaced by the top-level decoder front-end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpusDecodeError {
+    BadArgument,
+    BufferTooSmall,
+    InvalidPacket,
+    InternalError,
+    Unimplemented,
+}
+
+impl OpusDecodeError {
+    #[inline]
+    pub const fn code(&self) -> i32 {
+        match self {
+            Self::BadArgument => -1,
+            Self::BufferTooSmall => -2,
+            Self::InternalError => -3,
+            Self::InvalidPacket => -4,
+            Self::Unimplemented => -5,
+        }
+    }
+}
+
 impl From<CeltDecoderCtlError> for OpusDecoderCtlError {
     fn from(value: CeltDecoderCtlError) -> Self {
         match value {
@@ -179,6 +217,16 @@ impl From<CeltDecoderCtlError> for OpusDecoderCtlError {
 impl From<SilkError> for OpusDecoderCtlError {
     fn from(value: SilkError) -> Self {
         Self::Silk(value)
+    }
+}
+
+impl From<PacketError> for OpusDecodeError {
+    #[inline]
+    fn from(value: PacketError) -> Self {
+        match value {
+            PacketError::BadArgument => Self::BadArgument,
+            PacketError::InvalidPacket => Self::InvalidPacket,
+        }
     }
 }
 
@@ -297,6 +345,241 @@ impl<'mode> OpusDecoder<'mode> {
             stream_channels,
             parsed,
         })
+    }
+
+    /// Ports the FEC/PLC glue from `opus_decode_native`, delegating the actual
+    /// frame decode to `decode_frame`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_native_with<F>(
+        &mut self,
+        data: Option<&[u8]>,
+        len: usize,
+        pcm: &mut [OpusRes],
+        frame_size: usize,
+        decode_fec: bool,
+        self_delimited: bool,
+        packet_offset: Option<&mut usize>,
+        soft_clip: bool,
+        decode_frame: &mut F,
+    ) -> Result<usize, OpusDecodeError>
+    where
+        F: FnMut(
+            &mut OpusDecoder<'mode>,
+            Option<&[u8]>,
+            usize,
+            &mut [OpusRes],
+            usize,
+            bool,
+        ) -> Result<usize, OpusDecodeError>,
+    {
+        if frame_size == 0 {
+            return Err(OpusDecodeError::BadArgument);
+        }
+
+        let channels =
+            usize::try_from(self.channels).map_err(|_| OpusDecodeError::BadArgument)?;
+        if channels == 0 || channels > MAX_CHANNELS {
+            return Err(OpusDecodeError::BadArgument);
+        }
+
+        let total_samples = frame_size
+            .checked_mul(channels)
+            .ok_or(OpusDecodeError::BadArgument)?;
+        if pcm.len() < total_samples {
+            return Err(OpusDecodeError::BufferTooSmall);
+        }
+
+        let samples_per_2_5_ms =
+            usize::try_from(self.fs / 400).map_err(|_| OpusDecodeError::BadArgument)?;
+        if (decode_fec || len == 0 || data.is_none())
+            && samples_per_2_5_ms != 0
+            && !frame_size.is_multiple_of(samples_per_2_5_ms)
+        {
+            return Err(OpusDecodeError::BadArgument);
+        }
+
+        if len == 0 || data.is_none() {
+            let mut pcm_count = 0usize;
+            while pcm_count < frame_size {
+                let offset = pcm_count
+                    .checked_mul(channels)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                let remaining = frame_size
+                    .checked_sub(pcm_count)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                let pcm_slice_end = offset
+                    .checked_add(
+                        remaining
+                            .checked_mul(channels)
+                            .ok_or(OpusDecodeError::BadArgument)?,
+                    )
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                let ret = decode_frame(
+                    self,
+                    None,
+                    0,
+                    &mut pcm[offset..pcm_slice_end],
+                    remaining,
+                    false,
+                )?;
+                if ret == 0 {
+                    return Err(OpusDecodeError::InternalError);
+                }
+                pcm_count = pcm_count
+                    .checked_add(ret)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+            }
+            debug_assert_eq!(pcm_count, frame_size);
+            self.last_packet_duration =
+                i32::try_from(pcm_count).map_err(|_| OpusDecodeError::BadArgument)?;
+            // Apply decode gain but skip soft-clipping on PLC-only output.
+            self.apply_decode_gain_and_soft_clip(pcm, pcm_count, false);
+            return Ok(pcm_count);
+        }
+
+        let packet = data.unwrap_or(&[]);
+        if len > packet.len() {
+            return Err(OpusDecodeError::BadArgument);
+        }
+        let packet = &packet[..len];
+
+        let packet_mode = opus_packet_get_mode(packet)?;
+        let packet_bandwidth = opus_packet_get_bandwidth(packet)?;
+        let fs = u32::try_from(self.fs).map_err(|_| OpusDecodeError::BadArgument)?;
+        let packet_frame_size = opus_packet_get_samples_per_frame(packet, fs)?;
+        let packet_stream_channels = opus_packet_get_nb_channels(packet)?;
+
+        let parsed = opus_packet_parse_impl(packet, len, self_delimited)?;
+        if let Some(slot) = packet_offset {
+            *slot = parsed.packet_offset;
+        }
+
+        if decode_fec {
+            if frame_size < packet_frame_size
+                || opus_mode_to_int(packet_mode) == MODE_CELT_ONLY
+                || self.mode == MODE_CELT_ONLY
+            {
+                return self.decode_native_with(
+                    None,
+                    0,
+                    pcm,
+                    frame_size,
+                    false,
+                    false,
+                    None,
+                    soft_clip,
+                    decode_frame,
+                );
+            }
+
+            let duration_copy = self.last_packet_duration;
+            if frame_size != packet_frame_size {
+                let leading = frame_size
+                    .checked_sub(packet_frame_size)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                let ret = self.decode_native_with(
+                    None,
+                    0,
+                    pcm,
+                    leading,
+                    false,
+                    false,
+                    None,
+                    soft_clip,
+                    decode_frame,
+                );
+                if let Err(err) = ret {
+                    self.last_packet_duration = duration_copy;
+                    return Err(err);
+                }
+                let ret = ret?;
+                if ret != leading {
+                    self.last_packet_duration = duration_copy;
+                    return Err(OpusDecodeError::InternalError);
+                }
+            }
+
+            self.mode = opus_mode_to_int(packet_mode);
+            self.bandwidth = packet_bandwidth.to_opus_int();
+            self.frame_size =
+                i32::try_from(packet_frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
+            self.stream_channels = i32::try_from(packet_stream_channels)
+                .map_err(|_| OpusDecodeError::BadArgument)?;
+
+            let offset = (frame_size - packet_frame_size)
+                .checked_mul(channels)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let frame_samples = packet_frame_size
+                .checked_mul(channels)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let end = offset
+                .checked_add(frame_samples)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let ret = decode_frame(
+                self,
+                Some(parsed.frames[0]),
+                usize::from(parsed.frame_sizes[0]),
+                &mut pcm[offset..end],
+                packet_frame_size,
+                true,
+            )?;
+            debug_assert_eq!(ret, packet_frame_size);
+            self.last_packet_duration =
+                i32::try_from(frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
+            self.apply_decode_gain_and_soft_clip(pcm, frame_size, false);
+            return Ok(frame_size);
+        }
+
+        if parsed.frame_count * packet_frame_size > frame_size {
+            return Err(OpusDecodeError::BufferTooSmall);
+        }
+
+        self.mode = opus_mode_to_int(packet_mode);
+        self.bandwidth = packet_bandwidth.to_opus_int();
+        self.frame_size =
+            i32::try_from(packet_frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
+        self.stream_channels = i32::try_from(packet_stream_channels)
+            .map_err(|_| OpusDecodeError::BadArgument)?;
+
+        let mut nb_samples = 0usize;
+        for (frame, &size_bytes) in parsed
+            .frames
+            .iter()
+            .zip(parsed.frame_sizes.iter())
+            .take(parsed.frame_count)
+        {
+            let offset = nb_samples
+                .checked_mul(channels)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let remaining = frame_size
+                .checked_sub(nb_samples)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let pcm_samples = remaining
+                .checked_mul(channels)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let end = offset
+                .checked_add(pcm_samples)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let ret = decode_frame(
+                self,
+                Some(*frame),
+                usize::from(size_bytes),
+                &mut pcm[offset..end],
+                remaining,
+                false,
+            )?;
+            debug_assert_eq!(ret, packet_frame_size);
+            nb_samples = nb_samples
+                .checked_add(ret)
+                .ok_or(OpusDecodeError::BadArgument)?;
+        }
+
+        self.last_packet_duration =
+            i32::try_from(nb_samples).map_err(|_| OpusDecodeError::BadArgument)?;
+        self.apply_decode_gain_and_soft_clip(pcm, nb_samples, soft_clip);
+
+        Ok(nb_samples)
     }
 
     /// Applies the decoder gain and optional soft clipping to the decoded PCM.
@@ -424,6 +707,35 @@ pub fn opus_decoder_get_nb_samples(
     decoder.get_nb_samples(packet, len)
 }
 
+/// Mirrors `opus_decode_native` while delegating frame decode to the embedded closure.
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub fn opus_decode_native(
+    decoder: &mut OpusDecoder<'_>,
+    data: Option<&[u8]>,
+    len: usize,
+    pcm: &mut [OpusRes],
+    frame_size: usize,
+    decode_fec: bool,
+    self_delimited: bool,
+    packet_offset: Option<&mut usize>,
+    soft_clip: bool,
+) -> Result<usize, OpusDecodeError> {
+    decoder.decode_native_with(
+        data,
+        len,
+        pcm,
+        frame_size,
+        decode_fec,
+        self_delimited,
+        packet_offset,
+        soft_clip,
+        &mut |_st, _frame_data, _len, _pcm, _frame_size, _decode_fec| {
+            Err(OpusDecodeError::Unimplemented)
+        },
+    )
+}
+
 /// Applies a control request to the provided decoder state.
 pub fn opus_decoder_ctl<'req>(
     decoder: &mut OpusDecoder<'_>,
@@ -485,15 +797,24 @@ pub fn opus_decoder_ctl<'req>(
 #[cfg(test)]
 mod tests {
     use super::{
-        OpusDecoderCtlError, OpusDecoderCtlRequest, opus_decoder_create, opus_decoder_ctl,
-        opus_decoder_get_size,
+        OpusDecodeError, OpusDecoderCtlError, OpusDecoderCtlRequest, MODE_CELT_ONLY,
+        MODE_SILK_ONLY, opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
     };
+    use alloc::vec;
+    use alloc::vec::Vec;
     use crate::celt::{
         OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     };
     use crate::packet::{Bandwidth, Mode, PacketError};
     use crate::silk::dec_api::Decoder as SilkDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
+
+    fn simple_packet(toc: u8, payload_len: usize) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(payload_len + 1);
+        packet.push(toc);
+        packet.extend(core::iter::repeat(0u8).take(payload_len));
+        packet
+    }
 
     #[test]
     fn rejects_invalid_channel_counts() {
@@ -777,5 +1098,182 @@ mod tests {
             .parse_packet(&packet, packet.len() + 1, true)
             .unwrap_err();
         assert_eq!(err, PacketError::BadArgument);
+    }
+
+    #[test]
+    fn decode_native_rejects_misaligned_plc_frame_size() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        let mut pcm = [0.0; 240];
+
+        let err = decoder
+            .decode_native_with(
+                None,
+                0,
+                &mut pcm,
+                100,
+                false,
+                false,
+                None,
+                false,
+                &mut |_st, _data, _len, _pcm, _frame_size, _decode_fec| {
+                    unreachable!("decode_frame should not be called on invalid input")
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(err, OpusDecodeError::BadArgument);
+    }
+
+    #[test]
+    fn decode_native_runs_plc_path_when_packet_missing() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        let mut pcm = [0.0; 480];
+        let mut calls = 0usize;
+
+        let decoded = decoder
+            .decode_native_with(
+                None,
+                0,
+                &mut pcm,
+                480,
+                false,
+                false,
+                None,
+                false,
+                &mut |st, data, len, out, requested, decode_fec| {
+                    assert!(data.is_none());
+                    assert_eq!(len, 0);
+                    assert_eq!(requested, 480);
+                    assert!(!decode_fec);
+                    calls += 1;
+
+                    let channels = st.channels as usize;
+                    for sample in out.iter_mut().take(requested * channels) {
+                        *sample = 1.0;
+                    }
+
+                    Ok(requested)
+                },
+            )
+            .expect("PLC decode should succeed");
+
+        assert_eq!(decoded, 480);
+        assert_eq!(calls, 1);
+        assert_eq!(decoder.last_packet_duration, 480);
+        assert!(pcm[..480].iter().all(|&sample| (sample - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn decode_native_handles_partial_fec_and_updates_state() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        let packet = simple_packet(0x00, 2);
+        let mut pcm = [0.0; 960];
+        let mut calls = Vec::new();
+
+        let decoded = decoder
+            .decode_native_with(
+                Some(&packet),
+                packet.len(),
+                &mut pcm,
+                960,
+                true,
+                false,
+                None,
+                false,
+                &mut |st, data, len, out, requested, decode_fec| {
+                    calls.push((data.is_some(), len, requested, decode_fec));
+                    let channels = st.channels as usize;
+                    for sample in out.iter_mut().take(requested * channels) {
+                        *sample = if data.is_none() { -1.0 } else { 2.0 };
+                    }
+                    Ok(requested)
+                },
+            )
+            .expect("FEC decode should succeed");
+
+        assert_eq!(decoded, 960);
+        assert_eq!(decoder.mode, MODE_SILK_ONLY);
+        assert_eq!(decoder.bandwidth, Bandwidth::Narrow.to_opus_int());
+        assert_eq!(decoder.frame_size, 480);
+        assert_eq!(decoder.stream_channels, 1);
+        assert!(pcm[..480].iter().all(|&sample| (sample + 1.0).abs() < 1e-6));
+        assert!(pcm[480..960].iter().all(|&sample| (sample - 2.0).abs() < 1e-6));
+        assert_eq!(
+            calls,
+            vec![
+                (false, 0, 480, false),
+                (true, packet.len() - 1, 480, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_native_fec_falls_back_to_plc_when_celt_only() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.mode = MODE_CELT_ONLY;
+        let packet = simple_packet(0x80, 2);
+        let mut pcm = [0.0; 240];
+        let mut calls = 0usize;
+
+        let decoded = decoder
+            .decode_native_with(
+                Some(&packet),
+                packet.len(),
+                &mut pcm,
+                240,
+                true,
+                false,
+                None,
+                false,
+                &mut |st, data, _len, out, requested, decode_fec| {
+                    assert!(data.is_none());
+                    assert!(!decode_fec);
+                    calls += 1;
+
+                    let channels = st.channels as usize;
+                    for sample in out.iter_mut().take(requested * channels) {
+                        *sample = 3.0;
+                    }
+
+                    Ok(requested)
+                },
+            )
+            .expect("PLC fallback should succeed");
+
+        assert_eq!(decoded, 240);
+        assert_eq!(calls, 1);
+        assert_eq!(decoder.mode, MODE_CELT_ONLY);
+        assert!(pcm[..240].iter().all(|&sample| (sample - 3.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn decode_native_restores_last_duration_when_plc_fails_during_fec() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.last_packet_duration = 320;
+        let packet = simple_packet(0x00, 2);
+        let mut pcm = [0.0; 960];
+
+        let err = decoder
+            .decode_native_with(
+                Some(&packet),
+                packet.len(),
+                &mut pcm,
+                960,
+                true,
+                false,
+                None,
+                false,
+                &mut |_st, data, _len, _out, _requested, _decode_fec| {
+                    if data.is_none() {
+                        Err(OpusDecodeError::InvalidPacket)
+                    } else {
+                        Ok(0)
+                    }
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(err, OpusDecodeError::InvalidPacket);
+        assert_eq!(decoder.last_packet_duration, 320);
     }
 }

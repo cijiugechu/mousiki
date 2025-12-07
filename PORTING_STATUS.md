@@ -14,9 +14,9 @@ Current Rust coverage
   explicitly defer multistream wiring.
 - Multistream glue includes channel layout helpers plus ambisonics validation and
   bitrate-allocation utilities from `opus_multistream_encoder.c`. Decoder sizing/init/CTL
-  dispatch and packet validation are ported; decode entry points exist but still return
-  `Unimplemented` pending the top-level `opus_decode_native` port. Encoder front-ends remain
-  stubbed.
+  dispatch and packet validation are ported; the top-level decode glue now mirrors the
+  `opus_decode_native` FEC/PLC/front-end control flow but still stubs the per-frame decode
+  callback that wires CELT/SILK output into callers. Encoder front-ends remain stubbed.
 - Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
@@ -31,7 +31,7 @@ Current Rust coverage
 Remaining modules to port
 -------------------------
 - Top-level decoder: `opus_decoder.c` (`opus_decode_native`, `opus_decode{,_float,_24}`,
-  FEC/PLC glue, CTL handling).
+  frame decode wiring, CTL handling).
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
