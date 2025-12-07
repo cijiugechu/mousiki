@@ -8,7 +8,11 @@ use crate::celt::{
     canonical_mode, celt_decoder_get_size, opus_custom_decoder_create, opus_custom_decoder_ctl,
     opus_select_arch,
 };
-use crate::packet::{PacketError, opus_packet_get_nb_samples};
+use crate::packet::{
+    Bandwidth, Mode, PacketError, ParsedPacket, opus_packet_get_bandwidth, opus_packet_get_mode,
+    opus_packet_get_nb_channels, opus_packet_get_nb_samples, opus_packet_get_samples_per_frame,
+    opus_packet_parse_impl,
+};
 use crate::silk::dec_api::{
     DECODER_NUM_CHANNELS, Decoder as SilkDecoder, reset_decoder as silk_reset_decoder,
 };
@@ -189,6 +193,19 @@ pub enum OpusDecoderCtlRequest<'req> {
     GetPhaseInversionDisabled(&'req mut bool),
 }
 
+/// Packet metadata extracted from the top-level decoder front-end.
+///
+/// Mirrors the header parsing performed by `opus_decode_native`, including the
+/// optional self-delimited framing used when decoding multistream packets.
+#[derive(Debug, Clone)]
+pub struct ParsedPacketMetadata<'a> {
+    pub mode: Mode,
+    pub bandwidth: Bandwidth,
+    pub frame_size: usize,
+    pub stream_channels: usize,
+    pub parsed: ParsedPacket<'a>,
+}
+
 impl<'mode> OpusDecoder<'mode> {
     /// Mirrors `opus_decoder_init` by preparing both the SILK and CELT decoders.
     pub fn init(&mut self, fs: i32, channels: i32) -> Result<(), OpusDecoderInitError> {
@@ -243,6 +260,39 @@ impl<'mode> OpusDecoder<'mode> {
     pub fn get_nb_samples(&self, packet: &[u8], len: usize) -> Result<usize, PacketError> {
         debug_assert!(matches!(self.fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000));
         opus_packet_get_nb_samples(packet, len, self.fs as u32)
+    }
+
+    /// Parses packet metadata for the decode front-end.
+    ///
+    /// Mirrors the header parsing performed by `opus_decode_native`, including
+    /// the optional self-delimited framing used for multistream decoding.
+    pub fn parse_packet<'a>(
+        &self,
+        packet: &'a [u8],
+        len: usize,
+        self_delimited: bool,
+    ) -> Result<ParsedPacketMetadata<'a>, PacketError> {
+        if len == 0 || len > packet.len() {
+            return Err(PacketError::BadArgument);
+        }
+
+        debug_assert!(matches!(self.fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000));
+        debug_assert!(matches!(self.channels, 1 | 2));
+
+        let parsed = opus_packet_parse_impl(packet, len, self_delimited)?;
+        let mode = opus_packet_get_mode(packet)?;
+        let bandwidth = opus_packet_get_bandwidth(packet)?;
+        let fs = u32::try_from(self.fs).map_err(|_| PacketError::BadArgument)?;
+        let frame_size = opus_packet_get_samples_per_frame(packet, fs)?;
+        let stream_channels = opus_packet_get_nb_channels(packet)?;
+
+        Ok(ParsedPacketMetadata {
+            mode,
+            bandwidth,
+            frame_size,
+            stream_channels,
+            parsed,
+        })
     }
 
     /// Clears runtime decoder fields that are reset by both `opus_decoder_init` and `OPUS_RESET_STATE`.
@@ -384,6 +434,7 @@ mod tests {
         opus_decoder_get_size,
     };
     use crate::celt::{canonical_mode, celt_decoder_get_size, opus_custom_decoder_create};
+    use crate::packet::{Bandwidth, Mode, PacketError};
     use crate::silk::dec_api::Decoder as SilkDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
 
@@ -588,5 +639,36 @@ mod tests {
         )
         .unwrap();
         assert!(disabled);
+    }
+
+    #[test]
+    fn parse_packet_reports_self_delimited_metadata() {
+        let decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        let packet: [u8; 7] = [0x00, 0x05, 1, 2, 3, 4, 5];
+
+        let parsed = decoder
+            .parse_packet(&packet, packet.len(), true)
+            .expect("parse succeeds");
+
+        assert_eq!(parsed.mode, Mode::SILK);
+        assert_eq!(parsed.bandwidth, Bandwidth::Narrow);
+        assert_eq!(parsed.frame_size, 480);
+        assert_eq!(parsed.stream_channels, 1);
+        assert_eq!(parsed.parsed.frame_count, 1);
+        assert_eq!(parsed.parsed.frame_sizes[0], 5);
+        assert_eq!(parsed.parsed.payload_offset, 2);
+        assert_eq!(parsed.parsed.packet_offset, packet.len());
+        assert!(parsed.parsed.padding.is_empty());
+    }
+
+    #[test]
+    fn parse_packet_validates_length() {
+        let decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        let packet: [u8; 2] = [0x00, 0x00];
+
+        let err = decoder
+            .parse_packet(&packet, packet.len() + 1, true)
+            .unwrap_err();
+        assert_eq!(err, PacketError::BadArgument);
     }
 }
