@@ -189,7 +189,7 @@ fn setup_fs(
         encoder.common.nsq_state = NoiseShapingQuantizerState::default();
         encoder.common.nsq_state.lag_prev = 100;
         encoder.common.nsq_state.prev_gain_q16 = 65_536;
-        encoder.common.lp_state = LpState::default();
+        encoder.lp_state = LpState::default();
 
         let nb_subfr = encoder.common().nb_subfr;
         {

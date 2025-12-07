@@ -8,7 +8,9 @@
 use crate::celt::OPUS_ARCHMASK;
 use crate::silk::burg_modified::silk_burg_modified;
 use crate::silk::decode_indices::SideInfoIndices;
-use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState};
+use crate::silk::encoder::state::{
+    EncoderStateCommon, NoiseShapingQuantizerState, VadState,
+};
 use crate::silk::inner_product_flp_avx2::inner_product_flp_avx2;
 use crate::silk::nsq_del_dec_sse4_1::silk_nsq_del_dec_sse4_1;
 use crate::silk::nsq_sse4_1::silk_nsq_sse4_1;
@@ -25,7 +27,7 @@ pub type SilkInnerProd16Impl = fn(&[i16], &[i16]) -> i64;
 pub const SILK_INNER_PROD16_IMPL: [SilkInnerProd16Impl; ARCH_IMPL_COUNT] =
     [inner_prod16_sse4_1; ARCH_IMPL_COUNT];
 
-pub type SilkVadGetSaQ8Impl = fn(&mut EncoderStateCommon, &[i16]) -> u8;
+pub type SilkVadGetSaQ8Impl = fn(&mut EncoderStateCommon, &mut VadState, &[i16]) -> u8;
 pub const SILK_VAD_GETSA_Q8_IMPL: [SilkVadGetSaQ8Impl; ARCH_IMPL_COUNT] =
     [silk_vad_get_sa_q8_sse4_1; ARCH_IMPL_COUNT];
 
@@ -166,11 +168,13 @@ mod tests {
     #[test]
     fn vad_dispatch_matches_scalar() {
         let mut common = EncoderStateCommon::default();
+        let mut vad = VadState::default();
+        let mut vad_clone = vad.clone();
         let input = vec![0i16; common.frame_length];
         let fn_ptr = select_vad_get_sa_q8_impl(0);
         assert_eq!(
-            fn_ptr(&mut common, &input),
-            compute_speech_activity_q8_common(&mut common, &input)
+            fn_ptr(&mut common, &mut vad, &input),
+            compute_speech_activity_q8_common(&mut common, &mut vad_clone, &input)
         );
     }
 

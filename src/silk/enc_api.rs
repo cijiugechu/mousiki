@@ -82,6 +82,7 @@ pub fn silk_init_encoder(
 /// Populates the encoder status structure from the current channel state.
 fn query_encoder(encoder: &Encoder, status: &mut EncControl) {
     let common = &encoder.state_fxx[0].common;
+    let lp_state = &encoder.state_fxx[0].lp_state;
     status.n_channels_api = encoder.n_channels_api;
     status.n_channels_internal = encoder.n_channels_internal;
     status.api_sample_rate = common.api_sample_rate_hz;
@@ -97,7 +98,7 @@ fn query_encoder(encoder: &Encoder, status: &mut EncControl) {
     status.use_cbr = i32::from(common.use_cbr);
     status.internal_sample_rate = common.fs_khz * 1000;
     status.allow_bandwidth_switch = common.allow_bandwidth_switch;
-    status.in_wb_mode_without_variable_lp = common.fs_khz == 16 && common.lp_state.mode == 0;
+    status.in_wb_mode_without_variable_lp = common.fs_khz == 16 && lp_state.mode == 0;
     status.stereo_width_q14 = i32::from(encoder.stereo_state.smth_width_q14);
     status.signal_type = common.indices.signal_type;
     status.offset = i32::from(
@@ -173,7 +174,7 @@ pub fn silk_encode(
             return Err(SilkError::EncInputInvalidNoOfSamples);
         }
 
-        let mut saved_lp = encoder.state_fxx[0].common.lp_state.clone();
+        let mut saved_lp = encoder.state_fxx[0].lp_state.clone();
         if prefill.keep_low_pass_state() {
             saved_lp.saved_fs_khz = encoder.state_fxx[0].common.fs_khz;
         }
@@ -182,7 +183,7 @@ pub fn silk_encode(
             let arch = channel.common.arch;
             init_channel(channel, arch)?;
             if prefill.keep_low_pass_state() {
-                channel.common.lp_state = saved_lp.clone();
+                channel.lp_state = saved_lp.clone();
             }
             channel.common.controlled_since_last_payload = false;
             channel.common.prefill_flag = true;
@@ -618,7 +619,7 @@ pub fn silk_encode(
 
     control.allow_bandwidth_switch = encoder.allow_bandwidth_switch;
     control.in_wb_mode_without_variable_lp =
-        encoder.state_fxx[0].common.fs_khz == 16 && encoder.state_fxx[0].common.lp_state.mode == 0;
+        encoder.state_fxx[0].common.fs_khz == 16 && encoder.state_fxx[0].lp_state.mode == 0;
     control.internal_sample_rate = encoder.state_fxx[0].common.fs_khz * 1000;
     control.stereo_width_q14 = if control.to_mono {
         0
@@ -669,7 +670,7 @@ fn reset_side_channel(channel: &mut EncoderChannelState) {
     channel.shape_state = EncoderShapeState::default();
     channel.common.nsq_state = NoiseShapingQuantizerState::default();
     channel.common.prev_nlsf_q15 = [0; MAX_LPC_ORDER];
-    channel.common.lp_state.in_lp_state = [0; 2];
+    channel.lp_state.in_lp_state = [0; 2];
     channel.common.prev_lag = 100;
     channel.common.nsq_state.lag_prev = 100;
     channel.shape_state.last_gain_index = 10;

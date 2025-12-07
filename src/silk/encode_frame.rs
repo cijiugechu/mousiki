@@ -88,7 +88,8 @@ pub fn silk_encode_do_vad(encoder: &mut EncoderChannelState, activity: i32) {
 
     let threshold_q8 = q8_from_float(SPEECH_ACTIVITY_DTX_THRES);
     let input: Vec<i16> = encoder.common.input_buf[1..frame + 1].to_vec();
-    let speech_activity = compute_speech_activity_q8_common(&mut encoder.common, &input);
+    let speech_activity =
+        compute_speech_activity_q8_common(&mut encoder.common, &mut encoder.vad_state, &input);
     encoder.common.speech_activity_q8 = i32::from(speech_activity);
     if activity == VAD_NO_ACTIVITY && encoder.common.speech_activity_q8 >= threshold_q8 {
         encoder.common.speech_activity_q8 = threshold_q8 - 1;
@@ -237,7 +238,6 @@ pub fn silk_encode_frame(
     {
         let x_frame = &mut encoder.x_buf[ltp_offset..];
         encoder
-            .common
             .lp_state
             .lp_variable_cutoff(&mut encoder.common.input_buf[1..frame_length + 1]);
         let dest = &mut x_frame[la_shape_samples..la_shape_samples + frame_length];

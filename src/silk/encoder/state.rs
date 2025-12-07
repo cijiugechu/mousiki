@@ -237,10 +237,6 @@ pub struct EncoderStateCommon {
     pub snr_db_q7: i32,
     /// Cumulative logarithmic LTP gain used to bound the predictor power.
     pub sum_log_gain_q7: i32,
-    /// Voice activity detector state.
-    pub vad_state: VadState,
-    /// Variable low-pass filter state used during bandwidth transitions.
-    pub lp_state: LpState,
     /// Noise-shaping quantiser state.
     pub nsq_state: NoiseShapingQuantizerState,
     /// Running frame counter used for the entropy seed.
@@ -367,8 +363,6 @@ impl Default for EncoderStateCommon {
             target_rate_bps: 0,
             snr_db_q7: 0,
             sum_log_gain_q7: 0,
-            vad_state: VadState::default(),
-            lp_state: LpState::default(),
             nsq_state: NoiseShapingQuantizerState::default(),
             frame_counter: 0,
             input_buf: [0; INPUT_BUFFER_LENGTH],
@@ -418,6 +412,12 @@ impl Default for EncoderStateCommon {
 pub struct EncoderChannelState {
     /// Common fields shared with the floating-point build.
     pub common: EncoderStateCommon,
+    // Keep VAD state outside `common` so callers can borrow VAD + common mutably without unsafe aliasing.
+    /// Voice activity detector state.
+    pub vad_state: VadState,
+    // Likewise, keep the LP transition state disjoint from `common` to permit safe split borrows.
+    /// Variable low-pass filter state used during bandwidth transitions.
+    pub lp_state: LpState,
     /// Noise-shaping analysis state.
     pub shape_state: EncoderShapeState,
     /// High-level SILK resampler state used by the API wrapper.
@@ -432,6 +432,8 @@ impl Default for EncoderChannelState {
     fn default() -> Self {
         Self {
             common: EncoderStateCommon::default(),
+            vad_state: VadState::default(),
+            lp_state: LpState::default(),
             shape_state: EncoderShapeState::default(),
             resampler_state: Resampler::default(),
             x_buf: [0; X_BUFFER_LENGTH],
@@ -452,6 +454,8 @@ impl EncoderChannelState {
     pub fn with_common(common: EncoderStateCommon) -> Self {
         Self {
             common,
+            vad_state: VadState::default(),
+            lp_state: LpState::default(),
             shape_state: EncoderShapeState::default(),
             resampler_state: Resampler::default(),
             x_buf: [0; X_BUFFER_LENGTH],
@@ -474,37 +478,35 @@ impl EncoderChannelState {
     /// Borrow the VAD state.
     #[must_use]
     pub fn vad(&self) -> &VadState {
-        &self.common.vad_state
+        &self.vad_state
     }
 
     /// Mutably borrow the VAD state.
     #[must_use]
     pub fn vad_mut(&mut self) -> &mut VadState {
-        &mut self.common.vad_state
+        &mut self.vad_state
     }
 
     /// Simultaneously borrow the common encoder fields and VAD state.
     pub(crate) fn parts_mut(&mut self) -> (&mut EncoderStateCommon, &mut VadState) {
-        let ptr = &mut self.common as *mut EncoderStateCommon;
-        unsafe { (&mut *ptr, &mut (*ptr).vad_state) }
+        (&mut self.common, &mut self.vad_state)
     }
 
     /// Simultaneously borrow the common encoder fields and low-pass transition state.
     pub(crate) fn common_and_lp_mut(&mut self) -> (&mut EncoderStateCommon, &mut LpState) {
-        let ptr = &mut self.common as *mut EncoderStateCommon;
-        unsafe { (&mut *ptr, &mut (*ptr).lp_state) }
+        (&mut self.common, &mut self.lp_state)
     }
 
     /// Borrow the bandwidth-transition low-pass state.
     #[must_use]
     pub fn low_pass_state(&self) -> &LpState {
-        &self.common.lp_state
+        &self.lp_state
     }
 
     /// Mutably borrow the bandwidth-transition low-pass state.
     #[must_use]
     pub fn low_pass_state_mut(&mut self) -> &mut LpState {
-        &mut self.common.lp_state
+        &mut self.lp_state
     }
 
     /// Update the adaptive high-pass smoother using the current channel statistics.
@@ -603,8 +605,6 @@ mod tests {
         assert_eq!(common.prev_nlsf_q15, [0; MAX_LPC_ORDER]);
         assert_eq!(common.target_rate_bps, 0);
         assert_eq!(common.snr_db_q7, 0);
-        assert_eq!(common.vad_state, VadState::default());
-        assert_eq!(common.lp_state, LpState::default());
         assert_eq!(common.nsq_state, NoiseShapingQuantizerState::default());
         assert_eq!(common.frame_counter, 0);
         assert_eq!(common.input_buf, [0; INPUT_BUFFER_LENGTH]);
