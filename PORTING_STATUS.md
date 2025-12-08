@@ -16,8 +16,9 @@ Current Rust coverage
   bitrate-allocation utilities from `opus_multistream_encoder.c`. Decoder sizing/init/CTL
   dispatch and packet validation are ported; the top-level decode glue now mirrors the
   `opus_decode_native` FEC/PLC/front-end control flow and invokes the translated
-  per-frame decoder (SILK PLC/FEC plus CELT output on non-fixed builds). Hybrid
-  transitions/redundancy fades remain unported. Encoder front-ends remain stubbed.
+  per-frame decoder (SILK PLC/FEC plus CELT output on non-fixed builds), including the
+  CELT↔SILK transition smoothing and redundancy fades used during bandwidth switches. Hybrid
+  frames remain unported. Encoder front-ends remain stubbed.
 - Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
@@ -33,9 +34,9 @@ Current Rust coverage
 Remaining modules to port
 -------------------------
 - Top-level decoder: `opus_decoder.c` (`opus_decode_native`, `opus_decode{,_float,_24}`,
-  remaining CTLs beyond the existing pitch/bandwidth/gain/final-range set). Hybrid-mode frames,
-  redundancy fades, CELT/SILK transition smoothing, and fixed-point CELT output remain unported;
-  decode wrappers still need wiring for non-float PCM paths.
+  remaining CTLs beyond the existing pitch/bandwidth/gain/final-range set). Hybrid-mode frames
+  and fixed-point CELT output remain unported; decode wrappers still need wiring for non-float PCM
+  paths.
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).

@@ -2486,6 +2486,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_SILK_FRAME,
             bits_read: 31,
+            total_bits: 33,
             range_size: 536_870_912,
             high_and_coded_difference: 437_100_388,
         };
@@ -2511,6 +2512,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_SILK_FRAME,
             bits_read: 31,
+            total_bits: 33,
             range_size: 482_344_960,
             high_and_coded_difference: 437_100_388,
         };
@@ -2535,6 +2537,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_SILK_FRAME,
             bits_read: 47,
+            total_bits: 49,
             range_size: 722_810_880,
             high_and_coded_difference: 387_065_757,
         };
@@ -2584,6 +2587,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_SILK_FRAME,
             bits_read: 47,
+            total_bits: 49,
             range_size: 50_822_640,
             high_and_coded_difference: 5_895_957,
         };
@@ -2603,6 +2607,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_PITCH_LAG_FRAME,
             bits_read: 73,
+            total_bits: 75,
             range_size: 30_770_362,
             high_and_coded_difference: 1_380_489,
         };
@@ -2622,6 +2627,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_PITCH_LAG_FRAME,
             bits_read: 89,
+            total_bits: 91,
             range_size: 253_853_952,
             high_and_coded_difference: 138_203_876,
         };
@@ -2657,6 +2663,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_PITCH_LAG_FRAME,
             bits_read: 105,
+            total_bits: 107,
             range_size: 160_412_192,
             high_and_coded_difference: 164_623_240,
         };
@@ -2672,6 +2679,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_LCG_FRAME,
             bits_read: 71,
+            total_bits: 73,
             range_size: 851_775_140,
             high_and_coded_difference: 846_837_397,
         };
@@ -2816,6 +2824,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_LCG_FRAME,
             bits_read: 71,
+            total_bits: 73,
             range_size: 851_775_140,
             high_and_coded_difference: 846_837_397,
         };
@@ -2863,6 +2872,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: TEST_SILK_FRAME,
             bits_read: 55,
+            total_bits: 57,
             range_size: 493_249_168,
             high_and_coded_difference: 174_371_199,
         };
@@ -2884,6 +2894,7 @@ mod tests {
         let mut range_decoder = RangeDecoder {
             buf: frame,
             bits_read: 65,
+            total_bits: 67,
             range_size: 1_231_761_776,
             high_and_coded_difference: 1_068_195_183,
         };

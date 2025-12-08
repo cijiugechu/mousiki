@@ -11,6 +11,7 @@ use crate::celt::{
     opus_custom_decoder_ctl, opus_select_arch, CeltDecoderCtlError,
     DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
 };
+use crate::celt::{CeltCoef, OpusCustomMode};
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::celt_decode_with_ec_dred;
 #[cfg(not(feature = "fixed_point"))]
@@ -71,6 +72,43 @@ fn opus_mode_to_int(mode: Mode) -> i32 {
         Mode::SILK => MODE_SILK_ONLY,
         Mode::HYBRID => MODE_HYBRID,
         Mode::CELT => MODE_CELT_ONLY,
+    }
+}
+
+fn smooth_fade(
+    in1: &[OpusRes],
+    in2: &[OpusRes],
+    out: &mut [OpusRes],
+    overlap: usize,
+    channels: usize,
+    window: &[CeltCoef],
+    fs: i32,
+) {
+    if channels == 0 || overlap == 0 || fs <= 0 {
+        return;
+    }
+
+    let inc = match 48_000i32.checked_div(fs) {
+        Some(step) if step > 0 => step as usize,
+        _ => return,
+    };
+    let Some(required) = overlap.checked_mul(channels) else {
+        return;
+    };
+    if in1.len() < required || in2.len() < required || out.len() < required {
+        return;
+    }
+
+    for c in 0..channels {
+        for i in 0..overlap {
+            let w_idx = i.saturating_mul(inc);
+            if w_idx >= window.len() {
+                break;
+            }
+            let weight = window[w_idx] * window[w_idx];
+            let idx = i * channels + c;
+            out[idx] = weight * in2[idx] + (1.0 - weight) * in1[idx];
+        }
     }
 }
 
@@ -365,10 +403,9 @@ impl<'mode> OpusDecoder<'mode> {
     /// Decodes (or conceals) a single Opus frame.
     ///
     /// Mirrors the high-level control flow from `opus_decode_frame`, wiring the
-    /// SILK and CELT back-ends while handling PLC and simple CELT/SILK
-    /// accumulation. Redundancy and CELT/SILK transition fades are left for a
-    /// follow-up once the shared range-decoder path is available in the CELT
-    /// port.
+    /// SILK and CELT back-ends while handling PLC, CELT/SILK accumulation, the
+    /// optional redundancy frames used for SILK↔CELT transitions, and the
+    /// windowed fades that smooth decoder mode switches.
     #[cfg_attr(not(test), allow(dead_code))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_frame(
@@ -406,12 +443,13 @@ impl<'mode> OpusDecoder<'mode> {
         let max_frame = (fs / 25) * 3;
         let mut frame_size = frame_size.min(max_frame);
 
-        if let Some(packet) = data && len > packet.len() {
+        let mut packet_len = len;
+        if let Some(packet) = data && packet_len > packet.len() {
             return Err(OpusDecodeError::BadArgument);
         }
-        let mut packet = data.map(|packet| &packet[..len]);
+        let mut packet = data.map(|packet| &packet[..packet_len]);
 
-        if packet.is_none() || len <= 1 {
+        if packet.is_none() || packet_len <= 1 {
             packet = None;
             let current_size =
                 usize::try_from(self.frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
@@ -421,6 +459,13 @@ impl<'mode> OpusDecoder<'mode> {
         let mut audiosize;
         let mode;
         let bandwidth;
+        let mut transition = false;
+        let mut redundancy = false;
+        let mut celt_to_silk = false;
+        let mut redundant_rng = 0u32;
+        let mut pcm_transition: Option<Vec<OpusRes>> = None;
+        let mut redundant_audio: Option<Vec<OpusRes>> = None;
+        let mut redundant_packet: Option<&[u8]> = None;
 
         if packet.is_some() {
             audiosize = usize::try_from(self.frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
@@ -483,6 +528,28 @@ impl<'mode> OpusDecoder<'mode> {
             }
         }
 
+        if packet.is_some()
+            && self.prev_mode > 0
+            && ((mode == MODE_CELT_ONLY
+                && self.prev_mode != MODE_CELT_ONLY
+                && self.prev_redundancy == 0)
+                || (mode != MODE_CELT_ONLY && self.prev_mode == MODE_CELT_ONLY))
+        {
+            transition = true;
+            if mode == MODE_CELT_ONLY {
+                let transition_len = f5
+                    .checked_mul(channels)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                let mut buffer = vec![0.0; transition_len];
+                let transition_size = audiosize.min(f5);
+                let ret = self.decode_frame(None, 0, &mut buffer, transition_size, false)?;
+                if ret != transition_size {
+                    return Err(OpusDecodeError::InternalError);
+                }
+                pcm_transition = Some(buffer);
+            }
+        }
+
         if audiosize > frame_size {
             return Err(OpusDecodeError::BadArgument);
         }
@@ -534,6 +601,10 @@ impl<'mode> OpusDecoder<'mode> {
                     .filter(|&fs_khz| fs_khz > 0)
             {
                 control.internal_sample_rate = fs_khz * 1000;
+            }
+
+            if self.prev_mode == MODE_CELT_ONLY {
+                silk_reset_decoder(&mut self.silk).map_err(|_| OpusDecodeError::InternalError)?;
             }
 
             let mut range_decoder = RangeDecoder::init(packet.unwrap_or(&[]));
@@ -623,11 +694,77 @@ impl<'mode> OpusDecoder<'mode> {
                 pcm[..copy_len].copy_from_slice(&temp[..copy_len]);
             }
 
-            range_final = if packet.is_some() && len > 1 {
+            if !decode_fec && packet.is_some() {
+                let tell = range_decoder.tell();
+                let threshold = 17 + if mode == MODE_HYBRID { 20 } else { 0 };
+                if tell + threshold <= (8 * packet_len) as i32 {
+                    redundancy = if mode == MODE_HYBRID {
+                        range_decoder.decode_symbol_logp(12) != 0
+                    } else {
+                        true
+                    };
+                    if redundancy {
+                        celt_to_silk = range_decoder.decode_symbol_logp(1) != 0;
+                        let bytes = if mode == MODE_HYBRID {
+                            usize::try_from(range_decoder.decode_uint(256).saturating_add(2))
+                                .map_err(|_| OpusDecodeError::BadArgument)?
+                        } else {
+                            let used_bytes = ((range_decoder.tell() + 7) >> 3) as usize;
+                            packet_len
+                                .checked_sub(used_bytes)
+                                .ok_or(OpusDecodeError::BadArgument)?
+                        };
+                        if bytes > packet_len {
+                            return Err(OpusDecodeError::BadArgument);
+                        }
+                        let cutoff = packet_len
+                            .checked_sub(bytes)
+                            .ok_or(OpusDecodeError::BadArgument)?;
+                        if let Some(data) = packet {
+                            redundant_packet = data.get(cutoff..cutoff + bytes);
+                        }
+                        packet_len = cutoff;
+                        if packet_len
+                            .checked_mul(8)
+                            .is_none_or(|value| value < range_decoder.tell() as usize)
+                        {
+                            packet_len = 0;
+                            redundancy = false;
+                            redundant_packet = None;
+                        } else if redundancy && redundant_packet.is_none() {
+                            return Err(OpusDecodeError::BadArgument);
+                        }
+                    }
+                }
+            }
+
+            if redundancy {
+                transition = false;
+            } else if transition {
+                let transition_len = f5
+                    .checked_mul(channels)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                let mut buffer = vec![0.0; transition_len];
+                let transition_size = audiosize.min(f5);
+                let ret = self.decode_frame(None, 0, &mut buffer, transition_size, false)?;
+                if ret != transition_size {
+                    return Err(OpusDecodeError::InternalError);
+                }
+                pcm_transition = Some(buffer);
+            }
+
+            range_final = if packet.is_some() && packet_len > 1 {
                 range_decoder.range_size
             } else {
                 0
             };
+        }
+
+        if let Some(data) = packet {
+            if packet_len > data.len() {
+                return Err(OpusDecodeError::BadArgument);
+            }
+            packet = Some(&data[..packet_len]);
         }
 
         let mut start_band = 0;
@@ -681,9 +818,128 @@ impl<'mode> OpusDecoder<'mode> {
             }
         }
 
+        let mut mode_slot: Option<&OpusCustomMode<'_>> = None;
+        opus_custom_decoder_ctl(
+            self.celt.decoder(),
+            CeltDecoderCtlRequest::GetMode(&mut mode_slot),
+        )
+        .map_err(|_| OpusDecodeError::BadArgument)?;
+        let Some(celt_mode) = mode_slot else {
+            return Err(OpusDecodeError::InternalError);
+        };
+        let window = celt_mode.window;
+        let fade_len = f2_5
+            .checked_mul(channels)
+            .ok_or(OpusDecodeError::BadArgument)?;
+
+        if redundancy {
+            let redundant_len = f5
+                .checked_mul(channels)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let mut buffer = vec![0.0; redundant_len];
+            if !celt_to_silk {
+                opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::ResetState)
+                    .map_err(|_| OpusDecodeError::BadArgument)?;
+            }
+            opus_custom_decoder_ctl(
+                self.celt.decoder(),
+                CeltDecoderCtlRequest::SetStartBand(0),
+            )
+            .map_err(|_| OpusDecodeError::BadArgument)?;
+            if let Some(data) = redundant_packet {
+                decode_celt_frame(&mut self.celt, Some(data), &mut buffer, f5, false)?;
+                opus_custom_decoder_ctl(
+                    self.celt.decoder(),
+                    CeltDecoderCtlRequest::GetFinalRange(&mut redundant_rng),
+                )
+                .map_err(|_| OpusDecodeError::BadArgument)?;
+            } else {
+                return Err(OpusDecodeError::BadArgument);
+            }
+            redundant_audio = Some(buffer);
+        }
+
+        if redundancy {
+            if !celt_to_silk {
+                if let Some(buffer) = redundant_audio.as_ref() {
+                    let offset = audiosize
+                        .checked_sub(f2_5)
+                        .and_then(|value| value.checked_mul(channels))
+                        .ok_or(OpusDecodeError::BadArgument)?;
+                    let mut current = vec![0.0; fade_len];
+                    current.copy_from_slice(&pcm[offset..offset + fade_len]);
+                    smooth_fade(
+                        &current,
+                        &buffer[fade_len..],
+                        &mut pcm[offset..offset + fade_len],
+                        f2_5,
+                        channels,
+                        window,
+                        self.fs,
+                    );
+                }
+            } else if (self.prev_mode != MODE_SILK_ONLY || self.prev_redundancy != 0)
+                && let Some(buffer) = redundant_audio.as_ref()
+            {
+                if pcm.len() < fade_len.saturating_mul(2) {
+                    return Err(OpusDecodeError::BufferTooSmall);
+                }
+                for (dst, &src) in pcm.iter_mut().take(fade_len).zip(buffer.iter()) {
+                    *dst = src;
+                }
+                let mut tail = vec![0.0; fade_len];
+                tail.copy_from_slice(&pcm[fade_len..fade_len + fade_len]);
+                smooth_fade(
+                    &buffer[fade_len..],
+                    &tail,
+                    &mut pcm[fade_len..fade_len + fade_len],
+                    f2_5,
+                    channels,
+                    window,
+                    self.fs,
+                );
+            }
+        } else if transition && let Some(transition_pcm) = pcm_transition.as_ref() {
+            if audiosize >= f5 {
+                if transition_pcm.len() < fade_len || pcm.len() < fade_len {
+                    return Err(OpusDecodeError::BufferTooSmall);
+                }
+                pcm[..fade_len].copy_from_slice(&transition_pcm[..fade_len]);
+                if pcm.len() < fade_len.saturating_mul(2) {
+                    return Err(OpusDecodeError::BufferTooSmall);
+                }
+                let mut tail = vec![0.0; fade_len];
+                tail.copy_from_slice(&pcm[fade_len..fade_len + fade_len]);
+                smooth_fade(
+                    &transition_pcm[fade_len..],
+                    &tail,
+                    &mut pcm[fade_len..fade_len + fade_len],
+                    f2_5,
+                    channels,
+                    window,
+                    self.fs,
+                );
+            } else {
+                if pcm.len() < fade_len {
+                    return Err(OpusDecodeError::BufferTooSmall);
+                }
+                let mut current = vec![0.0; fade_len];
+                current.copy_from_slice(&pcm[..fade_len]);
+                smooth_fade(
+                    transition_pcm,
+                    &current,
+                    &mut pcm[..fade_len],
+                    f2_5,
+                    channels,
+                    window,
+                    self.fs,
+                );
+            }
+        }
+
         self.prev_mode = mode;
-        self.prev_redundancy = 0;
-        self.range_final = range_final;
+        self.prev_redundancy = i32::from(redundancy && !celt_to_silk);
+        self.range_final = range_final ^ redundant_rng;
 
         Ok(audiosize)
     }
@@ -1197,7 +1453,7 @@ pub fn opus_decoder_ctl<'req>(
 mod tests {
     use super::{
         DecControl, OpusDecodeError, OpusDecoderCtlError, OpusDecoderCtlRequest, MODE_CELT_ONLY,
-        MODE_SILK_ONLY, opus_decode_native, opus_decoder_create, opus_decoder_ctl,
+        MODE_SILK_ONLY, opus_decode_native, opus_decoder_create, opus_decoder_ctl, smooth_fade,
         opus_decoder_get_size,
     };
     use alloc::vec;
@@ -1214,6 +1470,21 @@ mod tests {
         packet.push(toc);
         packet.extend(core::iter::repeat(0u8).take(payload_len));
         packet
+    }
+
+    #[test]
+    fn smooth_fade_blends_with_squared_window() {
+        let in1 = [1.0f32, -1.0, 0.5, -0.5];
+        let in2 = [0.0f32, 0.5, 1.0, -1.0];
+        let mut out = [0.0f32; 4];
+        let window = [0.0f32, 0.5, 1.0, 1.0];
+
+        smooth_fade(&in1, &in2, &mut out, 2, 2, &window, 48_000);
+
+        assert!((out[0] - 1.0).abs() < 1e-7);
+        assert!((out[1] + 1.0).abs() < 1e-7);
+        assert!((out[2] - 0.625).abs() < 1e-7);
+        assert!((out[3] + 0.625).abs() < 1e-7);
     }
 
     #[test]

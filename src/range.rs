@@ -8,6 +8,8 @@ const EC_CODE_BITS: u32 = 32;
 const EC_CODE_TOP: u32 = 1 << (EC_CODE_BITS - 1);
 const EC_CODE_BOT: u32 = EC_CODE_TOP >> EC_SYM_BITS;
 const EC_CODE_SHIFT: u32 = EC_CODE_BITS - EC_SYM_BITS - 1;
+const EC_CODE_EXTRA: u32 = (EC_CODE_BITS - 2) % EC_SYM_BITS + 1;
+const EC_UINT_BITS: u32 = 8;
 
 /// See [section-4.1](https://datatracker.ietf.org/doc/html/rfc6716#section-4.1)
 // Opus uses an entropy coder based on range coding [RANGE-CODING]
@@ -78,6 +80,7 @@ const EC_CODE_SHIFT: u32 = EC_CODE_BITS - EC_SYM_BITS - 1;
 pub struct RangeDecoder<'a> {
     pub(crate) buf: &'a [u8],
     pub(crate) bits_read: usize,
+    pub(crate) total_bits: i32,
     /// `rng`
     pub(crate) range_size: u32,
     /// `val`
@@ -107,6 +110,7 @@ impl<'a> RangeDecoder<'a> {
     pub(crate) fn normalize(&mut self) {
         while self.range_size <= MIN_RANGE_SIZE {
             self.range_size <<= 8;
+            self.total_bits += EC_SYM_BITS as i32;
             self.high_and_coded_difference =
                 ((self.high_and_coded_difference << 8) + (255 - self.get_bits(8))) & 0x7FFFFFFF;
         }
@@ -265,6 +269,8 @@ impl<'a> RangeDecoder<'a> {
         let mut decoder = RangeDecoder {
             buf,
             bits_read: 0,
+            total_bits: EC_CODE_BITS as i32 + 1
+                - ((EC_CODE_BITS - EC_CODE_EXTRA) / EC_SYM_BITS) as i32 * EC_SYM_BITS as i32,
             range_size: 128,
             high_and_coded_difference: 0,
         };
@@ -273,6 +279,48 @@ impl<'a> RangeDecoder<'a> {
         decoder.normalize();
 
         decoder
+    }
+
+    /// Returns the number of whole bits consumed by the decoder so far.
+    #[must_use]
+    pub fn tell(&self) -> i32 {
+        self.total_bits - ec_ilog(self.range_size)
+    }
+
+    /// Decodes a uniformly distributed integer in the range `[0, total)`.
+    ///
+    /// Mirrors `ec_dec_uint` for the small-`total` path used by the decoder to
+    /// read redundancy byte counts during CELT/SILK transitions.
+    pub fn decode_uint(&mut self, total: u32) -> u32 {
+        debug_assert!(total > 1);
+        let total_minus_one = total - 1;
+        let bits = ec_ilog(total_minus_one);
+        if bits > EC_UINT_BITS as i32 {
+            // This branch is unreachable for the current redundancy use which
+            // caps the decoded value at 256, but is kept for parity with the
+            // reference helper.
+            let shift = bits - EC_UINT_BITS as i32;
+            let symbols = (total_minus_one >> shift) + 1;
+            let symbol = self.decode_uniform(symbols);
+            let tail = self.get_bits(shift as usize);
+            self.total_bits += shift;
+            (symbol << shift) | tail
+        } else {
+            self.decode_uniform(total)
+        }
+    }
+
+    fn decode_uniform(&mut self, total: u32) -> u32 {
+        let scale = self.range_size / total;
+        let symbol = total - (self.high_and_coded_difference / scale + 1).min(total);
+        self.high_and_coded_difference -= scale * (total - symbol - 1);
+        if symbol > 0 {
+            self.range_size = scale;
+        } else {
+            self.range_size -= scale * (total - 1);
+        }
+        self.normalize();
+        symbol
     }
 }
 
