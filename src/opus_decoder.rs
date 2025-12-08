@@ -144,6 +144,8 @@ pub struct OpusDecoder<'mode> {
     pub(crate) fs: i32,
     /// Number of channels (1 or 2).
     pub(crate) channels: i32,
+    /// Control block passed to the embedded SILK decoder.
+    dec_control: DecControl,
     /// Decoder gain offset applied in quarter-dB steps.
     decode_gain: i32,
     /// Complexity hint mirrored from the C reference state.
@@ -249,6 +251,7 @@ pub enum OpusDecoderCtlRequest<'req> {
     GetComplexity(&'req mut i32),
     GetBandwidth(&'req mut i32),
     GetSampleRate(&'req mut i32),
+    GetPitch(&'req mut i32),
     GetFinalRange(&'req mut u32),
     ResetState,
     GetLastPacketDuration(&'req mut i32),
@@ -278,6 +281,7 @@ impl<'mode> OpusDecoder<'mode> {
 
         self.fs = fs;
         self.channels = channels;
+        self.reset_dec_control();
         self.decode_gain = 0;
         self.complexity = 0;
         self.bandwidth = 0;
@@ -493,42 +497,43 @@ impl<'mode> OpusDecoder<'mode> {
                 vec![0.0; pcm_silk_len.saturating_mul(channels)]
             });
 
-            let payload_ms = ((audiosize * 1000) / fs).max(10);
-            let mut control = DecControl {
-                n_channels_api: self.channels,
-                n_channels_internal: self.silk.n_channels_internal,
-                api_sample_rate: self.fs,
-                internal_sample_rate: 16_000,
-                payload_size_ms: i32::try_from(payload_ms).map_err(|_| OpusDecodeError::BadArgument)?,
-                prev_pitch_lag: 0,
-                enable_deep_plc: self.complexity >= 5,
-            };
+            let payload_ms = audiosize
+                .checked_mul(1000)
+                .and_then(|value| value.checked_div(fs))
+                .ok_or(OpusDecodeError::BadArgument)?
+                .max(10);
+            let payload_ms =
+                i32::try_from(payload_ms).map_err(|_| OpusDecodeError::BadArgument)?;
 
-            if let Some(packet_bandwidth) = Bandwidth::from_opus_int(bandwidth) {
-                control.internal_sample_rate = match mode {
-                    MODE_SILK_ONLY => match packet_bandwidth {
-                        Bandwidth::Narrow => 8_000,
-                        Bandwidth::Medium => 12_000,
-                        Bandwidth::Wide => 16_000,
-                        _ => 16_000,
-                    },
-                    _ => 16_000,
-                };
-            } else if let Some(fs_khz) = self
-                .silk
-                .channel_states
-                .first()
-                .map(|state| state.sample_rate.fs_khz)
-            {
-                control.internal_sample_rate = if fs_khz > 0 {
-                    fs_khz * 1000
-                } else {
-                    16_000
-                };
-            }
+            let control = &mut self.dec_control;
+            control.n_channels_api = self.channels;
+            control.api_sample_rate = self.fs;
+            control.payload_size_ms = payload_ms;
+            control.enable_deep_plc = self.complexity >= 5;
 
             if packet.is_some() {
                 control.n_channels_internal = self.stream_channels;
+                control.internal_sample_rate =
+                    Bandwidth::from_opus_int(bandwidth).map_or(16_000, |packet_bandwidth| {
+                        match mode {
+                            MODE_SILK_ONLY => match packet_bandwidth {
+                                Bandwidth::Narrow => 8_000,
+                                Bandwidth::Medium => 12_000,
+                                Bandwidth::Wide => 16_000,
+                                _ => 16_000,
+                            },
+                            _ => 16_000,
+                        }
+                    });
+            } else if control.internal_sample_rate == 0
+                && let Some(fs_khz) = self
+                    .silk
+                    .channel_states
+                    .first()
+                    .map(|state| state.sample_rate.fs_khz)
+                    .filter(|&fs_khz| fs_khz > 0)
+            {
+                control.internal_sample_rate = fs_khz * 1000;
             }
 
             let mut range_decoder = RangeDecoder::init(packet.unwrap_or(&[]));
@@ -548,7 +553,7 @@ impl<'mode> OpusDecoder<'mode> {
                 }
                 let result = silk_decode(
                     &mut self.silk,
-                    &mut control,
+                    control,
                     if packet.is_some() {
                         if decode_fec {
                             DecodeFlag::Lbrr
@@ -969,6 +974,19 @@ impl<'mode> OpusDecoder<'mode> {
         }
     }
 
+    /// Resets the SILK control block to the defaults applied by `opus_decoder_init`.
+    fn reset_dec_control(&mut self) {
+        self.dec_control = DecControl {
+            n_channels_api: self.channels,
+            n_channels_internal: 0,
+            api_sample_rate: self.fs,
+            internal_sample_rate: 0,
+            payload_size_ms: 0,
+            prev_pitch_lag: 0,
+            enable_deep_plc: false,
+        };
+    }
+
     /// Clears runtime decoder fields that are reset by both `opus_decoder_init` and `OPUS_RESET_STATE`.
     fn reset_runtime_fields(&mut self) {
         self.stream_channels = self.channels;
@@ -1047,6 +1065,7 @@ pub fn opus_decoder_create(
         silk,
         fs,
         channels,
+        dec_control: DecControl::default(),
         decode_gain: 0,
         complexity: 0,
         arch: 0,
@@ -1118,6 +1137,16 @@ pub fn opus_decoder_ctl<'req>(
         OpusDecoderCtlRequest::GetSampleRate(slot) => {
             *slot = decoder.fs;
         }
+        OpusDecoderCtlRequest::GetPitch(slot) => {
+            if decoder.prev_mode == MODE_CELT_ONLY {
+                opus_custom_decoder_ctl(
+                    decoder.celt.decoder(),
+                    CeltDecoderCtlRequest::GetPitch(slot),
+                )?;
+            } else {
+                *slot = decoder.dec_control.prev_pitch_lag;
+            }
+        }
         OpusDecoderCtlRequest::SetGain(value) => {
             if !(-32_768..=32_767).contains(&value) {
                 return Err(OpusDecoderCtlError::BadArgument);
@@ -1167,7 +1196,7 @@ pub fn opus_decoder_ctl<'req>(
 #[cfg(test)]
 mod tests {
     use super::{
-        OpusDecodeError, OpusDecoderCtlError, OpusDecoderCtlRequest, MODE_CELT_ONLY,
+        DecControl, OpusDecodeError, OpusDecoderCtlError, OpusDecoderCtlRequest, MODE_CELT_ONLY,
         MODE_SILK_ONLY, opus_decode_native, opus_decoder_create, opus_decoder_ctl,
         opus_decoder_get_size,
     };
@@ -1217,6 +1246,7 @@ mod tests {
             silk,
             fs: 48_000,
             channels: 1,
+            dec_control: DecControl::default(),
             decode_gain: 0,
             complexity: 0,
             arch: 0,
@@ -1438,6 +1468,31 @@ mod tests {
         )
         .unwrap();
         assert!(disabled);
+    }
+
+    #[test]
+    fn get_pitch_reports_silk_prev_pitch_lag() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.prev_mode = MODE_SILK_ONLY;
+        decoder.dec_control.prev_pitch_lag = 123;
+
+        let mut pitch = 0;
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::GetPitch(&mut pitch)).unwrap();
+        assert_eq!(pitch, 123);
+    }
+
+    #[test]
+    fn get_pitch_forwards_to_celt_when_prev_mode_is_celt() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.prev_mode = MODE_CELT_ONLY;
+        {
+            let celt = decoder.celt.decoder();
+            celt.postfilter_period = 321;
+        }
+
+        let mut pitch = 0;
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::GetPitch(&mut pitch)).unwrap();
+        assert_eq!(pitch, 321);
     }
 
     #[test]
