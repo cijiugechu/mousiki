@@ -10,11 +10,9 @@ use crate::celt::CELT_SIG_SCALE;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::CeltDecodeError;
 #[cfg(not(feature = "fixed_point"))]
-use crate::celt::arm_celt_map::select_celt_float2int16_impl;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::celt_decode_with_ec_dred;
 #[cfg(not(feature = "fixed_point"))]
-use crate::celt::float_cast::float2int;
+use crate::celt::{float2int, select_celt_float2int16_impl};
 use crate::celt::{CeltCoef, OpusCustomMode};
 use crate::celt::{
     CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
@@ -561,6 +559,7 @@ impl<'mode> OpusDecoder<'mode> {
 
         let celt_accum = mode != MODE_CELT_ONLY;
         let mut range_final = 0u32;
+        let mut celt_final_range: Option<u32> = None;
 
         if mode != MODE_CELT_ONLY {
             let pcm_too_small = audiosize < f10;
@@ -756,11 +755,9 @@ impl<'mode> OpusDecoder<'mode> {
                 pcm_transition = Some(buffer);
             }
 
-            range_final = if packet.is_some() && packet_len > 1 {
-                range_decoder.range_size
-            } else {
-                0
-            };
+            if packet.is_some() && packet_len > 1 {
+                range_final = range_decoder.range_size;
+            }
         }
 
         if let Some(data) = packet {
@@ -860,6 +857,16 @@ impl<'mode> OpusDecoder<'mode> {
 
             if celt_ret != celt_frame {
                 return Err(OpusDecodeError::InternalError);
+            }
+
+            if packet.is_some() && packet_len > 1 && celt_packet.is_some() {
+                let mut final_range = 0u32;
+                opus_custom_decoder_ctl(
+                    self.celt.decoder(),
+                    CeltDecoderCtlRequest::GetFinalRange(&mut final_range),
+                )
+                .map_err(|_| OpusDecodeError::BadArgument)?;
+                celt_final_range = Some(final_range);
             }
         }
 
@@ -982,7 +989,7 @@ impl<'mode> OpusDecoder<'mode> {
 
         self.prev_mode = mode;
         self.prev_redundancy = i32::from(redundancy && !celt_to_silk);
-        self.range_final = range_final ^ redundant_rng;
+        self.range_final = celt_final_range.unwrap_or(range_final) ^ redundant_rng;
 
         Ok(audiosize)
     }

@@ -204,6 +204,10 @@ Stereo predictor glue and the bandwidth cut-off controllers are now ported; rema
 
 ## Missing Functions and Types
 
-- The top-level Opus decoder API remains partially unported. `opus_decoder_get_size`, `opus_decoder_init`, and `opus_decoder_create` now live in `src/opus_decoder.rs`, but the `OpusDecoder` decode paths (`opus_decode_native`, `opus_decode`/`opus_decode_float`/`opus_decode24`) still depend on the unported CELT/SILK glue, redundancy transitions, FEC/PLC integration, soft-clipping, decode-gain handling, CTL requests, self-delimited parsing, OSCE/Deep PLC hooks, and 24-bit output paths.【opus-c/src/opus_decoder.c†L65-L204】【opus-c/src/opus_decoder.c†L700-L840】【src/decoder.rs†L1-L200】【src/opus_decoder.rs†L1-L175】
+- The top-level Opus decoder API now lives in `src/opus_decoder.rs`, including `opus_decode_native`
+  and the 16/24-bit and float wrappers that wire in the CELT/SILK redundancy transitions, FEC/PLC
+  integration, decode-gain handling, soft-clipping, CTL requests, and self-delimited parsing.
+  Remaining gaps sit in auxiliary CTLs, optional OSCE/Deep PLC hooks, and fixed-point CELT output
+  paths.【opus-c/src/opus_decoder.c†L65-L204】【opus-c/src/opus_decoder.c†L700-L840】【src/decoder.rs†L1-L200】【src/opus_decoder.rs†L1-L175】
 
 Remaining work also focuses on wiring CPU detection and porting the remaining SIMD kernels (NSQ, VAD) alongside the optional Deep PLC/OSCE hooks; the AVX2 inner-product entry point now mirrors the C fast path while deferring to the scalar Rust implementation until dispatch is enabled.

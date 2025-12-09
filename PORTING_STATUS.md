@@ -28,8 +28,9 @@ Current Rust coverage
   now covers the frame pitch query (`OPUS_GET_PITCH`), exposing CELT post-filter state or the SILK
   control block as in the reference.
 - `opus_decoder_get_size` and related layout sizing helpers are ported. Packet/header parsing,
-  including the self-delimited variant used by multistream decode, is available via
-  `OpusDecoder::parse_packet`, but full decoding is not.
+  including the self-delimited variant used by multistream decode, feeds the ported
+  `opus_decode_native` and its 16/24-bit and float wrappers; fixed-point CELT output is still
+  omitted.
 
 Remaining modules to port
 -------------------------
@@ -40,7 +41,7 @@ Remaining modules to port
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
 - Multistream: Encoder front-end (`opus_multistream_encoder.c`) remains unimplemented apart from
   padding/unpadding helpers. Decoder side has size/init/CTL wiring and packet validation but still
-  lacks the per-stream decode/PCM routing that depends on `opus_decode_native`.
+  lacks the per-stream decode/PCM routing layered over the now-ported `opus_decode_native`.
 - Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are missing;
   only mapping/matrix selection is present and still depends on multistream glue.
   ```4:10:src/projection.rs
