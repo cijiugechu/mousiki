@@ -792,17 +792,68 @@ impl<'mode> OpusDecoder<'mode> {
         )
         .map_err(|_| OpusDecodeError::BadArgument)?;
 
+        if redundancy && celt_to_silk {
+            let redundant_len = f5
+                .checked_mul(channels)
+                .ok_or(OpusDecodeError::BadArgument)?;
+            let mut buffer = vec![0.0; redundant_len];
+            opus_custom_decoder_ctl(
+                self.celt.decoder(),
+                CeltDecoderCtlRequest::SetStartBand(0),
+            )
+            .map_err(|_| OpusDecodeError::BadArgument)?;
+            if let Some(data) = redundant_packet {
+                let ret = decode_celt_frame(&mut self.celt, Some(data), &mut buffer, f5, false)?;
+                if ret != f5 {
+                    return Err(OpusDecodeError::InternalError);
+                }
+                opus_custom_decoder_ctl(
+                    self.celt.decoder(),
+                    CeltDecoderCtlRequest::GetFinalRange(&mut redundant_rng),
+                )
+                .map_err(|_| OpusDecodeError::BadArgument)?;
+            } else {
+                return Err(OpusDecodeError::BadArgument);
+            }
+            redundant_audio = Some(buffer);
+        }
+
         opus_custom_decoder_ctl(
             self.celt.decoder(),
             CeltDecoderCtlRequest::SetStartBand(start_band),
         )
         .map_err(|_| OpusDecodeError::BadArgument)?;
 
-        if mode == MODE_HYBRID {
-            return Err(OpusDecodeError::Unimplemented);
-        }
-
-        if mode != MODE_SILK_ONLY {
+        if mode == MODE_SILK_ONLY {
+            if !celt_accum {
+                let total = audiosize
+                    .checked_mul(channels)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                if pcm.len() < total {
+                    return Err(OpusDecodeError::BufferTooSmall);
+                }
+                pcm[..total].fill(0.0);
+            }
+            if self.prev_mode == MODE_HYBRID
+                && !(redundancy && celt_to_silk && self.prev_redundancy != 0)
+            {
+                opus_custom_decoder_ctl(
+                    self.celt.decoder(),
+                    CeltDecoderCtlRequest::SetStartBand(0),
+                )
+                .map_err(|_| OpusDecodeError::BadArgument)?;
+                let silence = [0xFFu8, 0xFF];
+                let ret =
+                    decode_celt_frame(&mut self.celt, Some(&silence), pcm, f2_5, celt_accum)?;
+                if ret != f2_5 {
+                    return Err(OpusDecodeError::InternalError);
+                }
+            }
+        } else {
+            if mode != self.prev_mode && self.prev_mode > 0 && self.prev_redundancy == 0 {
+                opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::ResetState)
+                    .map_err(|_| OpusDecodeError::BadArgument)?;
+            }
             let celt_frame = audiosize.min(f20);
             let celt_packet = if decode_fec { None } else { packet };
             let celt_ret = decode_celt_frame(
@@ -832,22 +883,23 @@ impl<'mode> OpusDecoder<'mode> {
             .checked_mul(channels)
             .ok_or(OpusDecodeError::BadArgument)?;
 
-        if redundancy {
+        if redundancy && !celt_to_silk && redundant_audio.is_none() {
             let redundant_len = f5
                 .checked_mul(channels)
                 .ok_or(OpusDecodeError::BadArgument)?;
             let mut buffer = vec![0.0; redundant_len];
-            if !celt_to_silk {
-                opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::ResetState)
-                    .map_err(|_| OpusDecodeError::BadArgument)?;
-            }
+            opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::ResetState)
+                .map_err(|_| OpusDecodeError::BadArgument)?;
             opus_custom_decoder_ctl(
                 self.celt.decoder(),
                 CeltDecoderCtlRequest::SetStartBand(0),
             )
             .map_err(|_| OpusDecodeError::BadArgument)?;
             if let Some(data) = redundant_packet {
-                decode_celt_frame(&mut self.celt, Some(data), &mut buffer, f5, false)?;
+                let ret = decode_celt_frame(&mut self.celt, Some(data), &mut buffer, f5, false)?;
+                if ret != f5 {
+                    return Err(OpusDecodeError::InternalError);
+                }
                 opus_custom_decoder_ctl(
                     self.celt.decoder(),
                     CeltDecoderCtlRequest::GetFinalRange(&mut redundant_rng),
@@ -1456,6 +1508,8 @@ mod tests {
         MODE_SILK_ONLY, opus_decode_native, opus_decoder_create, opus_decoder_ctl, smooth_fade,
         opus_decoder_get_size,
     };
+    #[cfg(not(feature = "fixed_point"))]
+    use super::MODE_HYBRID;
     use alloc::vec;
     use alloc::vec::Vec;
     use crate::celt::{
@@ -1831,6 +1885,23 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err, OpusDecodeError::BufferTooSmall);
+    }
+
+    #[test]
+    #[cfg(not(feature = "fixed_point"))]
+    fn hybrid_plc_frames_decode_without_unimplemented() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        decoder.prev_mode = MODE_HYBRID;
+        decoder.frame_size = 960;
+        let mut pcm = vec![0.0; 960];
+
+        let decoded = decoder
+            .decode_frame(None, 0, &mut pcm, 960, false)
+            .expect("hybrid PLC decode should succeed");
+
+        assert_eq!(decoded, 960);
+        assert_eq!(decoder.prev_mode, MODE_HYBRID);
+        assert_eq!(decoder.prev_redundancy, 0);
     }
 
     #[test]
