@@ -35,8 +35,8 @@ pub fn ltp_scale_ctrl(
     let mut scale_index = 0;
 
     if matches!(cond_coding, ConditionalCoding::Independent) {
-        let frames_per_packet = i32::try_from(params.frames_per_packet)
-            .expect("frames per packet fits in i32");
+        let frames_per_packet =
+            i32::try_from(params.frames_per_packet).expect("frames per packet fits in i32");
         debug_assert!(frames_per_packet > 0, "frames per packet must be positive");
 
         let mut round_loss = params.packet_loss_perc.saturating_mul(frames_per_packet);

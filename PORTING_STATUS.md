@@ -33,9 +33,8 @@ Current Rust coverage
 
 Remaining modules to port
 -------------------------
-- Top-level decoder: `opus_decoder.c` (`opus_decode_native`, `opus_decode{,_float,_24}`,
-  remaining CTLs beyond the existing pitch/bandwidth/gain/final-range set). Fixed-point CELT
-  output remains unported; decode wrappers still need wiring for non-float PCM paths.
+- Top-level decoder: remaining CTLs beyond the existing pitch/bandwidth/gain/final-range set.
+  Fixed-point CELT output remains unported.
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
 - Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).

@@ -8,9 +8,7 @@
 use crate::celt::OPUS_ARCHMASK;
 use crate::silk::burg_modified::silk_burg_modified;
 use crate::silk::decode_indices::SideInfoIndices;
-use crate::silk::encoder::state::{
-    EncoderStateCommon, NoiseShapingQuantizerState, VadState,
-};
+use crate::silk::encoder::state::{EncoderStateCommon, NoiseShapingQuantizerState, VadState};
 use crate::silk::inner_product_flp_avx2::inner_product_flp_avx2;
 use crate::silk::nsq_del_dec_sse4_1::silk_nsq_del_dec_sse4_1;
 use crate::silk::nsq_sse4_1::silk_nsq_sse4_1;

@@ -143,7 +143,9 @@ pub fn opus_multistream_decoder_get_size(
         .checked_sub(nb_coupled_streams)?
         .checked_mul(align(mono_size))?;
 
-    header_size.checked_add(coupled_total)?.checked_add(mono_total)
+    header_size
+        .checked_add(coupled_total)?
+        .checked_add(mono_total)
 }
 
 /// Multistream decoder state mirroring `OpusMSDecoder` from the reference code.
@@ -655,10 +657,7 @@ pub fn opus_multistream_decoder_ctl<'req>(
         }
         OpusMultistreamDecoderCtlRequest::SetPhaseInversionDisabled(value) => {
             for dec in &mut decoder.decoders {
-                opus_decoder_ctl(
-                    dec,
-                    OpusDecoderCtlRequest::SetPhaseInversionDisabled(value),
-                )?;
+                opus_decoder_ctl(dec, OpusDecoderCtlRequest::SetPhaseInversionDisabled(value))?;
             }
         }
         OpusMultistreamDecoderCtlRequest::GetPhaseInversionDisabled(slot) => {
@@ -786,7 +785,15 @@ pub fn opus_multistream_decode(
     frame_size: usize,
     decode_fec: bool,
 ) -> Result<usize, OpusMultistreamDecoderError> {
-    opus_multistream_decode_native(decoder, data, len, pcm, frame_size, decode_fec, OPTIONAL_CLIP)
+    opus_multistream_decode_native(
+        decoder,
+        data,
+        len,
+        pcm,
+        frame_size,
+        decode_fec,
+        OPTIONAL_CLIP,
+    )
 }
 
 pub fn opus_multistream_decode24(
@@ -969,9 +976,8 @@ mod tests {
     fn multistream_decoder_size_matches_aligned_components() {
         let coupled = opus_decoder_get_size(2).expect("coupled size");
         let mono = opus_decoder_get_size(1).expect("mono size");
-        let expected = align(core::mem::size_of::<OpusMsDecoderLayout>())
-            + align(coupled)
-            + align(mono);
+        let expected =
+            align(core::mem::size_of::<OpusMsDecoderLayout>()) + align(coupled) + align(mono);
         let reported = opus_multistream_decoder_get_size(2, 1).expect("reported size");
 
         assert_eq!(reported, expected);
@@ -996,11 +1002,8 @@ mod tests {
         let mut decoder =
             opus_multistream_decoder_create(48_000, 2, 1, 1, &mapping).expect("decoder");
 
-        opus_multistream_decoder_ctl(
-            &mut decoder,
-            OpusMultistreamDecoderCtlRequest::SetGain(-12),
-        )
-        .unwrap();
+        opus_multistream_decoder_ctl(&mut decoder, OpusMultistreamDecoderCtlRequest::SetGain(-12))
+            .unwrap();
 
         let mut gain = 0;
         opus_multistream_decoder_ctl(
@@ -1055,8 +1058,7 @@ mod tests {
     fn packet_validation_rejects_mismatched_sample_counts() {
         // Second stream advertises a 60 ms frame, which does not match the first stream.
         let packet = [0x00, 0x01, 0xAA, 0x18, 0xBB];
-        let err =
-            opus_multistream_packet_validate(&packet, packet.len(), 2, 48_000).unwrap_err();
+        let err = opus_multistream_packet_validate(&packet, packet.len(), 2, 48_000).unwrap_err();
         assert_eq!(err, OpusMultistreamDecoderError::InvalidPacket);
     }
 
