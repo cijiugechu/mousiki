@@ -11,14 +11,14 @@ use crate::celt::CELT_SIG_SCALE;
 use crate::celt::CeltDecodeError;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::celt_decode_with_ec_dred;
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::{float2int, select_celt_float2int16_impl};
 use crate::celt::{CeltCoef, OpusCustomMode};
 use crate::celt::{
     CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
     canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     opus_custom_decoder_ctl, opus_select_arch,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::{float2int, select_celt_float2int16_impl};
 #[cfg(not(feature = "fixed_point"))]
 use crate::opus::opus_pcm_soft_clip_impl;
 use crate::packet::{

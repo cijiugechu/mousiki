@@ -1,9 +1,13 @@
+use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::extensions;
 use crate::packet::{
     MAX_FRAMES_PER_PACKET, PacketError, opus_packet_get_nb_frames,
     opus_packet_get_samples_per_frame, opus_packet_parse_impl,
 };
+
+pub use crate::extensions::OpusExtensionData;
 
 /// Errors surfaced by the repacketizer helpers, mirroring the C API codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,20 +40,19 @@ impl From<PacketError> for RepacketizerError {
     }
 }
 
+fn map_extension_error(err: extensions::ExtensionError) -> RepacketizerError {
+    match err {
+        extensions::ExtensionError::BadArgument => RepacketizerError::BadArgument,
+        extensions::ExtensionError::BufferTooSmall => RepacketizerError::BufferTooSmall,
+        extensions::ExtensionError::InvalidPacket => RepacketizerError::InvalidPacket,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Frame {
     start: usize,
     len: u16,
     padding_start: Option<usize>,
-}
-
-/// Extension descriptor placeholder. Full extension parsing is still unported, so the
-/// repacketizer treats incoming padding as opaque.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpusExtensionData<'a> {
-    pub id: u8,
-    pub frame: usize,
-    pub data: &'a [u8],
 }
 
 /// Repacketizer state mirroring the C layout, storing frame metadata and a backing copy
@@ -197,12 +200,67 @@ impl OpusRepacketizer {
         let mut ext_begin = 0usize;
         let mut ext_len = 0usize;
 
-        // Extension handling is currently a stub; we still track passed-in extensions so
-        // callers can add custom data in the future.
-        let mut all_extensions: Vec<OpusExtensionData<'_>> = Vec::new();
+        let mut total_ext_count = extensions.len();
+        for i in begin..end {
+            let pad_len = self.padding_len[i];
+            let nb_pad_frames = usize::from(self.padding_nb_frames[i]);
+            if pad_len == 0 || nb_pad_frames == 0 {
+                continue;
+            }
+            let pad_start = self.frames[i]
+                .padding_start
+                .ok_or(RepacketizerError::InternalError)?;
+            let pad_end = pad_start
+                .checked_add(pad_len)
+                .filter(|end| *end <= self.buffer.len())
+                .ok_or(RepacketizerError::InternalError)?;
+            let padding = &self.buffer[pad_start..pad_end];
+            let count = extensions::opus_packet_extensions_count(padding, pad_len, nb_pad_frames)
+                .map_err(|_| RepacketizerError::InternalError)?;
+            total_ext_count = total_ext_count
+                .checked_add(count)
+                .ok_or(RepacketizerError::InternalError)?;
+        }
+
+        let mut all_extensions: Vec<OpusExtensionData<'_>> = Vec::with_capacity(total_ext_count);
         if !extensions.is_empty() {
             all_extensions.extend_from_slice(extensions);
         }
+
+        for i in begin..end {
+            let pad_len = self.padding_len[i];
+            let nb_pad_frames = usize::from(self.padding_nb_frames[i]);
+            if pad_len == 0 || nb_pad_frames == 0 {
+                continue;
+            }
+            let pad_start = self.frames[i]
+                .padding_start
+                .ok_or(RepacketizerError::InternalError)?;
+            let pad_end = pad_start
+                .checked_add(pad_len)
+                .filter(|end| *end <= self.buffer.len())
+                .ok_or(RepacketizerError::InternalError)?;
+            let padding = &self.buffer[pad_start..pad_end];
+            let frame_count =
+                extensions::opus_packet_extensions_count(padding, pad_len, nb_pad_frames)
+                    .map_err(|_| RepacketizerError::InternalError)?;
+            if frame_count == 0 {
+                continue;
+            }
+            let mut frame_exts = vec![OpusExtensionData::default(); frame_count];
+            extensions::opus_packet_extensions_parse(
+                padding,
+                pad_len,
+                nb_pad_frames,
+                &mut frame_exts,
+            )
+            .map_err(|_| RepacketizerError::InternalError)?;
+            for mut ext in frame_exts {
+                ext.frame += (i - begin) as i32;
+                all_extensions.push(ext);
+            }
+        }
+
         let ext_count = all_extensions.len();
 
         let mut ptr = 0usize;
@@ -288,15 +346,14 @@ impl OpusRepacketizer {
             }
 
             if ext_count > 0 {
-                // With stub extensions we conservatively reserve space for the passed-in
-                // descriptors only.
-                ext_len = opus_packet_extensions_generate(
+                ext_len = extensions::opus_packet_extensions_generate(
                     None,
                     maxlen.saturating_sub(tot_size),
                     &all_extensions,
                     count,
                     false,
-                )?;
+                )
+                .map_err(map_extension_error)?;
                 if !pad {
                     pad_amount = ext_len + ext_len / 254 + 1;
                 }
@@ -353,13 +410,14 @@ impl OpusRepacketizer {
         }
 
         if ext_len > 0 {
-            let generated = opus_packet_extensions_generate(
+            let generated = extensions::opus_packet_extensions_generate(
                 Some(&mut data[ext_begin..ext_begin + ext_len]),
                 ext_len,
                 &all_extensions,
                 count,
                 false,
-            )?;
+            )
+            .map_err(map_extension_error)?;
             debug_assert_eq!(generated, ext_len);
         }
 
@@ -561,31 +619,4 @@ pub fn opus_multistream_packet_unpad(
     }
 
     Ok(dst_len)
-}
-
-/// Placeholder for the extension generator. Once the extension helpers are ported, this
-/// routine should parse and emit extension payloads. Currently it only supports the case
-/// where no extensions are provided.
-fn opus_packet_extensions_generate(
-    data: Option<&mut [u8]>,
-    len: usize,
-    extensions: &[OpusExtensionData<'_>],
-    _nb_frames: usize,
-    pad: bool,
-) -> Result<usize, RepacketizerError> {
-    if extensions.is_empty() {
-        if pad {
-            if let Some(buf) = data {
-                for byte in buf.iter_mut() {
-                    *byte = 0x01;
-                }
-            }
-            Ok(len)
-        } else {
-            Ok(0)
-        }
-    } else {
-        // Full extension support is not yet ported.
-        Err(RepacketizerError::InternalError)
-    }
 }

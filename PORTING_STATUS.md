@@ -12,6 +12,8 @@ Current Rust coverage
 - Packet parsing, repacketizer helpers, mapping matrices, and a subset of projection layout
   selection are available. The ambisonics helpers stop after matrix sizing/selection and
   explicitly defer multistream wiring.
+- Padding extension helpers from `extensions.c` are ported, including iterator/count/parse/generate
+  support wired through the repacketizer.
 - Multistream glue includes channel layout helpers plus ambisonics validation and
   bitrate-allocation utilities from `opus_multistream_encoder.c`. Decoder sizing/init/CTL
   dispatch and packet validation are ported; the top-level decode glue now mirrors the
@@ -38,7 +40,6 @@ Remaining modules to port
   Fixed-point CELT output remains unported.
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
-- Extensions/CTL shims: `extensions.c` (API wrappers and extra CTLs referenced by applications).
 - Multistream: Encoder front-end (`opus_multistream_encoder.c`) remains unimplemented apart from
   padding/unpadding helpers. Decoder side has size/init/CTL wiring and packet validation but still
   lacks the per-stream decode/PCM routing layered over the now-ported `opus_decode_native`.

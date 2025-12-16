@@ -6,6 +6,7 @@ mod analysis;
 pub mod bitdepth;
 mod celt;
 pub mod decoder;
+pub mod extensions;
 pub mod mapping_matrix;
 mod math;
 mod mlp;
