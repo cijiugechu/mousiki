@@ -401,6 +401,12 @@ impl RangeEncoder {
         self.nbits_total - ec_ilog(self.range_size)
     }
 
+    /// Returns the final range-coder state (`rng`) used by Opus for diagnostics.
+    #[must_use]
+    pub fn range_final(&self) -> u32 {
+        self.range_size
+    }
+
     pub fn encode_bin(&mut self, low: u32, high: u32, bits: u32) {
         let r = self.range_size >> bits;
         let total = 1u32 << bits;

@@ -212,6 +212,83 @@ impl Drop for CeltEncoderAlloc {
     }
 }
 
+/// Owning wrapper around [`OpusCustomEncoder`] and its backing allocation.
+///
+/// Matches the pattern used by [`OwnedCeltDecoder`](crate::celt::OwnedCeltDecoder):
+/// the encoder state borrows slices stored in [`CeltEncoderAlloc`], so the
+/// allocation is boxed and kept alongside the borrowed view.
+#[derive(Debug)]
+pub(crate) struct OwnedCeltEncoder<'mode> {
+    encoder: OpusCustomEncoder<'mode>,
+    alloc: Box<CeltEncoderAlloc>,
+}
+
+impl<'mode> OwnedCeltEncoder<'mode> {
+    /// Borrows the underlying encoder state.
+    #[must_use]
+    pub fn encoder(&mut self) -> &mut OpusCustomEncoder<'mode> {
+        &mut self.encoder
+    }
+
+    /// Creates a new owned encoder for `mode`, `channels`, and API `sampling_rate`.
+    pub fn new(
+        mode: &'mode OpusCustomMode<'mode>,
+        sampling_rate: OpusInt32,
+        channels: usize,
+        rng_seed: OpusUint32,
+    ) -> Result<Self, CeltEncoderInitError> {
+        opus_custom_encoder_create(mode, sampling_rate, channels, rng_seed)
+    }
+}
+
+impl<'mode> core::ops::Deref for OwnedCeltEncoder<'mode> {
+    type Target = OpusCustomEncoder<'mode>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.encoder
+    }
+}
+
+impl<'mode> core::ops::DerefMut for OwnedCeltEncoder<'mode> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.encoder
+    }
+}
+
+/// Allocates and initialises an encoder for a custom mode.
+///
+/// Mirrors the allocation strategy used by `opus_custom_encoder_create()` in
+/// `celt/celt_encoder.c` by returning an owned wrapper that keeps the trailing
+/// buffers alive for the lifetime of the encoder view.
+pub(crate) fn opus_custom_encoder_create<'mode>(
+    mode: &'mode OpusCustomMode<'mode>,
+    sampling_rate: OpusInt32,
+    channels: usize,
+    rng_seed: OpusUint32,
+) -> Result<OwnedCeltEncoder<'mode>, CeltEncoderInitError> {
+    let alloc = Box::new(CeltEncoderAlloc::new(mode, channels));
+    let ptr = Box::into_raw(alloc);
+    // SAFETY: `ptr` originates from `Box::into_raw` and remains valid until it is
+    // reconstructed below. The pointer is never null.
+    let result = unsafe { (*ptr).init_encoder_for_rate(mode, channels, channels, sampling_rate, rng_seed) };
+    match result {
+        Ok(encoder) => {
+            // SAFETY: Rebuilds the `Box` returned by `Box::into_raw` so the
+            // allocation is managed by Rust again.
+            let alloc = unsafe { Box::from_raw(ptr) };
+            Ok(OwnedCeltEncoder { encoder, alloc })
+        }
+        Err(err) => {
+            // SAFETY: The allocation must be reclaimed when initialisation fails
+            // to avoid leaking memory.
+            unsafe {
+                let _ = Box::from_raw(ptr);
+            }
+            Err(err)
+        }
+    }
+}
+
 /// Computes the L1 norm used by the time/frequency resolution heuristics.
 ///
 /// Mirrors the helper of the same name in `celt/celt_encoder.c`. The function

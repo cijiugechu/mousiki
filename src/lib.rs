@@ -14,6 +14,7 @@ mod mlp_data;
 pub mod oggreader;
 pub mod opus;
 pub mod opus_decoder;
+pub mod opus_encoder;
 mod opus_multistream;
 pub mod packet;
 pub mod projection;

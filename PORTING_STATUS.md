@@ -20,7 +20,10 @@ Current Rust coverage
   `opus_decode_native` FEC/PLC/front-end control flow and invokes the translated
   per-frame decoder (SILK PLC/FEC plus CELT output on non-fixed builds), including the
   CELT↔SILK transition smoothing and redundancy fades used during bandwidth switches; hybrid
-  frames now run through the same path. Encoder front-ends remain stubbed.
+  frames now run through the same path. Multistream encoder front-ends remain stubbed.
+- A minimal top-level encoder front-end is available via `src/opus_encoder.rs`, including
+  `opus_encoder_get_size`, create/init/reset helpers, a small CTL surface, and a SILK-only
+  `opus_encode` implementation capable of emitting single-frame 20 ms packets.
 - Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
@@ -40,6 +43,8 @@ Remaining modules to port
   Fixed-point CELT output remains unported.
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
+  The current Rust port supports SILK-only single-frame 20 ms packets; Hybrid/CELT packing,
+  variable-duration/multiframe framing, and the full CTL surface are still pending.
 - Multistream: Encoder front-end (`opus_multistream_encoder.c`) remains unimplemented apart from
   padding/unpadding helpers. Decoder side has size/init/CTL wiring and packet validation but still
   lacks the per-stream decode/PCM routing layered over the now-ported `opus_decode_native`.

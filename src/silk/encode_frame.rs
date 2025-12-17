@@ -249,10 +249,10 @@ pub fn silk_encode_frame(
             usize::try_from(encoder.common.la_pitch).expect("la_pitch must be non-negative");
         let buf_len = ltp_offset + frame_length + la_pitch;
         debug_assert!(buf_len <= res_pitch.len());
-        debug_assert!(ltp_offset + buf_len <= encoder.x_buf.len());
+        debug_assert!(buf_len <= encoder.x_buf.len());
 
         let mut x_pitch = [0i16; X_BUFFER_LENGTH];
-        x_pitch[..buf_len].copy_from_slice(&encoder.x_buf[ltp_offset..ltp_offset + buf_len]);
+        x_pitch[..buf_len].copy_from_slice(&encoder.x_buf[..buf_len]);
 
         find_pitch_lags(
             encoder,
@@ -261,24 +261,36 @@ pub fn silk_encode_frame(
             &x_pitch[..buf_len],
         );
 
-        let res_pitch_frame = &res_pitch[ltp_offset..buf_len];
+        let pitch_res_frame = &res_pitch[ltp_offset..ltp_offset + frame_length];
 
-        let x_frame_len = X_BUFFER_LENGTH - ltp_offset;
+        let la_shape = la_shape_samples;
+        debug_assert!(ltp_offset >= la_shape);
+        let x_start = ltp_offset.saturating_sub(la_shape);
+        let expected_len = frame_length + 2 * la_shape;
+        let x_end = x_start + expected_len;
+        debug_assert!(x_end <= encoder.x_buf.len());
+
+        // Copy the analysis window out of `encoder.x_buf` so we can mutably
+        // borrow the encoder while passing the samples by reference.
         let mut x_frame_full = [0i16; X_BUFFER_LENGTH];
-        x_frame_full[..x_frame_len].copy_from_slice(&encoder.x_buf[ltp_offset..]);
+        x_frame_full[..expected_len].copy_from_slice(&encoder.x_buf[x_start..x_end]);
+        let x_frame_with_lookahead = &x_frame_full[..expected_len];
 
         noise_shape_analysis(
             encoder,
             &mut enc_ctrl,
-            res_pitch_frame,
-            &x_frame_full[..x_frame_len],
+            pitch_res_frame,
+            x_frame_with_lookahead,
             encoder.common.arch,
         );
+
+        let mut x_full = [0i16; X_BUFFER_LENGTH];
+        x_full.copy_from_slice(&encoder.x_buf);
         find_pred_coefs(
             encoder,
             &mut enc_ctrl,
-            res_pitch_frame,
-            &x_frame_full[..x_frame_len],
+            &res_pitch[..buf_len],
+            &x_full,
             cond_coding,
         );
         process_gains(encoder, &mut enc_ctrl, cond_coding);
