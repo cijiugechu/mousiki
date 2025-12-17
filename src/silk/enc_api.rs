@@ -120,9 +120,6 @@ pub fn silk_encode(
 ) -> Result<(), SilkError> {
     *n_bytes_out = 0;
 
-    let mut remaining_samples =
-        i32::try_from(samples_in.len()).map_err(|_| SilkError::EncInputInvalidNoOfSamples)?;
-
     if control.reduced_dependency {
         for channel in encoder.state_fxx.iter_mut() {
             channel.common_mut().first_frame_after_reset = true;
@@ -141,6 +138,16 @@ pub fn silk_encode(
     let api_channels = usize::try_from(control.n_channels_api)
         .unwrap_or(ENCODER_NUM_CHANNELS)
         .min(ENCODER_NUM_CHANNELS);
+
+    if api_channels == 0 || !samples_in.len().is_multiple_of(api_channels) {
+        return Err(SilkError::EncInputInvalidNoOfSamples);
+    }
+
+    // The reference API accepts `nSamplesIn` in units of samples per channel
+    // while the PCM pointer is interleaved across channels. Mirror that by
+    // normalising the slice length to per-channel samples here.
+    let mut remaining_samples = i32::try_from(samples_in.len() / api_channels)
+        .map_err(|_| SilkError::EncInputInvalidNoOfSamples)?;
 
     if control.n_channels_internal > encoder.n_channels_internal {
         for n in encoder.n_channels_internal as usize..internal_channels {
@@ -336,9 +343,8 @@ pub fn silk_encode(
         }
 
         input_offset += samples_from_input * n_channels_api;
-        remaining_samples -= i32::try_from(samples_from_input)
-            .expect("input chunk size must fit in i32")
-            * control.n_channels_api;
+        remaining_samples -=
+            i32::try_from(samples_from_input).expect("input chunk size must fit in i32");
 
         encoder.allow_bandwidth_switch = false;
 

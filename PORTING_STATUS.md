@@ -20,7 +20,10 @@ Current Rust coverage
   `opus_decode_native` FEC/PLC/front-end control flow and invokes the translated
   per-frame decoder (SILK PLC/FEC plus CELT output on non-fixed builds), including the
   CELT↔SILK transition smoothing and redundancy fades used during bandwidth switches; hybrid
-  frames now run through the same path. Multistream encoder front-ends remain stubbed.
+  frames now run through the same path. Multistream decode now includes per-stream
+  `opus_decode_native` dispatch and PCM routing. The multistream encoder front-end is
+  available for generic layouts and wraps the current Rust `opus_encode` implementation
+  (still limited to SILK-only single-frame 20 ms packets).
 - A minimal top-level encoder front-end is available via `src/opus_encoder.rs`, including
   `opus_encoder_get_size`, create/init/reset helpers, a small CTL surface, and a SILK-only
   `opus_encode` implementation capable of emitting single-frame 20 ms packets.
@@ -45,9 +48,10 @@ Remaining modules to port
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
   The current Rust port supports SILK-only single-frame 20 ms packets; Hybrid/CELT packing,
   variable-duration/multiframe framing, and the full CTL surface are still pending.
-- Multistream: Encoder front-end (`opus_multistream_encoder.c`) remains unimplemented apart from
-  padding/unpadding helpers. Decoder side has size/init/CTL wiring and packet validation but still
-  lacks the per-stream decode/PCM routing layered over the now-ported `opus_decode_native`.
+- Multistream: Generic encoder/decoder front-ends are ported (per-stream encode/decode dispatch,
+  self-delimited framing for all but the last stream, and PCM routing). Surround/projection-specific
+  multistream encoder tuning (surround analysis, forced modes/bandwidth decisions, and the
+  projection front-ends) remains pending.
 - Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are missing;
   only mapping/matrix selection is present and still depends on multistream glue.
   ```4:10:src/projection.rs

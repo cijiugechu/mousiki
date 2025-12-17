@@ -1,12 +1,19 @@
 //! Channel layout helpers mirrored from `opus_multistream.c`.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::isqrt32;
+use crate::celt::{OpusRes, isqrt32};
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::{float2int, float2int16};
 use crate::opus_decoder::{
-    OpusDecoder, OpusDecoderCtlError, OpusDecoderCtlRequest, OpusDecoderInitError,
-    opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
+    OpusDecodeError, OpusDecoder, OpusDecoderCtlError, OpusDecoderCtlRequest, OpusDecoderInitError,
+    opus_decode_native, opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
+};
+use crate::opus_encoder::{
+    OpusEncodeError, OpusEncoder, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError,
+    opus_encode, opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
 };
 use crate::packet::{PacketError, opus_packet_get_nb_samples, opus_packet_parse_impl};
 
@@ -30,7 +37,7 @@ pub(crate) enum MappingType {
 /// states. The `mapping` table uses `255` as a sentinel for channels that are
 /// omitted from the encoded streams.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelLayout {
+pub struct ChannelLayout {
     pub nb_channels: usize,
     pub nb_streams: usize,
     pub nb_coupled_streams: usize,
@@ -47,6 +54,7 @@ pub enum OpusMultistreamDecoderError {
     Unimplemented,
     DecoderInit(OpusDecoderInitError),
     DecoderCtl(OpusDecoderCtlError),
+    DecoderDecode(OpusDecodeError),
 }
 
 impl OpusMultistreamDecoderError {
@@ -63,6 +71,7 @@ impl OpusMultistreamDecoderError {
             Self::DecoderCtl(OpusDecoderCtlError::BadArgument) => -1,
             Self::DecoderCtl(OpusDecoderCtlError::Unimplemented) => -5,
             Self::DecoderCtl(OpusDecoderCtlError::Silk(_)) => -3,
+            Self::DecoderDecode(err) => err.code(),
         }
     }
 }
@@ -91,6 +100,13 @@ impl From<OpusDecoderCtlError> for OpusMultistreamDecoderError {
     }
 }
 
+impl From<OpusDecodeError> for OpusMultistreamDecoderError {
+    #[inline]
+    fn from(value: OpusDecodeError) -> Self {
+        Self::DecoderDecode(value)
+    }
+}
+
 #[repr(C)]
 struct ChannelLayoutLayout {
     nb_channels: i32,
@@ -101,6 +117,11 @@ struct ChannelLayoutLayout {
 
 #[repr(C)]
 struct OpusMsDecoderLayout {
+    layout: ChannelLayoutLayout,
+}
+
+#[repr(C)]
+struct OpusMsEncoderLayout {
     layout: ChannelLayoutLayout,
 }
 
@@ -203,6 +224,18 @@ pub fn opus_multistream_decoder_create(
     let decoders = build_stream_decoders(sample_rate, streams, coupled_streams)?;
 
     Ok(OpusMultistreamDecoder { layout, decoders })
+}
+
+/// Mirrors `opus_multistream_decoder_init` by resetting an existing decoder instance.
+pub fn opus_multistream_decoder_init(
+    decoder: &mut OpusMultistreamDecoder<'_>,
+    sample_rate: i32,
+    channels: usize,
+    streams: usize,
+    coupled_streams: usize,
+    mapping: &[u8],
+) -> Result<(), OpusMultistreamDecoderError> {
+    decoder.init(sample_rate, channels, streams, coupled_streams, mapping)
 }
 
 fn build_layout(
@@ -718,19 +751,20 @@ const OPTIONAL_CLIP: bool = false;
 #[cfg(not(feature = "fixed_point"))]
 const OPTIONAL_CLIP: bool = true;
 
-fn opus_multistream_decode_native<T>(
+fn opus_multistream_decode_native<T: PcmSample>(
     decoder: &mut OpusMultistreamDecoder<'_>,
     data: &[u8],
     len: usize,
-    _pcm: &mut [T],
+    pcm: &mut [T],
     mut frame_size: usize,
     decode_fec: bool,
     soft_clip: bool,
 ) -> Result<usize, OpusMultistreamDecoderError> {
-    let _ = decode_fec;
-    let _ = soft_clip;
+    if frame_size == 0 {
+        return Err(OpusMultistreamDecoderError::BadArgument);
+    }
 
-    if len > data.len() || frame_size == 0 {
+    if len > data.len() {
         return Err(OpusMultistreamDecoderError::BadArgument);
     }
 
@@ -739,11 +773,9 @@ fn opus_multistream_decode_native<T>(
         return Err(OpusMultistreamDecoderError::BadArgument);
     }
 
-    let mut sample_rate = 0;
-    opus_multistream_decoder_ctl(
-        decoder,
-        OpusMultistreamDecoderCtlRequest::GetSampleRate(&mut sample_rate),
-    )?;
+    let sample_rate = decoder
+        .sample_rate()
+        .ok_or(OpusMultistreamDecoderError::InternalError)?;
 
     let max_frame = sample_rate as usize / 25 * 3;
     frame_size = frame_size.min(max_frame);
@@ -751,8 +783,8 @@ fn opus_multistream_decode_native<T>(
     let required = frame_size
         .checked_mul(decoder.layout.nb_channels)
         .ok_or(OpusMultistreamDecoderError::BadArgument)?;
-    if _pcm.len() < required {
-        return Err(OpusMultistreamDecoderError::BadArgument);
+    if pcm.len() < required {
+        return Err(OpusMultistreamDecoderError::BufferTooSmall);
     }
 
     let do_plc = len == 0;
@@ -771,10 +803,119 @@ fn opus_multistream_decode_native<T>(
         }
     }
 
-    // The per-stream decode glue still depends on the unported `opus_decode_native`
-    // front-end. Return an explicit error so callers can distinguish a missing
-    // implementation from malformed inputs.
-    Err(OpusMultistreamDecoderError::Unimplemented)
+    let mut scratch = vec![OpusRes::default(); 2 * frame_size];
+    let mut cursor = data;
+    let mut remaining = len;
+    let mut decoded_frame_size = frame_size;
+
+    for stream in 0..nb_streams {
+        let self_delimited = stream + 1 != nb_streams;
+
+        let decoder_state = decoder
+            .decoders
+            .get_mut(stream)
+            .ok_or(OpusMultistreamDecoderError::InternalError)?;
+
+        let mut packet_offset = 0usize;
+        let decoded = if do_plc {
+            opus_decode_native(
+                decoder_state,
+                None,
+                0,
+                &mut scratch,
+                decoded_frame_size,
+                decode_fec,
+                self_delimited,
+                None,
+                soft_clip,
+            )?
+        } else {
+            if remaining == 0 {
+                return Err(OpusMultistreamDecoderError::InternalError);
+            }
+            opus_decode_native(
+                decoder_state,
+                Some(cursor),
+                remaining,
+                &mut scratch,
+                decoded_frame_size,
+                decode_fec,
+                self_delimited,
+                Some(&mut packet_offset),
+                soft_clip,
+            )?
+        };
+
+        if !do_plc {
+            if packet_offset > remaining {
+                return Err(OpusMultistreamDecoderError::InvalidPacket);
+            }
+            cursor = &cursor[packet_offset..];
+            remaining -= packet_offset;
+        }
+
+        if decoded == 0 {
+            return Err(OpusMultistreamDecoderError::InternalError);
+        }
+        decoded_frame_size = decoded;
+
+        if stream < decoder.layout.nb_coupled_streams {
+            let mut prev = None;
+            while let Some(chan) = get_left_channel(&decoder.layout, stream, prev) {
+                copy_channel_out(
+                    pcm,
+                    decoder.layout.nb_channels,
+                    chan,
+                    Some((&scratch[..], 2)),
+                    decoded_frame_size,
+                    0,
+                );
+                prev = Some(chan);
+            }
+
+            let mut prev = None;
+            while let Some(chan) = get_right_channel(&decoder.layout, stream, prev) {
+                copy_channel_out(
+                    pcm,
+                    decoder.layout.nb_channels,
+                    chan,
+                    Some((&scratch[1..], 2)),
+                    decoded_frame_size,
+                    0,
+                );
+                prev = Some(chan);
+            }
+        } else {
+            let mut prev = None;
+            while let Some(chan) = get_mono_channel(&decoder.layout, stream, prev) {
+                copy_channel_out(
+                    pcm,
+                    decoder.layout.nb_channels,
+                    chan,
+                    Some((&scratch[..], 1)),
+                    decoded_frame_size,
+                    0,
+                );
+                prev = Some(chan);
+            }
+        }
+    }
+
+    // Handle muted channels.
+    for channel in 0..decoder.layout.nb_channels {
+        if decoder.layout.mapping[channel] == u8::MAX {
+            copy_channel_out(
+                pcm,
+                decoder.layout.nb_channels,
+                channel,
+                None,
+                decoded_frame_size,
+                0,
+            );
+        }
+    }
+
+    Ok(decoded_frame_size)
 }
 
 pub fn opus_multistream_decode(
@@ -818,10 +959,643 @@ pub fn opus_multistream_decode_float(
     opus_multistream_decode_native(decoder, data, len, pcm, frame_size, decode_fec, false)
 }
 
+trait PcmSample: Copy + Default {
+    fn from_opus_res(value: OpusRes) -> Self;
+}
+
+impl PcmSample for i16 {
+    #[inline]
+    fn from_opus_res(value: OpusRes) -> Self {
+        #[cfg(feature = "fixed_point")]
+        {
+            value as i16
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            float2int16(value)
+        }
+    }
+}
+
+impl PcmSample for i32 {
+    #[inline]
+    fn from_opus_res(value: OpusRes) -> Self {
+        #[cfg(feature = "fixed_point")]
+        {
+            i32::from(value as i16) << 8
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            float2int(value * 8_388_608.0)
+        }
+    }
+}
+
+impl PcmSample for f32 {
+    #[inline]
+    fn from_opus_res(value: OpusRes) -> Self {
+        #[cfg(feature = "fixed_point")]
+        {
+            f32::from(value as i16) * (1.0 / 32_768.0)
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            value
+        }
+    }
+}
+
+fn copy_channel_out<T: PcmSample>(
+    dst: &mut [T],
+    dst_stride: usize,
+    dst_channel: usize,
+    src: Option<(&[OpusRes], usize)>,
+    frame_size: usize,
+    src_offset: usize,
+) {
+    if dst_stride == 0 || frame_size == 0 {
+        return;
+    }
+    for i in 0..frame_size {
+        let dst_index = i * dst_stride + dst_channel;
+        if dst_index >= dst.len() {
+            break;
+        }
+        dst[dst_index] = match src {
+            Some((src_data, src_stride)) => {
+                let src_index = src_offset + i * src_stride;
+                let value = src_data.get(src_index).copied().unwrap_or_default();
+                T::from_opus_res(value)
+            }
+            None => T::default(),
+        };
+    }
+}
+
+/// Errors surfaced by the multistream encoder front-end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpusMultistreamEncoderError {
+    BadArgument,
+    BufferTooSmall,
+    InternalError,
+    Unimplemented,
+    EncoderInit(OpusEncoderInitError),
+    EncoderCtl(OpusEncoderCtlError),
+    Encode(OpusEncodeError),
+}
+
+impl OpusMultistreamEncoderError {
+    #[inline]
+    pub const fn code(&self) -> i32 {
+        match self {
+            Self::BadArgument => -1,
+            Self::BufferTooSmall => -2,
+            Self::InternalError => -3,
+            Self::Unimplemented => -5,
+            Self::EncoderInit(err) => err.code(),
+            Self::EncoderCtl(err) => err.code(),
+            Self::Encode(err) => err.code(),
+        }
+    }
+}
+
+impl From<OpusEncoderInitError> for OpusMultistreamEncoderError {
+    #[inline]
+    fn from(value: OpusEncoderInitError) -> Self {
+        Self::EncoderInit(value)
+    }
+}
+
+impl From<OpusEncoderCtlError> for OpusMultistreamEncoderError {
+    #[inline]
+    fn from(value: OpusEncoderCtlError) -> Self {
+        Self::EncoderCtl(value)
+    }
+}
+
+impl From<OpusEncodeError> for OpusMultistreamEncoderError {
+    #[inline]
+    fn from(value: OpusEncodeError) -> Self {
+        match value {
+            OpusEncodeError::BadArgument => Self::BadArgument,
+            OpusEncodeError::BufferTooSmall => Self::BufferTooSmall,
+            OpusEncodeError::InternalError => Self::InternalError,
+            OpusEncodeError::Unimplemented => Self::Unimplemented,
+            OpusEncodeError::Silk(_) => Self::Encode(value),
+        }
+    }
+}
+
+/// Multistream encoder state mirroring `OpusMSEncoder` from the reference code.
+#[derive(Debug)]
+pub struct OpusMultistreamEncoder<'mode> {
+    layout: ChannelLayout,
+    encoders: Vec<OpusEncoder<'mode>>,
+    mapping_type: MappingType,
+    lfe_stream: Option<usize>,
+    sample_rate: i32,
+    application: i32,
+    bitrate_bps: i32,
+}
+
+impl<'mode> OpusMultistreamEncoder<'mode> {
+    #[inline]
+    pub fn layout(&self) -> &ChannelLayout {
+        &self.layout
+    }
+
+    /// Resets the encoder to a new layout and sample rate.
+    pub fn init(
+        &mut self,
+        sample_rate: i32,
+        channels: usize,
+        streams: usize,
+        coupled_streams: usize,
+        mapping: &[u8],
+        application: i32,
+    ) -> Result<(), OpusMultistreamEncoderError> {
+        let layout = build_encoder_layout(channels, streams, coupled_streams, mapping)?;
+        let encoders = build_stream_encoders(sample_rate, streams, coupled_streams, application)?;
+
+        self.layout = layout;
+        self.encoders = encoders;
+        self.mapping_type = MappingType::None;
+        self.lfe_stream = None;
+        self.sample_rate = sample_rate;
+        self.application = application;
+        self.bitrate_bps = OPUS_AUTO;
+        Ok(())
+    }
+
+    /// Returns a mutable reference to the encoder for `stream_id`, mirroring
+    /// `OPUS_MULTISTREAM_GET_ENCODER_STATE`.
+    pub fn encoder_state(&mut self, stream_id: usize) -> Option<&mut OpusEncoder<'mode>> {
+        self.encoders.get_mut(stream_id)
+    }
+}
+
+/// Returns the number of bytes required to allocate a multistream encoder.
+#[must_use]
+pub fn opus_multistream_encoder_get_size(
+    nb_streams: usize,
+    nb_coupled_streams: usize,
+) -> Option<usize> {
+    if nb_streams == 0 || nb_coupled_streams > nb_streams {
+        return None;
+    }
+
+    let coupled_size = opus_encoder_get_size(2)?;
+    let mono_size = opus_encoder_get_size(1)?;
+    let header_size = align(core::mem::size_of::<OpusMsEncoderLayout>());
+
+    let coupled_total = nb_coupled_streams.checked_mul(align(coupled_size))?;
+    let mono_total = nb_streams
+        .checked_sub(nb_coupled_streams)?
+        .checked_mul(align(mono_size))?;
+
+    header_size
+        .checked_add(coupled_total)?
+        .checked_add(mono_total)
+}
+
+/// Mirrors `opus_multistream_encoder_create` by allocating and initialising all
+/// component encoders.
+pub fn opus_multistream_encoder_create(
+    sample_rate: i32,
+    channels: usize,
+    streams: usize,
+    coupled_streams: usize,
+    mapping: &[u8],
+    application: i32,
+) -> Result<OpusMultistreamEncoder<'static>, OpusMultistreamEncoderError> {
+    let layout = build_encoder_layout(channels, streams, coupled_streams, mapping)?;
+    let encoders = build_stream_encoders(sample_rate, streams, coupled_streams, application)?;
+
+    Ok(OpusMultistreamEncoder {
+        layout,
+        encoders,
+        mapping_type: MappingType::None,
+        lfe_stream: None,
+        sample_rate,
+        application,
+        bitrate_bps: OPUS_AUTO,
+    })
+}
+
+fn build_encoder_layout(
+    channels: usize,
+    streams: usize,
+    coupled_streams: usize,
+    mapping: &[u8],
+) -> Result<ChannelLayout, OpusMultistreamEncoderError> {
+    let layout = build_layout(channels, streams, coupled_streams, mapping)
+        .map_err(|err| match err {
+            OpusMultistreamDecoderError::BadArgument => OpusMultistreamEncoderError::BadArgument,
+            _ => OpusMultistreamEncoderError::InternalError,
+        })?;
+    if streams
+        .checked_add(coupled_streams)
+        .is_none_or(|total| total > channels)
+    {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    if !validate_encoder_layout(&layout) {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    Ok(layout)
+}
+
+fn build_stream_encoders(
+    sample_rate: i32,
+    streams: usize,
+    coupled_streams: usize,
+    application: i32,
+) -> Result<Vec<OpusEncoder<'static>>, OpusMultistreamEncoderError> {
+    if sample_rate <= 0 {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    let mut encoders = Vec::with_capacity(streams);
+    for stream in 0..streams {
+        let channels: i32 = if stream < coupled_streams { 2 } else { 1 };
+        encoders.push(opus_encoder_create(sample_rate, channels, application)?);
+    }
+    Ok(encoders)
+}
+
+/// Strongly-typed replacement for the multistream encoder CTL dispatcher.
+pub enum OpusMultistreamEncoderCtlRequest<'req> {
+    SetBitrate(i32),
+    GetBitrate(&'req mut i32),
+    SetVbr(bool),
+    GetVbr(&'req mut bool),
+    SetVbrConstraint(bool),
+    GetVbrConstraint(&'req mut bool),
+    SetComplexity(i32),
+    GetComplexity(&'req mut i32),
+    SetPacketLossPerc(i32),
+    GetPacketLossPerc(&'req mut i32),
+    SetInbandFec(bool),
+    GetInbandFec(&'req mut bool),
+    SetDtx(bool),
+    GetDtx(&'req mut bool),
+    GetFinalRange(&'req mut u32),
+    ResetState,
+}
+
+/// Applies a control request across the embedded encoders.
+pub fn opus_multistream_encoder_ctl<'req>(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    request: OpusMultistreamEncoderCtlRequest<'req>,
+) -> Result<(), OpusMultistreamEncoderError> {
+    if encoder.encoders.is_empty() {
+        return Err(OpusMultistreamEncoderError::InternalError);
+    }
+
+    match request {
+        OpusMultistreamEncoderCtlRequest::SetBitrate(value) => {
+            if value != OPUS_AUTO && value != OPUS_BITRATE_MAX && value <= 0 {
+                return Err(OpusMultistreamEncoderError::BadArgument);
+            }
+            encoder.bitrate_bps = value;
+        }
+        OpusMultistreamEncoderCtlRequest::GetBitrate(out) => {
+            *out = encoder.bitrate_bps;
+        }
+        OpusMultistreamEncoderCtlRequest::SetVbr(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetVbr(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetVbr(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetVbr(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetVbrConstraint(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetVbrConstraint(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetVbrConstraint(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetComplexity(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetComplexity(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetComplexity(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetComplexity(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetPacketLossPerc(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetPacketLossPerc(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetPacketLossPerc(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetPacketLossPerc(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetInbandFec(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetInbandFec(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetInbandFec(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetInbandFec(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetDtx(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetDtx(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetDtx(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetDtx(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::GetFinalRange(out) => {
+            let mut acc = 0u32;
+            for enc in &mut encoder.encoders {
+                let mut value = 0u32;
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::GetFinalRange(&mut value))?;
+                acc ^= value;
+            }
+            *out = acc;
+        }
+        OpusMultistreamEncoderCtlRequest::ResetState => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::ResetState)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn encode_size(size: usize, data: &mut [u8]) -> Option<usize> {
+    if data.is_empty() {
+        return None;
+    }
+    if size < 252 {
+        data[0] = size as u8;
+        Some(1)
+    } else {
+        if data.len() < 2 {
+            return None;
+        }
+        data[0] = 252 + (size & 0x3) as u8;
+        data[1] = ((size - usize::from(data[0])) >> 2) as u8;
+        Some(2)
+    }
+}
+
+fn extract_i16_channel(
+    input: &[i16],
+    input_channels: usize,
+    channel: usize,
+    frame_size: usize,
+    output: &mut [i16],
+    output_stride: usize,
+    output_offset: usize,
+) -> Result<(), OpusMultistreamEncoderError> {
+    for i in 0..frame_size {
+        let src = i
+            .checked_mul(input_channels)
+            .and_then(|base| base.checked_add(channel))
+            .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+        let dst = output_offset
+            .checked_add(i.checked_mul(output_stride).ok_or(OpusMultistreamEncoderError::BadArgument)?)
+            .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+        output[dst] = *input.get(src).ok_or(OpusMultistreamEncoderError::BadArgument)?;
+    }
+    Ok(())
+}
+
+pub fn opus_multistream_encode(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    pcm: &[i16],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusMultistreamEncoderError> {
+    let channels = encoder.layout.nb_channels;
+    if channels == 0 || frame_size == 0 {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    let required_pcm = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+    if pcm.len() < required_pcm {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+
+    let nb_streams = encoder.layout.nb_streams;
+    if nb_streams == 0 {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+
+    let smallest_packet = nb_streams
+        .checked_mul(2)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+    if data.len() < smallest_packet {
+        return Err(OpusMultistreamEncoderError::BufferTooSmall);
+    }
+
+    let mut rates = vec![0i32; nb_streams];
+    let _ = rate_allocation(
+        &encoder.layout,
+        encoder.mapping_type,
+        encoder.bitrate_bps,
+        encoder.lfe_stream,
+        frame_size,
+        encoder.sample_rate,
+        &mut rates,
+    );
+
+    let mut total_written = 0usize;
+    for stream in 0..nb_streams {
+        let self_delimited = stream + 1 != nb_streams;
+        let remaining_streams = nb_streams - stream - 1;
+        let reserve_min = remaining_streams
+            .checked_mul(2)
+            .and_then(|value| value.checked_sub(1))
+            .unwrap_or(0);
+        let available = data
+            .len()
+            .checked_sub(total_written)
+            .and_then(|value| value.checked_sub(reserve_min))
+            .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
+
+        // Worst-case 2 bytes for the self-delimiting size.
+        let size_overhead = if self_delimited { 2 } else { 0 };
+        if available <= size_overhead + 1 {
+            return Err(OpusMultistreamEncoderError::BufferTooSmall);
+        }
+        let mut tmp = vec![0u8; available - size_overhead];
+
+        if let Some(rate) = rates.get(stream).copied() {
+            let _ = opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .get_mut(stream)
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::SetBitrate(rate),
+            );
+        }
+
+        if stream < encoder.layout.nb_coupled_streams {
+            let left = get_left_channel(&encoder.layout, stream, None)
+                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+            let right = get_right_channel(&encoder.layout, stream, None)
+                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+
+            let mut coupled_pcm = vec![0i16; frame_size * 2];
+            extract_i16_channel(pcm, channels, left, frame_size, &mut coupled_pcm, 2, 0)?;
+            extract_i16_channel(pcm, channels, right, frame_size, &mut coupled_pcm, 2, 1)?;
+
+            let len = opus_encode(
+                encoder
+                    .encoders
+                    .get_mut(stream)
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                &coupled_pcm,
+                frame_size,
+                &mut tmp,
+            )?;
+
+            let written = write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
+                .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
+            total_written += written;
+        } else {
+            let chan = get_mono_channel(&encoder.layout, stream, None)
+                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+            let mut mono_pcm = vec![0i16; frame_size];
+            extract_i16_channel(pcm, channels, chan, frame_size, &mut mono_pcm, 1, 0)?;
+
+            let len = opus_encode(
+                encoder
+                    .encoders
+                    .get_mut(stream)
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                &mono_pcm,
+                frame_size,
+                &mut tmp,
+            )?;
+
+            let written = write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
+                .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
+            total_written += written;
+        }
+    }
+
+    Ok(total_written)
+}
+
+fn write_stream_packet(stream_packet: &[u8], self_delimited: bool, out: &mut [u8]) -> Option<usize> {
+    if !self_delimited {
+        if out.len() < stream_packet.len() {
+            return None;
+        }
+        out[..stream_packet.len()].copy_from_slice(stream_packet);
+        return Some(stream_packet.len());
+    }
+    if stream_packet.is_empty() {
+        return None;
+    }
+    let toc = stream_packet[0];
+    let frame = &stream_packet[1..];
+    if out.is_empty() {
+        return None;
+    }
+    out[0] = toc;
+    let size_bytes = encode_size(frame.len(), &mut out[1..])?;
+    let start = 1 + size_bytes;
+    if out.len() < start + frame.len() {
+        return None;
+    }
+    out[start..start + frame.len()].copy_from_slice(frame);
+    Some(start + frame.len())
+}
+
+pub fn opus_multistream_encode_float(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    pcm: &[f32],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusMultistreamEncoderError> {
+    let channels = encoder.layout.nb_channels;
+    let required_pcm = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+    if pcm.len() < required_pcm {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    let mut tmp = vec![0i16; required_pcm];
+    for (dst, &sample) in tmp.iter_mut().zip(pcm.iter().take(required_pcm)) {
+        let scaled = libm::roundf(sample * 32_768.0);
+        *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+    }
+    opus_multistream_encode(encoder, &tmp, frame_size, data)
+}
+
+pub fn opus_multistream_encode24(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    pcm: &[i32],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusMultistreamEncoderError> {
+    let channels = encoder.layout.nb_channels;
+    let required_pcm = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+    if pcm.len() < required_pcm {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    let mut tmp = vec![0i16; required_pcm];
+    for (dst, &sample) in tmp.iter_mut().zip(pcm.iter().take(required_pcm)) {
+        let shifted = (sample >> 8).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+        *dst = shifted as i16;
+    }
+    opus_multistream_encode(encoder, &tmp, frame_size, data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
+    use crate::opus_decoder::{opus_decode, opus_decoder_create};
 
     fn layout_from_mapping(
         nb_channels: usize,
@@ -1070,9 +1844,125 @@ mod tests {
         let packet = [0x00, 0xAA];
         let mut pcm = vec![0i16; 2 * 960];
 
-        let err =
+        let decoded =
             opus_multistream_decode(&mut decoder, &packet, packet.len(), &mut pcm, 960, false)
-                .unwrap_err();
-        assert_eq!(err, OpusMultistreamDecoderError::Unimplemented);
+                .expect("decode");
+        assert!(decoded > 0);
+    }
+
+    #[test]
+    fn multistream_decode_matches_single_stream_decoder_for_stereo() {
+        let mapping = [0u8, 1];
+        let mut encoder = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        let pcm_in = vec![0i16; 2 * 960];
+        let mut packet = vec![0u8; 1500];
+        let len = opus_encode(&mut encoder, &pcm_in, 960, &mut packet).expect("encode");
+
+        let mut ms_decoder =
+            opus_multistream_decoder_create(48_000, 2, 1, 1, &mapping).expect("ms decoder");
+        let mut single = opus_decoder_create(48_000, 2).expect("single decoder");
+
+        let mut ms_out = vec![0i16; 2 * 960];
+        let mut single_out = vec![0i16; 2 * 960];
+
+        let ms_decoded =
+            opus_multistream_decode(&mut ms_decoder, &packet, len, &mut ms_out, 960, false)
+                .expect("ms decode");
+        let single_decoded =
+            opus_decode(&mut single, Some(&packet[..len]), len, &mut single_out, 960, false)
+                .expect("single decode");
+        assert_eq!(ms_decoded, single_decoded);
+        assert_eq!(ms_out[..ms_decoded * 2], single_out[..single_decoded * 2]);
+    }
+
+    #[test]
+    fn multistream_decode_routes_two_coupled_streams() {
+        let mapping = [0u8, 1, 2, 3];
+        let mut ms_encoder =
+            opus_multistream_encoder_create(48_000, 4, 2, 2, &mapping, 2048).expect("ms encoder");
+        let pcm_in = vec![0i16; 4 * 960];
+        let mut packet = vec![0u8; 4000];
+        let len = opus_multistream_encode(&mut ms_encoder, &pcm_in, 960, &mut packet).expect("encode");
+
+        let mut ms_decoder =
+            opus_multistream_decoder_create(48_000, 4, 2, 2, &mapping).expect("ms decoder");
+
+        let mut ms_out = vec![0i16; 4 * 960];
+        let decoded = opus_multistream_decode(&mut ms_decoder, &packet, len, &mut ms_out, 960, false)
+            .expect("ms decode");
+        assert!(decoded > 0);
+
+        let mut offset = 0usize;
+        let mut remaining = len;
+        let mut expected = vec![0i16; 4 * decoded];
+        for stream in 0..2 {
+            let self_delimited = stream == 0;
+            let parsed = opus_packet_parse_impl(&packet[offset..], remaining, self_delimited).expect("parse");
+            let packet_offset = parsed.packet_offset;
+            let mut dec = opus_decoder_create(48_000, 2).expect("decoder");
+            let mut stream_out = vec![0i16; 2 * decoded];
+            let stream_packet = if self_delimited {
+                let toc = packet[offset];
+                let payload_start = offset + parsed.payload_offset;
+                let payload_end = offset + parsed.packet_offset;
+                let mut reconstructed = vec![0u8; 1 + (payload_end - payload_start)];
+                reconstructed[0] = toc;
+                reconstructed[1..].copy_from_slice(&packet[payload_start..payload_end]);
+                reconstructed
+            } else {
+                packet[offset..offset + packet_offset].to_vec()
+            };
+
+            let stream_decoded = opus_decode(
+                &mut dec,
+                Some(&stream_packet),
+                stream_packet.len(),
+                &mut stream_out,
+                decoded,
+                false,
+            )
+            .expect("decode");
+            assert_eq!(stream_decoded, decoded);
+
+            for i in 0..decoded {
+                expected[i * 4 + stream * 2] = stream_out[i * 2];
+                expected[i * 4 + stream * 2 + 1] = stream_out[i * 2 + 1];
+            }
+
+            offset += packet_offset;
+            remaining -= packet_offset;
+        }
+
+        assert_eq!(ms_out[..decoded * 4], expected[..decoded * 4]);
+    }
+
+    #[test]
+    fn multistream_decode_zero_fills_muted_channel() {
+        let mapping = [0u8, 1, u8::MAX];
+        let mut encoder = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        let pcm_in = vec![0i16; 2 * 960];
+        let mut packet = vec![0u8; 1500];
+        let len = opus_encode(&mut encoder, &pcm_in, 960, &mut packet).expect("encode");
+
+        let mut ms_decoder =
+            opus_multistream_decoder_create(48_000, 3, 1, 1, &mapping).expect("ms decoder");
+        let mut out = vec![0i16; 3 * 960];
+        let decoded = opus_multistream_decode(&mut ms_decoder, &packet, len, &mut out, 960, false)
+            .expect("decode");
+
+        for i in 0..decoded {
+            assert_eq!(out[i * 3 + 2], 0);
+        }
+    }
+
+    #[test]
+    fn multistream_encode_respects_minimum_packet_size() {
+        let mapping = [0u8, 1];
+        let mut ms_encoder =
+            opus_multistream_encoder_create(48_000, 2, 1, 1, &mapping, 2048).expect("ms encoder");
+        let pcm_in = vec![0i16; 2 * 960];
+        let mut packet = vec![0u8; 2];
+        let err = opus_multistream_encode(&mut ms_encoder, &pcm_in, 960, &mut packet).unwrap_err();
+        assert_eq!(err, OpusMultistreamEncoderError::BufferTooSmall);
     }
 }
