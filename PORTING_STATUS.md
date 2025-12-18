@@ -56,7 +56,8 @@ Remaining modules to port
       `SIG2RES/RES2SIG`, `RES2FLOAT/FLOAT2RES`, etc.) so Rust call sites can stay readable.
       - Initial RES16 helpers are now available in `src/celt/fixed_arch.rs` (including
         `SIG_SHIFT`, `SIG_SAT`, `NORM_SCALING`, `SIG2RES/RES2SIG`, `RES2INT16/RES2INT24`,
-        `INT16TORES/INT24TORES`, and `ADD_RES`); `ENABLE_RES24`-specific variants remain pending.
+        `INT16TORES/INT24TORES`, and `ADD_RES`); the optional `ENABLE_RES24`-style variants are
+        now available behind the `enable_res24` Cargo feature.
     - Refactor `src/celt/types.rs` so `OpusRes`/`CeltSig`/`CeltNorm`/`CeltCoef` are `cfg(feature="fixed_point")`
       aware, or introduce parallel fixed-point types and keep the float build unchanged.
   - Remove float-only dependencies from the fixed-point decode graph:

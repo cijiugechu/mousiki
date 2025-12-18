@@ -13,7 +13,11 @@
 //! reuse these constants and integer conversion helpers to stay aligned with
 //! the reference semantics.
 
-use super::float_cast::{CELT_SIG_SCALE, float2int16};
+use super::float_cast::CELT_SIG_SCALE;
+#[cfg(feature = "enable_res24")]
+use super::float_cast::float2int;
+#[cfg(not(feature = "enable_res24"))]
+use super::float_cast::float2int16;
 
 /// Number of fractional bits in the fixed-point `celt_sig` representation.
 ///
@@ -41,28 +45,57 @@ pub(crate) const Q15_ONE: i16 = 32_767;
 /// Q31 representation of 1.0.
 pub(crate) const Q31_ONE: i32 = 2_147_483_647;
 
-/// `opus-c`'s non-`ENABLE_RES24` fixed-point build uses 16-bit `opus_res`.
+/// `opus_res` representation used by the fixed-point build.
+///
+/// Mirrors the `ENABLE_RES24` switch in `opus-c/celt/arch.h`: the default
+/// fixed-point build uses RES16 (`i16`), while the optional RES24 mode uses
+/// `i32` samples with `RES_SHIFT = 8`.
+#[cfg(feature = "enable_res24")]
+pub(crate) type FixedOpusRes = i32;
+#[cfg(not(feature = "enable_res24"))]
+pub(crate) type FixedOpusRes = i16;
+
+#[cfg(feature = "enable_res24")]
+pub(crate) const RES_SHIFT: u32 = 8;
+#[cfg(not(feature = "enable_res24"))]
 pub(crate) const RES_SHIFT: u32 = 0;
 
 /// Maximum bit depth allowed by the `opus_res` representation.
 ///
 /// Mirrors `MAX_ENCODING_DEPTH` from `opus-c/celt/arch.h` for the RES16 build.
+#[cfg(feature = "enable_res24")]
+pub(crate) const MAX_ENCODING_DEPTH: u32 = 24;
+#[cfg(not(feature = "enable_res24"))]
 pub(crate) const MAX_ENCODING_DEPTH: u32 = 16;
 
-/// Converts a fixed-point RES16 sample to a floating-point sample in `[-1, 1)`.
+/// Converts a fixed-point `opus_res` sample to a floating-point sample in `[-1, 1)`.
 ///
-/// Mirrors the `RES2FLOAT()` macro for the RES16 build.
+/// Mirrors the `RES2FLOAT()` macro for the selected fixed-point build.
 #[inline]
-pub(crate) fn res2float(res: i16) -> f32 {
-    f32::from(res) * (1.0 / CELT_SIG_SCALE)
+pub(crate) fn res2float(res: FixedOpusRes) -> f32 {
+    #[cfg(feature = "enable_res24")]
+    {
+        (res as f32) * (1.0 / (CELT_SIG_SCALE * 256.0))
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        f32::from(res) * (1.0 / CELT_SIG_SCALE)
+    }
 }
 
-/// Converts a floating-point sample in `[-1, 1]` to a fixed-point RES16 sample.
+/// Converts a floating-point sample in `[-1, 1]` to a fixed-point `opus_res` sample.
 ///
-/// Mirrors the `FLOAT2RES()` macro for the RES16 build.
+/// Mirrors the `FLOAT2RES()` macro for the selected fixed-point build.
 #[inline]
-pub(crate) fn float2res(sample: f32) -> i16 {
-    float2int16(sample)
+pub(crate) fn float2res(sample: f32) -> FixedOpusRes {
+    #[cfg(feature = "enable_res24")]
+    {
+        float2int(CELT_SIG_SCALE * 256.0 * sample)
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        float2int16(sample)
+    }
 }
 
 #[inline]
@@ -115,54 +148,123 @@ pub(crate) fn sig2word16(sig: i32) -> i16 {
 }
 
 /// Convert a fixed-point `celt_sig` sample to a fixed-point `opus_res` sample
-/// (`i16` for the RES16 build).
+/// (`i16` for the RES16 build, `i32` for the RES24 build).
 #[inline]
-pub(crate) fn sig2res(sig: i32) -> i16 {
-    sig2word16(sig)
+pub(crate) fn sig2res(sig: i32) -> FixedOpusRes {
+    #[cfg(feature = "enable_res24")]
+    {
+        pshr32(sig, SIG_SHIFT - RES_SHIFT)
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        sig2word16(sig)
+    }
 }
 
 /// Convert a fixed-point `opus_res` sample to a fixed-point `celt_sig` sample.
 #[inline]
-pub(crate) fn res2sig(res: i16) -> i32 {
-    shl32(extend32(res), SIG_SHIFT - RES_SHIFT)
+pub(crate) fn res2sig(res: FixedOpusRes) -> i32 {
+    #[cfg(feature = "enable_res24")]
+    {
+        shl32(res, SIG_SHIFT - RES_SHIFT)
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        shl32(extend32(res), SIG_SHIFT - RES_SHIFT)
+    }
 }
 
-/// Convert a fixed-point `opus_res` sample (RES16) to 16-bit PCM.
+/// Convert a fixed-point `opus_res` sample to 16-bit PCM.
 #[inline]
-pub(crate) fn res2int16(res: i16) -> i16 {
-    res
+pub(crate) fn res2int16(res: FixedOpusRes) -> i16 {
+    #[cfg(feature = "enable_res24")]
+    {
+        sat16(pshr32(res, RES_SHIFT))
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        res
+    }
 }
 
-/// Convert a fixed-point `opus_res` sample (RES16) to 24-bit PCM stored in an
-/// `i32`.
+/// Convert a fixed-point `opus_res` sample to 24-bit PCM stored in an `i32`.
 #[inline]
-pub(crate) fn res2int24(res: i16) -> i32 {
-    shl32(extend32(res), 8)
+pub(crate) fn res2int24(res: FixedOpusRes) -> i32 {
+    #[cfg(feature = "enable_res24")]
+    {
+        res
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        shl32(extend32(res), 8)
+    }
 }
 
-/// Convert a 16-bit PCM sample to a fixed-point `opus_res` sample (RES16).
+/// Convert a 16-bit PCM sample to a fixed-point `opus_res` sample.
 #[inline]
-pub(crate) fn int16tores(sample: i16) -> i16 {
-    sample
+pub(crate) fn int16tores(sample: i16) -> FixedOpusRes {
+    #[cfg(feature = "enable_res24")]
+    {
+        shl32(extend32(sample), RES_SHIFT)
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        sample
+    }
 }
 
 /// Convert a 24-bit PCM sample stored in an `i32` to a fixed-point `opus_res`
-/// sample (RES16), using the same rounding and saturation semantics as the C
-/// macros.
+/// sample, using the same rounding and saturation semantics as the C macros.
 #[inline]
-pub(crate) fn int24tores(sample: i32) -> i16 {
-    sat16(pshr32(sample, 8))
+pub(crate) fn int24tores(sample: i32) -> FixedOpusRes {
+    #[cfg(feature = "enable_res24")]
+    {
+        sample
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        sat16(pshr32(sample, 8))
+    }
 }
 
-/// Saturating addition of two RES16 samples.
+/// Addition of two `opus_res` samples.
 #[inline]
-pub(crate) fn add_res(a: i16, b: i16) -> i16 {
-    sat16(i32::from(a) + i32::from(b))
+pub(crate) fn add_res(a: FixedOpusRes, b: FixedOpusRes) -> FixedOpusRes {
+    #[cfg(feature = "enable_res24")]
+    {
+        let sum = i64::from(a) + i64::from(b);
+        debug_assert!(
+            (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&sum),
+            "opus_res addition overflow: {a} + {b}"
+        );
+        sum as i32
+    }
+    #[cfg(not(feature = "enable_res24"))]
+    {
+        sat16(i32::from(a) + i32::from(b))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "enable_res24")]
+    const TEST_VALUES: &[FixedOpusRes] = &[
+        -8_388_608i32,
+        -1_234_432,
+        -256,
+        -1,
+        0,
+        1,
+        256,
+        1_234_432,
+        8_388_352,
+        8_388_607,
+    ];
+
+    #[cfg(not(feature = "enable_res24"))]
+    const TEST_VALUES: &[FixedOpusRes] = &[-32_768i16, -12_345, -1, 0, 1, 12_345, 32_767];
 
     #[test]
     fn pshr32_matches_reference_biasing() {
@@ -193,23 +295,15 @@ mod tests {
     }
 
     #[test]
-    fn res_sig_roundtrip_is_exact_for_res16() {
-        for &value in &[-32_768i16, -12_345, -1, 0, 1, 12_345, 32_767] {
+    fn res_sig_roundtrip_is_exact_for_selected_res() {
+        for &value in TEST_VALUES {
             assert_eq!(sig2res(res2sig(value)), value);
         }
     }
 
     #[test]
     fn int24_conversions_roundtrip_for_byte_aligned_values() {
-        for &value in &[
-            -8_388_608i32,
-            -1_234_432,
-            -256,
-            0,
-            256,
-            1_234_432,
-            8_388_352,
-        ] {
+        for &value in &[-8_388_608i32, -1_234_432, -256, 0, 256, 1_234_432, 8_388_352] {
             let res = int24tores(value);
             let back = res2int24(res);
             assert_eq!(back, value);
@@ -217,6 +311,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "enable_res24"))]
     fn int24_to_res_saturates() {
         assert_eq!(int24tores(8_388_607), 32_767);
         assert_eq!(int24tores(-8_388_608), -32_768);
@@ -225,6 +320,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "enable_res24"))]
     fn add_res_saturates_like_sat16() {
         assert_eq!(add_res(30_000, 10_000), 32_767);
         assert_eq!(add_res(-30_000, -10_000), -32_768);
@@ -232,10 +328,29 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "enable_res24")]
+    fn add_res_behaves_like_add32_for_res24() {
+        assert_eq!(add_res(1_000_000, 2_000_000), 3_000_000);
+        assert_eq!(add_res(-1_000_000, 500_000), -500_000);
+    }
+
+    #[test]
     fn float_res_round_trips_on_exact_grid_points() {
-        for &value in &[-32_768i16, -12_345, -1, 0, 1, 12_345, 32_767] {
+        for &value in TEST_VALUES {
             let sample = res2float(value);
             assert_eq!(float2res(sample), value);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "enable_res24")]
+    fn res24_to_int16_rounds_and_saturates_like_reference() {
+        assert_eq!(res2int16(0), 0);
+        assert_eq!(res2int16(32_767i32 << RES_SHIFT), 32_767);
+        assert_eq!(res2int16(-32_768i32 << RES_SHIFT), -32_768);
+
+        // One past full scale must saturate after shifting down to i16.
+        assert_eq!(res2int16(32_768i32 << RES_SHIFT), 32_767);
+        assert_eq!(res2int16((-32_769i32) << RES_SHIFT), -32_768);
     }
 }
