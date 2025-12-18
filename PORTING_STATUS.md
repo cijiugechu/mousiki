@@ -47,6 +47,46 @@ Remaining modules to port
 -------------------------
 - Top-level decoder: optional Deep PLC / OSCE CTLs (e.g. `OPUS_SET_DNN_BLOB`,
   `OPUS_SET_OSCE_BWE`) remain pending alongside a true fixed-point decode backend.
+- True fixed-point decode backend (align `--features fixed_point` with `opus-c`'s `FIXED_POINT` build):
+  - Decide and encode the fixed-point type/scale model from `opus-c/celt/arch.h`:
+    - `opus_val16/opus_val32/celt_sig/celt_norm/celt_coef/opus_res` become integer types in
+      fixed builds (e.g. Q15/Q27 for CELT, plus `RES_SHIFT` selection for 16-bit vs 24-bit output).
+    - Port/centralise the scaling constants and conversion macros used throughout the C tree
+      (`SIG_SHIFT`, `SIG_SAT`, `NORM_SCALING`, `RES2INT16/RES2INT24`, `INT16TORES/INT24TORES`,
+      `SIG2RES/RES2SIG`, `RES2FLOAT/FLOAT2RES`, etc.) so Rust call sites can stay readable.
+    - Refactor `src/celt/types.rs` so `OpusRes`/`CeltSig`/`CeltNorm`/`CeltCoef` are `cfg(feature="fixed_point")`
+      aware, or introduce parallel fixed-point types and keep the float build unchanged.
+  - Remove float-only dependencies from the fixed-point decode graph:
+    - Eliminate `libm`/`f32` math from CELT decode when `fixed_point` is enabled (e.g. replace
+      `celt_exp2`, `celt_cos_norm`, `celt_div`, `celt_sqrt`, `celt_rsqrt` with fixed-point equivalents).
+    - Ensure no float-only helpers (including float-specific test assertions) are required to build
+      `cargo test --features fixed_point`.
+  - Port CELT's fixed-point DSP backend (most of the work; today Rust mirrors the float path):
+    - FFT/MDCT: implement the `FIXED_POINT` branches of `celt/kiss_fft.c` and `celt/mdct.c`
+      (twiddle tables, scaling/shift strategy, and saturation rules), then re-plumb `MdctLookup`
+      and its callers to use the fixed-point kernels.
+    - Pitch/search: port the `FIXED_POINT` branches of `celt/pitch.c` (downsampling, xcorr kernels,
+      gain computations, and the fixed-point normalisation steps).
+    - Bands/VQ/quantisation: port the `FIXED_POINT` branches in `celt/bands.c`, `celt/vq.c`,
+      and `celt/quant_bands.c` (normalisation, renormalisation, PVQ search, stereo energy maths,
+      and the fixed-point energy/log-domain conversions).
+    - LPC helpers: port `celt/celt_lpc.c` fixed-point branches used by PLC and post-filter paths.
+    - Decoder glue: update `celt_decoder` paths that currently assume float (`CELT_SIG_SCALE` and
+      float PCM scaling) to match `celt_decoder.c`'s fixed-point output handling, including the
+      `ENABLE_RES24`-style conversions where applicable.
+  - Align top-level decode wrappers with the fixed-point reference behaviour:
+    - Mirror `opus-c/src/opus_decoder.c`’s fixed-point wrapper behaviour where it decodes directly
+      to `i16`/`i32` output buffers (avoiding an intermediate float `opus_res` vector when possible).
+    - Keep `OPUS_SET_GAIN` behaviour but implement the gain scaling without floats in fixed builds
+      (fixed-point `exp2`/lookup path).
+    - Match the reference’s soft-clip behaviour (`#ifndef FIXED_POINT` in `opus_decode_native`):
+      keep `OPTIONAL_CLIP` disabled for fixed builds unless an integer soft-clip is implemented.
+  - Tests and validation for the fixed backend:
+    - Add `--features fixed_point` coverage that validates fixed-point bit-exactness against known
+      vectors (or against the `opus-c` fixed-point build) for CELT-only, SILK-only, and hybrid packets,
+      including PLC/FEC cases and transition smoothing.
+    - Keep the existing float tests, but add fixed-point-specific assertions around saturation/scaling
+      boundaries (e.g. `SIG_SAT` behaviour and `RES2INT16/24` conversions).
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
   The current Rust port supports SILK-only single-frame 20 ms packets; Hybrid/CELT packing,
