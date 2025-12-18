@@ -18,6 +18,8 @@ mod deep_plc;
 mod entcode;
 mod entdec;
 mod entenc;
+#[cfg(feature = "fixed_point")]
+mod fixed_arch;
 mod float_cast;
 mod kiss_fft;
 mod laplace;
@@ -57,6 +59,9 @@ pub(crate) use entcode::*;
 pub(crate) use entdec::*;
 #[allow(unused_imports)]
 pub(crate) use entenc::*;
+#[cfg(feature = "fixed_point")]
+#[allow(unused_imports)]
+pub(crate) use fixed_arch::*;
 #[allow(unused_imports)]
 pub(crate) use float_cast::*;
 #[allow(unused_imports)]
