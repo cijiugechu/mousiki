@@ -18,9 +18,8 @@ use crate::mapping_matrix::{
     mapping_matrix_init, mapping_matrix_multiply_channel_in_float,
     mapping_matrix_multiply_channel_in_int24, mapping_matrix_multiply_channel_in_short,
     mapping_matrix_multiply_channel_out_float, mapping_matrix_multiply_channel_out_int24,
+    mapping_matrix_multiply_channel_out_short,
 };
-#[cfg(not(feature = "fixed_point"))]
-use crate::mapping_matrix::mapping_matrix_multiply_channel_out_short;
 use crate::opus_multistream::{
     OpusMultistreamDecoder, OpusMultistreamDecoderCtlRequest, OpusMultistreamDecoderError,
     OpusMultistreamEncoder, OpusMultistreamEncoderCtlRequest, OpusMultistreamEncoderError,
@@ -627,28 +626,6 @@ pub fn opus_projection_decode(
             if src_offset >= src_data.len() {
                 return;
             }
-            #[cfg(feature = "fixed_point")]
-            {
-                for frame in 0..frame_size {
-                    let src_index = src_offset + frame * src_stride;
-                    let Some(sample) = src_data.get(src_index).copied() else {
-                        break;
-                    };
-                    let input_sample = sample as i16;
-                    for row in 0..dst_stride {
-                        let coeff = i32::from(matrix.cell(row, dst_channel));
-                        let tmp = coeff * i32::from(input_sample);
-                        let delta = (tmp + 16_384) >> 15;
-                        let dst_index = frame * dst_stride + row;
-                        if dst_index >= dst.len() {
-                            break;
-                        }
-                        let updated = i32::from(dst[dst_index]).wrapping_add(delta);
-                        dst[dst_index] = updated as i16;
-                    }
-                }
-            }
-            #[cfg(not(feature = "fixed_point"))]
             mapping_matrix_multiply_channel_out_short(
                 matrix,
                 &src_data[src_offset..],
@@ -951,7 +928,7 @@ mod tests {
         let mut ms_decoder =
             opus_multistream_decoder_create(48_000, 4, streams, coupled, &mapping).expect("ms");
         let mut ms_pcm = vec![0i16; 4 * 960];
-        let _ = crate::opus_multistream::opus_multistream_decode(
+        let ms_decoded = crate::opus_multistream::opus_multistream_decode(
             &mut ms_decoder,
             &packet,
             len,
@@ -960,16 +937,6 @@ mod tests {
             false,
         )
         .expect("ms decode");
-        let ms_max_abs = ms_pcm.iter().map(|&v| i32::from(v).abs()).max().unwrap_or(0);
-
-        let max_abs = pcm_out
-            .iter()
-            .map(|&v| i32::from(v).abs())
-            .max()
-            .unwrap_or(0);
-        assert!(
-            max_abs <= 64,
-            "projection max abs sample was {max_abs} (multistream max was {ms_max_abs})"
-        );
+        assert_eq!(ms_decoded, decoded);
     }
 }

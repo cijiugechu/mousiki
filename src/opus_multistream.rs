@@ -4,9 +4,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::{OpusRes, isqrt32};
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::{float2int, float2int16};
+use crate::celt::{CELT_SIG_SCALE, OpusRes, float2int, float2int16, isqrt32};
 use crate::opus_decoder::{
     OpusDecodeError, OpusDecoder, OpusDecoderCtlError, OpusDecoderCtlRequest, OpusDecoderInitError,
     opus_decode_native, opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
@@ -988,45 +986,31 @@ trait PcmSample: Copy + Default {
     fn from_opus_res(value: OpusRes) -> Self;
 }
 
+#[inline]
+fn res_to_int24(sample: OpusRes) -> i32 {
+    let scale = CELT_SIG_SCALE * 256.0;
+    let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
+    float2int(scaled)
+}
+
 impl PcmSample for i16 {
     #[inline]
     fn from_opus_res(value: OpusRes) -> Self {
-        #[cfg(feature = "fixed_point")]
-        {
-            value as i16
-        }
-        #[cfg(not(feature = "fixed_point"))]
-        {
-            float2int16(value)
-        }
+        float2int16(value)
     }
 }
 
 impl PcmSample for i32 {
     #[inline]
     fn from_opus_res(value: OpusRes) -> Self {
-        #[cfg(feature = "fixed_point")]
-        {
-            i32::from(value as i16) << 8
-        }
-        #[cfg(not(feature = "fixed_point"))]
-        {
-            float2int(value * 8_388_608.0)
-        }
+        res_to_int24(value)
     }
 }
 
 impl PcmSample for f32 {
     #[inline]
     fn from_opus_res(value: OpusRes) -> Self {
-        #[cfg(feature = "fixed_point")]
-        {
-            f32::from(value as i16) * (1.0 / 32_768.0)
-        }
-        #[cfg(not(feature = "fixed_point"))]
-        {
-            value
-        }
+        value
     }
 }
 

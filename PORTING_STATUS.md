@@ -34,17 +34,19 @@ Current Rust coverage
 - The public soft-clip helper from `opus.c` is ported as `opus_pcm_soft_clip{,_impl}`.
 - The decode-side gain and soft-clip tail from `opus_decode_native` are wired into
   `opus_decode_native` via `OpusDecoder::apply_decode_gain_and_soft_clip`. Decoder CTL dispatch
-  now covers the frame pitch query (`OPUS_GET_PITCH`), exposing CELT post-filter state or the SILK
-  control block as in the reference.
+  now covers the full reference decoder surface (gain/complexity/bandwidth/sample-rate/pitch/
+  last-packet-duration/final-range/phase-inversion/reset), exposing CELT post-filter state or the
+  SILK control block as in the reference.
 - `opus_decoder_get_size` and related layout sizing helpers are ported. Packet/header parsing,
   including the self-delimited variant used by multistream decode, feeds the ported
-  `opus_decode_native` and its 16/24-bit and float wrappers; fixed-point CELT output is still
-  omitted.
+  `opus_decode_native` and its 16/24-bit and float wrappers. The `fixed_point` feature builds
+  the same floating-point CELT/SILK decode path today; a true fixed-point backend is still
+  pending.
 
 Remaining modules to port
 -------------------------
-- Top-level decoder: remaining CTLs beyond the existing pitch/bandwidth/gain/final-range set.
-  Fixed-point CELT output remains unported.
+- Top-level decoder: optional Deep PLC / OSCE CTLs (e.g. `OPUS_SET_DNN_BLOB`,
+  `OPUS_SET_OSCE_BWE`) remain pending alongside a true fixed-point decode backend.
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
   The current Rust port supports SILK-only single-frame 20 ms packets; Hybrid/CELT packing,

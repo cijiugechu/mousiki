@@ -7,9 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::CELT_SIG_SCALE;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::CeltDecodeError;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::celt_decode_with_ec_dred;
 use crate::celt::{CeltCoef, OpusCustomMode};
 use crate::celt::{
@@ -17,7 +15,6 @@ use crate::celt::{
     canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     opus_custom_decoder_ctl, opus_select_arch,
 };
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::{float2int, select_celt_float2int16_impl};
 #[cfg(not(feature = "fixed_point"))]
 use crate::opus::opus_pcm_soft_clip_impl;
@@ -603,6 +600,9 @@ impl<'mode> OpusDecoder<'mode> {
                     .filter(|&fs_khz| fs_khz > 0)
             {
                 control.internal_sample_rate = fs_khz * 1000;
+            }
+            if control.n_channels_internal == 0 {
+                control.n_channels_internal = self.stream_channels;
             }
 
             if self.prev_mode == MODE_CELT_ONLY {
@@ -1317,7 +1317,6 @@ impl<'mode> OpusDecoder<'mode> {
     }
 }
 
-#[cfg(not(feature = "fixed_point"))]
 fn map_celt_error(err: CeltDecodeError) -> OpusDecodeError {
     match err {
         CeltDecodeError::BadArgument => OpusDecodeError::BadArgument,
@@ -1327,7 +1326,6 @@ fn map_celt_error(err: CeltDecodeError) -> OpusDecodeError {
     }
 }
 
-#[cfg(not(feature = "fixed_point"))]
 fn decode_celt_frame(
     decoder: &mut OwnedCeltDecoder<'_>,
     packet: Option<&[u8]>,
@@ -1339,19 +1337,6 @@ fn decode_celt_frame(
         .map_err(map_celt_error)
 }
 
-#[cfg(feature = "fixed_point")]
-fn decode_celt_frame(
-    decoder: &mut OwnedCeltDecoder<'_>,
-    packet: Option<&[u8]>,
-    pcm: &mut [OpusRes],
-    frame_size: usize,
-    accum: bool,
-) -> Result<usize, OpusDecodeError> {
-    let _ = (decoder, packet, pcm, frame_size, accum);
-    Err(OpusDecodeError::Unimplemented)
-}
-
-#[cfg(not(feature = "fixed_point"))]
 #[inline]
 fn res_to_int24(sample: OpusRes) -> i32 {
     let scale = CELT_SIG_SCALE * 256.0;
@@ -1498,19 +1483,7 @@ pub fn opus_decode(
         return Err(OpusDecodeError::BufferTooSmall);
     }
 
-    #[cfg(not(feature = "fixed_point"))]
-    {
-        select_celt_float2int16_impl(decoder.arch)(
-            &out[..decoded_samples],
-            &mut pcm[..decoded_samples],
-        );
-    }
-    #[cfg(feature = "fixed_point")]
-    {
-        for (dst, &src) in pcm.iter_mut().take(decoded_samples).zip(out.iter()) {
-            *dst = src as i16;
-        }
-    }
+    select_celt_float2int16_impl(decoder.arch)(&out[..decoded_samples], &mut pcm[..decoded_samples]);
 
     Ok(decoded)
 }
@@ -1567,13 +1540,8 @@ pub fn opus_decode24(
         return Err(OpusDecodeError::BufferTooSmall);
     }
 
-    #[cfg(not(feature = "fixed_point"))]
     for (dst, &src) in pcm.iter_mut().take(decoded_samples).zip(out.iter()) {
         *dst = res_to_int24(src);
-    }
-    #[cfg(feature = "fixed_point")]
-    for (dst, &src) in pcm.iter_mut().take(decoded_samples).zip(out.iter()) {
-        *dst = src as i32;
     }
 
     Ok(decoded)
@@ -1592,61 +1560,9 @@ pub fn opus_decode_float(
         return Err(OpusDecodeError::BadArgument);
     }
 
-    #[cfg(feature = "fixed_point")]
-    {
-        let channels =
-            usize::try_from(decoder.channels).map_err(|_| OpusDecodeError::BadArgument)?;
-        if channels == 0 || channels > MAX_CHANNELS {
-            return Err(OpusDecodeError::BadArgument);
-        }
-
-        let mut frame_size = frame_size;
-        if let Some(packet) = data {
-            if len > packet.len() {
-                return Err(OpusDecodeError::BadArgument);
-            }
-
-            if len > 0 && !decode_fec {
-                let nb_samples = opus_decoder_get_nb_samples(decoder, packet, len)?;
-                if nb_samples == 0 {
-                    return Err(OpusDecodeError::InvalidPacket);
-                }
-                frame_size = frame_size.min(nb_samples);
-            }
-        }
-
-        let total_samples = frame_size
-            .checked_mul(channels)
-            .ok_or(OpusDecodeError::BadArgument)?;
-        if pcm.len() < total_samples {
-            return Err(OpusDecodeError::BufferTooSmall);
-        }
-
-        let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
-        let decoded = opus_decode_native(
-            decoder, data, len, &mut out, frame_size, decode_fec, false, None, false,
-        )?;
-
-        let decoded_samples = decoded
-            .checked_mul(channels)
-            .ok_or(OpusDecodeError::BadArgument)?;
-        if pcm.len() < decoded_samples {
-            return Err(OpusDecodeError::BufferTooSmall);
-        }
-
-        for (dst, &src) in pcm.iter_mut().take(decoded_samples).zip(out.iter()) {
-            *dst = src;
-        }
-
-        Ok(decoded)
-    }
-
-    #[cfg(not(feature = "fixed_point"))]
-    {
-        opus_decode_native(
-            decoder, data, len, pcm, frame_size, decode_fec, false, None, false,
-        )
-    }
+    opus_decode_native(
+        decoder, data, len, pcm, frame_size, decode_fec, false, None, false,
+    )
 }
 
 /// Applies a control request to the provided decoder state.
@@ -1719,7 +1635,6 @@ pub fn opus_decoder_ctl<'req>(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "fixed_point"))]
     use super::MODE_HYBRID;
     use super::{
         DecControl, MODE_CELT_ONLY, MODE_SILK_ONLY, OpusDecodeError, OpusDecoderCtlError,
@@ -2100,7 +2015,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "fixed_point"))]
     fn hybrid_plc_frames_decode_without_unimplemented() {
         let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
         decoder.prev_mode = MODE_HYBRID;

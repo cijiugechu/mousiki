@@ -16,10 +16,8 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::BandCodingState;
 use crate::celt::bands::denormalise_bands;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::bands::{anti_collapse, celt_lcg_rand, quant_all_bands};
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
@@ -28,15 +26,11 @@ use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::float_cast::{float2int, float2int16};
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::mdct::clt_mdct_backward;
 use crate::celt::modes::opus_custom_mode_find_static;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::unquant_energy_finalise;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
@@ -45,10 +39,8 @@ use crate::celt::types::{
     OpusVal16, OpusVal32,
 };
 use crate::celt::vq::SPREAD_NORMAL;
-#[cfg(not(feature = "fixed_point"))]
 use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
-#[cfg(not(feature = "fixed_point"))]
 use core::cmp::Ordering;
 use core::cmp::{max, min};
 use core::ptr::NonNull;
@@ -413,7 +405,6 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
     }
 }
 
-#[cfg(not(feature = "fixed_point"))]
 pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm: usize) {
     let channels = decoder.channels;
     if channels == 0 || n == 0 {
@@ -1629,14 +1620,12 @@ pub(crate) fn prepare_frame(
     })
 }
 
-#[cfg(not(feature = "fixed_point"))]
 fn res_to_int24(sample: OpusRes) -> i32 {
     let scale = CELT_SIG_SCALE * 256.0;
     let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
     float2int(scaled)
 }
 
-#[cfg(not(feature = "fixed_point"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn celt_decode_with_ec_dred(
     decoder: &mut OpusCustomDecoder<'_>,
@@ -2012,7 +2001,6 @@ pub(crate) fn celt_decode_with_ec_dred(
     Ok(output_samples)
 }
 
-#[cfg(not(feature = "fixed_point"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn celt_decode_with_ec(
     decoder: &mut OpusCustomDecoder<'_>,
@@ -2025,7 +2013,6 @@ pub(crate) fn celt_decode_with_ec(
     celt_decode_with_ec_dred(decoder, packet, pcm, frame_size, range_decoder, accum)
 }
 
-#[cfg(not(feature = "fixed_point"))]
 pub(crate) fn opus_custom_decode(
     decoder: &mut OpusCustomDecoder<'_>,
     packet: Option<&[u8]>,
@@ -2048,7 +2035,6 @@ pub(crate) fn opus_custom_decode(
     Ok(samples)
 }
 
-#[cfg(not(feature = "fixed_point"))]
 pub(crate) fn opus_custom_decode24(
     decoder: &mut OpusCustomDecoder<'_>,
     packet: Option<&[u8]>,
@@ -2071,7 +2057,6 @@ pub(crate) fn opus_custom_decode24(
     Ok(samples)
 }
 
-#[cfg(not(feature = "fixed_point"))]
 pub(crate) fn opus_custom_decode_float(
     decoder: &mut OpusCustomDecoder<'_>,
     packet: Option<&[u8]>,
@@ -2435,11 +2420,8 @@ pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "fixed_point"))]
     use super::celt_decode_lost;
-    #[cfg(not(feature = "fixed_point"))]
     use super::celt_plc_pitch_search;
-    #[cfg(not(feature = "fixed_point"))]
     use super::deemphasis;
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
@@ -2449,14 +2431,12 @@ mod tests {
         prefilter_and_fold, prepare_frame, tf_decode, validate_celt_decoder,
         validate_channel_layout,
     };
-    #[cfg(not(feature = "fixed_point"))]
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::modes::opus_custom_mode_create;
     use crate::celt::opus_select_arch;
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
     use alloc::vec::Vec;
-    #[cfg(not(feature = "fixed_point"))]
     use core::f32::consts::PI;
     use core::ptr;
 
@@ -2469,7 +2449,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "fixed_point"))]
     fn celt_plc_pitch_search_detects_mono_period() {
         let target_period = 320i32;
         let mut channel = vec![0.0; super::DECODE_BUFFER_SIZE];
@@ -2484,7 +2463,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "fixed_point"))]
     fn celt_plc_pitch_search_handles_stereo_average() {
         let target_period = 480i32;
         let mut left = vec![0.0; super::DECODE_BUFFER_SIZE];
@@ -3203,7 +3181,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "fixed_point"))]
     #[test]
     fn celt_decode_lost_noise_branch_updates_state() {
         use crate::celt::modes::opus_custom_mode_find_static;
@@ -3229,7 +3206,6 @@ mod tests {
         assert_eq!(decoder.loss_duration, 1);
     }
 
-    #[cfg(not(feature = "fixed_point"))]
     #[test]
     fn celt_decode_lost_pitch_branch_generates_output() {
         use crate::celt::modes::opus_custom_mode_find_static;
@@ -3262,7 +3238,6 @@ mod tests {
         assert!(energy > 0.0);
     }
 
-    #[cfg(not(feature = "fixed_point"))]
     #[test]
     fn deemphasis_stereo_simple_matches_reference() {
         let left = [0.25_f32, -0.5, 0.75];
@@ -3297,7 +3272,6 @@ mod tests {
         assert!((mem[1] - expected_mem[1]).abs() < 1e-6);
     }
 
-    #[cfg(not(feature = "fixed_point"))]
     #[test]
     fn deemphasis_downsamples_with_accumulation() {
         let samples = [0.5_f32, -0.25, 0.75, -0.5];
