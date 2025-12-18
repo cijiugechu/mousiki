@@ -756,9 +756,34 @@ fn opus_multistream_decode_native<T: PcmSample>(
     data: &[u8],
     len: usize,
     pcm: &mut [T],
+    frame_size: usize,
+    decode_fec: bool,
+    soft_clip: bool,
+) -> Result<usize, OpusMultistreamDecoderError> {
+    opus_multistream_decode_native_with_handler(
+        decoder,
+        data,
+        len,
+        pcm,
+        frame_size,
+        decode_fec,
+        soft_clip,
+        |dst, dst_stride, dst_channel, src, frame_size, src_offset| {
+            copy_channel_out(dst, dst_stride, dst_channel, src, frame_size, src_offset);
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn opus_multistream_decode_native_with_handler<T>(
+    decoder: &mut OpusMultistreamDecoder<'_>,
+    data: &[u8],
+    len: usize,
+    pcm: &mut [T],
     mut frame_size: usize,
     decode_fec: bool,
     soft_clip: bool,
+    mut handler: impl FnMut(&mut [T], usize, usize, Option<(&[OpusRes], usize)>, usize, usize),
 ) -> Result<usize, OpusMultistreamDecoderError> {
     if frame_size == 0 {
         return Err(OpusMultistreamDecoderError::BadArgument);
@@ -862,7 +887,7 @@ fn opus_multistream_decode_native<T: PcmSample>(
         if stream < decoder.layout.nb_coupled_streams {
             let mut prev = None;
             while let Some(chan) = get_left_channel(&decoder.layout, stream, prev) {
-                copy_channel_out(
+                handler(
                     pcm,
                     decoder.layout.nb_channels,
                     chan,
@@ -875,7 +900,7 @@ fn opus_multistream_decode_native<T: PcmSample>(
 
             let mut prev = None;
             while let Some(chan) = get_right_channel(&decoder.layout, stream, prev) {
-                copy_channel_out(
+                handler(
                     pcm,
                     decoder.layout.nb_channels,
                     chan,
@@ -888,7 +913,7 @@ fn opus_multistream_decode_native<T: PcmSample>(
         } else {
             let mut prev = None;
             while let Some(chan) = get_mono_channel(&decoder.layout, stream, prev) {
-                copy_channel_out(
+                handler(
                     pcm,
                     decoder.layout.nb_channels,
                     chan,
@@ -904,7 +929,7 @@ fn opus_multistream_decode_native<T: PcmSample>(
     // Handle muted channels.
     for channel in 0..decoder.layout.nb_channels {
         if decoder.layout.mapping[channel] == u8::MAX {
-            copy_channel_out(
+            handler(
                 pcm,
                 decoder.layout.nb_channels,
                 channel,
@@ -1591,6 +1616,159 @@ pub fn opus_multistream_encode24(
     opus_multistream_encode(encoder, &tmp, frame_size, data)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpusMultistreamSurroundLayout {
+    pub streams: usize,
+    pub coupled_streams: usize,
+    pub mapping: Vec<u8>,
+}
+
+pub fn opus_multistream_surround_encoder_get_size(
+    channels: usize,
+    mapping_family: u8,
+) -> Option<usize> {
+    let (streams, coupled_streams, _) = surround_layout(channels, mapping_family).ok()?;
+    let mut size = opus_multistream_encoder_get_size(streams, coupled_streams)?;
+    if channels > 2 {
+        size = size.checked_add(
+            channels
+                .checked_mul(
+                    120usize
+                        .checked_mul(core::mem::size_of::<crate::celt::OpusVal32>())?
+                        .checked_add(core::mem::size_of::<crate::celt::OpusVal32>())?,
+                )?,
+        )?;
+    }
+    Some(size)
+}
+
+pub fn opus_multistream_surround_encoder_create(
+    sample_rate: i32,
+    channels: usize,
+    mapping_family: u8,
+    application: i32,
+) -> Result<(OpusMultistreamEncoder<'static>, OpusMultistreamSurroundLayout), OpusMultistreamEncoderError>
+{
+    let (streams, coupled_streams, mapping) = surround_layout(channels, mapping_family)?;
+    let mut encoder = opus_multistream_encoder_create(
+        sample_rate,
+        channels,
+        streams,
+        coupled_streams,
+        &mapping,
+        application,
+    )?;
+
+    let (mapping_type, lfe_stream) = surround_mapping_type(channels, mapping_family, streams);
+    encoder.mapping_type = mapping_type;
+    encoder.lfe_stream = lfe_stream;
+
+    Ok((
+        encoder,
+        OpusMultistreamSurroundLayout {
+            streams,
+            coupled_streams,
+            mapping,
+        },
+    ))
+}
+
+pub fn opus_multistream_surround_encoder_init(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    sample_rate: i32,
+    channels: usize,
+    mapping_family: u8,
+    application: i32,
+) -> Result<OpusMultistreamSurroundLayout, OpusMultistreamEncoderError> {
+    let (streams, coupled_streams, mapping) = surround_layout(channels, mapping_family)?;
+    encoder.init(
+        sample_rate,
+        channels,
+        streams,
+        coupled_streams,
+        &mapping,
+        application,
+    )?;
+
+    let (mapping_type, lfe_stream) = surround_mapping_type(channels, mapping_family, streams);
+    encoder.mapping_type = mapping_type;
+    encoder.lfe_stream = lfe_stream;
+
+    Ok(OpusMultistreamSurroundLayout {
+        streams,
+        coupled_streams,
+        mapping,
+    })
+}
+
+fn surround_mapping_type(
+    channels: usize,
+    mapping_family: u8,
+    streams: usize,
+) -> (MappingType, Option<usize>) {
+    match mapping_family {
+        1 if channels > 2 => (
+            MappingType::Surround,
+            if channels >= 6 {
+                streams.checked_sub(1)
+            } else {
+                None
+            },
+        ),
+        2 => (MappingType::Ambisonics, None),
+        _ => (MappingType::None, None),
+    }
+}
+
+fn surround_layout(
+    channels: usize,
+    mapping_family: u8,
+) -> Result<(usize, usize, Vec<u8>), OpusMultistreamEncoderError> {
+    if channels == 0 || channels > 255 {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+
+    let mut mapping = Vec::with_capacity(channels);
+    match mapping_family {
+        0 => match channels {
+            1 => {
+                mapping.push(0);
+                Ok((1, 0, mapping))
+            }
+            2 => {
+                mapping.extend_from_slice(&[0, 1]);
+                Ok((1, 1, mapping))
+            }
+            _ => Err(OpusMultistreamEncoderError::Unimplemented),
+        },
+        1 => {
+            if !(1..=8).contains(&channels) {
+                return Err(OpusMultistreamEncoderError::Unimplemented);
+            }
+            let layout = &VORBIS_MAPPINGS[channels - 1];
+            mapping.extend_from_slice(&layout.mapping[..channels]);
+            Ok((layout.nb_streams, layout.nb_coupled_streams, mapping))
+        }
+        255 => {
+            mapping.extend((0..channels).map(|v| v as u8));
+            Ok((channels, 0, mapping))
+        }
+        2 => {
+            let (streams, coupled_streams) = validate_ambisonics(channels)
+                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+            let uncoupled_streams = streams - coupled_streams;
+            for i in 0..uncoupled_streams {
+                mapping.push((i + coupled_streams * 2) as u8);
+            }
+            for i in 0..coupled_streams * 2 {
+                mapping.push(i as u8);
+            }
+            Ok((streams, coupled_streams, mapping))
+        }
+        _ => Err(OpusMultistreamEncoderError::Unimplemented),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1964,5 +2142,40 @@ mod tests {
         let mut packet = vec![0u8; 2];
         let err = opus_multistream_encode(&mut ms_encoder, &pcm_in, 960, &mut packet).unwrap_err();
         assert_eq!(err, OpusMultistreamEncoderError::BufferTooSmall);
+    }
+
+    #[test]
+    fn surround_encoder_layout_matches_vorbis_mapping() {
+        let (encoder, layout) =
+            opus_multistream_surround_encoder_create(48_000, 6, 1, 2048).expect("encoder");
+
+        assert_eq!(layout.streams, 4);
+        assert_eq!(layout.coupled_streams, 2);
+        assert_eq!(layout.mapping, vec![0, 4, 1, 2, 3, 5]);
+        assert_eq!(encoder.layout.nb_channels, 6);
+        assert_eq!(encoder.layout.nb_streams, 4);
+        assert_eq!(encoder.layout.nb_coupled_streams, 2);
+
+        // LFE is the last stream for 5.1+ layouts.
+        assert_eq!(encoder.lfe_stream, Some(3));
+        assert_eq!(encoder.mapping_type, MappingType::Surround);
+    }
+
+    #[test]
+    fn surround_encoder_ambisonics_layout_matches_reference_ordering() {
+        let (_encoder, layout) =
+            opus_multistream_surround_encoder_create(48_000, 6, 2, 2048).expect("encoder");
+        assert_eq!(layout.streams, 5);
+        assert_eq!(layout.coupled_streams, 1);
+        assert_eq!(layout.mapping, vec![2, 3, 4, 5, 0, 1]);
+    }
+
+    #[test]
+    fn surround_encoder_get_size_matches_reference_overhead() {
+        let size = opus_multistream_surround_encoder_get_size(6, 1).expect("size");
+        let base = opus_multistream_encoder_get_size(4, 2).expect("base");
+        let overhead = 6 * (120 * core::mem::size_of::<crate::celt::OpusVal32>()
+            + core::mem::size_of::<crate::celt::OpusVal32>());
+        assert_eq!(size, base + overhead);
     }
 }

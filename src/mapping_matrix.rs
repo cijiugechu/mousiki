@@ -236,7 +236,7 @@ pub fn mapping_matrix_multiply_channel_out_float(
     frame_size: usize,
 ) {
     assert!(input_rows <= matrix.cols && output_rows <= matrix.rows);
-    assert!(input_row < input_rows);
+    assert!(input_row < matrix.cols);
     let expected_input = input_rows
         .checked_mul(frame_size.saturating_sub(1))
         .and_then(|v| v.checked_add(1))
@@ -299,7 +299,7 @@ pub fn mapping_matrix_multiply_channel_out_short(
     frame_size: usize,
 ) {
     assert!(input_rows <= matrix.cols && output_rows <= matrix.rows);
-    assert!(input_row < input_rows);
+    assert!(input_row < matrix.cols);
     let expected_input = input_rows
         .checked_mul(frame_size.saturating_sub(1))
         .and_then(|v| v.checked_add(1))
@@ -365,7 +365,7 @@ pub fn mapping_matrix_multiply_channel_out_int24(
     frame_size: usize,
 ) {
     assert!(input_rows <= matrix.cols && output_rows <= matrix.rows);
-    assert!(input_row < input_rows);
+    assert!(input_row < matrix.cols);
     let expected_input = input_rows
         .checked_mul(frame_size.saturating_sub(1))
         .and_then(|v| v.checked_add(1))

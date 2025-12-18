@@ -10,8 +10,8 @@ Current Rust coverage
 - CELT and SILK scalar implementations are ported (see the sub-status files above); platform
   SIMD back-ends still default to scalar helpers.
 - Packet parsing, repacketizer helpers, mapping matrices, and a subset of projection layout
-  selection are available. The ambisonics helpers stop after matrix sizing/selection and
-  explicitly defer multistream wiring.
+  selection are available. Projection encoder/decoder front-ends for mapping family 3 are
+  now wired on top of the multistream glue.
 - Padding extension helpers from `extensions.c` are ported, including iterator/count/parse/generate
   support wired through the repacketizer.
 - Multistream glue includes channel layout helpers plus ambisonics validation and
@@ -23,7 +23,8 @@ Current Rust coverage
   frames now run through the same path. Multistream decode now includes per-stream
   `opus_decode_native` dispatch and PCM routing. The multistream encoder front-end is
   available for generic layouts and wraps the current Rust `opus_encode` implementation
-  (still limited to SILK-only single-frame 20 ms packets).
+  (still limited to SILK-only single-frame 20 ms packets). Surround/projection helper
+  entry points are available for computing layouts and wiring the projection matrices.
 - A minimal top-level encoder front-end is available via `src/opus_encoder.rs`, including
   `opus_encoder_get_size`, create/init/reset helpers, a small CTL surface, and a SILK-only
   `opus_encode` implementation capable of emitting single-frame 20 ms packets.
@@ -50,13 +51,9 @@ Remaining modules to port
   variable-duration/multiframe framing, and the full CTL surface are still pending.
 - Multistream: Generic encoder/decoder front-ends are ported (per-stream encode/decode dispatch,
   self-delimited framing for all but the last stream, and PCM routing). Surround/projection-specific
-  multistream encoder tuning (surround analysis, forced modes/bandwidth decisions, and the
-  projection front-ends) remains pending.
-- Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are missing;
-  only mapping/matrix selection is present and still depends on multistream glue.
-  ```4:10:src/projection.rs
-  //! This module begins the port of `opus_projection_{encoder,decoder}.c` ...
-  ```
+  multistream encoder tuning (surround analysis and forced modes/bandwidth decisions) remains pending.
+- Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are ported and
+  wired through the multistream glue, including demixing-matrix CTL equivalents.
 - Neural/DNN extras: the entire `opus-c/dnn/` tree (DRED/LPCNet/OSCE/Deep PLC tooling and demos)
   is not ported; Rust currently only stubs the optional deep-PLC hooks.
 - Architecture-specific SIMD back-ends and runtime CPU detection for CELT/SILK (arm/x86/mips)
