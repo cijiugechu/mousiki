@@ -26,7 +26,9 @@ use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 use crate::celt::float_cast::CELT_SIG_SCALE;
-use crate::celt::float_cast::{float2int, float2int16};
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::float_cast::float2int;
+use crate::celt::float_cast::float2int16;
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::mdct::clt_mdct_backward;
@@ -1621,9 +1623,16 @@ pub(crate) fn prepare_frame(
 }
 
 fn res_to_int24(sample: OpusRes) -> i32 {
-    let scale = CELT_SIG_SCALE * 256.0;
-    let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
-    float2int(scaled)
+    #[cfg(feature = "fixed_point")]
+    {
+        crate::celt::res2int24(crate::celt::float2res(sample))
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        let scale = CELT_SIG_SCALE * 256.0;
+        let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
+        float2int(scaled)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

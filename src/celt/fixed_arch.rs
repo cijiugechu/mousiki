@@ -13,6 +13,8 @@
 //! reuse these constants and integer conversion helpers to stay aligned with
 //! the reference semantics.
 
+use super::float_cast::{CELT_SIG_SCALE, float2int16};
+
 /// Number of fractional bits in the fixed-point `celt_sig` representation.
 ///
 /// Mirrors `SIG_SHIFT` in `opus-c/celt/arch.h` when `FIXED_POINT` is enabled.
@@ -46,6 +48,22 @@ pub(crate) const RES_SHIFT: u32 = 0;
 ///
 /// Mirrors `MAX_ENCODING_DEPTH` from `opus-c/celt/arch.h` for the RES16 build.
 pub(crate) const MAX_ENCODING_DEPTH: u32 = 16;
+
+/// Converts a fixed-point RES16 sample to a floating-point sample in `[-1, 1)`.
+///
+/// Mirrors the `RES2FLOAT()` macro for the RES16 build.
+#[inline]
+pub(crate) fn res2float(res: i16) -> f32 {
+    f32::from(res) * (1.0 / CELT_SIG_SCALE)
+}
+
+/// Converts a floating-point sample in `[-1, 1]` to a fixed-point RES16 sample.
+///
+/// Mirrors the `FLOAT2RES()` macro for the RES16 build.
+#[inline]
+pub(crate) fn float2res(sample: f32) -> i16 {
+    float2int16(sample)
+}
 
 #[inline]
 pub(crate) fn sat16(x: i32) -> i16 {
@@ -211,5 +229,13 @@ mod tests {
         assert_eq!(add_res(30_000, 10_000), 32_767);
         assert_eq!(add_res(-30_000, -10_000), -32_768);
         assert_eq!(add_res(10_000, -3_000), 7_000);
+    }
+
+    #[test]
+    fn float_res_round_trips_on_exact_grid_points() {
+        for &value in &[-32_768i16, -12_345, -1, 0, 1, 12_345, 32_767] {
+            let sample = res2float(value);
+            assert_eq!(float2res(sample), value);
+        }
     }
 }

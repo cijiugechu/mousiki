@@ -6,6 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::CELT_SIG_SCALE;
 use crate::celt::CeltDecodeError;
 use crate::celt::celt_decode_with_ec_dred;
@@ -15,7 +16,9 @@ use crate::celt::{
     canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     opus_custom_decoder_ctl, opus_select_arch,
 };
-use crate::celt::{float2int, select_celt_float2int16_impl};
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::float2int;
+use crate::celt::select_celt_float2int16_impl;
 #[cfg(not(feature = "fixed_point"))]
 use crate::opus::opus_pcm_soft_clip_impl;
 use crate::packet::{
@@ -662,7 +665,6 @@ impl<'mode> OpusDecoder<'mode> {
                     .ok_or(OpusDecodeError::BadArgument)?;
             }
 
-            let convert_scale = 1.0 / CELT_SIG_SCALE;
             let silk_samples = decoded_samples
                 .checked_mul(channels)
                 .ok_or(OpusDecodeError::BadArgument)?;
@@ -671,7 +673,7 @@ impl<'mode> OpusDecoder<'mode> {
                     return Err(OpusDecodeError::BufferTooSmall);
                 }
                 for (dst, &src) in temp.iter_mut().zip(silk_output.iter().take(silk_samples)) {
-                    *dst = OpusRes::from(src) * convert_scale;
+                    *dst = silk_int16_to_res(src);
                 }
             } else {
                 if pcm.len() < silk_samples {
@@ -682,7 +684,7 @@ impl<'mode> OpusDecoder<'mode> {
                     .take(silk_samples)
                     .zip(silk_output.iter().take(silk_samples))
                 {
-                    *dst = OpusRes::from(src) * convert_scale;
+                    *dst = silk_int16_to_res(src);
                 }
             }
 
@@ -1338,10 +1340,29 @@ fn decode_celt_frame(
 }
 
 #[inline]
+fn silk_int16_to_res(sample: i16) -> OpusRes {
+    #[cfg(feature = "fixed_point")]
+    {
+        crate::celt::res2float(crate::celt::int16tores(sample))
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        OpusRes::from(sample) * (1.0 / CELT_SIG_SCALE)
+    }
+}
+
+#[inline]
 fn res_to_int24(sample: OpusRes) -> i32 {
-    let scale = CELT_SIG_SCALE * 256.0;
-    let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
-    float2int(scaled)
+    #[cfg(feature = "fixed_point")]
+    {
+        crate::celt::res2int24(crate::celt::float2res(sample))
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        let scale = CELT_SIG_SCALE * 256.0;
+        let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
+        float2int(scaled)
+    }
 }
 
 /// Mirrors `opus_decoder_create` by allocating and initialising a decoder.
