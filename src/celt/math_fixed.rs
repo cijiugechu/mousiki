@@ -11,6 +11,28 @@
 
 use crate::celt::math::celt_ilog2;
 
+pub(crate) fn celt_maxabs16(samples: &[i16]) -> i32 {
+    let mut max_abs = 0i32;
+    for &sample in samples {
+        let abs = i32::from(sample).abs();
+        if abs > max_abs {
+            max_abs = abs;
+        }
+    }
+    max_abs
+}
+
+pub(crate) fn celt_maxabs32(samples: &[i32]) -> i32 {
+    let mut max_abs = 0i32;
+    for &sample in samples {
+        let abs = sample.abs();
+        if abs > max_abs {
+            max_abs = abs;
+        }
+    }
+    max_abs
+}
+
 fn vshr32(a: i32, shift: i32) -> i32 {
     match shift.cmp(&0) {
         core::cmp::Ordering::Greater => a >> shift,
@@ -202,7 +224,8 @@ pub(crate) fn frac_div32(a: i32, b: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        celt_cos_norm, celt_rcp, celt_rsqrt_norm, celt_sqrt, frac_div32, frac_div32_q29, vshr32,
+        celt_cos_norm, celt_maxabs16, celt_maxabs32, celt_rcp, celt_rsqrt_norm, celt_sqrt,
+        frac_div32, frac_div32_q29, vshr32,
     };
 
     #[test]
@@ -254,5 +277,14 @@ mod tests {
             assert!(current >= prev);
             prev = current;
         }
+    }
+
+    #[test]
+    fn maxabs_helpers_match_expected_values() {
+        let samples_16 = [0i16, -12, 9, 32, -31];
+        let samples_32 = [0i32, -12_000, 9_000, 32_000, -31_999];
+
+        assert_eq!(celt_maxabs16(&samples_16), 32);
+        assert_eq!(celt_maxabs32(&samples_32), 32_000);
     }
 }

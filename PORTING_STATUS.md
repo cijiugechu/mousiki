@@ -61,8 +61,6 @@ Remaining modules to port
     now in place, but much of the decode graph still mirrors the float path):
     - FFT/MDCT: fixed-point `kiss_fft` + MDCT kernels are ported (`kiss_fft_fixed.rs`,
       `mdct_fixed.rs`) and wired into the decode IMDCT path.
-    - Pitch/search: port the `FIXED_POINT` branches of `celt/pitch.c` (downsampling, xcorr kernels,
-      gain computations, and the fixed-point normalisation steps).
     - Bands/VQ/quantisation: port the `FIXED_POINT` branches in `celt/bands.c`, `celt/vq.c`,
       and `celt/quant_bands.c` (normalisation, renormalisation, PVQ search, stereo energy maths,
       and the fixed-point energy/log-domain conversions).

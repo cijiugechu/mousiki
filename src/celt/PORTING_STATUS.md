@@ -399,6 +399,9 @@ safely.
 - `celt_autocorr` &rarr; evaluates the autocorrelation sequence with optional
   analysis windowing, matching `_celt_autocorr()` in `celt/celt_lpc.c` for the
   float configuration.
+- Fixed-point `celt_lpc_fixed` and `celt_autocorr_fixed` mirror the
+  `FIXED_POINT` branches used by the pitch analysis and PLC paths, including
+  the coefficient range guard and autocorrelation rescaling steps.
 
 ### `pitch.rs`
 - `celt_inner_prod` &rarr; scalar dot product helper from `celt/pitch.c` used by the
@@ -423,6 +426,9 @@ safely.
 - `remove_doubling` &rarr; mirrors the subharmonic inspection helper from
   `celt/pitch.c` that suppresses doubled pitch estimates and returns the
   adjusted gain.
+- Fixed-point pitch helpers (`pitch_downsample_fixed`, `pitch_search_fixed`,
+  `remove_doubling_fixed`) mirror the `FIXED_POINT` branches in `celt/pitch.c`,
+  including the integer normalisation steps and LPC prefilter scaling.
 
 ### `rate.rs`
 - `MAX_PSEUDO`, `LOG_MAX_PSEUDO`, `CELT_MAX_PULSES`, `MAX_FINE_BITS`,

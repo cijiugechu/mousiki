@@ -10,23 +10,28 @@
 use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
 use crate::celt::{celt_autocorr, celt_lpc, celt_udiv};
+#[cfg(feature = "fixed_point")]
+use crate::celt::{celt_autocorr_fixed, celt_lpc_fixed};
 use alloc::vec;
 use core::cmp::min;
 #[cfg(feature = "fixed_point")]
 use core::cmp::{max, min as min_i32};
 
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::Q15_ONE;
+use crate::celt::fixed_arch::{Q15_ONE, SIG_SHIFT};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
-    extract16, mac16_16, mult16_16, mult16_16_q15, mult16_32_q15, shr32, vshr32,
+    extract16, mac16_16, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, qconst16, shl32,
+    shr32, vshr32,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 #[cfg(feature = "fixed_point")]
-use crate::celt::math_fixed::celt_rsqrt_norm;
+use crate::celt::math_fixed::{celt_maxabs16, celt_maxabs32, celt_rsqrt_norm};
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
+use crate::celt::types::{FixedCeltSig, FixedOpusVal16, FixedOpusVal32};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::frac_div32 as frac_div32_fixed;
 
 /// Selects the two most promising pitch lags based on normalised correlation.
 ///
@@ -115,6 +120,21 @@ pub(crate) fn celt_inner_prod(x: &[OpusVal16], y: &[OpusVal16]) -> OpusVal32 {
         .sum::<OpusVal32>()
 }
 
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_inner_prod_fixed(x: &[FixedOpusVal16], y: &[FixedOpusVal16]) -> FixedOpusVal32 {
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "vectors provided to celt_inner_prod_fixed must have the same length",
+    );
+
+    let mut sum = 0i32;
+    for (&a, &b) in x.iter().zip(y.iter()) {
+        sum = mac16_16(sum, a, b);
+    }
+    sum
+}
+
 /// Computes two inner products between the same `x` vector and two targets.
 ///
 /// Ports the scalar `dual_inner_prod_c()` helper from `celt/pitch.c` for the
@@ -139,6 +159,28 @@ pub(crate) fn dual_inner_prod(
     for ((&a, &b0), &b1) in x.iter().zip(y0.iter()).zip(y1.iter()) {
         xy0 += a * b0;
         xy1 += a * b1;
+    }
+
+    (xy0, xy1)
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn dual_inner_prod_fixed(
+    x: &[FixedOpusVal16],
+    y0: &[FixedOpusVal16],
+    y1: &[FixedOpusVal16],
+) -> (FixedOpusVal32, FixedOpusVal32) {
+    assert!(
+        x.len() == y0.len() && x.len() == y1.len(),
+        "dual_inner_prod_fixed inputs must have the same length"
+    );
+
+    let mut xy0 = 0i32;
+    let mut xy1 = 0i32;
+
+    for ((&a, &b0), &b1) in x.iter().zip(y0.iter()).zip(y1.iter()) {
+        xy0 = mac16_16(xy0, a, b0);
+        xy1 = mac16_16(xy1, a, b1);
     }
 
     (xy0, xy1)
@@ -518,9 +560,145 @@ pub(crate) fn pitch_search(
     2 * best_pitch[0]
 }
 
+/// Fixed-point variant of `pitch_search()` used when CELT is built without floats.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn pitch_search_fixed(
+    x_lp: &[FixedOpusVal16],
+    y: &[FixedOpusVal16],
+    len: usize,
+    max_pitch: usize,
+    _arch: i32,
+) -> i32 {
+    assert!(len > 0, "pitch_search_fixed requires a non-empty target length");
+    assert!(
+        max_pitch > 0,
+        "pitch_search_fixed requires a positive search span"
+    );
+
+    let lag = len + max_pitch;
+    let len_quarter = len >> 2;
+    let lag_quarter = lag >> 2;
+    let max_pitch_quarter = max_pitch >> 2;
+
+    let mut best_pitch = [0i32, 0i32];
+
+    let mut shift = 0i32;
+    if len_quarter > 0 && max_pitch_quarter > 0 {
+        let mut x_lp4 = vec![0i16; len_quarter];
+        for (j, slot) in x_lp4.iter_mut().enumerate() {
+            *slot = x_lp[2 * j];
+        }
+
+        let mut y_lp4 = vec![0i16; lag_quarter];
+        for (j, slot) in y_lp4.iter_mut().enumerate() {
+            *slot = y[2 * j];
+        }
+
+        let xmax = celt_maxabs16(&x_lp4);
+        let ymax = celt_maxabs16(&y_lp4);
+        shift = celt_ilog2(max(1, max(xmax, ymax))) - 11;
+        if shift > 0 {
+            let shift_u = shift as u32;
+            for sample in x_lp4.iter_mut() {
+                *sample = (*sample >> shift_u) as i16;
+            }
+            for sample in y_lp4.iter_mut() {
+                *sample = (*sample >> shift_u) as i16;
+            }
+            shift *= 2;
+        } else {
+            shift = 0;
+        }
+
+        let mut xcorr = vec![0i32; max_pitch_quarter];
+        let maxcorr = celt_pitch_xcorr_fixed(
+            &x_lp4,
+            &y_lp4,
+            len_quarter,
+            max_pitch_quarter,
+            &mut xcorr,
+        );
+        find_best_pitch_fixed(
+            &xcorr,
+            &y_lp4,
+            len_quarter,
+            max_pitch_quarter,
+            &mut best_pitch,
+            0,
+            maxcorr,
+        );
+    }
+
+    let max_pitch_half = max_pitch >> 1;
+    if max_pitch_half == 0 {
+        return 2 * best_pitch[0];
+    }
+
+    let len_half = len >> 1;
+    let mut xcorr = vec![0i32; max_pitch_half];
+    if len_half > 0 {
+        let mut maxcorr = 1i32;
+        for (i, slot) in xcorr.iter_mut().enumerate() {
+            if (i as i32 - 2 * best_pitch[0]).abs() > 2
+                && (i as i32 - 2 * best_pitch[1]).abs() > 2
+            {
+                continue;
+            }
+            let mut sum = 0i32;
+            for j in 0..len_half {
+                sum = sum.wrapping_add(shr32(mult16_16(x_lp[j], y[i + j]), shift as u32));
+            }
+            if sum < -1 {
+                sum = -1;
+            }
+            *slot = sum;
+            maxcorr = max(maxcorr, sum);
+        }
+
+        find_best_pitch_fixed(
+            &xcorr,
+            y,
+            len_half,
+            max_pitch_half,
+            &mut best_pitch,
+            shift + 1,
+            maxcorr,
+        );
+    }
+
+    let mut offset = 0;
+    if best_pitch[0] > 0 && (best_pitch[0] as usize) < max_pitch_half - 1 {
+        let a = xcorr[(best_pitch[0] - 1) as usize];
+        let b = xcorr[best_pitch[0] as usize];
+        let c = xcorr[(best_pitch[0] + 1) as usize];
+        if (c - a) > mult16_32_q15(qconst16(0.7, 15), b - a) {
+            offset = 1;
+        } else if (a - c) > mult16_32_q15(qconst16(0.7, 15), b - c) {
+            offset = -1;
+        }
+    }
+
+    2 * best_pitch[0] - offset
+}
+
 const SECOND_CHECK: [i32; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
 
 fn window(data: &[OpusVal16], center: usize, offset: isize, len: usize) -> &[OpusVal16] {
+    let start = center as isize + offset;
+    assert!(start >= 0, "window would start before the buffer");
+    let start = start as usize;
+    let end = start + len;
+    assert!(end <= data.len(), "window extends beyond the buffer");
+    &data[start..end]
+}
+
+#[cfg(feature = "fixed_point")]
+fn window_fixed(
+    data: &[FixedOpusVal16],
+    center: usize,
+    offset: isize,
+    len: usize,
+) -> &[FixedOpusVal16] {
     let start = center as isize + offset;
     assert!(start >= 0, "window would start before the buffer");
     let start = start as usize;
@@ -680,7 +858,171 @@ pub(crate) fn remove_doubling(
         pg = g;
     }
 
-    let updated = 2 * t - offset;
+    let updated = 2 * t + offset;
+    *t0 = updated.max(minperiod0);
+
+    pg
+}
+
+/// Fixed-point variant of `remove_doubling()` used by the prefilter and PLC paths.
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn remove_doubling_fixed(
+    x: &[FixedOpusVal16],
+    maxperiod: usize,
+    minperiod: usize,
+    n: usize,
+    t0: &mut i32,
+    prev_period: i32,
+    prev_gain: FixedOpusVal16,
+    _arch: i32,
+) -> FixedOpusVal16 {
+    assert!(maxperiod > 0, "maxperiod must be positive");
+    assert!(minperiod > 0, "minperiod must be positive");
+    assert!(n > 0, "window size must be positive");
+
+    let maxperiod_half = maxperiod >> 1;
+    let minperiod_half = minperiod >> 1;
+    let n_half = n >> 1;
+    assert!(
+        x.len() >= maxperiod_half + n_half,
+        "x must contain at least maxperiod / 2 + n / 2 samples",
+    );
+
+    let minperiod0 = minperiod as i32;
+    let t0_half = (*t0 >> 1).clamp(0, maxperiod_half.saturating_sub(1) as i32);
+    let prev_period_half = prev_period >> 1;
+
+    if maxperiod_half <= 1 || n_half == 0 {
+        *t0 = (*t0).max(minperiod0);
+        return prev_gain;
+    }
+
+    let center = maxperiod_half;
+    let x_center = window_fixed(x, center, 0, n_half);
+    let x_t0 = window_fixed(x, center, -(t0_half as isize), n_half);
+    let (xx, xy) = dual_inner_prod_fixed(x_center, x_center, x_t0);
+
+    let mut yy_lookup = vec![0i32; maxperiod_half + 1];
+    yy_lookup[0] = xx;
+    let mut yy = xx;
+
+    for i in 1..=maxperiod_half {
+        let prev_sample = x[center - i];
+        let enter_sample = x[center + n_half - i];
+        yy = yy
+            .wrapping_add(mult16_16(prev_sample, prev_sample))
+            .wrapping_sub(mult16_16(enter_sample, enter_sample));
+        yy_lookup[i] = max(0, yy);
+    }
+
+    yy = yy_lookup[t0_half as usize];
+    let mut best_xy = xy;
+    let mut best_yy = yy;
+    let mut g = compute_pitch_gain_fixed(xy, xx, yy);
+    let g0 = g;
+    let max_allowed = maxperiod_half.saturating_sub(1) as i32;
+    let mut t = if max_allowed >= 1 {
+        t0_half.clamp(1, max_allowed)
+    } else {
+        0
+    };
+
+    for k in 2..=15 {
+        let t1 = celt_udiv((2 * t0_half + k) as u32, (2 * k) as u32) as i32;
+        if t1 < minperiod_half as i32 {
+            break;
+        }
+        if t1 as usize > maxperiod_half {
+            continue;
+        }
+        let t1b = if k == 2 {
+            if t1 + t0_half > maxperiod_half as i32 {
+                t0_half
+            } else {
+                t0_half + t1
+            }
+        } else {
+            let check = SECOND_CHECK[k as usize];
+            celt_udiv((2 * check * t0_half + k) as u32, (2 * k) as u32) as i32
+        };
+        if t1b as usize > maxperiod_half {
+            continue;
+        }
+
+        let x_t1 = window_fixed(x, center, -(t1 as isize), n_half);
+        let x_t1b = window_fixed(x, center, -(t1b as isize), n_half);
+        let (xy1, xy2) = dual_inner_prod_fixed(x_center, x_t1, x_t1b);
+        let xy1 = shr32(xy1.wrapping_add(xy2), 1);
+        let yy1 = shr32(
+            yy_lookup[t1 as usize].wrapping_add(yy_lookup[t1b as usize]),
+            1,
+        );
+        let g1 = compute_pitch_gain_fixed(xy1, xx, yy1);
+
+        let diff = (t1 - prev_period_half).abs();
+        let cont = if diff <= 1 {
+            prev_gain
+        } else if diff <= 2 && 5 * (k * k) < t0_half {
+            prev_gain >> 1
+        } else {
+            0
+        };
+
+        let mut thresh = max(
+            qconst16(0.3, 15),
+            mult16_16_q15(qconst16(0.7, 15), g0).wrapping_sub(cont),
+        );
+        if t1 < 3 * minperiod_half as i32 {
+            thresh = max(
+                qconst16(0.4, 15),
+                mult16_16_q15(qconst16(0.85, 15), g0).wrapping_sub(cont),
+            );
+        } else if t1 < 2 * minperiod_half as i32 {
+            thresh = max(
+                qconst16(0.5, 15),
+                mult16_16_q15(qconst16(0.9, 15), g0).wrapping_sub(cont),
+            );
+        }
+
+        if g1 > thresh {
+            best_xy = xy1;
+            best_yy = yy1;
+            if max_allowed >= 1 {
+                t = t1.clamp(1, max_allowed);
+            } else {
+                t = 0;
+            }
+            g = g1;
+        }
+    }
+
+    best_xy = max(0, best_xy);
+    let mut pg = if best_yy <= best_xy {
+        Q15_ONE
+    } else {
+        extract16(shr32(frac_div32_fixed(best_xy, best_yy + 1), 16))
+    };
+
+    let mut xcorr = [0i32; 3];
+    for (k, slot) in xcorr.iter_mut().enumerate() {
+        let lag = t + k as i32 - 1;
+        let x_lag = window_fixed(x, center, -(lag as isize), n_half);
+        *slot = celt_inner_prod_fixed(x_center, x_lag);
+    }
+
+    let mut offset = 0;
+    if (xcorr[2] - xcorr[0]) > mult16_32_q15(qconst16(0.7, 15), xcorr[1] - xcorr[0]) {
+        offset = 1;
+    } else if (xcorr[0] - xcorr[2]) > mult16_32_q15(qconst16(0.7, 15), xcorr[1] - xcorr[2]) {
+        offset = -1;
+    }
+
+    if pg > g {
+        pg = g;
+    }
+
+    let updated = 2 * t + offset;
     *t0 = updated.max(minperiod0);
 
     pg
@@ -705,6 +1047,34 @@ fn celt_fir5(x: &mut [OpusVal16], num: &[OpusVal16; 5]) {
         mem0 = current;
 
         *sample = sum;
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn celt_fir5_fixed(x: &mut [FixedOpusVal16], num: &[FixedOpusVal16; 5]) {
+    let [num0, num1, num2, num3, num4] = *num;
+    let mut mem0: FixedOpusVal16 = 0;
+    let mut mem1: FixedOpusVal16 = 0;
+    let mut mem2: FixedOpusVal16 = 0;
+    let mut mem3: FixedOpusVal16 = 0;
+    let mut mem4: FixedOpusVal16 = 0;
+
+    for sample in x.iter_mut() {
+        let current = *sample;
+        let mut sum = shl32(i32::from(current), SIG_SHIFT);
+        sum = mac16_16(sum, num0, mem0);
+        sum = mac16_16(sum, num1, mem1);
+        sum = mac16_16(sum, num2, mem2);
+        sum = mac16_16(sum, num3, mem3);
+        sum = mac16_16(sum, num4, mem4);
+
+        mem4 = mem3;
+        mem3 = mem2;
+        mem2 = mem1;
+        mem1 = mem0;
+        mem0 = current;
+
+        *sample = extract16(pshr32(sum, SIG_SHIFT));
     }
 }
 
@@ -782,6 +1152,114 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
     celt_fir5(x_lp, &lpc2);
 }
 
+/// Fixed-point variant of `pitch_downsample()` used by the fixed-point pitch search.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn pitch_downsample_fixed(
+    x: &[&[FixedCeltSig]],
+    x_lp: &mut [FixedOpusVal16],
+    len: usize,
+    arch: i32,
+) {
+    assert!(!x.is_empty(), "at least one channel is required");
+    assert!(
+        x.len() <= 2,
+        "pitch_downsample_fixed supports at most two channels"
+    );
+    assert!(
+        len >= 2,
+        "pitch_downsample_fixed requires at least two input samples"
+    );
+
+    for (idx, channel) in x.iter().enumerate() {
+        assert!(
+            channel.len() >= len,
+            "channel {idx} must provide at least len samples",
+        );
+    }
+
+    let half_len = len / 2;
+    assert!(
+        x_lp.len() >= half_len,
+        "output buffer must contain len / 2 samples"
+    );
+
+    if half_len == 0 {
+        return;
+    }
+
+    let x_lp = &mut x_lp[..half_len];
+    x_lp.fill(0);
+
+    let mut maxabs = celt_maxabs32(&x[0][..len]);
+    if x.len() == 2 {
+        let maxabs_1 = celt_maxabs32(&x[1][..len]);
+        maxabs = max(maxabs, maxabs_1);
+    }
+    if maxabs < 1 {
+        maxabs = 1;
+    }
+    let mut shift = celt_ilog2(maxabs) - 10;
+    if shift < 0 {
+        shift = 0;
+    }
+    if x.len() == 2 {
+        shift += 1;
+    }
+
+    for i in 1..half_len {
+        let base = 2 * i;
+        let mut sum = shr32(x[0][base - 1], (shift + 2) as u32)
+            .wrapping_add(shr32(x[0][base + 1], (shift + 2) as u32))
+            .wrapping_add(shr32(x[0][base], (shift + 1) as u32));
+        if x.len() == 2 {
+            sum = sum
+                .wrapping_add(shr32(x[1][base - 1], (shift + 2) as u32))
+                .wrapping_add(shr32(x[1][base + 1], (shift + 2) as u32))
+                .wrapping_add(shr32(x[1][base], (shift + 1) as u32));
+        }
+        x_lp[i] = sum as FixedOpusVal16;
+    }
+
+    let mut head = shr32(x[0][1], (shift + 2) as u32)
+        .wrapping_add(shr32(x[0][0], (shift + 1) as u32));
+    if x.len() == 2 {
+        head = head
+            .wrapping_add(shr32(x[1][1], (shift + 2) as u32))
+            .wrapping_add(shr32(x[1][0], (shift + 1) as u32));
+    }
+    x_lp[0] = head as FixedOpusVal16;
+
+    let mut ac = [0i32; 5];
+    celt_autocorr_fixed(x_lp, &mut ac, None, 0, 4, arch);
+
+    ac[0] = ac[0].wrapping_add(shr32(ac[0], 13));
+    for i in 1..=4 {
+        let coeff = (2 * i * i) as FixedOpusVal16;
+        ac[i] = ac[i].wrapping_sub(mult16_32_q15(coeff, ac[i]));
+    }
+
+    let mut lpc = [0i16; 4];
+    celt_lpc_fixed(&mut lpc, &ac);
+
+    let mut tmp = Q15_ONE;
+    let mut lpc_scaled = [0i16; 4];
+    for (idx, slot) in lpc_scaled.iter_mut().enumerate() {
+        tmp = mult16_16_q15(qconst16(0.9, 15), tmp);
+        *slot = mult16_16_q15(lpc[idx], tmp);
+    }
+
+    let c1 = qconst16(0.8, 15);
+    let lpc2 = [
+        lpc_scaled[0].wrapping_add(qconst16(0.8, SIG_SHIFT)),
+        lpc_scaled[1].wrapping_add(mult16_16_q15(c1, lpc_scaled[0])),
+        lpc_scaled[2].wrapping_add(mult16_16_q15(c1, lpc_scaled[1])),
+        lpc_scaled[3].wrapping_add(mult16_16_q15(c1, lpc_scaled[2])),
+        mult16_16_q15(c1, lpc_scaled[3]),
+    ];
+
+    celt_fir5_fixed(x_lp, &lpc2);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -796,9 +1274,14 @@ mod tests {
     use alloc::vec::Vec;
     use core::f32::consts::PI;
     #[cfg(feature = "fixed_point")]
-    use super::{celt_pitch_xcorr_fixed, find_best_pitch_fixed};
+    use super::{
+        celt_pitch_xcorr_fixed, find_best_pitch_fixed, pitch_downsample_fixed, pitch_search_fixed,
+        remove_doubling_fixed,
+    };
     #[cfg(feature = "fixed_point")]
-    use crate::celt::types::FixedOpusVal16;
+    use crate::celt::fixed_arch::float2sig;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::types::{FixedCeltSig, FixedOpusVal16};
 
     fn generate_sequence(len: usize, seed: u32) -> Vec<OpusVal16> {
         let mut state = seed;
@@ -1273,7 +1756,7 @@ mod tests {
             pg = g;
         }
 
-        let updated = 2 * t - offset;
+        let updated = 2 * t + offset;
         *t0 = updated.max(minperiod0);
         pg
     }
@@ -1414,5 +1897,128 @@ mod tests {
         find_best_pitch(&xcorr_float, &y_float, len, max_pitch, &mut best_float);
 
         assert_eq!(best_fixed[0], best_float[0]);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_pitch_search_tracks_float_reference() {
+        let len = 96usize;
+        let max_pitch = 48usize;
+        let fundamental = 34usize;
+
+        let mut x_lp = vec![0.0f32; len];
+        for (i, sample) in x_lp.iter_mut().enumerate() {
+            let phase = 2.0 * PI * (i as f32) / fundamental as f32;
+            *sample = phase.sin();
+        }
+
+        let mut y = vec![0.0f32; len + max_pitch];
+        for i in 0..len {
+            y[i + fundamental] += x_lp[i];
+        }
+        for i in 0..len {
+            y[i + 20] += 0.4 * x_lp[i];
+        }
+
+        let scale = 32_768.0;
+        let x_fixed: Vec<FixedOpusVal16> =
+            x_lp.iter().map(|&v| (v * scale).round() as i16).collect();
+        let y_fixed: Vec<FixedOpusVal16> =
+            y.iter().map(|&v| (v * scale).round() as i16).collect();
+
+        let fixed = pitch_search_fixed(&x_fixed, &y_fixed, len, max_pitch, 0);
+
+        let x_float: Vec<f32> = x_fixed.iter().map(|&v| v as f32 / scale).collect();
+        let y_float: Vec<f32> = y_fixed.iter().map(|&v| v as f32 / scale).collect();
+        let reference = pitch_search(&x_float, &y_float, len, max_pitch, 0);
+
+        assert!((fixed - reference).abs() <= 1);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_remove_doubling_tracks_float_reference() {
+        let maxperiod = 120usize;
+        let minperiod = 40usize;
+        let n = 80usize;
+        let fundamental = 60usize;
+
+        let mut x = vec![0.0f32; maxperiod + n];
+        for (i, sample) in x.iter_mut().enumerate() {
+            let phase = 2.0 * PI * (i as f32) / fundamental as f32;
+            *sample = phase.sin();
+        }
+
+        let mut t0_float = (2 * fundamental) as i32;
+        let _float_gain = remove_doubling(
+            &x,
+            maxperiod,
+            minperiod,
+            n,
+            &mut t0_float,
+            fundamental as i32,
+            0.8,
+            0,
+        );
+
+        let scale = 32_768.0;
+        let x_fixed: Vec<FixedOpusVal16> =
+            x.iter().map(|&v| (v * scale).round() as i16).collect();
+        let mut t0_fixed = (2 * fundamental) as i32;
+        let fixed_gain = remove_doubling_fixed(
+            &x_fixed,
+            maxperiod,
+            minperiod,
+            n,
+            &mut t0_fixed,
+            fundamental as i32,
+            (0.8 * scale).round() as i16,
+            0,
+        );
+
+        assert!((t0_fixed - t0_float).abs() <= 2);
+        let fixed_gain_float = fixed_gain as f32 / scale;
+        assert!((0.0..=1.0).contains(&fixed_gain_float));
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_pitch_downsample_tracks_float_shape() {
+        let len = 64usize;
+        let mut input = vec![0.0f32; len];
+        for (i, sample) in input.iter_mut().enumerate() {
+            let phase = 2.0 * PI * (i as f32) / 16.0;
+            *sample = 0.4 * phase.sin();
+        }
+
+        let input_fixed: Vec<FixedCeltSig> = input.iter().map(|&v| float2sig(v)).collect();
+        let channels_fixed: [&[FixedCeltSig]; 1] = [&input_fixed];
+        let channels_float: [&[CeltSig]; 1] = [&input];
+
+        let mut fixed_out = vec![0i16; len / 2];
+        pitch_downsample_fixed(&channels_fixed, &mut fixed_out, len, 0);
+
+        let mut float_out = vec![0.0f32; len / 2];
+        pitch_downsample(&channels_float, &mut float_out, len, 0);
+
+        let fixed_float: Vec<f32> = fixed_out.iter().map(|&v| v as f32 / 32_768.0).collect();
+
+        let mut dot = 0.0;
+        let mut dot_fixed = 0.0;
+        for (f, r) in fixed_float.iter().zip(float_out.iter()) {
+            dot += f * r;
+            dot_fixed += f * f;
+        }
+        let scale = if dot_fixed > 0.0 { dot / dot_fixed } else { 0.0 };
+
+        let mut err = 0.0;
+        let mut ref_energy = 0.0;
+        for (f, r) in fixed_float.iter().zip(float_out.iter()) {
+            let diff = f * scale - r;
+            err += diff * diff;
+            ref_energy += r * r;
+        }
+        let nmse = if ref_energy > 0.0 { err / ref_energy } else { 0.0 };
+        assert!(nmse < 1e-2);
     }
 }

@@ -213,6 +213,9 @@ pub(crate) fn celt_synthesis(
     assert!(lm <= mode.max_lm);
     assert!(eff_end <= mode.num_ebands);
     assert!(downsample > 0);
+    #[cfg(not(feature = "fixed_point"))]
+    #[allow(clippy::let_unit_value)]
+    let _ = fixed_ctx;
 
     let nb_ebands = mode.num_ebands;
     let n = mode.short_mdct_size << lm;

@@ -8,10 +8,31 @@
 //! the pitch analysis and postfilter reuse it.
 
 use alloc::borrow::Cow;
+#[cfg(feature = "fixed_point")]
+use alloc::vec;
+#[cfg(feature = "fixed_point")]
+use alloc::vec::Vec;
 
 use crate::celt::math::frac_div32;
 use crate::celt::pitch::celt_pitch_xcorr;
 use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
+#[cfg(feature = "fixed_point")]
+use crate::celt::entcode::ec_ilog;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{
+    add32, div32, extract16, mult16_16, mult16_16_q15, mult32_32_32, mult32_32_q16,
+    mult32_32_q31, pshr32, qconst32, shl32, shr32,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::celt_ilog2;
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::frac_div32 as frac_div32_fixed;
+#[cfg(feature = "fixed_point")]
+use crate::celt::pitch::celt_pitch_xcorr_fixed;
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedCeltCoef, FixedOpusVal16, FixedOpusVal32};
+#[cfg(feature = "fixed_point")]
+use core::cmp::min;
 
 /// Computes LPC coefficients from the autocorrelation sequence using the
 /// Levinson-Durbin recursion.
@@ -68,6 +89,99 @@ pub(crate) fn celt_lpc(lpc: &mut [OpusVal16], ac: &[OpusVal32]) {
         error -= (reflection * reflection) * error;
         if error <= 0.001 * ac0 {
             break;
+        }
+    }
+}
+
+/// Fixed-point LPC solver used by CELT when `fixed_point` is enabled.
+///
+/// Mirrors the `FIXED_POINT` branch of `_celt_lpc()` from `celt/celt_lpc.c`,
+/// including the chirp-based bandwidth expansion that ensures the final
+/// coefficients fit into Q12 precision.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_lpc_fixed(lpc: &mut [FixedOpusVal16], ac: &[FixedOpusVal32]) {
+    let order = lpc.len();
+    assert!(
+        ac.len() > order,
+        "autocorrelation must provide order + 1 samples"
+    );
+
+    lpc.fill(0);
+
+    if order == 0 || ac[0] == 0 {
+        return;
+    }
+
+    let mut lpc32 = vec![0i32; order];
+    let mut error = ac[0];
+
+    for i in 0..order {
+        let mut rr = 0i32;
+        for j in 0..i {
+            rr = rr.wrapping_add(mult32_32_q31(lpc32[j], ac[i - j]));
+        }
+        rr = rr.wrapping_add(shr32(ac[i + 1], 6));
+        let r = -frac_div32_fixed(shl32(rr, 6), error);
+        lpc32[i] = shr32(r, 6);
+
+        for j in 0..((i + 1) >> 1) {
+            let tmp1 = lpc32[j];
+            let tmp2 = lpc32[i - 1 - j];
+            lpc32[j] = tmp1.wrapping_add(mult32_32_q31(r, tmp2));
+            lpc32[i - 1 - j] = tmp2.wrapping_add(mult32_32_q31(r, tmp1));
+        }
+
+        error = error.wrapping_sub(mult32_32_q31(mult32_32_q31(r, r), error));
+        if error <= shr32(ac[0], 10) {
+            break;
+        }
+    }
+
+    let mut iter = 0;
+    let mut idx = 0usize;
+    while iter < 10 {
+        let mut maxabs = 0i32;
+        for (i, &value) in lpc32.iter().enumerate() {
+            let absval = value.abs();
+            if absval > maxabs {
+                maxabs = absval;
+                idx = i;
+            }
+        }
+
+        maxabs = pshr32(maxabs, 13);
+        if maxabs <= 32_767 {
+            break;
+        }
+
+        maxabs = min(maxabs, 163_838);
+        let denom = shr32(mult32_32_32(maxabs, (idx + 1) as i32), 2);
+        let numer = shl32(maxabs.wrapping_sub(32_767), 14);
+        let mut chirp_q16 = qconst32(0.999, 16).wrapping_sub(div32(numer, denom));
+        let chirp_minus_one_q16 = chirp_q16.wrapping_sub(65_536);
+
+        for i in 0..order.saturating_sub(1) {
+            lpc32[i] = mult32_32_q16(chirp_q16, lpc32[i]);
+            chirp_q16 = chirp_q16.wrapping_add(pshr32(
+                mult32_32_32(chirp_q16, chirp_minus_one_q16),
+                16,
+            ));
+        }
+        if let Some(last) = lpc32.last_mut() {
+            *last = mult32_32_q16(chirp_q16, *last);
+        }
+
+        iter += 1;
+    }
+
+    if iter == 10 {
+        lpc.fill(0);
+        if let Some(first) = lpc.first_mut() {
+            *first = 4096;
+        }
+    } else {
+        for (dst, &value) in lpc.iter_mut().zip(lpc32.iter()) {
+            *dst = extract16(pshr32(value, 13));
         }
     }
 }
@@ -208,6 +322,114 @@ pub(crate) fn celt_autocorr(
     }
 
     0
+}
+
+/// Fixed-point autocorrelation helper used by the pitch search and PLC paths.
+///
+/// Mirrors the `FIXED_POINT` branch of `_celt_autocorr()` from
+/// `celt/celt_lpc.c`, including the dynamic rescaling that keeps the
+/// autocorrelation values within range.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_autocorr_fixed(
+    x: &[FixedOpusVal16],
+    ac: &mut [FixedOpusVal32],
+    window: Option<&[FixedCeltCoef]>,
+    overlap: usize,
+    lag: usize,
+    arch: i32,
+) -> i32 {
+    assert!(
+        !x.is_empty(),
+        "input signal must contain at least one sample"
+    );
+    assert!(
+        ac.len() > lag,
+        "autocorrelation buffer must hold lag + 1 values"
+    );
+    assert!(lag <= x.len(), "lag must not exceed the input length");
+    assert!(
+        overlap <= x.len(),
+        "window overlap cannot exceed the input length"
+    );
+
+    let n = x.len();
+    let fast_n = n - lag;
+    let _ = arch;
+
+    let mut buffer = if overlap > 0 {
+        let window = window.expect("window coefficients required when overlap > 0");
+        assert!(
+            window.len() >= overlap,
+            "window must provide at least overlap coefficients"
+        );
+
+        let mut tmp = x.to_vec();
+        for i in 0..overlap {
+            let w = window[i];
+            tmp[i] = mult16_16_q15(tmp[i], w);
+            let tail = n - i - 1;
+            tmp[tail] = mult16_16_q15(tmp[tail], w);
+        }
+        Some(tmp)
+    } else {
+        None
+    };
+    let mut xptr: &[FixedOpusVal16] = buffer.as_ref().map_or(x, |buf| buf);
+
+    let mut ac0 = 1i32 + ((n as i32) << 7);
+    if n & 1 != 0 {
+        ac0 = ac0.wrapping_add(shr32(mult16_16(xptr[0], xptr[0]), 9));
+    }
+    let mut i = (n & 1) as usize;
+    while i < n {
+        ac0 = ac0.wrapping_add(shr32(mult16_16(xptr[i], xptr[i]), 9));
+        ac0 = ac0.wrapping_add(shr32(mult16_16(xptr[i + 1], xptr[i + 1]), 9));
+        i += 2;
+    }
+
+    let mut shift = (celt_ilog2(ac0) - 30 + 10) / 2;
+    if shift > 0 {
+        let mut shifted = Vec::with_capacity(n);
+        for i in 0..n {
+            shifted.push(pshr32(i32::from(xptr[i]), shift as u32) as i16);
+        }
+        buffer = Some(shifted);
+        xptr = buffer.as_ref().expect("shifted buffer must exist");
+    } else {
+        shift = 0;
+    }
+
+    celt_pitch_xcorr_fixed(xptr, xptr, fast_n, lag + 1, ac);
+    for k in 0..=lag {
+        let mut d = 0i32;
+        for i in k + fast_n..n {
+            d = add32(d, mult16_16(xptr[i], xptr[i - k]));
+        }
+        ac[k] = ac[k].wrapping_add(d);
+    }
+
+    shift *= 2;
+    if shift <= 0 {
+        ac[0] = ac[0].wrapping_add(shl32(1, (-shift) as u32));
+    }
+    if ac[0] < 268_435_456 {
+        let shift2 = 29 - ec_ilog(ac[0] as u32);
+        for value in ac.iter_mut().take(lag + 1) {
+            *value = shl32(*value, shift2 as u32);
+        }
+        shift -= shift2;
+    } else if ac[0] >= 536_870_912 {
+        let mut shift2 = 1;
+        if ac[0] >= 1_073_741_824 {
+            shift2 += 1;
+        }
+        for value in ac.iter_mut().take(lag + 1) {
+            *value = shr32(*value, shift2 as u32);
+        }
+        shift += shift2;
+    }
+
+    shift
 }
 
 #[cfg(test)]

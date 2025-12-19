@@ -129,8 +129,24 @@ pub(crate) fn mult32_32_q31(a: FixedOpusVal32, b: FixedOpusVal32) -> FixedOpusVa
 }
 
 #[inline]
+pub(crate) fn mult32_32_q16(a: FixedOpusVal32, b: FixedOpusVal32) -> FixedOpusVal32 {
+    ((i64::from(a) * i64::from(b)) >> 16) as FixedOpusVal32
+}
+
+#[inline]
 pub(crate) fn mult32_32_p31(a: FixedOpusVal32, b: FixedOpusVal32) -> FixedOpusVal32 {
     ((i64::from(a) * i64::from(b) + (1i64 << 30)) >> 31) as FixedOpusVal32
+}
+
+#[inline]
+pub(crate) fn mult32_32_32(a: FixedOpusVal32, b: FixedOpusVal32) -> FixedOpusVal32 {
+    a.wrapping_mul(b)
+}
+
+#[inline]
+pub(crate) fn div32(a: FixedOpusVal32, b: FixedOpusVal32) -> FixedOpusVal32 {
+    debug_assert!(b != 0);
+    a / b
 }
 
 #[inline]
