@@ -515,6 +515,17 @@ safely.
   matching the forward 1/`N` normalisation and unscaled inverse behaviour of
   the reference code.
 
+### `kiss_fft_fixed.rs`
+- `FixedKissFftState` and `FixedKissFftCpx` &rarr; port the `FIXED_POINT`
+  branches of `celt/kiss_fft.c`, including factorisation, twiddle reuse,
+  downshift scheduling, and radix-2/3/4/5 butterflies.
+- `compute_twiddles` &rarr; mirrors the fixed-point twiddle generation that
+  feeds `kf_cexp2()` in the reference, using `celt_cos_norm()` for the Q15
+  cosine/sine pairs.
+- `fft`/`ifft` &rarr; implement the scaled forward FFT and unscaled inverse FFT
+  used by CELT's fixed-point MDCT kernels, with tests validating the numerical
+  accuracy and base-table reuse behaviour.
+
 ### `mdct.rs`
 - `MdctLookup::new` &rarr; owns the per-shift FFT plans and twiddle tables used
   by CELT's MDCT, mirroring the allocation performed by `clt_mdct_init()` in
@@ -525,6 +536,17 @@ safely.
 - `clt_mdct_backward` &rarr; mirrors the inverse MDCT and TDAC overlap-add paths
   from `celt/mdct.c`, including the twiddle symmetry, inverse FFT, and final
   window mixing used to reconstruct the time-domain signal.
+
+### `mdct_fixed.rs`
+- `FixedMdctLookup` &rarr; fixed-point analogue of `mdct_lookup`, caching the
+  per-shift FFT plans and fixed twiddle tables generated via
+  `celt_cos_norm()`.
+- `clt_mdct_forward_fixed` &rarr; ports the `FIXED_POINT` forward MDCT path
+  from `celt/mdct.c`, including the windowed fold, fixed-point pre-rotation,
+  FFT scaling/headroom management, and post-rotation shuffle.
+- `clt_mdct_backward_fixed` &rarr; mirrors the fixed-point inverse MDCT and
+  TDAC overlap-add logic from `celt/mdct.c`, reproducing the pre/post-shift
+  strategy used to protect against overflow.
 
 ## Outstanding pieces of the reference sources
 

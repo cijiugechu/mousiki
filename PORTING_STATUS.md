@@ -39,9 +39,10 @@ Current Rust coverage
   SILK control block as in the reference.
 - `opus_decoder_get_size` and related layout sizing helpers are ported. Packet/header parsing,
   including the self-delimited variant used by multistream decode, feeds the ported
-  `opus_decode_native` and its 16/24-bit and float wrappers. The `fixed_point` feature builds
-  the same floating-point CELT/SILK decode path today; a true fixed-point backend is still
-  pending.
+  `opus_decode_native` and its 16/24-bit and float wrappers. The `fixed_point` feature now
+  wires the fixed-point MDCT/FFT kernels into the CELT decode IMDCT and uses the reference
+  PLC pitch downsample/search flow (still float-backed), but the broader fixed-point backend
+  is still pending.
 
 Remaining modules to port
 -------------------------
@@ -56,10 +57,10 @@ Remaining modules to port
       `celt_exp2`, `celt_cos_norm`, `celt_div`, `celt_sqrt`, `celt_rsqrt` with fixed-point equivalents).
     - Ensure no float-only helpers (including float-specific test assertions) are required to build
       `cargo test --features fixed_point`.
-  - Port CELT's fixed-point DSP backend (most of the work; today Rust mirrors the float path):
-    - FFT/MDCT: implement the `FIXED_POINT` branches of `celt/kiss_fft.c` and `celt/mdct.c`
-      (twiddle tables, scaling/shift strategy, and saturation rules), then re-plumb `MdctLookup`
-      and its callers to use the fixed-point kernels.
+  - Port CELT's fixed-point DSP backend (most of the work; the fixed-point MDCT/FFT kernels are
+    now in place, but much of the decode graph still mirrors the float path):
+    - FFT/MDCT: fixed-point `kiss_fft` + MDCT kernels are ported (`kiss_fft_fixed.rs`,
+      `mdct_fixed.rs`) and wired into the decode IMDCT path.
     - Pitch/search: port the `FIXED_POINT` branches of `celt/pitch.c` (downsampling, xcorr kernels,
       gain computations, and the fixed-point normalisation steps).
     - Bands/VQ/quantisation: port the `FIXED_POINT` branches in `celt/bands.c`, `celt/vq.c`,

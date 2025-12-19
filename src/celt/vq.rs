@@ -21,6 +21,14 @@ use crate::celt::math::{
 use crate::celt::pitch::celt_inner_prod;
 use crate::celt::types::{OpusInt32, OpusVal16, OpusVal32};
 use libm::floorf;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{extract16, mult16_16, mult32_32_q31, pshr32, vshr32};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::celt_ilog2;
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::celt_rsqrt_norm as celt_rsqrt_norm_fixed;
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
 
 /// Spread decisions mirrored from `celt/bands.h`.
 pub(crate) const SPREAD_NONE: i32 = 0;
@@ -158,6 +166,35 @@ pub(crate) fn normalise_residual(
     let scale = celt_rsqrt_norm(ryy) * gain;
     for (dst, &pulse) in x.iter_mut().take(len).zip(pulses.iter()) {
         *dst = scale * pulse as OpusVal16;
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn normalise_residual_fixed(
+    pulses: &[i32],
+    x: &mut [FixedOpusVal16],
+    n: usize,
+    ryy: FixedOpusVal32,
+    gain: FixedOpusVal32,
+) {
+    if n == 0 {
+        return;
+    }
+
+    debug_assert!(pulses.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(x.len() >= n, "output buffer shorter than band size");
+
+    let len = n.min(pulses.len()).min(x.len());
+    if len == 0 || ryy == 0 {
+        return;
+    }
+
+    let k = celt_ilog2(ryy) >> 1;
+    let t = vshr32(ryy, 2 * (k - 7));
+    let g = mult32_32_q31(i32::from(celt_rsqrt_norm_fixed(t)), gain) as i16;
+
+    for (dst, &pulse) in x.iter_mut().take(len).zip(pulses.iter()) {
+        *dst = extract16(pshr32(mult16_16(g, pulse as i16), (k + 1) as u32));
     }
 }
 
@@ -431,6 +468,8 @@ mod tests {
         SPREAD_NORMAL, alg_quant, alg_unquant, exp_rotation, extract_collapse_mask,
         normalise_residual, renormalise_vector, stereo_itheta,
     };
+    #[cfg(feature = "fixed_point")]
+    use super::normalise_residual_fixed;
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
 
@@ -551,8 +590,9 @@ mod tests {
         let mask_dec = alg_unquant(&mut decoded, n, k, spread, b, &mut dec, gain);
 
         assert_eq!(mask, mask_dec);
+        let tolerance = 1e-6;
         for (a, b) in encoded.iter().zip(decoded.iter()) {
-            assert!((a - b).abs() < 1e-6);
+            assert!((a - b).abs() < tolerance);
         }
     }
 
@@ -572,5 +612,25 @@ mod tests {
         let y = [1.0f32; 8];
         let angle = stereo_itheta(&x, &y, false, x.len(), 0);
         assert!((angle - 16_384).abs() <= 1);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_residual_normalisation_preserves_signs() {
+        let pulses = [3, -2, 1, 0];
+        let mut output = [0i16; 4];
+        let ryy = 1 << 14;
+        let gain = 1 << 14;
+
+        normalise_residual_fixed(&pulses, &mut output, pulses.len(), ryy, gain);
+
+        for (value, &pulse) in output.iter().zip(&pulses) {
+            if pulse == 0 {
+                assert_eq!(*value, 0);
+            } else {
+                let sign = i32::from(value.signum());
+                assert!(sign == 0 || sign == pulse.signum());
+            }
+        }
     }
 }

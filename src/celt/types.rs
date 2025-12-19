@@ -4,6 +4,10 @@ use alloc::vec::Vec;
 
 use super::mini_kfft::MiniKissFft;
 use super::vq::SPREAD_NORMAL;
+#[cfg(feature = "fixed_point")]
+use super::fixed_ops::qconst16;
+#[cfg(feature = "fixed_point")]
+use super::mdct_fixed::FixedMdctLookup;
 use libm::cosf;
 
 /// Corresponds to `opus_int16` in the C implementation.
@@ -516,6 +520,10 @@ pub struct OpusCustomDecoder<'a> {
     pub old_log_e: &'a mut [CeltGlog],
     pub old_log_e2: &'a mut [CeltGlog],
     pub background_log_e: &'a mut [CeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_mdct: FixedMdctLookup,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_window: Vec<FixedCeltCoef>,
 }
 
 impl<'a> OpusCustomDecoder<'a> {
@@ -544,6 +552,14 @@ impl<'a> OpusCustomDecoder<'a> {
         debug_assert_eq!(old_log_e.len(), band_count);
         debug_assert_eq!(old_log_e2.len(), band_count);
         debug_assert_eq!(background_log_e.len(), band_count);
+        #[cfg(feature = "fixed_point")]
+        let fixed_mdct = FixedMdctLookup::new(mode.mdct.len(), mode.mdct.max_shift());
+        #[cfg(feature = "fixed_point")]
+        let fixed_window = mode
+            .window
+            .iter()
+            .map(|&value| qconst16(f64::from(value), 15))
+            .collect();
         Self {
             mode,
             overlap,
@@ -575,6 +591,10 @@ impl<'a> OpusCustomDecoder<'a> {
             old_log_e,
             old_log_e2,
             background_log_e,
+            #[cfg(feature = "fixed_point")]
+            fixed_mdct,
+            #[cfg(feature = "fixed_point")]
+            fixed_window,
         }
     }
 

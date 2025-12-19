@@ -20,13 +20,19 @@ mod entdec;
 mod entenc;
 #[cfg(feature = "fixed_point")]
 mod fixed_arch;
+#[cfg(feature = "fixed_point")]
+mod fixed_ops;
 mod float_cast;
 mod kiss_fft;
+#[cfg(feature = "fixed_point")]
+mod kiss_fft_fixed;
 mod laplace;
 mod lpc;
 mod math;
 pub(crate) mod math_fixed;
 mod mdct;
+#[cfg(feature = "fixed_point")]
+mod mdct_fixed;
 mod mini_kfft;
 mod modes;
 mod pitch;
@@ -62,10 +68,16 @@ pub(crate) use entenc::*;
 #[cfg(feature = "fixed_point")]
 #[allow(unused_imports)]
 pub(crate) use fixed_arch::*;
+#[cfg(feature = "fixed_point")]
+#[allow(unused_imports)]
+pub(crate) use fixed_ops::*;
 #[allow(unused_imports)]
 pub(crate) use float_cast::*;
 #[allow(unused_imports)]
 pub(crate) use kiss_fft::*;
+#[cfg(feature = "fixed_point")]
+#[allow(unused_imports)]
+pub(crate) use kiss_fft_fixed::*;
 #[allow(unused_imports)]
 pub(crate) use laplace::*;
 #[allow(unused_imports)]
@@ -75,6 +87,9 @@ pub(crate) use math::isqrt32;
 pub(crate) use math::*;
 #[allow(unused_imports)]
 pub(crate) use mdct::*;
+#[cfg(feature = "fixed_point")]
+#[allow(unused_imports)]
+pub(crate) use mdct_fixed::*;
 #[allow(unused_imports)]
 pub(crate) use mini_kfft::*;
 #[allow(unused_imports)]

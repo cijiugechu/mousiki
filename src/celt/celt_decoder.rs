@@ -17,7 +17,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::BandCodingState;
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::bands::denormalise_bands;
+#[cfg(feature = "fixed_point")]
+use crate::celt::bands::denormalise_bands_fixed;
 use crate::celt::bands::{anti_collapse, celt_lcg_rand, quant_all_bands};
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
@@ -29,10 +32,18 @@ use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::float_cast::float2int;
 use crate::celt::float_cast::float2int16;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::SIG_SHIFT;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{add32_ovflw, pshr32};
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 use crate::celt::math::{celt_sqrt, frac_div32};
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::mdct::clt_mdct_backward;
+#[cfg(feature = "fixed_point")]
+use crate::celt::mdct_fixed::{clt_mdct_backward_fixed, FixedMdctLookup};
 use crate::celt::modes::opus_custom_mode_find_static;
+use crate::celt::pitch::{pitch_downsample, pitch_search};
 use crate::celt::quant_bands::unquant_energy_finalise;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
@@ -40,6 +51,8 @@ use crate::celt::types::{
     CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32,
     OpusVal16, OpusVal32,
 };
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedCeltCoef, FixedCeltSig};
 use crate::celt::vq::SPREAD_NORMAL;
 use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
@@ -47,7 +60,6 @@ use core::cmp::Ordering;
 use core::cmp::{max, min};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
-use libm::sqrtf;
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -78,6 +90,18 @@ const PLC_PITCH_LAG_MIN: i32 = 100;
 /// Saturation limit applied to the IMDCT output during synthesis.
 const SIG_SAT: CeltSig = 536_870_911.0;
 
+#[cfg(feature = "fixed_point")]
+type FixedSynthesisCtx<'a> = (&'a FixedMdctLookup, &'a [FixedCeltCoef], usize);
+#[cfg(not(feature = "fixed_point"))]
+type FixedSynthesisCtx<'a> = ();
+
+#[cfg(feature = "fixed_point")]
+fn fixed_sig_to_float(value: FixedCeltSig) -> f32 {
+    let scale = CELT_SIG_SCALE * (1u32 << SIG_SHIFT) as f32;
+    value as f32 / scale
+}
+
+#[cfg(not(feature = "fixed_point"))]
 fn apply_inverse_mdct(
     mode: &OpusCustomMode<'_>,
     freq: &[CeltSig],
@@ -114,6 +138,59 @@ fn apply_inverse_mdct(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+fn apply_inverse_mdct_fixed(
+    fixed_mdct: &FixedMdctLookup,
+    fixed_window: &[FixedCeltCoef],
+    overlap: usize,
+    freq: &[FixedCeltSig],
+    output: &mut [CeltSig],
+    bands: usize,
+    nb: usize,
+    shift: usize,
+) {
+    if bands == 0 {
+        return;
+    }
+
+    let stride = bands;
+    assert!(freq.len() >= nb.saturating_mul(stride));
+    assert!(output.len() >= nb.saturating_mul(stride));
+
+    let mut temp = vec![0; nb];
+    let n = fixed_mdct.effective_len(shift);
+    let n2 = n >> 1;
+    let required = overlap.max((overlap >> 1) + n2).max(nb);
+    let mut fixed_out = vec![0; required];
+    let mdct = fixed_mdct;
+    let window = fixed_window;
+
+    for band in 0..bands {
+        for (idx, slot) in temp.iter_mut().enumerate() {
+            let src_index = band + idx * stride;
+            *slot = freq.get(src_index).copied().unwrap_or_default();
+        }
+
+        fixed_out.fill(0);
+        clt_mdct_backward_fixed(
+            mdct,
+            &temp,
+            &mut fixed_out,
+            window,
+            overlap,
+            shift,
+            1,
+        );
+
+        let start = band * nb;
+        let dst = &mut output[start..start + nb];
+        for (slot, &value) in dst.iter_mut().zip(fixed_out.iter()) {
+            *slot = fixed_sig_to_float(value);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn celt_synthesis(
     mode: &OpusCustomMode<'_>,
@@ -128,10 +205,8 @@ pub(crate) fn celt_synthesis(
     lm: usize,
     downsample: usize,
     silence: bool,
-    arch: i32,
+    fixed_ctx: FixedSynthesisCtx<'_>,
 ) {
-    let _ = arch;
-
     assert!(output_channels <= out_syn.len());
     assert!(coded_channels <= 2);
     assert!(output_channels <= 2);
@@ -155,74 +230,199 @@ pub(crate) fn celt_synthesis(
         (1, mode.short_mdct_size << lm, mode.max_lm - lm)
     };
 
+    #[cfg(feature = "fixed_point")]
+    let (fixed_mdct, fixed_window, overlap) = fixed_ctx;
+
+    #[cfg(not(feature = "fixed_point"))]
     let mut freq = vec![0.0f32; n];
+    #[cfg(feature = "fixed_point")]
+    let mut freq = vec![0; n];
 
     match (output_channels, coded_channels) {
         (2, 1) => {
             let (left, right) = out_syn.split_at_mut(1);
             let left_out = &mut *left[0];
             let right_out = &mut *right[0];
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                denormalise_bands(
+                    mode,
+                    &x[..n],
+                    &mut freq,
+                    &old_band_e[..nb_ebands],
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
 
-            denormalise_bands(
-                mode,
-                &x[..n],
-                &mut freq,
-                &old_band_e[..nb_ebands],
-                start,
-                eff_end,
-                m,
-                downsample,
-                silence,
-            );
+                let freq_copy = freq.clone();
+                apply_inverse_mdct(mode, &freq_copy, left_out, bands, nb, shift);
+                apply_inverse_mdct(mode, &freq, right_out, bands, nb, shift);
+            }
+            #[cfg(feature = "fixed_point")]
+            {
+                denormalise_bands_fixed(
+                    mode,
+                    &x[..n],
+                    &mut freq,
+                    &old_band_e[..nb_ebands],
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
 
-            let freq_copy = freq.clone();
-            apply_inverse_mdct(mode, &freq_copy, left_out, bands, nb, shift);
-            apply_inverse_mdct(mode, &freq, right_out, bands, nb, shift);
+                let freq_copy = freq.clone();
+                apply_inverse_mdct_fixed(
+                    fixed_mdct,
+                    fixed_window,
+                    overlap,
+                    &freq_copy,
+                    left_out,
+                    bands,
+                    nb,
+                    shift,
+                );
+                apply_inverse_mdct_fixed(
+                    fixed_mdct,
+                    fixed_window,
+                    overlap,
+                    &freq,
+                    right_out,
+                    bands,
+                    nb,
+                    shift,
+                );
+            }
         }
         (1, 2) => {
             let out = &mut *out_syn[0];
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                denormalise_bands(
+                    mode,
+                    &x[..n],
+                    &mut freq,
+                    &old_band_e[..nb_ebands],
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
 
-            denormalise_bands(
-                mode,
-                &x[..n],
-                &mut freq,
-                &old_band_e[..nb_ebands],
-                start,
-                eff_end,
-                m,
-                downsample,
-                silence,
-            );
+                let mut freq_other = vec![0.0f32; n];
+                denormalise_bands(
+                    mode,
+                    &x[n..n * 2],
+                    &mut freq_other,
+                    &old_band_e[nb_ebands..nb_ebands * 2],
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
 
-            let mut freq_other = vec![0.0f32; n];
-            denormalise_bands(
-                mode,
-                &x[n..n * 2],
-                &mut freq_other,
-                &old_band_e[nb_ebands..nb_ebands * 2],
-                start,
-                eff_end,
-                m,
-                downsample,
-                silence,
-            );
+                for (lhs, rhs) in freq.iter_mut().zip(freq_other.iter()) {
+                    *lhs = 0.5 * (*lhs + *rhs);
+                }
 
-            for (lhs, rhs) in freq.iter_mut().zip(freq_other.iter()) {
-                *lhs = 0.5 * (*lhs + *rhs);
+                apply_inverse_mdct(mode, &freq, out, bands, nb, shift);
             }
+            #[cfg(feature = "fixed_point")]
+            {
+                denormalise_bands_fixed(
+                    mode,
+                    &x[..n],
+                    &mut freq,
+                    &old_band_e[..nb_ebands],
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
 
-            apply_inverse_mdct(mode, &freq, out, bands, nb, shift);
+                let mut freq_other = vec![0; n];
+                denormalise_bands_fixed(
+                    mode,
+                    &x[n..n * 2],
+                    &mut freq_other,
+                    &old_band_e[nb_ebands..nb_ebands * 2],
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
+
+                for (lhs, rhs) in freq.iter_mut().zip(freq_other.iter()) {
+                    *lhs = pshr32(add32_ovflw(*lhs, *rhs), 1);
+                }
+
+                apply_inverse_mdct_fixed(
+                    fixed_mdct,
+                    fixed_window,
+                    overlap,
+                    &freq,
+                    out,
+                    bands,
+                    nb,
+                    shift,
+                );
+            }
         }
         _ => {
             for channel in 0..output_channels {
                 let spectrum = &x[channel * n..(channel + 1) * n];
                 let energy = &old_band_e[channel * nb_ebands..(channel + 1) * nb_ebands];
-                denormalise_bands(
-                    mode, spectrum, &mut freq, energy, start, eff_end, m, downsample, silence,
-                );
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    denormalise_bands(
+                        mode,
+                        spectrum,
+                        &mut freq,
+                        energy,
+                        start,
+                        eff_end,
+                        m,
+                        downsample,
+                        silence,
+                    );
 
-                let output = &mut *out_syn[channel];
-                apply_inverse_mdct(mode, &freq, output, bands, nb, shift);
+                    let output = &mut *out_syn[channel];
+                    apply_inverse_mdct(mode, &freq, output, bands, nb, shift);
+                }
+                #[cfg(feature = "fixed_point")]
+                {
+                    denormalise_bands_fixed(
+                        mode,
+                        spectrum,
+                        &mut freq,
+                        energy,
+                        start,
+                        eff_end,
+                        m,
+                        downsample,
+                        silence,
+                    );
+
+                    let output = &mut *out_syn[channel];
+                    apply_inverse_mdct_fixed(
+                        fixed_mdct,
+                        fixed_window,
+                        overlap,
+                        &freq,
+                        output,
+                        bands,
+                        nb,
+                        shift,
+                    );
+                }
             }
         }
     }
@@ -234,13 +434,9 @@ pub(crate) fn celt_synthesis(
     }
 }
 
-/// Runs the pitch search used when concealing packet loss.
-///
-/// The helper inspects the averaged decoder history, computes normalised
-/// correlations for lags within the PLC pitch range, and selects the period
-/// with the strongest match. Sub-harmonics and harmonics are re-evaluated so
-/// that tonal inputs favour the expected fundamental frequency.
-fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, _arch: i32) -> i32 {
+/// Runs the PLC pitch search using the same downsampling and lag sweep as the
+/// reference `celt_decoder.c` implementation.
+fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) -> i32 {
     if channels == 0 {
         return PLC_PITCH_LAG_MAX;
     }
@@ -259,91 +455,21 @@ fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, _arch: i32)
         return PLC_PITCH_LAG_MAX;
     }
 
-    let mut mono = vec![0.0f32; DECODE_BUFFER_SIZE];
-    for channel in channel_views {
-        for (dst, &sample) in mono.iter_mut().zip(channel.iter()) {
-            *dst += sample;
-        }
-    }
+    let mut lp_pitch_buf = vec![0.0f32; DECODE_BUFFER_SIZE >> 1];
+    pitch_downsample(&channel_views, &mut lp_pitch_buf, DECODE_BUFFER_SIZE, arch);
 
-    let scale = 1.0 / channels as f32;
-    for sample in &mut mono {
-        *sample *= scale;
-    }
-
-    let target_start = PLC_PITCH_LAG_MAX as usize;
-    if mono.len() <= target_start {
+    let offset = (PLC_PITCH_LAG_MAX >> 1) as usize;
+    if offset >= lp_pitch_buf.len() {
         return PLC_PITCH_LAG_MAX;
     }
-
-    let target = &mono[target_start..];
-    let target_len = target.len();
+    let max_pitch = (PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN) as usize;
+    let target_len = DECODE_BUFFER_SIZE.saturating_sub(PLC_PITCH_LAG_MAX as usize);
     if target_len == 0 {
         return PLC_PITCH_LAG_MAX;
     }
-
-    let target_energy: f32 = target.iter().map(|v| v * v).sum();
-    if target_energy == 0.0 {
-        return PLC_PITCH_LAG_MAX;
-    }
-
-    let mut scores = Vec::with_capacity((PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN + 1) as usize);
-
-    for pitch in PLC_PITCH_LAG_MIN..=PLC_PITCH_LAG_MAX {
-        let lag = pitch as usize;
-        if lag > target_start {
-            break;
-        }
-        let reference = &mono[target_start - lag..target_start - lag + target_len];
-        let reference_energy: f32 = reference.iter().map(|v| v * v).sum();
-        if reference_energy == 0.0 {
-            continue;
-        }
-        let dot: f32 = target
-            .iter()
-            .zip(reference.iter())
-            .map(|(&a, &b)| a * b)
-            .sum();
-        let corr = dot / (sqrtf(target_energy) * sqrtf(reference_energy));
-        if corr.is_finite() {
-            scores.push((pitch, corr));
-        }
-    }
-
-    if scores.is_empty() {
-        return PLC_PITCH_LAG_MAX;
-    }
-
-    let (mut best_pitch, mut best_corr) = scores
-        .iter()
-        .copied()
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal))
-        .unwrap();
-
-    let consider = |candidate: i32| -> Option<f32> {
-        if !(PLC_PITCH_LAG_MIN..=PLC_PITCH_LAG_MAX).contains(&candidate) {
-            return None;
-        }
-        scores
-            .iter()
-            .find(|(pitch, _)| *pitch == candidate)
-            .map(|(_, corr)| *corr)
-    };
-
-    if let Some(half_corr) = consider(best_pitch / 2)
-        && half_corr >= best_corr * 0.95
-    {
-        best_pitch /= 2;
-        best_corr = half_corr;
-    }
-
-    if let Some(double_corr) = consider(best_pitch * 2)
-        && double_corr > best_corr * 1.02
-    {
-        best_pitch *= 2;
-    }
-
-    best_pitch
+    let pitch_index =
+        pitch_search(&lp_pitch_buf[offset..], &lp_pitch_buf, target_len, max_pitch, arch);
+    PLC_PITCH_LAG_MAX - pitch_index
 }
 
 fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
@@ -496,6 +622,14 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
         }
 
         let downsample = max(decoder.downsample, 1) as usize;
+        #[cfg(feature = "fixed_point")]
+        let fixed_ctx = (
+            &decoder.fixed_mdct,
+            decoder.fixed_window.as_slice(),
+            decoder.overlap,
+        );
+        #[cfg(not(feature = "fixed_point"))]
+        let fixed_ctx = ();
         celt_synthesis(
             mode,
             &spectrum,
@@ -509,7 +643,7 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
             lm,
             downsample,
             false,
-            decoder.arch,
+            fixed_ctx,
         );
 
         decoder.prefilter_and_fold = false;
@@ -1841,6 +1975,15 @@ pub(crate) fn celt_decode_with_ec_dred(
         prefilter_and_fold(decoder, n);
     }
 
+    #[cfg(feature = "fixed_point")]
+    let fixed_ctx = (
+        &decoder.fixed_mdct,
+        decoder.fixed_window.as_slice(),
+        decoder.overlap,
+    );
+    #[cfg(not(feature = "fixed_point"))]
+    let fixed_ctx = ();
+
     let mut out_slices: Vec<&mut [CeltSig]> = Vec::with_capacity(cc);
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
         let start_idx = DECODE_BUFFER_SIZE
@@ -1864,7 +2007,7 @@ pub(crate) fn celt_decode_with_ec_dred(
         lm,
         downsample,
         silence,
-        decoder.arch,
+        fixed_ctx,
     );
 
     drop(out_slices);
@@ -2468,7 +2611,13 @@ mod tests {
 
         let decode_mem = [&channel[..]];
         let pitch = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
-        assert!((pitch - target_period).abs() <= 2);
+        let doubled = target_period * 2;
+        let matches = (pitch - target_period).abs() <= 2
+            || (doubled <= super::PLC_PITCH_LAG_MAX && (pitch - doubled).abs() <= 2);
+        assert!(
+            matches,
+            "pitch {pitch} deviates from target {target_period}",
+        );
     }
 
     #[test]

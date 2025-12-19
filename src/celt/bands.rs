@@ -25,6 +25,18 @@ use crate::celt::{
     vq::{alg_quant, alg_unquant, stereo_itheta},
 };
 use core::convert::TryFrom;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::{float2sig, EPSILON as FIXED_EPSILON};
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{
+    abs32, extract16, mult16_16, mult16_32_q15, pshr32, shl32, shr32, vshr32,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::{celt_ilog2, celt_zlog2};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::{celt_rcp as celt_rcp_fixed, celt_sqrt as celt_sqrt_fixed};
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedCeltEner, FixedCeltNorm, FixedCeltSig};
 
 /// Small positive constant used throughout the CELT band tools to avoid divisions by zero.
 const EPSILON: f32 = 1e-15;
@@ -2498,6 +2510,76 @@ pub(crate) fn compute_band_energies(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+pub(crate) fn compute_band_energies_fixed(
+    mode: &OpusCustomMode<'_>,
+    x: &[FixedCeltSig],
+    band_e: &mut [FixedCeltEner],
+    end: usize,
+    channels: usize,
+    lm: usize,
+) {
+    assert!(
+        end <= mode.num_ebands,
+        "end band must not exceed mode bands"
+    );
+    assert!(
+        mode.e_bands.len() > end,
+        "eBands must contain end + 1 entries"
+    );
+
+    let n = mode.short_mdct_size << lm;
+    assert!(
+        x.len() >= channels * n,
+        "input spectrum is too short for the mode"
+    );
+
+    let stride = mode.num_ebands;
+    assert!(
+        band_e.len() >= channels * stride,
+        "band energy buffer too small"
+    );
+
+    for c in 0..channels {
+        let signal_base = c * n;
+        let energy_base = c * stride;
+        for band in 0..end {
+            let band_start = (mode.e_bands[band] as usize) << lm;
+            let band_end = (mode.e_bands[band + 1] as usize) << lm;
+            let slice = &x[signal_base + band_start..signal_base + band_end];
+            let mut maxval = 0i32;
+            for &value in slice {
+                maxval = maxval.max(abs32(value));
+            }
+            if maxval > 0 {
+                let mut sum = 0i32;
+                let mut shift = celt_ilog2(maxval) - 14;
+                let shift2 = ((i32::from(mode.log_n[band]) >> BITRES) + lm as i32 + 1) >> 1;
+                if shift > 0 {
+                    for &value in slice {
+                        let sample = extract16(shr32(value, shift as u32));
+                        sum = sum.wrapping_add(shr32(mult16_16(sample, sample), (2 * shift2) as u32));
+                    }
+                } else {
+                    for &value in slice {
+                        let sample = extract16(shl32(value, (-shift) as u32));
+                        sum = sum.wrapping_add(shr32(mult16_16(sample, sample), (2 * shift2) as u32));
+                    }
+                }
+                shift += shift2;
+                while sum < (1 << 28) {
+                    sum <<= 2;
+                    shift -= 1;
+                }
+                band_e[energy_base + band] =
+                    FixedCeltEner::from(FIXED_EPSILON) + vshr32(celt_sqrt_fixed(sum), -shift);
+            } else {
+                band_e[energy_base + band] = FixedCeltEner::from(FIXED_EPSILON);
+            }
+        }
+    }
+}
+
 /// Normalises each band to unit energy.
 ///
 /// Mirrors the float implementation of `normalise_bands()` from `celt/bands.c`
@@ -2549,6 +2631,57 @@ pub(crate) fn normalise_bands(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+pub(crate) fn normalise_bands_fixed(
+    mode: &OpusCustomMode<'_>,
+    freq: &[FixedCeltSig],
+    x: &mut [FixedCeltNorm],
+    band_e: &[FixedCeltEner],
+    end: usize,
+    channels: usize,
+    m: usize,
+) {
+    assert!(
+        end <= mode.num_ebands,
+        "end band must not exceed mode bands"
+    );
+    assert!(
+        mode.e_bands.len() > end,
+        "eBands must contain end + 1 entries"
+    );
+
+    let n = m * mode.short_mdct_size;
+    assert!(freq.len() >= channels * n);
+    assert!(x.len() >= channels * n);
+
+    let stride = mode.num_ebands;
+    assert!(band_e.len() >= channels * stride);
+
+    for c in 0..channels {
+        let signal_base = c * n;
+        let energy_base = c * stride;
+        for band in 0..end {
+            let shift = celt_zlog2(band_e[energy_base + band]) - 14;
+            let e = vshr32(band_e[energy_base + band], shift - 2);
+            let g = extract16(celt_rcp_fixed(e));
+            let band_start = (mode.e_bands[band] as usize) * m;
+            let band_end = (mode.e_bands[band + 1] as usize) * m;
+            if shift > 0 {
+                for j in band_start..band_end {
+                    let idx = signal_base + j;
+                    let value = mult16_32_q15(g, freq[idx]);
+                    x[idx] = extract16(pshr32(value, shift as u32));
+                }
+            } else {
+                for j in band_start..band_end {
+                    let idx = signal_base + j;
+                    let value = mult16_32_q15(g, freq[idx]);
+                    x[idx] = extract16(shl32(value, (-shift) as u32));
+                }
+            }
+        }
+    }
+}
 /// Rescales the unit-energy coefficients back to their target magnitudes.
 ///
 /// Mirrors the float variant of `denormalise_bands()` from `celt/bands.c` by
@@ -2621,6 +2754,36 @@ pub(crate) fn denormalise_bands(
     freq[bound..n].fill(0.0);
 }
 
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn denormalise_bands_fixed(
+    mode: &OpusCustomMode<'_>,
+    x: &[OpusVal16],
+    freq: &mut [FixedCeltSig],
+    band_log_e: &[CeltGlog],
+    start: usize,
+    end: usize,
+    m: usize,
+    downsample: usize,
+    silence: bool,
+) {
+    let mut temp = vec![0.0f32; freq.len()];
+    denormalise_bands(
+        mode,
+        x,
+        &mut temp,
+        band_log_e,
+        start,
+        end,
+        m,
+        downsample,
+        silence,
+    );
+    for (dst, &src) in freq.iter_mut().zip(temp.iter()) {
+        *dst = float2sig(src);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2630,6 +2793,10 @@ mod tests {
         hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
         special_hybrid_folding, spreading_decision, stereo_merge, stereo_split,
     };
+    #[cfg(feature = "fixed_point")]
+    use super::{compute_band_energies_fixed, normalise_bands_fixed};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::EPSILON as FIXED_EPSILON;
     use crate::celt::entcode::BITRES;
     use crate::celt::math::celt_exp2;
     use crate::celt::quant_bands::E_MEANS;
@@ -3577,5 +3744,46 @@ mod tests {
         assert!(spectrum[..samples].iter().any(|v| *v != 0.0));
         assert!(energy > 0.0);
         assert!((energy - 1.0).abs() <= 1e-3, "renormalised energy {energy}");
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_band_energies_return_epsilon_on_silence() {
+        let e_bands = [0i16, 4, 8];
+        let log_n = [0i16, 0];
+        let mdct = MdctLookup::new(16, 0);
+        let window = crate::celt::modes::compute_mdct_window(8);
+        let mut mode = OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        mode.short_mdct_size = 8;
+        mode.num_short_mdcts = 1;
+
+        let mut band_e = vec![0i32; mode.num_ebands];
+        let spectrum = vec![0i32; mode.short_mdct_size];
+
+        compute_band_energies_fixed(&mode, &spectrum, &mut band_e, mode.num_ebands, 1, 0);
+
+        for value in band_e {
+            assert_eq!(value, i32::from(FIXED_EPSILON));
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_normalise_bands_preserves_silence() {
+        let e_bands = [0i16, 4, 8];
+        let log_n = [0i16, 0];
+        let mdct = MdctLookup::new(16, 0);
+        let window = crate::celt::modes::compute_mdct_window(8);
+        let mut mode = OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        mode.short_mdct_size = 8;
+        mode.num_short_mdcts = 1;
+
+        let freq = vec![0i32; mode.short_mdct_size];
+        let band_e = vec![i32::from(FIXED_EPSILON); mode.num_ebands];
+        let mut x = vec![0i16; mode.short_mdct_size];
+
+        normalise_bands_fixed(&mode, &freq, &mut x, &band_e, mode.num_ebands, 1, 1);
+
+        assert!(x.iter().all(|&v| v == 0));
     }
 }

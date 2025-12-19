@@ -12,6 +12,21 @@ use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
 use crate::celt::{celt_autocorr, celt_lpc, celt_udiv};
 use alloc::vec;
 use core::cmp::min;
+#[cfg(feature = "fixed_point")]
+use core::cmp::{max, min as min_i32};
+
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::Q15_ONE;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{
+    extract16, mac16_16, mult16_16, mult16_16_q15, mult16_32_q15, shr32, vshr32,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::celt_ilog2;
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::celt_rsqrt_norm;
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
 
 /// Selects the two most promising pitch lags based on normalised correlation.
 ///
@@ -265,6 +280,128 @@ pub(crate) fn celt_pitch_xcorr(
             .map(|(&a, &b)| a * b)
             .sum();
     }
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_pitch_xcorr_fixed(
+    x: &[FixedOpusVal16],
+    y: &[FixedOpusVal16],
+    len: usize,
+    max_pitch: usize,
+    xcorr: &mut [FixedOpusVal32],
+) -> FixedOpusVal32 {
+    assert!(x.len() >= len, "input x must provide at least len samples");
+    assert!(
+        y.len() >= len + max_pitch.saturating_sub(1),
+        "input y must provide len + max_pitch - 1 samples"
+    );
+    assert!(
+        xcorr.len() >= max_pitch,
+        "output buffer must store max_pitch correlation values"
+    );
+
+    let mut maxcorr = 1i32;
+    for (delay, slot) in xcorr.iter_mut().enumerate().take(max_pitch) {
+        let mut sum = 0i32;
+        for j in 0..len {
+            sum = mac16_16(sum, x[j], y[delay + j]);
+        }
+        *slot = sum;
+        maxcorr = maxcorr.max(sum);
+    }
+
+    maxcorr
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn find_best_pitch_fixed(
+    xcorr: &[FixedOpusVal32],
+    y: &[FixedOpusVal16],
+    len: usize,
+    max_pitch: usize,
+    best_pitch: &mut [i32; 2],
+    yshift: i32,
+    maxcorr: FixedOpusVal32,
+) {
+    assert!(
+        xcorr.len() >= max_pitch,
+        "xcorr must contain max_pitch elements"
+    );
+    assert!(
+        y.len() >= len + max_pitch,
+        "y must contain len + max_pitch samples to slide the energy window",
+    );
+
+    let xshift = celt_ilog2(maxcorr) - 14;
+
+    let mut syy: FixedOpusVal32 = 1;
+    for &sample in &y[..len] {
+        syy = syy.wrapping_add(shr32(mult16_16(sample, sample), yshift as u32));
+    }
+
+    let mut best_num = [-1i16, -1i16];
+    let mut best_den = [0i32, 0i32];
+    best_pitch[0] = 0;
+    best_pitch[1] = if max_pitch > 1 { 1 } else { 0 };
+
+    for (i, &corr) in xcorr.iter().enumerate().take(max_pitch) {
+        if corr > 0 {
+            let xcorr16 = extract16(vshr32(corr, xshift));
+            let num = mult16_16_q15(xcorr16, xcorr16);
+            if mult16_32_q15(num, best_den[1]) > mult16_32_q15(best_num[1], syy) {
+                if mult16_32_q15(num, best_den[0]) > mult16_32_q15(best_num[0], syy) {
+                    best_num[1] = best_num[0];
+                    best_den[1] = best_den[0];
+                    best_pitch[1] = best_pitch[0];
+                    best_num[0] = num;
+                    best_den[0] = syy;
+                    best_pitch[0] = i as i32;
+                } else {
+                    best_num[1] = num;
+                    best_den[1] = syy;
+                    best_pitch[1] = i as i32;
+                }
+            }
+        }
+
+        let entering = y[i + len];
+        let leaving = y[i];
+        syy = syy
+            .wrapping_add(shr32(mult16_16(entering, entering), yshift as u32))
+            .wrapping_sub(shr32(mult16_16(leaving, leaving), yshift as u32));
+        syy = max(1, syy);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn compute_pitch_gain_fixed(
+    xy: FixedOpusVal32,
+    xx: FixedOpusVal32,
+    yy: FixedOpusVal32,
+) -> FixedOpusVal16 {
+    if xy == 0 || xx == 0 || yy == 0 {
+        return 0;
+    }
+    let sx = celt_ilog2(xx) - 14;
+    let sy = celt_ilog2(yy) - 14;
+    let mut shift = sx + sy;
+    let mut x2y2 = shr32(
+        mult16_16(extract16(vshr32(xx, sx)), extract16(vshr32(yy, sy))),
+        14,
+    );
+    if shift & 1 != 0 {
+        if x2y2 < 32_768 {
+            x2y2 <<= 1;
+            shift -= 1;
+        } else {
+            x2y2 >>= 1;
+            shift += 1;
+        }
+    }
+    let den = celt_rsqrt_norm(x2y2);
+    let mut g = mult16_32_q15(den, xy);
+    g = vshr32(g, (shift >> 1) - 1);
+    extract16(max(-i32::from(Q15_ONE), min_i32(g, i32::from(Q15_ONE))))
 }
 
 /// Performs the coarse-to-fine pitch search used by the encoder analysis paths.
@@ -658,6 +795,10 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::f32::consts::PI;
+    #[cfg(feature = "fixed_point")]
+    use super::{celt_pitch_xcorr_fixed, find_best_pitch_fixed};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::types::FixedOpusVal16;
 
     fn generate_sequence(len: usize, seed: u32) -> Vec<OpusVal16> {
         let mut state = seed;
@@ -1200,5 +1341,78 @@ mod tests {
 
         assert_eq!(t0_result, t0_reference);
         assert!((gain - expected).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_pitch_xcorr_matches_float_reference() {
+        let len = 16usize;
+        let max_pitch = 6usize;
+        let mut x = vec![0.0f32; len];
+        let mut y = vec![0.0f32; len + max_pitch];
+        for (i, sample) in x.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.17).sin();
+        }
+        for (i, sample) in y.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.23).cos();
+        }
+
+        let scale = 8192.0;
+        let x_fixed: Vec<FixedOpusVal16> = x.iter().map(|&v| (v * scale).round() as i16).collect();
+        let y_fixed: Vec<FixedOpusVal16> = y.iter().map(|&v| (v * scale).round() as i16).collect();
+        let mut xcorr_fixed = vec![0i32; max_pitch];
+        let maxcorr = celt_pitch_xcorr_fixed(&x_fixed, &y_fixed, len, max_pitch, &mut xcorr_fixed);
+        assert!(maxcorr > 0);
+
+        let x_float: Vec<f32> = x_fixed.iter().map(|&v| v as f32 / scale).collect();
+        let y_float: Vec<f32> = y_fixed.iter().map(|&v| v as f32 / scale).collect();
+        let mut xcorr_float = vec![0.0f32; max_pitch];
+        celt_pitch_xcorr(&x_float, &y_float, len, max_pitch, &mut xcorr_float);
+
+        let denom = scale * scale;
+        for (fixed, float) in xcorr_fixed.iter().zip(xcorr_float.iter()) {
+            let fixed_float = *fixed as f32 / denom;
+            assert!((fixed_float - float).abs() < 1e-3, "{fixed_float} vs {float}");
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_find_best_pitch_matches_float_choice() {
+        let len = 12usize;
+        let max_pitch = 5usize;
+        let mut y = vec![0.0f32; len + max_pitch];
+        for (i, sample) in y.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.19).sin();
+        }
+
+        let scale = 8192.0;
+        let y_fixed: Vec<FixedOpusVal16> = y.iter().map(|&v| (v * scale).round() as i16).collect();
+        let mut xcorr_fixed = vec![0i32; max_pitch];
+        let maxcorr = celt_pitch_xcorr_fixed(
+            &y_fixed[..len],
+            &y_fixed,
+            len,
+            max_pitch,
+            &mut xcorr_fixed,
+        );
+        let mut best_fixed = [0i32; 2];
+        find_best_pitch_fixed(
+            &xcorr_fixed,
+            &y_fixed,
+            len,
+            max_pitch,
+            &mut best_fixed,
+            0,
+            maxcorr,
+        );
+
+        let y_float: Vec<f32> = y_fixed.iter().map(|&v| v as f32 / scale).collect();
+        let mut xcorr_float = vec![0.0f32; max_pitch];
+        celt_pitch_xcorr(&y_float[..len], &y_float, len, max_pitch, &mut xcorr_float);
+        let mut best_float = [0i32; 2];
+        find_best_pitch(&xcorr_float, &y_float, len, max_pitch, &mut best_float);
+
+        assert_eq!(best_fixed[0], best_float[0]);
     }
 }
