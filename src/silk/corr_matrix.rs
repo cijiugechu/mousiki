@@ -48,6 +48,7 @@ pub fn corr_vector_fix(
         let value = if rshifts > 0 {
             inner_prod_aligned_scale(column, target, rshifts)
         } else {
+            debug_assert!(rshifts == 0, "rshifts must be zero for unscaled path");
             inner_prod_aligned(column, target, arch)
         };
         *slot = value;
@@ -81,6 +82,7 @@ pub fn corr_matrix_fix(xx: &mut [i32], x: &[i16], l: usize, order: usize, arch: 
         energy = sub_rshift32(energy, mul_i16(sample, sample), rshifts);
     }
     set_matrix(xx, order, 0, 0, energy);
+    debug_assert!(energy >= 0, "correlation energy must be non-negative");
 
     let mut diag_energy = energy;
     for j in 1..order {
@@ -97,6 +99,7 @@ pub fn corr_matrix_fix(xx: &mut [i32], x: &[i16], l: usize, order: usize, arch: 
             rshifts,
         );
         set_matrix(xx, order, j, j, diag_energy);
+        debug_assert!(diag_energy >= 0, "correlation energy must be non-negative");
     }
 
     if order > 1 {
@@ -108,6 +111,7 @@ pub fn corr_matrix_fix(xx: &mut [i32], x: &[i16], l: usize, order: usize, arch: 
             let mut cross = if rshifts > 0 {
                 inner_prod_aligned_scale(column_zero, column_lag, rshifts)
             } else {
+                debug_assert!(rshifts == 0, "rshifts must be zero for unscaled path");
                 inner_prod_aligned(column_zero, column_lag, arch)
             };
             set_symmetric(xx, order, lag, 0, cross);
