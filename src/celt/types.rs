@@ -12,6 +12,37 @@ pub type OpusInt16 = i16;
 pub type OpusInt32 = i32;
 /// Corresponds to `opus_uint32` in the C implementation.
 pub type OpusUint32 = u32;
+
+/// Fixed-point representation used for `opus_val16` in CELT's fixed build.
+#[cfg(feature = "fixed_point")]
+pub type FixedOpusVal16 = i16;
+/// Fixed-point representation used for `opus_val32` in CELT's fixed build.
+#[cfg(feature = "fixed_point")]
+pub type FixedOpusVal32 = i32;
+/// Fixed-point representation used for `opus_val64` in CELT's fixed build.
+#[cfg(feature = "fixed_point")]
+pub type FixedOpusVal64 = i64;
+/// Fixed-point CELT signal precision (Q27 in the reference build).
+#[cfg(feature = "fixed_point")]
+pub type FixedCeltSig = FixedOpusVal32;
+/// Fixed-point normalised MDCT coefficient precision.
+#[cfg(feature = "fixed_point")]
+pub type FixedCeltNorm = FixedOpusVal16;
+/// Fixed-point CELT energy precision.
+#[cfg(feature = "fixed_point")]
+pub type FixedCeltEner = FixedOpusVal32;
+/// Fixed-point CELT log-energy precision.
+#[cfg(feature = "fixed_point")]
+pub type FixedCeltGlog = FixedOpusVal32;
+/// Fixed-point representation used when emitting or consuming PCM samples.
+#[cfg(all(feature = "fixed_point", feature = "enable_res24"))]
+pub type FixedOpusRes = FixedOpusVal32;
+/// Fixed-point representation used when emitting or consuming PCM samples.
+#[cfg(all(feature = "fixed_point", not(feature = "enable_res24")))]
+pub type FixedOpusRes = FixedOpusVal16;
+/// Fixed-point coefficient precision (Q15 unless QEXT is enabled in C).
+#[cfg(feature = "fixed_point")]
+pub type FixedCeltCoef = FixedOpusVal16;
 /// Floating-point representation used for `opus_val16` in CELT's float build.
 pub type OpusVal16 = f32;
 /// Floating-point representation used for `opus_val32` in CELT's float build.

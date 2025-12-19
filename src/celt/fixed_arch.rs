@@ -13,9 +13,8 @@
 //! reuse these constants and integer conversion helpers to stay aligned with
 //! the reference semantics.
 
-use super::float_cast::CELT_SIG_SCALE;
-#[cfg(feature = "enable_res24")]
-use super::float_cast::float2int;
+use super::float_cast::{float2int, CELT_SIG_SCALE};
+use super::types::{FixedCeltSig, FixedOpusRes, FixedOpusVal16, FixedOpusVal32};
 #[cfg(not(feature = "enable_res24"))]
 use super::float_cast::float2int16;
 
@@ -27,12 +26,12 @@ pub(crate) const SIG_SHIFT: u32 = 12;
 /// Safe saturation limit for 32-bit signals.
 ///
 /// Mirrors `SIG_SAT` in `opus-c/celt/arch.h`.
-pub(crate) const SIG_SAT: i32 = 536_870_911;
+pub(crate) const SIG_SAT: FixedCeltSig = 536_870_911;
 
 /// Scaling applied to unit-norm MDCT vectors in fixed-point builds.
 ///
 /// Mirrors `NORM_SCALING` in `opus-c/celt/arch.h`.
-pub(crate) const NORM_SCALING: i16 = 16_384;
+pub(crate) const NORM_SCALING: FixedOpusVal16 = 16_384;
 
 /// Bit shift used for CELT gain values.
 ///
@@ -40,20 +39,19 @@ pub(crate) const NORM_SCALING: i16 = 16_384;
 pub(crate) const DB_SHIFT: u32 = 24;
 
 /// Q15 representation of 1.0.
-pub(crate) const Q15_ONE: i16 = 32_767;
+pub(crate) const Q15_ONE: FixedOpusVal16 = i16::MAX;
 
 /// Q31 representation of 1.0.
-pub(crate) const Q31_ONE: i32 = 2_147_483_647;
+pub(crate) const Q31_ONE: FixedOpusVal32 = i32::MAX;
 
-/// `opus_res` representation used by the fixed-point build.
-///
-/// Mirrors the `ENABLE_RES24` switch in `opus-c/celt/arch.h`: the default
-/// fixed-point build uses RES16 (`i16`), while the optional RES24 mode uses
-/// `i32` samples with `RES_SHIFT = 8`.
-#[cfg(feature = "enable_res24")]
-pub(crate) type FixedOpusRes = i32;
-#[cfg(not(feature = "enable_res24"))]
-pub(crate) type FixedOpusRes = i16;
+/// Smallest non-zero value in fixed-point builds.
+pub(crate) const EPSILON: FixedOpusVal16 = 1;
+
+/// Placeholder for "very small" fixed-point values.
+pub(crate) const VERY_SMALL: FixedOpusVal16 = 0;
+
+/// Largest 16-bit fixed-point value.
+pub(crate) const VERY_LARGE16: FixedOpusVal16 = i16::MAX;
 
 #[cfg(feature = "enable_res24")]
 pub(crate) const RES_SHIFT: u32 = 8;
@@ -98,30 +96,39 @@ pub(crate) fn float2res(sample: f32) -> FixedOpusRes {
     }
 }
 
+/// Converts a floating-point sample in `[-1, 1]` to a fixed-point `celt_sig` sample.
+///
+/// Mirrors the `FLOAT2SIG()` macro in `opus-c/celt/arch.h`.
 #[inline]
-pub(crate) fn sat16(x: i32) -> i16 {
+pub(crate) fn float2sig(sample: f32) -> FixedCeltSig {
+    let scale = CELT_SIG_SCALE * (1_u32 << SIG_SHIFT) as f32;
+    float2int(scale * sample)
+}
+
+#[inline]
+pub(crate) fn sat16(x: i32) -> FixedOpusVal16 {
     if x > 32_767 {
         32_767
     } else if x < -32_768 {
         -32_768
     } else {
-        x as i16
+        x as FixedOpusVal16
     }
 }
 
 #[inline]
-fn extend32(x: i16) -> i32 {
-    i32::from(x)
+fn extend32(x: FixedOpusVal16) -> FixedCeltSig {
+    FixedCeltSig::from(x)
 }
 
 #[inline]
-fn shl32(x: i32, shift: u32) -> i32 {
+fn shl32(x: FixedCeltSig, shift: u32) -> FixedCeltSig {
     debug_assert!(shift < 32);
-    ((x as u32) << shift) as i32
+    ((x as u32) << shift) as FixedCeltSig
 }
 
 #[inline]
-fn shr32(x: i32, shift: u32) -> i32 {
+fn shr32(x: FixedCeltSig, shift: u32) -> FixedCeltSig {
     debug_assert!(shift < 32);
     x >> shift
 }
@@ -130,7 +137,7 @@ fn shr32(x: i32, shift: u32) -> i32 {
 ///
 /// Mirrors `PSHR32()` from `opus-c/celt/fixed_generic.h`.
 #[inline]
-pub(crate) fn pshr32(x: i32, shift: u32) -> i32 {
+pub(crate) fn pshr32(x: FixedCeltSig, shift: u32) -> FixedCeltSig {
     if shift == 0 {
         return x;
     }
@@ -143,14 +150,14 @@ pub(crate) fn pshr32(x: i32, shift: u32) -> i32 {
 /// Mirrors `SIG2WORD16()` from `opus-c/celt/fixed_generic.h` (and consequently
 /// the `SIG2RES()` macro for the RES16 build).
 #[inline]
-pub(crate) fn sig2word16(sig: i32) -> i16 {
+pub(crate) fn sig2word16(sig: FixedCeltSig) -> FixedOpusVal16 {
     sat16(pshr32(sig, SIG_SHIFT))
 }
 
 /// Convert a fixed-point `celt_sig` sample to a fixed-point `opus_res` sample
 /// (`i16` for the RES16 build, `i32` for the RES24 build).
 #[inline]
-pub(crate) fn sig2res(sig: i32) -> FixedOpusRes {
+pub(crate) fn sig2res(sig: FixedCeltSig) -> FixedOpusRes {
     #[cfg(feature = "enable_res24")]
     {
         pshr32(sig, SIG_SHIFT - RES_SHIFT)
@@ -163,7 +170,7 @@ pub(crate) fn sig2res(sig: i32) -> FixedOpusRes {
 
 /// Convert a fixed-point `opus_res` sample to a fixed-point `celt_sig` sample.
 #[inline]
-pub(crate) fn res2sig(res: FixedOpusRes) -> i32 {
+pub(crate) fn res2sig(res: FixedOpusRes) -> FixedCeltSig {
     #[cfg(feature = "enable_res24")]
     {
         shl32(res, SIG_SHIFT - RES_SHIFT)
@@ -174,9 +181,21 @@ pub(crate) fn res2sig(res: FixedOpusRes) -> i32 {
     }
 }
 
+/// Convert a 16-bit PCM sample to a fixed-point `celt_sig` sample.
+#[inline]
+pub(crate) fn int16tosig(sample: FixedOpusVal16) -> FixedCeltSig {
+    shl32(extend32(sample), SIG_SHIFT)
+}
+
+/// Convert a 24-bit PCM sample to a fixed-point `celt_sig` sample.
+#[inline]
+pub(crate) fn int24tosig(sample: i32) -> FixedCeltSig {
+    shl32(sample, SIG_SHIFT - 8)
+}
+
 /// Convert a fixed-point `opus_res` sample to 16-bit PCM.
 #[inline]
-pub(crate) fn res2int16(res: FixedOpusRes) -> i16 {
+pub(crate) fn res2int16(res: FixedOpusRes) -> FixedOpusVal16 {
     #[cfg(feature = "enable_res24")]
     {
         sat16(pshr32(res, RES_SHIFT))
@@ -185,6 +204,12 @@ pub(crate) fn res2int16(res: FixedOpusRes) -> i16 {
     {
         res
     }
+}
+
+/// Convert a fixed-point `opus_res` sample to a fixed-point `opus_val16`.
+#[inline]
+pub(crate) fn res2val16(res: FixedOpusRes) -> FixedOpusVal16 {
+    res2int16(res)
 }
 
 /// Convert a fixed-point `opus_res` sample to 24-bit PCM stored in an `i32`.
@@ -202,7 +227,7 @@ pub(crate) fn res2int24(res: FixedOpusRes) -> i32 {
 
 /// Convert a 16-bit PCM sample to a fixed-point `opus_res` sample.
 #[inline]
-pub(crate) fn int16tores(sample: i16) -> FixedOpusRes {
+pub(crate) fn int16tores(sample: FixedOpusVal16) -> FixedOpusRes {
     #[cfg(feature = "enable_res24")]
     {
         shl32(extend32(sample), RES_SHIFT)
@@ -225,6 +250,13 @@ pub(crate) fn int24tores(sample: i32) -> FixedOpusRes {
     {
         sat16(pshr32(sample, 8))
     }
+}
+
+/// Multiply a Q15 value by a fixed-point `opus_res` sample.
+#[inline]
+pub(crate) fn mult16_res_q15(a: FixedOpusVal16, b: FixedOpusRes) -> FixedCeltSig {
+    let product = i64::from(a) * i64::from(b);
+    (product >> 15) as FixedCeltSig
 }
 
 /// Addition of two `opus_res` samples.
@@ -302,6 +334,17 @@ mod tests {
     }
 
     #[test]
+    fn pcm_to_sig_conversions_share_the_same_scale() {
+        let unit = 1.0 / CELT_SIG_SCALE;
+        assert_eq!(float2sig(unit), int16tosig(1));
+        assert_eq!(float2sig(-unit), int16tosig(-1));
+
+        for &value in &[-8_388_608i32, -1_234_432, -256, 0, 256, 1_234_432, 8_388_352] {
+            assert_eq!(int24tosig(value), res2sig(int24tores(value)));
+        }
+    }
+
+    #[test]
     fn int24_conversions_roundtrip_for_byte_aligned_values() {
         for &value in &[-8_388_608i32, -1_234_432, -256, 0, 256, 1_234_432, 8_388_352] {
             let res = int24tores(value);
@@ -340,6 +383,14 @@ mod tests {
             let sample = res2float(value);
             assert_eq!(float2res(sample), value);
         }
+    }
+
+    #[test]
+    fn mult16_res_q15_matches_scaled_product() {
+        let a: FixedOpusVal16 = 16_384;
+        let b = int16tores(10_000);
+        let expected = (i64::from(a) * i64::from(b)) >> 15;
+        assert_eq!(mult16_res_q15(a, b), expected as FixedCeltSig);
     }
 
     #[test]

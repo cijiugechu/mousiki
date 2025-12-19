@@ -48,18 +48,9 @@ Remaining modules to port
 - Top-level decoder: optional Deep PLC / OSCE CTLs (e.g. `OPUS_SET_DNN_BLOB`,
   `OPUS_SET_OSCE_BWE`) remain pending alongside a true fixed-point decode backend.
 - True fixed-point decode backend (align `--features fixed_point` with `opus-c`'s `FIXED_POINT` build):
-  - Decide and encode the fixed-point type/scale model from `opus-c/celt/arch.h`:
-    - `opus_val16/opus_val32/celt_sig/celt_norm/celt_coef/opus_res` become integer types in
-      fixed builds (e.g. Q15/Q27 for CELT, plus `RES_SHIFT` selection for 16-bit vs 24-bit output).
-    - Port/centralise the scaling constants and conversion macros used throughout the C tree
-      (`SIG_SHIFT`, `SIG_SAT`, `NORM_SCALING`, `RES2INT16/RES2INT24`, `INT16TORES/INT24TORES`,
-      `SIG2RES/RES2SIG`, `RES2FLOAT/FLOAT2RES`, etc.) so Rust call sites can stay readable.
-      - Initial RES16 helpers are now available in `src/celt/fixed_arch.rs` (including
-        `SIG_SHIFT`, `SIG_SAT`, `NORM_SCALING`, `SIG2RES/RES2SIG`, `RES2INT16/RES2INT24`,
-        `INT16TORES/INT24TORES`, and `ADD_RES`); the optional `ENABLE_RES24`-style variants are
-        now available behind the `enable_res24` Cargo feature.
-    - Refactor `src/celt/types.rs` so `OpusRes`/`CeltSig`/`CeltNorm`/`CeltCoef` are `cfg(feature="fixed_point")`
-      aware, or introduce parallel fixed-point types and keep the float build unchanged.
+  - Fixed-point type aliases plus the `arch.h` scaling/conversion helpers now live in
+    `src/celt/types.rs` and `src/celt/fixed_arch.rs` (including RES16/RES24 variants, SIG/RES
+    conversions, and PCM helpers), so downstream ports can reuse a single model.
   - Remove float-only dependencies from the fixed-point decode graph:
     - Eliminate `libm`/`f32` math from CELT decode when `fixed_point` is enabled (e.g. replace
       `celt_exp2`, `celt_cos_norm`, `celt_div`, `celt_sqrt`, `celt_rsqrt` with fixed-point equivalents).
