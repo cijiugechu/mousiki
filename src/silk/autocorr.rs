@@ -6,8 +6,6 @@
 //! tracking, returning the applied shift so downstream code can interpret the
 //! 32-bit accumulators safely.
 
-use alloc::vec::Vec;
-
 use crate::celt::{celt_ilog2, ec_ilog};
 
 /// Computes the autocorrelation vector of `input` up to `correlation_count`
@@ -16,21 +14,29 @@ use crate::celt::{celt_ilog2, ec_ilog};
 /// The function returns the scaling exponent applied to the `results` slice,
 /// matching the behaviour of the C implementation's `scale` out-parameter. The
 /// caller must provide a `results` buffer whose length is at least
-/// `min(input.len(), correlation_count)`.
-pub fn autocorr(results: &mut [i32], input: &[i16], correlation_count: usize, arch: i32) -> i32 {
+/// `min(input.len(), correlation_count)` and a `scratch` buffer that can hold
+/// `input.len()` samples for the temporary scaled signal.
+pub fn autocorr(
+    results: &mut [i32],
+    input: &[i16],
+    correlation_count: usize,
+    arch: i32,
+    scratch: &mut [i16],
+) -> i32 {
+    assert!(
+        correlation_count > 0,
+        "correlation_count must be positive"
+    );
+    assert!(!input.is_empty(), "input must contain at least one sample");
     let corr_count = correlation_count.min(input.len());
     assert!(
         results.len() >= corr_count,
         "results buffer must hold at least correlation_count elements"
     );
-
-    for slot in &mut results[..corr_count] {
-        *slot = 0;
-    }
-
-    if corr_count == 0 {
-        return 0;
-    }
+    assert!(
+        scratch.len() >= input.len(),
+        "scratch buffer must cover the input length"
+    );
 
     let n = input.len();
     let mut ac0 = 1 + ((n as i32) << 7);
@@ -50,18 +56,15 @@ pub fn autocorr(results: &mut [i32], input: &[i16], correlation_count: usize, ar
     let mut shift = celt_ilog2(ac0) - 30 + 10;
     shift /= 2;
 
-    let scaled_storage = if shift > 0 {
-        Some(
-            input
-                .iter()
-                .map(|&sample| pshr32(i32::from(sample), shift) as i16)
-                .collect::<Vec<_>>(),
-        )
+    let signal: &[i16] = if shift > 0 {
+        for (dst, &sample) in scratch.iter_mut().zip(input.iter()).take(n) {
+            *dst = pshr32(i32::from(sample), shift) as i16;
+        }
+        &scratch[..n]
     } else {
         shift = 0;
-        None
+        input
     };
-    let signal = scaled_storage.as_deref().unwrap_or(input);
 
     compute_autocorrelation(&mut results[..corr_count], signal);
 
@@ -144,8 +147,9 @@ mod tests {
         let input = [1, 2, 3, 4];
         let mut output = [0i32; 3];
         let taps = output.len();
+        let mut scratch = [0i16; 4];
 
-        let scale = autocorr(&mut output, &input, taps, 0);
+        let scale = autocorr(&mut output, &input, taps, 0, &mut scratch);
 
         assert_eq!(output, [520_093_696, 335_544_320, 184_549_376]);
         assert_eq!(scale, -24);
@@ -156,8 +160,9 @@ mod tests {
         let input = [30_000, -20_000, 15_000, -10_000, 5_000, -2_500, 1_250, -625];
         let mut output = [0i32; 5];
         let taps = output.len();
+        let mut scratch = [0i16; 8];
 
-        let scale = autocorr(&mut output, &input, taps, 0);
+        let scale = autocorr(&mut output, &input, taps, 0, &mut scratch);
 
         assert_eq!(
             output,
@@ -177,8 +182,9 @@ mod tests {
         let input = [-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5];
         let mut output = [0i32; 4];
         let taps = output.len();
+        let mut scratch = [0i16; 16];
 
-        let scale = autocorr(&mut output, &input, taps, 0);
+        let scale = autocorr(&mut output, &input, taps, 0, &mut scratch);
 
         assert_eq!(output, [462_422_016, 387_973_120, 315_621_376, 245_366_784]);
         assert_eq!(scale, -20);

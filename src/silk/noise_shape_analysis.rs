@@ -161,6 +161,7 @@ pub fn noise_shape_analysis(
     let mut ar_q24 = [0i32; MAX_SHAPE_LPC_ORDER];
     let mut auto_corr = [0i32; MAX_SHAPE_LPC_ORDER + 1];
     let mut refl_coef_q16 = [0i32; MAX_SHAPE_LPC_ORDER];
+    let mut autocorr_scratch = [0i16; SHAPE_LPC_WIN_MAX as usize];
     let mut x_windowed = [0i16; SHAPE_LPC_WIN_MAX as usize];
 
     for k in 0..nb_subframes {
@@ -194,6 +195,7 @@ pub fn noise_shape_analysis(
                 &x_windowed[..encoder.common.shape_win_length as usize],
                 lpc_order + 1,
                 arch,
+                &mut autocorr_scratch[..encoder.common.shape_win_length as usize],
             )
         };
 

@@ -112,11 +112,13 @@ pub fn find_pitch_lags(
 
     let corr_count = order + 1;
     let mut auto_corr = [0i32; MAX_FIND_PITCH_LPC_ORDER as usize + 1];
+    let mut autocorr_scratch = [0i16; MAX_PITCH_LPC_WIN_LENGTH];
     autocorr(
         &mut auto_corr[..corr_count],
         window,
         corr_count,
         encoder.common.arch,
+        &mut autocorr_scratch[..pitch_lpc_win_length],
     );
     auto_corr[0] = smlawb(
         auto_corr[0],
