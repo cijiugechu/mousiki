@@ -2214,7 +2214,7 @@ fn encode_internal(
     encoder: &mut OpusCustomEncoder<'_>,
     pcm: &[CeltSig],
     frame_size: usize,
-    enc: &mut EcEnc<'_>,
+    _enc: &mut EcEnc<'_>,
 ) -> Result<(), CeltEncodeError> {
     let mode = encoder.mode;
     let Some(lm) = resolve_lm(mode, frame_size) else {
@@ -2227,8 +2227,7 @@ fn encode_internal(
     let time = prepare_time_domain(encoder, pcm, frame_size)?;
     update_overlap_history(encoder, &time, frame_size);
 
-    let freq_bins = frame_size / 2;
-    let mut freq = vec![0.0f32; encoder.stream_channels * freq_bins];
+    let mut freq = vec![0.0f32; encoder.stream_channels * frame_size];
     compute_mdct_spectrum(
         mode,
         false,
@@ -2292,10 +2291,6 @@ fn encode_internal(
     encoder.last_coded_bands = end_band as i32;
     encoder.tapset_decision = 0;
     encoder.consec_transient = 0;
-
-    // The simplified port does not emit additional data yet but ensures the
-    // entropy coder remains in a valid state.
-    enc.enc_bits(0, 0);
 
     Ok(())
 }
