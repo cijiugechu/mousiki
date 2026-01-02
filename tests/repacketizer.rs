@@ -168,10 +168,30 @@ fn multistream_pad_rejects_invalid_lengths() {
 }
 
 #[test]
+fn multistream_pad_rejects_missing_self_delimited_stream() {
+    let mut packet = [0u8; 5];
+    packet[..4].copy_from_slice(&[0, 0xAA, 0xBB, 0xCC]);
+    assert_eq!(
+        opus_multistream_packet_pad(&mut packet, 4, 5, 2),
+        Err(RepacketizerError::InvalidPacket)
+    );
+}
+
+#[test]
 fn multistream_unpad_rejects_invalid_packet() {
     let mut packet = *b"Opus";
     assert_eq!(
         opus_multistream_packet_unpad(&mut packet, 4, 1),
+        Err(RepacketizerError::InvalidPacket)
+    );
+}
+
+#[test]
+fn multistream_unpad_rejects_missing_self_delimited_size() {
+    let mut packet = [0u8, 0xAA, 0xBB];
+    let len = packet.len();
+    assert_eq!(
+        opus_multistream_packet_unpad(&mut packet, len, 2),
         Err(RepacketizerError::InvalidPacket)
     );
 }
