@@ -107,7 +107,7 @@ Porting plan (tracked work)
 - Step 2 (done): port single-stream encoder CTLs needed by `test_opus_encode`
   (force channels, bandwidth caps, signal type, lsb depth, expert frame duration,
   prediction/phase inversion flags, forced mode) with Rust tests.
-- Step 3 (next): add multistream encoder CTL parity and expose encoder-state access
+- Step 3 (done): add multistream encoder CTL parity and expose encoder-state access
   used by `test_opus_encode`; extend packet padding/unpadding test coverage.
 - Step 4 (next): extend `opus_encode` to non-20ms frame sizes plus Hybrid/CELT paths,
   with correct TOC and final-range handling.
