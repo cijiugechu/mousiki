@@ -26,8 +26,11 @@ Current Rust coverage
   (still limited to SILK-only single-frame 20 ms packets). Surround/projection helper
   entry points are available for computing layouts and wiring the projection matrices.
 - A minimal top-level encoder front-end is available via `src/opus_encoder.rs`, including
-  `opus_encoder_get_size`, create/init/reset helpers, a small CTL surface, and a SILK-only
-  `opus_encode` implementation capable of emitting single-frame 20 ms packets.
+  `opus_encoder_get_size`, create/init/reset helpers, an expanded CTL surface (bitrate,
+  VBR, force channels, bandwidth caps, signal type, lsb depth, expert frame duration,
+  prediction disable, phase inversion disable, forced mode), and a SILK-only `opus_encode`
+  implementation capable of emitting single-frame 20 ms packets. Unit tests cover the new
+  encoder CTL round-trips and validation cases.
 - Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
@@ -84,7 +87,8 @@ Remaining modules to port
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
   The current Rust port supports SILK-only single-frame 20 ms packets; Hybrid/CELT packing,
-  variable-duration/multiframe framing, and the full CTL surface are still pending.
+  variable-duration/multiframe framing, and remaining CTL coverage (e.g. voice ratio, lookahead,
+  application changes, LFE/energy mask, DNN hooks) are still pending.
 - Multistream: Generic encoder/decoder front-ends are ported (per-stream encode/decode dispatch,
   self-delimited framing for all but the last stream, and PCM routing). Surround/projection-specific
   multistream encoder tuning (surround analysis and forced modes/bandwidth decisions) remains pending.
@@ -96,3 +100,16 @@ Remaining modules to port
   remain unported; dispatch tables default to scalar implementations.
 - Demos/tests/tools: `opus_demo.c`, `opus_compare.c`, and other CLI/test harnesses are not
   reproduced in Rust.
+
+Porting plan (tracked work)
+---------------------------
+- Step 1 (done): map `test_opus_encode` call chain and identify missing APIs/CTLs/features.
+- Step 2 (done): port single-stream encoder CTLs needed by `test_opus_encode`
+  (force channels, bandwidth caps, signal type, lsb depth, expert frame duration,
+  prediction/phase inversion flags, forced mode) with Rust tests.
+- Step 3 (next): add multistream encoder CTL parity and expose encoder-state access
+  used by `test_opus_encode`; extend packet padding/unpadding test coverage.
+- Step 4 (next): extend `opus_encode` to non-20ms frame sizes plus Hybrid/CELT paths,
+  with correct TOC and final-range handling.
+- Step 5 (next): port regression vectors from `opus_encode_regressions.c` into Rust tests.
+- Step 6 (optional): implement or feature-gate DRED paths.
