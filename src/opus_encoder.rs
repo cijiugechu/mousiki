@@ -5,6 +5,7 @@
 //! SILK-only packets. Hybrid/CELT modes will be wired once the remaining CELT
 //! bitstream packing path is ported.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(not(feature = "fixed_point"))]
@@ -20,6 +21,7 @@ use crate::celt::{
 use crate::opus_multistream::{OPUS_AUTO, OPUS_BITRATE_MAX};
 use crate::packet::Bandwidth;
 use crate::range::RangeEncoder;
+use crate::repacketizer::{OpusRepacketizer, RepacketizerError};
 use crate::silk::enc_api::{PrefillMode, silk_encode, silk_init_encoder};
 use crate::silk::errors::SilkError;
 use crate::silk::EncControl as SilkEncControl;
@@ -472,8 +474,10 @@ impl<'mode> OpusEncoder<'mode> {
         self.silk_mode.opus_can_switch = false;
         self.silk_mode.max_bits = (max_data_bytes.saturating_mul(8)).min(i32::MAX as usize) as i32;
 
-        self.silk_mode.max_internal_sample_rate =
+        let max_internal =
             max_internal_sample_rate_for_bandwidth(self.user_bandwidth, self.max_bandwidth);
+        self.silk_mode.max_internal_sample_rate = max_internal;
+        self.silk_mode.desired_internal_sample_rate = max_internal;
 
         let bitrate = match self.user_bitrate_bps {
             OPUS_AUTO => self.bitrate_bps,
@@ -848,7 +852,7 @@ pub fn opus_encode(
         .checked_mul(frame_size)
         .ok_or(OpusEncodeError::BadArgument)?;
 
-    let frame_rate = encoder
+    let mut frame_rate = encoder
         .fs
         .checked_div(frame_size_i32)
         .ok_or(OpusEncodeError::BadArgument)?;
@@ -863,7 +867,7 @@ pub fn opus_encode(
     encoder.stream_channels = stream_channels;
 
     let mut mode = if encoder.user_forced_mode == OPUS_AUTO {
-        encoder.mode
+        OPUS_AUTO
     } else {
         encoder.user_forced_mode
     };
@@ -880,8 +884,88 @@ pub fn opus_encode(
     if mode != MODE_SILK_ONLY && frame_size > max_celt {
         return Err(OpusEncodeError::Unimplemented);
     }
-    if mode == MODE_SILK_ONLY && frame_size != max_celt {
-        return Err(OpusEncodeError::Unimplemented);
+    if mode == MODE_SILK_ONLY {
+        let multiples = frame_size / max_celt;
+        if frame_size % max_celt != 0 || !(1..=6).contains(&multiples) {
+            return Err(OpusEncodeError::Unimplemented);
+        }
+    }
+
+    if mode == MODE_SILK_ONLY && frame_size > max_celt * 3 {
+        let fs = encoder.fs;
+        let enc_frame_size_i32 = if frame_size_i32 == 2 * fs / 25 {
+            fs / 25
+        } else if frame_size_i32 == 3 * fs / 25 {
+            3 * fs / 50
+        } else {
+            fs / 50
+        };
+        if enc_frame_size_i32 <= 0 || frame_size_i32 % enc_frame_size_i32 != 0 {
+            return Err(OpusEncodeError::Unimplemented);
+        }
+        let nb_frames = frame_size_i32 / enc_frame_size_i32;
+        if nb_frames <= 0 {
+            return Err(OpusEncodeError::Unimplemented);
+        }
+
+        let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+        let max_header_bytes = if nb_frames == 2 {
+            3
+        } else {
+            2 + (nb_frames - 1) * 2
+        };
+        let mut remaining = max_data_bytes
+            .checked_add(nb_frames)
+            .and_then(|value| value.checked_sub(max_header_bytes))
+            .ok_or(OpusEncodeError::BufferTooSmall)?;
+        if remaining < 2 * nb_frames {
+            return Err(OpusEncodeError::BufferTooSmall);
+        }
+
+        let enc_frame_size = usize::try_from(enc_frame_size_i32)
+            .map_err(|_| OpusEncodeError::BadArgument)?;
+        let nb_frames = usize::try_from(nb_frames).map_err(|_| OpusEncodeError::BadArgument)?;
+        let mut repacketizer = OpusRepacketizer::new();
+        repacketizer.opus_repacketizer_init();
+        let mut tmp = vec![0u8; data.len()];
+
+        for frame_idx in 0..nb_frames {
+            let frames_left = nb_frames - frame_idx;
+            let frame_max =
+                (remaining / i32::try_from(frames_left).unwrap_or(1)).max(2) as usize;
+            if frame_max > tmp.len() {
+                return Err(OpusEncodeError::BufferTooSmall);
+            }
+            let start = frame_idx
+                .checked_mul(enc_frame_size)
+                .and_then(|value| value.checked_mul(channels))
+                .ok_or(OpusEncodeError::BadArgument)?;
+            let end = start
+                .checked_add(enc_frame_size * channels)
+                .ok_or(OpusEncodeError::BadArgument)?;
+            let len = opus_encode(
+                encoder,
+                &pcm[start..end],
+                enc_frame_size,
+                &mut tmp[..frame_max],
+            )?;
+            repacketizer
+                .opus_repacketizer_cat(&tmp[..len], len)
+                .map_err(|err| match err {
+                    RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                    _ => OpusEncodeError::InternalError,
+                })?;
+            remaining = remaining.saturating_sub(len as i32);
+        }
+
+        let maxlen = data.len();
+        let out_len = repacketizer
+            .opus_repacketizer_out(&mut data[..], maxlen)
+            .map_err(|err| match err {
+                RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                _ => OpusEncodeError::InternalError,
+            })?;
+        return Ok(out_len);
     }
 
     let mut bandwidth = select_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
@@ -978,10 +1062,69 @@ pub fn opus_encode(
             )
             .map_err(|_| OpusEncodeError::InternalError)?;
 
+            let mut upsampled_pcm = Vec::new();
+            let mut celt_frame_size = frame_size;
+            let upsample = usize::try_from(encoder.celt.encoder().upsample)
+                .map_err(|_| OpusEncodeError::BadArgument)?;
+            let mut celt_pcm: &[i16] = if upsample > 1 {
+                let upsampled_len = required
+                    .checked_mul(upsample)
+                    .ok_or(OpusEncodeError::BadArgument)?;
+                upsampled_pcm.resize(upsampled_len, 0i16);
+                for i in 0..frame_size {
+                    let base = i
+                        .checked_mul(channels)
+                        .ok_or(OpusEncodeError::BadArgument)?;
+                    let dst_base = i
+                        .checked_mul(upsample)
+                        .and_then(|value| value.checked_mul(channels))
+                        .ok_or(OpusEncodeError::BadArgument)?;
+                    for ch in 0..channels {
+                        upsampled_pcm[dst_base + ch] = pcm[base + ch];
+                    }
+                }
+                celt_frame_size = frame_size
+                    .checked_mul(upsample)
+                    .ok_or(OpusEncodeError::BadArgument)?;
+                &upsampled_pcm[..]
+            } else {
+                &pcm[..required]
+            };
+
+            let min_celt_frame = encoder
+                .celt
+                .encoder()
+                .mode
+                .mdct
+                .effective_len(encoder.celt.encoder().mode.max_lm);
+            if celt_frame_size < min_celt_frame {
+                let padded_len = channels
+                    .checked_mul(min_celt_frame)
+                    .ok_or(OpusEncodeError::BadArgument)?;
+                if upsampled_pcm.is_empty() {
+                    upsampled_pcm.resize(padded_len, 0i16);
+                    upsampled_pcm[..required].copy_from_slice(&pcm[..required]);
+                } else {
+                    upsampled_pcm.resize(padded_len, 0i16);
+                }
+                celt_frame_size = min_celt_frame;
+                celt_pcm = &upsampled_pcm[..];
+
+                let adjusted_frame = min_celt_frame
+                    .checked_div(upsample)
+                    .ok_or(OpusEncodeError::BadArgument)?;
+                let adjusted_frame_i32 =
+                    i32::try_from(adjusted_frame).map_err(|_| OpusEncodeError::BadArgument)?;
+                frame_rate = encoder
+                    .fs
+                    .checked_div(adjusted_frame_i32)
+                    .ok_or(OpusEncodeError::BadArgument)?;
+            }
+
             let bytes = crate::celt::opus_custom_encode(
                 encoder.celt.encoder(),
-                &pcm[..required],
-                frame_size,
+                celt_pcm,
+                celt_frame_size,
                 &mut data[1..],
                 max_payload_bytes,
             )

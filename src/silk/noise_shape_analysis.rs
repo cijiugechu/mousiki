@@ -217,6 +217,10 @@ pub fn noise_shape_analysis(
 
         if warping_q16 > 0 {
             let gain_mult_q16 = warped_gain(&ar_q24[..lpc_order], warping_q16, lpc_order);
+            assert!(
+                control.gains_q16[k] > 0,
+                "warped gain adjustment requires positive subframe gain"
+            );
             if control.gains_q16[k] < ONE_Q16 / 4 {
                 control.gains_q16[k] = smulww(control.gains_q16[k], gain_mult_q16);
             } else {
@@ -227,6 +231,10 @@ pub fn noise_shape_analysis(
                     control.gains_q16[k] << 1
                 };
             }
+            assert!(
+                control.gains_q16[k] > 0,
+                "warped gain adjustment must keep gains positive"
+            );
         }
 
         bwexpander_32(&mut ar_q24[..lpc_order], bwexp_q16);
@@ -260,6 +268,7 @@ pub fn noise_shape_analysis(
         snr_adj_db_q7,
         (0.16_f32 * (1 << 16) as f32 + 0.5) as i32,
     ));
+    assert!(gain_mult_q16 > 0, "gain multiplier must be positive");
     let gain_add_q16 = log2lin(smlawb(
         16 << 7,
         MIN_QGAIN_DB << 7,
@@ -267,6 +276,7 @@ pub fn noise_shape_analysis(
     ));
     for gain in control.gains_q16.iter_mut().take(nb_subframes) {
         *gain = smulww(*gain, gain_mult_q16);
+        assert!(*gain >= 0, "gain multiplier must not yield negative gain");
         *gain = add_pos_sat32(*gain, gain_add_q16);
     }
 
@@ -469,8 +479,10 @@ fn rshift(value: i32, shift: i32) -> i32 {
 fn rshift_round(value: i32, shift: i32) -> i32 {
     if shift <= 0 {
         value
+    } else if shift == 1 {
+        (value >> 1).wrapping_add(value & 1)
     } else {
-        (value + (1 << (shift - 1))) >> shift
+        ((value >> (shift - 1)) + 1) >> 1
     }
 }
 

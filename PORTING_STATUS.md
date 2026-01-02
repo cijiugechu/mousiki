@@ -114,5 +114,5 @@ Porting plan (tracked work)
   used by `test_opus_encode`; extend packet padding/unpadding test coverage.
 - Step 4 (done): extend `opus_encode` with frame-size selection and basic Hybrid/CELT paths,
   updating TOC and final-range handling (SILK remains 20 ms only; multi-frame packing pending).
-- Step 5 (next): port regression vectors from `opus_encode_regressions.c` into Rust tests.
+- Step 5 (done): port regression vectors from `opus_encode_regressions.c` into Rust tests.
 - Step 6 (optional): implement or feature-gate DRED paths.
