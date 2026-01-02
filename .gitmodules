@@ -1,3 +1,4 @@
 [submodule "opus-c"]
 	path = opus-c
 	url = https://github.com/xiph/opus.git
+	branch = v1.5.2
