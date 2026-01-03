@@ -20,19 +20,24 @@ Current Rust coverage
   `opus_decode_native` FEC/PLC/front-end control flow and invokes the translated
   per-frame decoder (SILK PLC/FEC plus CELT output on non-fixed builds), including the
   CELT↔SILK transition smoothing and redundancy fades used during bandwidth switches; hybrid
-  frames now run through the same path. Multistream decode now includes per-stream
+  packets are currently decoded as CELT-only until the shared range-decoder path is ported.
+  Multistream decode now includes per-stream
   `opus_decode_native` dispatch and PCM routing. The multistream encoder front-end is
   available for generic layouts and wraps the current Rust `opus_encode` implementation
-  (SILK-only is still limited to single-frame 20 ms; CELT/HYBRID support only minimal
-  single-frame 10/20 ms payloads). Surround/projection helper
+  (SILK-only supports 10/20/40/60 ms packets plus repacketized >60 ms frames, CELT-only
+  supports multiframe packing; hybrid remains minimal single-frame 10/20 ms payloads).
+  Surround/projection helper
   entry points are available for computing layouts and wiring the projection matrices.
 - A minimal top-level encoder front-end is available via `src/opus_encoder.rs`, including
   `opus_encoder_get_size`, create/init/reset helpers, an expanded CTL surface (bitrate,
   VBR, force channels, bandwidth caps, signal type, lsb depth, expert frame duration,
   prediction disable, phase inversion disable, forced mode), plus a basic `opus_encode`
-  implementation that emits SILK-only single-frame 20 ms packets and minimal CELT/HYBRID
-  single-frame 10/20 ms payloads with updated TOC/final-range handling. Unit tests cover
+  implementation that emits SILK-only 10/20/40/60 ms packets (and repacketized >60 ms frames),
+  plus CELT-only multiframe payloads, with updated TOC/final-range handling; hybrid remains
+  limited to single-frame 10/20 ms payloads. Unit tests cover
   the encoder CTL round-trips, validation cases, and TOC/frame-size outputs.
+- Feature-gated Deep REDundancy (DRED) stubs are available in `src/dred.rs`, with matching
+  encoder/multistream CTLs gated behind the `dred` feature.
 - Tonality analysis mirrors `analysis.c/h` and the supporting MLP (`mlp.c`, `mlp_data.c`),
   including the RNN-based music/speech classifier, bandwidth detector, and tonality metadata
   extraction used by the encoder heuristics.
@@ -52,7 +57,8 @@ Current Rust coverage
 Remaining modules to port
 -------------------------
 - Top-level decoder: optional Deep PLC / OSCE CTLs (e.g. `OPUS_SET_DNN_BLOB`,
-  `OPUS_SET_OSCE_BWE`) remain pending alongside a true fixed-point decode backend.
+  `OPUS_SET_OSCE_BWE`) remain pending alongside a true fixed-point decode backend and the
+  shared SILK/CELT range-decoder path for hybrid packets.
 - True fixed-point decode backend (align `--features fixed_point` with `opus-c`'s `FIXED_POINT` build):
   - Fixed-point type aliases plus the `arch.h` scaling/conversion helpers now live in
     `src/celt/types.rs` and `src/celt/fixed_arch.rs` (including RES16/RES24 variants, SIG/RES
@@ -88,21 +94,22 @@ Remaining modules to port
       boundaries (e.g. `SIG_SAT` behaviour and `RES2INT16/24` conversions).
 - Top-level encoder: `opus_encoder.c` and `analysis.h` entry points (`opus_encode`,
   `_encode_float/_encode_native`, FEC/DTX/LBRR glue, encoder CTLs, per-frame state updates).
-  The current Rust port supports SILK-only single-frame 20 ms packets plus minimal CELT/HYBRID
-  single-frame 10/20 ms payloads; full CELT/HYBRID packing, variable-duration/multiframe framing,
-  redundancy, and remaining CTL coverage (e.g. voice ratio, lookahead, application changes,
-  LFE/energy mask, DNN hooks) are still pending.
+  The current Rust port supports SILK-only 10/20/40/60 ms packets (plus repacketized >60 ms
+  frames) and CELT-only multiframe packing; hybrid payloads remain minimal single-frame 10/20 ms.
+  Full CELT/HYBRID packing, variable-duration/multiframe framing for hybrid, redundancy, and
+  remaining CTL coverage (e.g. voice ratio, lookahead, application changes, LFE/energy mask,
+  DNN hooks) are still pending.
 - Multistream: Generic encoder/decoder front-ends are ported (per-stream encode/decode dispatch,
   self-delimited framing for all but the last stream, and PCM routing). Surround/projection-specific
   multistream encoder tuning (surround analysis and forced modes/bandwidth decisions) remains pending.
 - Projection: `opus_projection_encoder.c` / `opus_projection_decoder.c` front-ends are ported and
   wired through the multistream glue, including demixing-matrix CTL equivalents.
 - Neural/DNN extras: the entire `opus-c/dnn/` tree (DRED/LPCNet/OSCE/Deep PLC tooling and demos)
-  is not ported; Rust currently only stubs the optional deep-PLC hooks.
+  is not ported; Rust currently only stubs the optional deep-PLC hooks and the DRED API surface.
 - Architecture-specific SIMD back-ends and runtime CPU detection for CELT/SILK (arm/x86/mips)
   remain unported; dispatch tables default to scalar implementations.
 - Demos/tests/tools: `opus_demo.c`, `opus_compare.c`, and other CLI/test harnesses are not
-  reproduced in Rust.
+  reproduced in Rust; `test_opus_encode.c` is ported as `tests/test_opus_encode.rs`.
 
 Porting plan (tracked work)
 ---------------------------
@@ -113,6 +120,7 @@ Porting plan (tracked work)
 - Step 3 (done): add multistream encoder CTL parity and expose encoder-state access
   used by `test_opus_encode`; extend packet padding/unpadding test coverage.
 - Step 4 (done): extend `opus_encode` with frame-size selection and basic Hybrid/CELT paths,
-  updating TOC and final-range handling (SILK remains 20 ms only; multi-frame packing pending).
+  updating TOC and final-range handling (SILK supports 10/20/40/60 ms plus repacketized >60 ms;
+  CELT-only multiframe packing available; hybrid multiframe pending).
 - Step 5 (done): port regression vectors from `opus_encode_regressions.c` into Rust tests.
-- Step 6 (optional): implement or feature-gate DRED paths.
+- Step 6 (done): feature-gate DRED APIs/CTLs while stubbing the unported DRED paths.

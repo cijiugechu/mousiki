@@ -50,6 +50,8 @@ pub(crate) const OPUS_FRAMESIZE_80_MS: i32 = 5007;
 pub(crate) const OPUS_FRAMESIZE_100_MS: i32 = 5008;
 pub(crate) const OPUS_FRAMESIZE_120_MS: i32 = 5009;
 
+const DRED_MAX_FRAMES: i32 = 104;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpusApplication {
     Voip,
@@ -169,6 +171,8 @@ pub enum OpusEncoderCtlRequest<'req> {
     GetPredictionDisabled(&'req mut bool),
     SetPhaseInversionDisabled(bool),
     GetPhaseInversionDisabled(&'req mut bool),
+    SetDredDuration(i32),
+    GetDredDuration(&'req mut i32),
     SetForceMode(i32),
     GetFinalRange(&'req mut u32),
     ResetState,
@@ -362,6 +366,7 @@ pub struct OpusEncoder<'mode> {
     mode: i32,
     bandwidth: Bandwidth,
     range_final: u32,
+    dred_duration: i32,
 }
 
 impl<'mode> OpusEncoder<'mode> {
@@ -433,6 +438,7 @@ impl<'mode> OpusEncoder<'mode> {
         self.mode = MODE_SILK_ONLY;
         self.bandwidth = Bandwidth::Wide;
         self.range_final = 0;
+        self.dred_duration = 0;
 
         #[cfg(not(feature = "fixed_point"))]
         {
@@ -451,6 +457,8 @@ impl<'mode> OpusEncoder<'mode> {
             tonality_analysis_reset(&mut self.analysis);
         }
         self.analysis_info = AnalysisInfo::default();
+        self.dred_duration = 0;
+        self.silk_mode.use_dred = 0;
         self.range_final = 0;
         Ok(())
     }
@@ -468,6 +476,7 @@ impl<'mode> OpusEncoder<'mode> {
         self.silk_mode.packet_loss_percentage = self.packet_loss_perc;
         self.silk_mode.complexity = self.complexity;
         self.silk_mode.use_in_band_fec = i32::from(self.inband_fec);
+        self.silk_mode.lbrr_coded = 0;
         self.silk_mode.use_dtx = i32::from(self.use_dtx);
         self.silk_mode.use_cbr = i32::from(!self.use_vbr);
         self.silk_mode.reduced_dependency = self.prediction_disabled;
@@ -572,6 +581,88 @@ fn select_bandwidth(user_bandwidth: i32, max_bandwidth: i32) -> Bandwidth {
     Bandwidth::from_opus_int(requested).unwrap_or(Bandwidth::Wide)
 }
 
+fn encode_multiframe(
+    encoder: &mut OpusEncoder<'_>,
+    pcm: &[i16],
+    frame_size: usize,
+    enc_frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusEncodeError> {
+    if enc_frame_size == 0 || !frame_size.is_multiple_of(enc_frame_size) {
+        return Err(OpusEncodeError::Unimplemented);
+    }
+
+    let nb_frames = frame_size / enc_frame_size;
+    if !(1..=6).contains(&nb_frames) {
+        return Err(OpusEncodeError::Unimplemented);
+    }
+
+    let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    let max_header_bytes = if nb_frames == 2 {
+        3
+    } else {
+        2 + (nb_frames - 1) * 2
+    };
+    let nb_frames_i32 = i32::try_from(nb_frames).map_err(|_| OpusEncodeError::BadArgument)?;
+    let max_header_bytes_i32 =
+        i32::try_from(max_header_bytes).map_err(|_| OpusEncodeError::BadArgument)?;
+    let mut remaining = max_data_bytes
+        .checked_add(nb_frames_i32)
+        .and_then(|value| value.checked_sub(max_header_bytes_i32))
+        .ok_or(OpusEncodeError::BufferTooSmall)?;
+    if remaining < 2 * nb_frames_i32 {
+        return Err(OpusEncodeError::BufferTooSmall);
+    }
+
+    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
+    let mut repacketizer = OpusRepacketizer::new();
+    repacketizer.opus_repacketizer_init();
+    let mut tmp = vec![0u8; data.len()];
+
+    let saved_duration = encoder.variable_duration;
+    encoder.variable_duration = OPUS_FRAMESIZE_ARG;
+    let result = (|| {
+        for frame_idx in 0..nb_frames {
+            let frames_left = nb_frames - frame_idx;
+            let frame_max = (remaining / i32::try_from(frames_left).unwrap_or(1))
+                .max(2) as usize;
+            if frame_max > tmp.len() {
+                return Err(OpusEncodeError::BufferTooSmall);
+            }
+            let start = frame_idx
+                .checked_mul(enc_frame_size)
+                .and_then(|value| value.checked_mul(channels))
+                .ok_or(OpusEncodeError::BadArgument)?;
+            let end = start
+                .checked_add(enc_frame_size * channels)
+                .ok_or(OpusEncodeError::BadArgument)?;
+            let len = opus_encode(
+                encoder,
+                &pcm[start..end],
+                enc_frame_size,
+                &mut tmp[..frame_max],
+            )?;
+            repacketizer
+                .opus_repacketizer_cat(&tmp[..len], len)
+                .map_err(|err| match err {
+                    RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                    _ => OpusEncodeError::InternalError,
+                })?;
+            remaining = remaining.saturating_sub(len as i32);
+        }
+
+        let maxlen = data.len();
+        repacketizer
+            .opus_repacketizer_out(&mut data[..], maxlen)
+            .map_err(|err| match err {
+                RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                _ => OpusEncodeError::InternalError,
+            })
+    })();
+    encoder.variable_duration = saved_duration;
+    result
+}
+
 pub fn opus_encoder_create<'mode>(
     fs: i32,
     channels: i32,
@@ -619,6 +710,7 @@ pub fn opus_encoder_create<'mode>(
         mode: MODE_SILK_ONLY,
         bandwidth: Bandwidth::Wide,
         range_final: 0,
+        dred_duration: 0,
     };
 
     encoder.init(fs, channels, application)?;
@@ -807,6 +899,22 @@ pub fn opus_encoder_ctl<'req>(
                 CeltEncoderCtlRequest::GetPhaseInversionDisabled(out),
             )?;
         }
+        OpusEncoderCtlRequest::SetDredDuration(value) => {
+            if !cfg!(feature = "dred") {
+                return Err(OpusEncoderCtlError::Unimplemented);
+            }
+            if !(0..=DRED_MAX_FRAMES).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.dred_duration = value;
+            encoder.silk_mode.use_dred = if value > 0 { 1 } else { 0 };
+        }
+        OpusEncoderCtlRequest::GetDredDuration(out) => {
+            if !cfg!(feature = "dred") {
+                return Err(OpusEncoderCtlError::Unimplemented);
+            }
+            *out = encoder.dred_duration;
+        }
         OpusEncoderCtlRequest::SetForceMode(value) => {
             if value != OPUS_AUTO && !(MODE_SILK_ONLY..=MODE_CELT_ONLY).contains(&value) {
                 return Err(OpusEncoderCtlError::BadArgument);
@@ -852,7 +960,7 @@ pub fn opus_encode(
         .checked_mul(frame_size)
         .ok_or(OpusEncodeError::BadArgument)?;
 
-    let mut frame_rate = encoder
+    let frame_rate = encoder
         .fs
         .checked_div(frame_size_i32)
         .ok_or(OpusEncodeError::BadArgument)?;
@@ -879,14 +987,20 @@ pub fn opus_encode(
             mode = MODE_SILK_ONLY;
         }
     }
+    if mode != MODE_CELT_ONLY && frame_size < min_celt {
+        mode = MODE_CELT_ONLY;
+    }
 
     let max_celt = usize::try_from(encoder.fs / 50).map_err(|_| OpusEncodeError::BadArgument)?;
     if mode != MODE_SILK_ONLY && frame_size > max_celt {
+        if mode == MODE_CELT_ONLY {
+            return encode_multiframe(encoder, pcm, frame_size, max_celt, data);
+        }
         return Err(OpusEncodeError::Unimplemented);
     }
-    if mode == MODE_SILK_ONLY {
+    if mode == MODE_SILK_ONLY && frame_size * 2 != max_celt {
         let multiples = frame_size / max_celt;
-        if frame_size % max_celt != 0 || !(1..=6).contains(&multiples) {
+        if !frame_size.is_multiple_of(max_celt) || !(1..=6).contains(&multiples) {
             return Err(OpusEncodeError::Unimplemented);
         }
     }
@@ -903,69 +1017,9 @@ pub fn opus_encode(
         if enc_frame_size_i32 <= 0 || frame_size_i32 % enc_frame_size_i32 != 0 {
             return Err(OpusEncodeError::Unimplemented);
         }
-        let nb_frames = frame_size_i32 / enc_frame_size_i32;
-        if nb_frames <= 0 {
-            return Err(OpusEncodeError::Unimplemented);
-        }
-
-        let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
-        let max_header_bytes = if nb_frames == 2 {
-            3
-        } else {
-            2 + (nb_frames - 1) * 2
-        };
-        let mut remaining = max_data_bytes
-            .checked_add(nb_frames)
-            .and_then(|value| value.checked_sub(max_header_bytes))
-            .ok_or(OpusEncodeError::BufferTooSmall)?;
-        if remaining < 2 * nb_frames {
-            return Err(OpusEncodeError::BufferTooSmall);
-        }
-
         let enc_frame_size = usize::try_from(enc_frame_size_i32)
             .map_err(|_| OpusEncodeError::BadArgument)?;
-        let nb_frames = usize::try_from(nb_frames).map_err(|_| OpusEncodeError::BadArgument)?;
-        let mut repacketizer = OpusRepacketizer::new();
-        repacketizer.opus_repacketizer_init();
-        let mut tmp = vec![0u8; data.len()];
-
-        for frame_idx in 0..nb_frames {
-            let frames_left = nb_frames - frame_idx;
-            let frame_max =
-                (remaining / i32::try_from(frames_left).unwrap_or(1)).max(2) as usize;
-            if frame_max > tmp.len() {
-                return Err(OpusEncodeError::BufferTooSmall);
-            }
-            let start = frame_idx
-                .checked_mul(enc_frame_size)
-                .and_then(|value| value.checked_mul(channels))
-                .ok_or(OpusEncodeError::BadArgument)?;
-            let end = start
-                .checked_add(enc_frame_size * channels)
-                .ok_or(OpusEncodeError::BadArgument)?;
-            let len = opus_encode(
-                encoder,
-                &pcm[start..end],
-                enc_frame_size,
-                &mut tmp[..frame_max],
-            )?;
-            repacketizer
-                .opus_repacketizer_cat(&tmp[..len], len)
-                .map_err(|err| match err {
-                    RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
-                    _ => OpusEncodeError::InternalError,
-                })?;
-            remaining = remaining.saturating_sub(len as i32);
-        }
-
-        let maxlen = data.len();
-        let out_len = repacketizer
-            .opus_repacketizer_out(&mut data[..], maxlen)
-            .map_err(|err| match err {
-                RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
-                _ => OpusEncodeError::InternalError,
-            })?;
-        return Ok(out_len);
+        return encode_multiframe(encoder, pcm, frame_size, enc_frame_size, data);
     }
 
     let mut bandwidth = select_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
@@ -979,22 +1033,27 @@ pub fn opus_encode(
             #[cfg(not(feature = "fixed_point"))]
             let activity = {
                 encoder.analysis.application = encoder.application.to_opus_int();
-                run_analysis(
-                    &mut encoder.analysis,
-                    encoder.celt.mode,
-                    Some(&pcm[..required]),
-                    frame_size,
-                    frame_size,
-                    0,
-                    -1,
-                    encoder.channels,
-                    encoder.fs,
-                    16,
-                    &mut encoder.analysis_info,
-                );
-                if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
-                    0
+                if encoder.silk_mode.complexity >= 7 && encoder.fs >= 16_000 {
+                    run_analysis(
+                        &mut encoder.analysis,
+                        encoder.celt.mode,
+                        Some(&pcm[..required]),
+                        frame_size,
+                        frame_size,
+                        0,
+                        -1,
+                        encoder.channels,
+                        encoder.fs,
+                        16,
+                        &mut encoder.analysis_info,
+                    );
+                    if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
+                        0
+                    } else {
+                        1
+                    }
                 } else {
+                    tonality_analysis_reset(&mut encoder.analysis);
                     1
                 }
             };
@@ -1012,21 +1071,32 @@ pub fn opus_encode(
             )?;
 
             let range_final = range_encoder.range_final();
-            let payload = range_encoder.finish();
-            if payload.len() > max_payload_bytes {
-                return Err(OpusEncodeError::BufferTooSmall);
-            }
+            let bytes_out =
+                usize::try_from(bytes_out).map_err(|_| OpusEncodeError::InternalError)?;
 
             bandwidth = OpusEncoder::bandwidth_from_silk_control(&encoder.silk_mode);
             let toc = gen_toc(mode, frame_rate, bandwidth, encoder.stream_channels) & 0xFC;
 
             data[0] = toc;
-            data[1..1 + payload.len()].copy_from_slice(&payload);
+            if bytes_out == 0 {
+                encoder.bandwidth = bandwidth;
+                encoder.range_final = 0;
+                encoder.mode = mode;
+                return Ok(1);
+            }
+
+            let payload = range_encoder.finish();
+            let payload_len = payload.len();
+            if payload_len > max_payload_bytes {
+                return Err(OpusEncodeError::BufferTooSmall);
+            }
+
+            data[1..1 + payload_len].copy_from_slice(&payload);
             encoder.bandwidth = bandwidth;
             encoder.range_final = range_final;
             encoder.mode = mode;
 
-            Ok(1 + payload.len())
+            Ok(1 + payload_len)
         }
         MODE_CELT_ONLY | MODE_HYBRID => {
             if mode == MODE_CELT_ONLY && bandwidth == Bandwidth::Medium {
@@ -1066,7 +1136,7 @@ pub fn opus_encode(
             let mut celt_frame_size = frame_size;
             let upsample = usize::try_from(encoder.celt.encoder().upsample)
                 .map_err(|_| OpusEncodeError::BadArgument)?;
-            let mut celt_pcm: &[i16] = if upsample > 1 {
+            let celt_pcm: &[i16] = if upsample > 1 {
                 let upsampled_len = required
                     .checked_mul(upsample)
                     .ok_or(OpusEncodeError::BadArgument)?;
@@ -1079,9 +1149,13 @@ pub fn opus_encode(
                         .checked_mul(upsample)
                         .and_then(|value| value.checked_mul(channels))
                         .ok_or(OpusEncodeError::BadArgument)?;
-                    for ch in 0..channels {
-                        upsampled_pcm[dst_base + ch] = pcm[base + ch];
-                    }
+                    let src_end = base
+                        .checked_add(channels)
+                        .ok_or(OpusEncodeError::BadArgument)?;
+                    let dst_end = dst_base
+                        .checked_add(channels)
+                        .ok_or(OpusEncodeError::BadArgument)?;
+                    upsampled_pcm[dst_base..dst_end].copy_from_slice(&pcm[base..src_end]);
                 }
                 celt_frame_size = frame_size
                     .checked_mul(upsample)
@@ -1091,37 +1165,7 @@ pub fn opus_encode(
                 &pcm[..required]
             };
 
-            let min_celt_frame = encoder
-                .celt
-                .encoder()
-                .mode
-                .mdct
-                .effective_len(encoder.celt.encoder().mode.max_lm);
-            if celt_frame_size < min_celt_frame {
-                let padded_len = channels
-                    .checked_mul(min_celt_frame)
-                    .ok_or(OpusEncodeError::BadArgument)?;
-                if upsampled_pcm.is_empty() {
-                    upsampled_pcm.resize(padded_len, 0i16);
-                    upsampled_pcm[..required].copy_from_slice(&pcm[..required]);
-                } else {
-                    upsampled_pcm.resize(padded_len, 0i16);
-                }
-                celt_frame_size = min_celt_frame;
-                celt_pcm = &upsampled_pcm[..];
-
-                let adjusted_frame = min_celt_frame
-                    .checked_div(upsample)
-                    .ok_or(OpusEncodeError::BadArgument)?;
-                let adjusted_frame_i32 =
-                    i32::try_from(adjusted_frame).map_err(|_| OpusEncodeError::BadArgument)?;
-                frame_rate = encoder
-                    .fs
-                    .checked_div(adjusted_frame_i32)
-                    .ok_or(OpusEncodeError::BadArgument)?;
-            }
-
-            let bytes = crate::celt::opus_custom_encode(
+            let mut bytes = crate::celt::opus_custom_encode(
                 encoder.celt.encoder(),
                 celt_pcm,
                 celt_frame_size,
@@ -1129,6 +1173,13 @@ pub fn opus_encode(
                 max_payload_bytes,
             )
             .map_err(|_| OpusEncodeError::InternalError)?;
+            if bytes == 0 {
+                if max_payload_bytes == 0 {
+                    return Err(OpusEncodeError::BufferTooSmall);
+                }
+                data[1] = 0;
+                bytes = 1;
+            }
 
             let mut celt_range = 0u32;
             opus_custom_encoder_ctl(
@@ -1178,10 +1229,10 @@ pub fn opus_encode_float(
 #[cfg(test)]
 mod tests {
     use super::{
-        MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY, OPUS_BANDWIDTH_NARROWBAND,
-        OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_SIGNAL_MUSIC,
-        OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError,
-        opus_encode, opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
+        DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY, OPUS_BANDWIDTH_NARROWBAND,
+        OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_SIGNAL_MUSIC, OpusEncodeError,
+        OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode,
+        opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
     };
     use crate::packet::{
         Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode,
@@ -1335,6 +1386,36 @@ mod tests {
         assert!(phase_inversion_disabled);
 
         opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_SILK_ONLY)).unwrap();
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn ctl_round_trips_dred_duration() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetDredDuration(12)).unwrap();
+        let mut duration = 0;
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::GetDredDuration(&mut duration)).unwrap();
+        assert_eq!(duration, 12);
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn ctl_rejects_invalid_dred_duration() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+
+        assert_eq!(
+            opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetDredDuration(-1)).unwrap_err(),
+            OpusEncoderCtlError::BadArgument
+        );
+        assert_eq!(
+            opus_encoder_ctl(
+                &mut enc,
+                OpusEncoderCtlRequest::SetDredDuration(DRED_MAX_FRAMES + 1),
+            )
+            .unwrap_err(),
+            OpusEncoderCtlError::BadArgument
+        );
     }
 
     #[test]

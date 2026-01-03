@@ -2105,7 +2105,8 @@ fn resolve_lm(mode: &OpusCustomMode<'_>, frame_size: usize) -> Option<usize> {
 }
 
 fn mdct_shift_for_frame(mode: &OpusCustomMode<'_>, frame_size: usize) -> Option<usize> {
-    (0..=mode.mdct.max_shift()).find(|&shift| mode.mdct.effective_len(shift) == frame_size)
+    let target = frame_size.checked_mul(2)?;
+    (0..=mode.mdct.max_shift()).find(|&shift| mode.mdct.effective_len(shift) == target)
 }
 
 fn prepare_time_domain(
@@ -2171,7 +2172,7 @@ fn compute_mdct_spectrum(
     for ch in 0..encoded_channels {
         let src_index = ch * stride;
         let input = &time[src_index..src_index + overlap + frame_size];
-        let output = &mut freq[ch * (frame_size / 2)..(ch + 1) * (frame_size / 2)];
+        let output = &mut freq[ch * frame_size..(ch + 1) * frame_size];
         clt_mdct_forward(
             &mode.mdct,
             input,

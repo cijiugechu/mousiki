@@ -208,7 +208,7 @@ pub fn clt_mdct_forward(
     let n2 = n >> 1;
     let n4 = n >> 2;
 
-    assert!(input.len() >= overlap + n);
+    assert!(input.len() >= overlap + n2);
     assert!(window.len() >= overlap);
     assert!(output.len() >= stride * n2);
     assert!(stride > 0);

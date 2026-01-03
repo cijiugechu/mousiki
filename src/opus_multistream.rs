@@ -1278,6 +1278,8 @@ pub enum OpusMultistreamEncoderCtlRequest<'req> {
     GetPredictionDisabled(&'req mut bool),
     SetPhaseInversionDisabled(bool),
     GetPhaseInversionDisabled(&'req mut bool),
+    SetDredDuration(i32),
+    GetDredDuration(&'req mut i32),
     SetForceMode(i32),
     GetFinalRange(&'req mut u32),
     ResetState,
@@ -1506,6 +1508,20 @@ pub fn opus_multistream_encoder_ctl<'req>(
                     .first_mut()
                     .ok_or(OpusMultistreamEncoderError::InternalError)?,
                 OpusEncoderCtlRequest::GetPhaseInversionDisabled(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetDredDuration(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetDredDuration(value))?;
+            }
+        }
+        OpusMultistreamEncoderCtlRequest::GetDredDuration(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetDredDuration(out),
             )?;
         }
         OpusMultistreamEncoderCtlRequest::SetForceMode(value) => {
@@ -2345,6 +2361,27 @@ mod tests {
             opus_multistream_encoder_get_encoder_state(&mut encoder, 2).unwrap_err(),
             OpusMultistreamEncoderError::BadArgument
         );
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn multistream_encoder_ctl_round_trips_dred_duration() {
+        let mapping = [0u8, 1];
+        let mut encoder =
+            opus_multistream_encoder_create(48_000, 2, 2, 0, &mapping, 2048).expect("ms encoder");
+
+        opus_multistream_encoder_ctl(
+            &mut encoder,
+            OpusMultistreamEncoderCtlRequest::SetDredDuration(8),
+        )
+        .unwrap();
+        let mut duration = 0;
+        opus_multistream_encoder_ctl(
+            &mut encoder,
+            OpusMultistreamEncoderCtlRequest::GetDredDuration(&mut duration),
+        )
+        .unwrap();
+        assert_eq!(duration, 8);
     }
 
     #[test]

@@ -155,6 +155,5 @@ pub fn find_pitch_lags_flp(
         encoder.common.indices.lag_index = 0;
         encoder.common.indices.contour_index = 0;
         encoder.ltp_corr = 0.0;
-        encoder.common.indices.signal_type = FrameSignalType::Unvoiced;
     }
 }

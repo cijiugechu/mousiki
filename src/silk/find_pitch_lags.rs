@@ -197,7 +197,6 @@ pub fn find_pitch_lags(
         encoder.common.indices.lag_index = 0;
         encoder.common.indices.contour_index = 0;
         encoder.ltp_corr_q15 = 0;
-        encoder.common.indices.signal_type = FrameSignalType::Unvoiced;
     }
 }
 
@@ -292,7 +291,7 @@ mod tests {
 
         assert_eq!(
             encoder.common.indices.signal_type,
-            FrameSignalType::Unvoiced
+            FrameSignalType::Inactive
         );
         assert!(
             control.pitch_l[..encoder.common.nb_subfr]

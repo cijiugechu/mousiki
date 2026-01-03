@@ -106,7 +106,9 @@ impl EncoderIndicesState {
         range_encoder.encode_icdf(indices.seed as usize, &SILK_UNIFORM4_ICDF, 8);
 
         self.prev_signal_type = indices.signal_type;
-        self.prev_lag_index = indices.lag_index;
+        if indices.signal_type == FrameSignalType::Voiced {
+            self.prev_lag_index = indices.lag_index;
+        }
     }
 
     fn encode_signal_type(

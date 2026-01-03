@@ -753,4 +753,42 @@ mod tests {
         assert_eq!(decoder.decode_icdf(icdf, 8), 2);
         assert_eq!(decoder.decode_icdf(icdf, 8), 1);
     }
+
+    #[test]
+    fn patch_initial_bits_round_trips_logp_flags() {
+        for header_bits in 1u32..=8 {
+            let value = (1u32 << header_bits).wrapping_sub(1) ^ (header_bits % 3);
+            let mut encoder = RangeEncoder::new();
+            let mut icdf = [0u8; 2];
+            icdf[0] = (256u16 - (256u16 >> header_bits)) as u8;
+            encoder.encode_icdf(0, &icdf, 8);
+            encoder.patch_initial_bits(value, header_bits);
+
+            let payload = encoder.finish();
+            let mut decoder = RangeDecoder::init(&payload);
+            let mut decoded = 0u32;
+            for _ in 0..header_bits {
+                decoded = (decoded << 1) | decoder.decode_symbol_logp(1);
+            }
+            let mask = (1u32 << header_bits) - 1;
+            assert_eq!(decoded, value & mask);
+        }
+    }
+
+    #[test]
+    fn range_final_matches_after_roundtrip_decode() {
+        let mut encoder = RangeEncoder::new();
+        encoder.encode_icdf(2, &SILK_UNIFORM4_ICDF, 8);
+        encoder.encode_symbol_with_icdf(1, SILK_FRAME_TYPE_INACTIVE);
+        encoder.encode_icdf(0, &SILK_UNIFORM4_ICDF, 8);
+        let range_final = encoder.range_final();
+
+        let data = encoder.finish();
+        let mut decoder = RangeDecoder::init(&data);
+        assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 2);
+        assert_eq!(decoder.decode_symbol_with_icdf(SILK_FRAME_TYPE_INACTIVE), 1);
+        assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 0);
+
+        assert_eq!(decoder.range_size, range_final);
+    }
 }

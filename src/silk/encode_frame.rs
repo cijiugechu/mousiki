@@ -177,11 +177,11 @@ fn silk_lbrr_encode(
             pred_coef_q12,
             &control.ltp_coef_q14,
             &control.ar_q13,
-            &control.harm_shape_gain_q14,
-            &control.tilt_q14,
-            &control.lf_shp_q14,
-            &gains_q16,
-            &control.pitch_l,
+            &control.harm_shape_gain_q14[..encoder.common.nb_subfr],
+            &control.tilt_q14[..encoder.common.nb_subfr],
+            &control.lf_shp_q14[..encoder.common.nb_subfr],
+            &gains_q16[..encoder.common.nb_subfr],
+            &control.pitch_l[..encoder.common.nb_subfr],
             control.lambda_q10,
             control.ltp_scale_q14,
         );
@@ -195,11 +195,11 @@ fn silk_lbrr_encode(
             pred_coef_q12,
             &control.ltp_coef_q14,
             &control.ar_q13,
-            &control.harm_shape_gain_q14,
-            &control.tilt_q14,
-            &control.lf_shp_q14,
-            &gains_q16,
-            &control.pitch_l,
+            &control.harm_shape_gain_q14[..encoder.common.nb_subfr],
+            &control.tilt_q14[..encoder.common.nb_subfr],
+            &control.lf_shp_q14[..encoder.common.nb_subfr],
+            &gains_q16[..encoder.common.nb_subfr],
+            &control.pitch_l[..encoder.common.nb_subfr],
             control.lambda_q10,
             control.ltp_scale_q14,
         );
@@ -359,42 +359,42 @@ pub fn silk_encode_frame(
                 let common_snapshot = encoder.common.clone();
                 if common_snapshot.n_states_delayed_decision > 1 || common_snapshot.warping_q16 > 0
                 {
-                    silk_nsq_del_dec(
-                        &common_snapshot,
-                        &mut encoder.common.nsq_state,
-                        &mut encoder.common.indices,
-                        &frame_slice[..frame_length],
-                        &mut encoder.common.pulses[..frame_length],
-                        &pred_coef_q12,
-                        &enc_ctrl.ltp_coef_q14,
-                        &enc_ctrl.ar_q13,
-                        &enc_ctrl.harm_shape_gain_q14,
-                        &enc_ctrl.tilt_q14,
-                        &enc_ctrl.lf_shp_q14,
-                        &enc_ctrl.gains_q16,
-                        &enc_ctrl.pitch_l,
-                        enc_ctrl.lambda_q10,
-                        enc_ctrl.ltp_scale_q14,
-                    );
-                } else {
-                    silk_nsq(
-                        &common_snapshot,
-                        &mut encoder.common.nsq_state,
-                        &encoder.common.indices,
-                        &frame_slice[..frame_length],
-                        &mut encoder.common.pulses[..frame_length],
-                        &pred_coef_q12,
-                        &enc_ctrl.ltp_coef_q14,
-                        &enc_ctrl.ar_q13,
-                        &enc_ctrl.harm_shape_gain_q14,
-                        &enc_ctrl.tilt_q14,
-                        &enc_ctrl.lf_shp_q14,
-                        &enc_ctrl.gains_q16,
-                        &enc_ctrl.pitch_l,
-                        enc_ctrl.lambda_q10,
-                        enc_ctrl.ltp_scale_q14,
-                    );
-                }
+                silk_nsq_del_dec(
+                    &common_snapshot,
+                    &mut encoder.common.nsq_state,
+                    &mut encoder.common.indices,
+                    &frame_slice[..frame_length],
+                    &mut encoder.common.pulses[..frame_length],
+                    &pred_coef_q12,
+                    &enc_ctrl.ltp_coef_q14,
+                    &enc_ctrl.ar_q13,
+                    &enc_ctrl.harm_shape_gain_q14[..nb_subfr],
+                    &enc_ctrl.tilt_q14[..nb_subfr],
+                    &enc_ctrl.lf_shp_q14[..nb_subfr],
+                    &enc_ctrl.gains_q16[..nb_subfr],
+                    &enc_ctrl.pitch_l[..nb_subfr],
+                    enc_ctrl.lambda_q10,
+                    enc_ctrl.ltp_scale_q14,
+                );
+            } else {
+                silk_nsq(
+                    &common_snapshot,
+                    &mut encoder.common.nsq_state,
+                    &encoder.common.indices,
+                    &frame_slice[..frame_length],
+                    &mut encoder.common.pulses[..frame_length],
+                    &pred_coef_q12,
+                    &enc_ctrl.ltp_coef_q14,
+                    &enc_ctrl.ar_q13,
+                    &enc_ctrl.harm_shape_gain_q14[..nb_subfr],
+                    &enc_ctrl.tilt_q14[..nb_subfr],
+                    &enc_ctrl.lf_shp_q14[..nb_subfr],
+                    &enc_ctrl.gains_q16[..nb_subfr],
+                    &enc_ctrl.pitch_l[..nb_subfr],
+                    enc_ctrl.lambda_q10,
+                    enc_ctrl.ltp_scale_q14,
+                );
+            }
 
                 let (prev_sig_type, prev_lag_index) = encode_indices_with_state(
                     encoder,

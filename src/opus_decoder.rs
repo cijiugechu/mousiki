@@ -82,6 +82,12 @@ fn opus_mode_to_int(mode: Mode) -> i32 {
     }
 }
 
+#[inline]
+fn decode_as_celt_only(mode: i32) -> bool {
+    // Hybrid packets are decoded as CELT-only until the shared range-decoder path is ported.
+    mode == MODE_CELT_ONLY || mode == MODE_HYBRID
+}
+
 fn smooth_fade(
     in1: &[OpusRes],
     in2: &[OpusRes],
@@ -432,10 +438,6 @@ impl<'mode> OpusDecoder<'mode> {
             return Err(OpusDecodeError::BadArgument);
         }
 
-        if data.is_some() && len == 0 {
-            return Err(OpusDecodeError::BadArgument);
-        }
-
         let fs = usize::try_from(self.fs).map_err(|_| OpusDecodeError::BadArgument)?;
         let f20 = fs / 50;
         let f10 = f20 / 2;
@@ -474,12 +476,12 @@ impl<'mode> OpusDecoder<'mode> {
         let mut pcm_transition: Option<Vec<OpusRes>> = None;
         let mut redundant_audio: Option<Vec<OpusRes>> = None;
         let mut redundant_packet: Option<&[u8]> = None;
-
-        if packet.is_some() {
+        let celt_only = if packet.is_some() {
             audiosize =
                 usize::try_from(self.frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
             mode = self.mode;
             bandwidth = self.bandwidth;
+            decode_as_celt_only(mode)
         } else {
             audiosize = frame_size;
             mode = if self.prev_redundancy != 0 {
@@ -488,6 +490,8 @@ impl<'mode> OpusDecoder<'mode> {
                 self.prev_mode
             };
             bandwidth = 0;
+            // For PLC, keep hybrid frames on the SILK path to avoid CELT-only PLC.
+            let celt_only = mode == MODE_CELT_ONLY;
 
             if mode == 0 {
                 let samples = audiosize
@@ -525,21 +529,24 @@ impl<'mode> OpusDecoder<'mode> {
             } else if audiosize < f20 {
                 if audiosize > f10 {
                     audiosize = f10;
-                } else if mode != MODE_CELT_ONLY && audiosize > f5 && audiosize < f10 {
+                } else if !celt_only && audiosize > f5 && audiosize < f10 {
                     audiosize = f5;
                 }
             }
-        }
 
+            celt_only
+        };
+
+        let prev_celt_only = decode_as_celt_only(self.prev_mode);
         if packet.is_some()
             && self.prev_mode > 0
-            && ((mode == MODE_CELT_ONLY
-                && self.prev_mode != MODE_CELT_ONLY
+            && ((celt_only
+                && !prev_celt_only
                 && self.prev_redundancy == 0)
-                || (mode != MODE_CELT_ONLY && self.prev_mode == MODE_CELT_ONLY))
+                || (!celt_only && prev_celt_only))
         {
             transition = true;
-            if mode == MODE_CELT_ONLY {
+            if celt_only {
                 let transition_len = f5
                     .checked_mul(channels)
                     .ok_or(OpusDecodeError::BadArgument)?;
@@ -557,11 +564,11 @@ impl<'mode> OpusDecoder<'mode> {
             return Err(OpusDecodeError::BadArgument);
         }
 
-        let celt_accum = mode != MODE_CELT_ONLY;
+        let celt_accum = !celt_only;
         let mut range_final = 0u32;
         let mut celt_final_range: Option<u32> = None;
 
-        if mode != MODE_CELT_ONLY {
+        if !celt_only {
             let pcm_too_small = audiosize < f10;
             let pcm_silk_len = if pcm_too_small { f10 } else { audiosize };
             let mut silk_pcm: Option<Vec<OpusRes>> =
@@ -608,7 +615,7 @@ impl<'mode> OpusDecoder<'mode> {
                 control.n_channels_internal = self.stream_channels;
             }
 
-            if self.prev_mode == MODE_CELT_ONLY {
+            if prev_celt_only {
                 silk_reset_decoder(&mut self.silk).map_err(|_| OpusDecodeError::InternalError)?;
             }
 
@@ -698,7 +705,7 @@ impl<'mode> OpusDecoder<'mode> {
                 pcm[..copy_len].copy_from_slice(&temp[..copy_len]);
             }
 
-            if !decode_fec && packet.is_some() {
+            if !decode_fec && packet.is_some() && mode != MODE_SILK_ONLY {
                 let tell = range_decoder.tell();
                 let threshold = 17 + if mode == MODE_HYBRID { 20 } else { 0 };
                 if tell + threshold <= (8 * packet_len) as i32 {
@@ -770,7 +777,7 @@ impl<'mode> OpusDecoder<'mode> {
         }
 
         let mut start_band = 0;
-        if mode != MODE_CELT_ONLY {
+        if !celt_only {
             start_band = 17;
         }
 
@@ -1105,8 +1112,8 @@ impl<'mode> OpusDecoder<'mode> {
 
         if decode_fec {
             if frame_size < packet_frame_size
-                || opus_mode_to_int(packet_mode) == MODE_CELT_ONLY
-                || self.mode == MODE_CELT_ONLY
+                || decode_as_celt_only(opus_mode_to_int(packet_mode))
+                || decode_as_celt_only(self.mode)
             {
                 return self.decode_native_with(
                     None,
@@ -1599,7 +1606,7 @@ pub fn opus_decoder_ctl<'req>(
             *slot = decoder.fs;
         }
         OpusDecoderCtlRequest::GetPitch(slot) => {
-            if decoder.prev_mode == MODE_CELT_ONLY {
+            if decode_as_celt_only(decoder.prev_mode) {
                 opus_custom_decoder_ctl(
                     decoder.celt.decoder(),
                     CeltDecoderCtlRequest::GetPitch(slot),
