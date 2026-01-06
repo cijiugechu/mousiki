@@ -7,7 +7,7 @@
 //! helpers, so it only touches the compact side information needed later in
 //! the pipeline.
 
-use crate::range::RangeDecoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::icdf::{
     DELTA_QUANTIZATION_GAIN, INDEPENDENT_QUANTIZATION_GAIN_LSB,
     INDEPENDENT_QUANTIZATION_GAIN_MSB_INACTIVE, INDEPENDENT_QUANTIZATION_GAIN_MSB_UNVOICED,
@@ -108,7 +108,7 @@ impl DecoderIndicesState {
 
     pub fn decode_indices(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         frame_index: usize,
         decode_lbrr: bool,
         coding: ConditionalCoding,
@@ -147,7 +147,7 @@ impl DecoderIndicesState {
 
     fn decode_gains(
         &self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         coding: ConditionalCoding,
         indices: &mut SideInfoIndices,
     ) {
@@ -172,7 +172,11 @@ impl DecoderIndicesState {
         }
     }
 
-    fn decode_nlsf(&self, range_decoder: &mut RangeDecoder<'_>, indices: &mut SideInfoIndices) {
+    fn decode_nlsf(
+        &self,
+        range_decoder: &mut impl SilkRangeDecoder,
+        indices: &mut SideInfoIndices,
+    ) {
         let stage_class = match indices.signal_type {
             FrameSignalType::Voiced => 1,
             _ => 0,
@@ -218,7 +222,7 @@ impl DecoderIndicesState {
 
     fn decode_pitch_and_ltp(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         coding: ConditionalCoding,
         indices: &mut SideInfoIndices,
     ) {
@@ -267,7 +271,8 @@ impl DecoderIndicesState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::range::{RangeDecoder, RangeEncoder};
+    use crate::celt::EcDec;
+    use crate::range::RangeEncoder;
     use crate::silk::nlsf_unpack::nlsf_unpack;
     use crate::silk::tables_nlsf_cb_wb::SILK_NLSF_CB_WB;
 
@@ -327,9 +332,9 @@ mod tests {
         encode_stage_two(&mut encoder, 3, MAX_LPC_ORDER, 4);
         encoder.encode_icdf(2, &SILK_NLSF_INTERPOLATION_FACTOR_ICDF, 8);
         encoder.encode_icdf(2, &SILK_UNIFORM4_ICDF, 8);
-        let packet = encoder.finish();
+        let mut packet = encoder.finish();
 
-        let mut decoder = RangeDecoder::init(&packet);
+        let mut decoder = EcDec::new(packet.as_mut_slice());
         let mut state = DecoderIndicesState::new(&SILK_NLSF_CB_WB);
         state.vad_flags[0] = true;
         let indices = state.decode_indices(&mut decoder, 0, false, ConditionalCoding::Independent);
@@ -367,9 +372,9 @@ mod tests {
             encoder.encode_icdf(symbol, gain_icdf, 8);
         }
         encoder.encode_icdf(1, &SILK_UNIFORM4_ICDF, 8);
-        let packet = encoder.finish();
+        let mut packet = encoder.finish();
 
-        let mut decoder = RangeDecoder::init(&packet);
+        let mut decoder = EcDec::new(packet.as_mut_slice());
         let mut state = DecoderIndicesState::new(&SILK_NLSF_CB_WB);
         state.vad_flags[0] = true;
         state.prev_signal_type = FrameSignalType::Voiced;

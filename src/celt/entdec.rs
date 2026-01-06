@@ -151,7 +151,7 @@ impl<'a> EcDec<'a> {
             let idx = ret as usize;
             debug_assert!(idx < icdf.len());
             s = r.wrapping_mul(OpusUint32::from(icdf[idx]));
-            if d < s {
+            if d >= s {
                 self.ctx.val = d.wrapping_sub(s);
                 self.ctx.rng = t.wrapping_sub(s);
                 self.normalize();
@@ -173,7 +173,7 @@ impl<'a> EcDec<'a> {
             let idx = ret as usize;
             debug_assert!(idx < icdf.len());
             s = r.wrapping_mul(OpusUint32::from(icdf[idx]));
-            if d < s {
+            if d >= s {
                 self.ctx.val = d.wrapping_sub(s);
                 self.ctx.rng = t.wrapping_sub(s);
                 self.normalize();
@@ -254,6 +254,7 @@ mod tests {
     use alloc::vec;
 
     use super::EcDec;
+    use crate::celt::EcEnc;
     use crate::celt::entcode::{EC_CODE_BITS, EC_CODE_EXTRA, EC_SYM_BITS, EC_WINDOW_SIZE};
     use crate::celt::types::{OpusInt32, OpusUint32};
 
@@ -332,11 +333,16 @@ mod tests {
 
     #[test]
     fn dec_icdf_matches_reference_for_simple_case() {
-        let mut buf = vec![0x00, 0x00, 0xFF, 0x00];
-        let mut dec = EcDec::new(&mut buf);
-        dec.val = 0;
-        let icdf = [64, 128, 255];
+        let icdf = [192u8, 128, 64, 0];
+        let mut storage = vec![0u8; 16];
+        let mut enc = EcEnc::new(storage.as_mut_slice());
+        enc.enc_icdf(2, &icdf, 8);
+        enc.enc_done();
+        let size = enc.range_bytes() as usize;
+
+        let mut data = storage[..size].to_vec();
+        let mut dec = EcDec::new(data.as_mut_slice());
         let ret = dec.dec_icdf(&icdf, 8);
-        assert_eq!(ret, 0);
+        assert_eq!(ret, 2);
     }
 }

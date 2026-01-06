@@ -4,7 +4,8 @@
 //! binary tree over non-negative pulse amplitudes. Each split is entropy coded
 //! using tables from `tables_pulses_per_block`.
 
-use crate::range::{RangeDecoder, RangeEncoder};
+use crate::range::RangeEncoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::tables_pulses_per_block::{
     SILK_SHELL_CODE_TABLE_OFFSETS, SILK_SHELL_CODE_TABLE0, SILK_SHELL_CODE_TABLE1,
     SILK_SHELL_CODE_TABLE2, SILK_SHELL_CODE_TABLE3,
@@ -35,7 +36,7 @@ fn encode_split(encoder: &mut RangeEncoder, first_child: i32, total: i32, table:
     }
 }
 
-fn decode_split(decoder: &mut RangeDecoder<'_>, total: i32, table: &[u8]) -> (i32, i32) {
+fn decode_split(decoder: &mut impl SilkRangeDecoder, total: i32, table: &[u8]) -> (i32, i32) {
     if total > 0 {
         let slice = shell_table_slice(table, total as usize);
         let first = decoder.decode_icdf(slice, 8) as i32;
@@ -84,7 +85,11 @@ pub fn silk_shell_encoder(encoder: &mut RangeEncoder, pulses0: &[i32]) {
 }
 
 /// Shell decoder, operates on one shell code frame of 16 pulses.
-pub fn silk_shell_decoder(pulses0: &mut [i16], decoder: &mut RangeDecoder<'_>, total_pulses: i32) {
+pub fn silk_shell_decoder(
+    pulses0: &mut [i16],
+    decoder: &mut impl SilkRangeDecoder,
+    total_pulses: i32,
+) {
     assert_eq!(pulses0.len(), SHELL_CODEC_FRAME_LENGTH);
     debug_assert!(total_pulses >= 0);
 
@@ -124,6 +129,8 @@ pub fn silk_shell_decoder(pulses0: &mut [i16], decoder: &mut RangeDecoder<'_>, t
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+    use crate::celt::EcDec;
+    use crate::range::RangeDecoder;
 
     #[test]
     fn round_trip_shell_coder() {
@@ -131,9 +138,8 @@ mod tests {
 
         let mut encoder = RangeEncoder::new();
         silk_shell_encoder(&mut encoder, &pulses);
-        let data = encoder.finish();
-
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         let mut decoded = [0i16; SHELL_CODEC_FRAME_LENGTH];
         silk_shell_decoder(
             &mut decoded,
@@ -159,9 +165,8 @@ mod tests {
 
         let mut encoder = RangeEncoder::new();
         silk_shell_encoder(&mut encoder, &pulses);
-        let data = encoder.finish();
-
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         let mut decoded = [0i16; SHELL_CODEC_FRAME_LENGTH];
         silk_shell_decoder(&mut decoded, &mut decoder, 16);
 

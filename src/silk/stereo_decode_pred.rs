@@ -3,7 +3,7 @@
 //! Decodes the mid/side stereo predictor indices and reconstructs the
 //! quantised predictor pair as described in the SILK reference implementation.
 
-use crate::range::RangeDecoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::icdf::{STEREO_ONLY_CODE_MID, STEREO_PREDICTOR_JOINT, UNIFORM3, UNIFORM5};
 use crate::silk::tables_other::{SILK_STEREO_PRED_QUANT_Q13, STEREO_QUANT_SUB_STEPS};
 
@@ -15,7 +15,7 @@ const HALF_STEP_Q16: i32 =
 /// Mirrors `silk_stereo_decode_pred` from the C sources by first unpacking
 /// the jointly-coded quotient index, then reading the residual indices for
 /// each predictor and reconstructing the quantised predictor pair.
-pub fn stereo_decode_pred(range_decoder: &mut RangeDecoder<'_>, pred_q13: &mut [i32; 2]) {
+pub fn stereo_decode_pred(range_decoder: &mut impl SilkRangeDecoder, pred_q13: &mut [i32; 2]) {
     let joint_index = range_decoder.decode_symbol_with_icdf(STEREO_PREDICTOR_JOINT) as i32;
 
     let mut indices = [[0i32; 3]; 2];
@@ -42,7 +42,7 @@ pub fn stereo_decode_pred(range_decoder: &mut RangeDecoder<'_>, pred_q13: &mut [
 }
 
 /// Decode the flag that signals whether only the mid channel was coded.
-pub fn stereo_decode_mid_only(range_decoder: &mut RangeDecoder<'_>) -> bool {
+pub fn stereo_decode_mid_only(range_decoder: &mut impl SilkRangeDecoder) -> bool {
     range_decoder.decode_symbol_with_icdf(STEREO_ONLY_CODE_MID) == 1
 }
 
@@ -58,6 +58,7 @@ fn smlabb(a: i32, b: i32, c: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::celt::EcDec;
     use crate::range::RangeEncoder;
     use alloc::vec::Vec;
 
@@ -79,8 +80,8 @@ mod tests {
         encoder.encode_icdf16(4, &to_raw_icdf(UNIFORM5), 8);
         encoder.encode_icdf16(1, &to_raw_icdf(STEREO_ONLY_CODE_MID), 8);
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         let mut predictors = [0; 2];
 
         stereo_decode_pred(&mut decoder, &mut predictors);

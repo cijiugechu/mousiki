@@ -4,7 +4,10 @@ use super::icdf::{FRAME_TYPE_VAD_ACTIVE, FRAME_TYPE_VAD_INACTIVE};
 use super::{FrameQuantizationOffsetType, FrameSignalType};
 use crate::math::{ilog, sign};
 use crate::packet::Bandwidth;
+use crate::celt::EcDec;
+#[cfg(test)]
 use crate::range::RangeDecoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::code_signs;
 use crate::silk::codebook::{
     CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_0, CODEBOOK_LTP_FILTER_PERIODICITY_INDEX_1,
@@ -208,7 +211,7 @@ impl core::error::Error for DecodeError {
 }
 
 impl Decoder {
-    fn decode_header_bits(&mut self, range_decoder: &mut RangeDecoder<'_>) -> (bool, bool) {
+    fn decode_header_bits(&mut self, range_decoder: &mut impl SilkRangeDecoder) -> (bool, bool) {
         let voice_activity_detected = range_decoder.decode_symbol_logp(1) == 1;
         let low_bit_rate_redundancy = range_decoder.decode_symbol_logp(1) == 1;
         (voice_activity_detected, low_bit_rate_redundancy)
@@ -221,7 +224,7 @@ impl Decoder {
     /// See [section-4.2.7.3](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.3)
     pub fn determine_frame_type(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         voice_activity_detected: bool,
     ) -> (FrameSignalType, FrameQuantizationOffsetType) {
         let frame_type_symbol = if voice_activity_detected {
@@ -265,7 +268,7 @@ impl Decoder {
     #[allow(unused_assignments)]
     pub fn decode_subframe_quantizations(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         signal_type: FrameSignalType,
     ) -> [f32; SUBFRAME_COUNT] {
         let mut log_gain = 0;
@@ -360,7 +363,7 @@ impl Decoder {
     /// See [Section-4.2.7.5.1](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.1).
     pub fn normalize_line_spectral_frequency_stage_one(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         voice_activity_detected: bool,
         bandwidth: Bandwidth,
     ) -> u32 {
@@ -400,7 +403,7 @@ impl Decoder {
     /// see [section-4.2.7.5.2](https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.2).
     pub fn normalize_line_spectral_frequency_stage_two(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         bandwidth: Bandwidth,
         i1: u32,
     ) -> ResQ10 {
@@ -516,7 +519,7 @@ impl Decoder {
     /// https://datatracker.ietf.org/doc/html/rfc6716#section-4.2.7.5.5
     pub fn normalize_lsf_interpolation(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         n2_q15: &[i16],
     ) -> (Option<NlsfQ15>, i16) {
         let w_q2 = range_decoder.decode_symbol_with_icdf(NORMALIZED_LSF_INTERPOLATION_INDEX) as i16;
@@ -559,7 +562,7 @@ impl Decoder {
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.1
     pub fn decode_pitch_lags(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         signal_type: FrameSignalType,
         bandwidth: Bandwidth,
     ) -> Result<Option<PitchLagInfo>, DecodePitchLagsError> {
@@ -619,7 +622,7 @@ impl Decoder {
     /// See [section-4.2.7.6.2](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.2)
     pub fn decode_ltp_filter_coefficients(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         signal_type: FrameSignalType,
     ) -> Option<[[i8; 5]; SUBFRAME_COUNT]> {
         if signal_type != FrameSignalType::Voiced {
@@ -656,7 +659,7 @@ impl Decoder {
     /// See [section-4.2.7.6.3](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.6.3)
     pub fn decode_ltp_scaling_parameter(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         signal_type: FrameSignalType,
     ) -> f32 {
         const SCALE_FACTORS_Q14: [f32; 3] = [15_565.0, 12_288.0, 8_192.0];
@@ -673,7 +676,7 @@ impl Decoder {
     /// See [section-4.2.7.7](https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.7)
     pub fn decode_linear_congruential_generator_seed(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
     ) -> u32 {
         range_decoder.decode_symbol_with_icdf(LINEAR_CONGRUENTIAL_GENERATOR_SEED)
     }
@@ -1003,7 +1006,8 @@ impl Decoder {
             return Err(DecodeError::OutBufferTooSmall);
         }
 
-        let mut range_decoder = RangeDecoder::init(input);
+        let mut range_storage = input.to_vec();
+        let mut range_decoder = EcDec::new(range_storage.as_mut_slice());
         trace!(
             "silk::Decoder::decode: range decoder initialized (subframe_size={})",
             subframe_size
@@ -1173,7 +1177,7 @@ impl Decoder {
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8.1
     pub fn decode_rate_level(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         voice_activity_detected: bool,
     ) -> u32 {
         if voice_activity_detected {
@@ -1186,7 +1190,7 @@ impl Decoder {
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8.2
     pub fn decode_pulse_and_lsb_counts(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         shell_blocks: usize,
         rate_level: u32,
     ) -> ShellBlockCounts {
@@ -1224,7 +1228,7 @@ impl Decoder {
     /// https://www.rfc-editor.org/rfc/rfc6716.html#section-4.2.7.8
     pub fn decode_excitation(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         signal_type: FrameSignalType,
         quantization_offset_type: FrameQuantizationOffsetType,
         mut seed: u32,
@@ -1269,7 +1273,7 @@ impl Decoder {
 
     fn decode_pulse_location_into(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         counts: &ShellBlockCounts,
         e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
         len: usize,
@@ -1334,7 +1338,7 @@ impl Decoder {
 
     fn decode_excitation_lsb_into(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
         counts: &ShellBlockCounts,
         len: usize,
@@ -1351,7 +1355,7 @@ impl Decoder {
 
     fn decode_excitation_sign_into(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         e_raw: &mut [i32; MAX_EXCITATION_SAMPLES],
         signal_type: FrameSignalType,
         quantization_offset_type: FrameQuantizationOffsetType,
@@ -1400,7 +1404,7 @@ impl Decoder {
 
     fn partition_pulse_count(
         &mut self,
-        range_decoder: &mut RangeDecoder<'_>,
+        range_decoder: &mut impl SilkRangeDecoder,
         contexts: &[icdf::ICDFContext; 16],
         block: u8,
         halves: &mut [u8; 2],

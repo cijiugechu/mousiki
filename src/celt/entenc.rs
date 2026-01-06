@@ -377,6 +377,11 @@ impl EcEncSnapshot {
         ctx.error = self.error;
         ctx.buffer_mut().copy_from_slice(&self.buffer);
     }
+
+    #[must_use]
+    pub(crate) fn buffer_len(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 impl<'a> core::ops::Deref for EcEnc<'a> {

@@ -5,7 +5,8 @@
 //! coder (`silk/shell_coder.c`) and reuse the shared sign entropy
 //! tables exposed in `tables_pulses_per_block`.
 
-use crate::range::{RangeDecoder, RangeEncoder};
+use crate::range::RangeEncoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::tables_pulses_per_block::SILK_SIGN_ICDF;
 
 const SHELL_CODEC_FRAME_LENGTH: usize = 16;
@@ -81,7 +82,7 @@ pub fn silk_encode_signs(
 
 /// Decodes sign bits and applies them in-place to the absolute pulse magnitudes.
 pub fn silk_decode_signs(
-    decoder: &mut RangeDecoder<'_>,
+    decoder: &mut impl SilkRangeDecoder,
     pulses: &mut [i16],
     frame_length: usize,
     signal_type: i32,
@@ -127,6 +128,7 @@ pub fn silk_decode_signs(
 mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
+    use crate::celt::EcDec;
 
     fn sums_for_blocks(pulses: &[i8]) -> Vec<i32> {
         let num_blocks = number_of_shell_blocks(pulses.len());
@@ -164,10 +166,10 @@ mod tests {
             quant_offset_type,
             &sums,
         );
-        let encoded = encoder.finish();
+        let mut encoded = encoder.finish();
 
         let mut magnitudes: Vec<i16> = pulses.iter().map(|&value| i16::from(value.abs())).collect();
-        let mut decoder = RangeDecoder::init(&encoded);
+        let mut decoder = EcDec::new(encoded.as_mut_slice());
         silk_decode_signs(
             &mut decoder,
             &mut magnitudes,
@@ -198,11 +200,11 @@ mod tests {
             quant_offset_type,
             &sums,
         );
-        let encoded = encoder.finish();
+        let mut encoded = encoder.finish();
         assert!(encoded.is_empty());
 
         let mut magnitudes = [0i16; SHELL_CODEC_FRAME_LENGTH];
-        let mut decoder = RangeDecoder::init(&encoded);
+        let mut decoder = EcDec::new(encoded.as_mut_slice());
         silk_decode_signs(
             &mut decoder,
             &mut magnitudes,

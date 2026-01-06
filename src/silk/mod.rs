@@ -113,6 +113,7 @@ pub mod resampler_rom;
 pub mod residual_energy;
 pub mod residual_energy16;
 pub mod residual_energy_flp;
+pub mod range_decoder;
 pub mod scale_vector;
 pub mod schur;
 pub mod schur64;
@@ -149,6 +150,7 @@ pub mod wrappers_flp;
 pub mod x86_silk_map;
 
 pub use check_control_input::EncControl;
+pub use range_decoder::SilkRangeDecoder;
 pub use decode_frame::{DecodeFlag, silk_decode_frame};
 pub use decoder_control::DecoderControl;
 pub use decoder_state::{DecoderState, PacketLossConcealmentState};

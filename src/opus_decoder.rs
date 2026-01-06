@@ -13,7 +13,7 @@ use crate::celt::celt_decode_with_ec_dred;
 use crate::celt::{CeltCoef, OpusCustomMode};
 use crate::celt::{
     CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
-    canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
+    EcDec, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     opus_custom_decoder_ctl, opus_select_arch,
 };
 #[cfg(not(feature = "fixed_point"))]
@@ -26,7 +26,6 @@ use crate::packet::{
     opus_packet_get_nb_channels, opus_packet_get_nb_samples, opus_packet_get_samples_per_frame,
     opus_packet_parse_impl,
 };
-use crate::range::RangeDecoder;
 use crate::silk::dec_api::{
     DECODER_NUM_CHANNELS, DecControl, Decoder as SilkDecoder, reset_decoder as silk_reset_decoder,
     silk_decode,
@@ -36,6 +35,7 @@ use crate::silk::decoder_state::DecoderState;
 use crate::silk::errors::SilkError;
 use crate::silk::get_decoder_size::get_decoder_size;
 use crate::silk::init_decoder::init_decoder as silk_init_channel;
+use crate::silk::SilkRangeDecoder;
 
 /// Maximum supported channel count for the canonical decoder.
 const MAX_CHANNELS: usize = 2;
@@ -619,7 +619,8 @@ impl<'mode> OpusDecoder<'mode> {
                 silk_reset_decoder(&mut self.silk).map_err(|_| OpusDecodeError::InternalError)?;
             }
 
-            let mut range_decoder = RangeDecoder::init(packet.unwrap_or(&[]));
+            let mut range_storage = packet.unwrap_or(&[]).to_vec();
+            let mut range_decoder = EcDec::new(range_storage.as_mut_slice());
             let mut silk_output = vec![0i16; pcm_silk_len.saturating_mul(channels)];
             let mut decoded_samples = 0usize;
             let mut write_offset = 0usize;
@@ -765,7 +766,7 @@ impl<'mode> OpusDecoder<'mode> {
             }
 
             if packet.is_some() && packet_len > 1 {
-                range_final = range_decoder.range_size;
+                range_final = range_decoder.range_final();
             }
         }
 

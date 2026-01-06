@@ -285,7 +285,7 @@ impl EncoderIndicesState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::range::RangeDecoder;
+    use crate::celt::EcDec;
     use crate::silk::decode_indices::DecoderIndicesState;
     use crate::silk::tables_pitch_lag::PITCH_CONTOUR_ICDF;
 
@@ -307,9 +307,9 @@ mod tests {
             ConditionalCoding::Independent,
             false,
         );
-        let payload = encoder.finish();
+        let mut payload = encoder.finish();
 
-        let mut decoder = RangeDecoder::init(&payload);
+        let mut decoder = EcDec::new(payload.as_mut_slice());
         let mut decoder_state = DecoderIndicesState::new(&SILK_NLSF_CB_WB);
         decoder_state.vad_flags[0] = true;
         let decoded =
@@ -354,9 +354,9 @@ mod tests {
         );
         assert_eq!(encoder_state.prev_signal_type, indices.signal_type);
         assert_eq!(encoder_state.prev_lag_index, indices.lag_index);
-        let payload = encoder.finish();
+        let mut payload = encoder.finish();
 
-        let mut decoder = RangeDecoder::init(&payload);
+        let mut decoder = EcDec::new(payload.as_mut_slice());
         let mut decoder_state = DecoderIndicesState::new(&SILK_NLSF_CB_WB);
         decoder_state.vad_flags[0] = true;
         decoder_state.prev_signal_type = FrameSignalType::Voiced;

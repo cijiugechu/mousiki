@@ -1,13 +1,15 @@
+use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
+use core::ptr::NonNull;
 
+use crate::celt::{EcEnc, EcEncSnapshot, ec_tell};
 use crate::silk::icdf::ICDFContext;
 
 const EC_SYM_BITS: u32 = 8;
-const EC_SYM_MAX: u32 = (1 << EC_SYM_BITS) - 1;
 const EC_CODE_BITS: u32 = 32;
 const EC_CODE_TOP: u32 = 1 << (EC_CODE_BITS - 1);
 const EC_CODE_BOT: u32 = EC_CODE_TOP >> EC_SYM_BITS;
-const EC_CODE_SHIFT: u32 = EC_CODE_BITS - EC_SYM_BITS - 1;
 const EC_CODE_EXTRA: u32 = (EC_CODE_BITS - 2) % EC_SYM_BITS + 1;
 const EC_UINT_BITS: u32 = 8;
 
@@ -116,6 +118,7 @@ impl<'a> RangeDecoder<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn decode_bin(&self, bits: u32) -> u32 {
         let scale = self.range_size >> bits;
         let max = 1u32 << bits;
@@ -332,17 +335,103 @@ fn ec_ilog(value: u32) -> i32 {
     }
 }
 
-#[derive(Debug, Clone)]
+const RANGE_ENCODER_STORAGE_BYTES: usize = 1275;
+
+#[derive(Debug)]
 pub struct RangeEncoder {
-    data: Vec<u8>,
-    range_size: u32,
-    low_value: u32,
-    rem: i32,
-    ext: u32,
-    end_window: u32,
-    nend_bits: u32,
-    nbits_total: i32,
-    tail: Vec<u8>,
+    encoder: EcEnc<'static>,
+    storage: NonNull<[u8]>,
+}
+
+impl RangeEncoder {
+    pub fn new() -> Self {
+        Self::with_capacity(RANGE_ENCODER_STORAGE_BYTES)
+    }
+
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        let boxed = vec![0u8; capacity].into_boxed_slice();
+        let storage = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        // SAFETY: The storage is owned by `Self` and released in `Drop`.
+        let encoder = {
+            let slice: &'static mut [u8] = unsafe { &mut *storage.as_ptr() };
+            EcEnc::new(slice)
+        };
+        Self { encoder, storage }
+    }
+
+    fn from_snapshot(snapshot: &EcEncSnapshot) -> Self {
+        let boxed = vec![0u8; snapshot.buffer_len()].into_boxed_slice();
+        let storage = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        // SAFETY: The storage is owned by `Self` and released in `Drop`.
+        let mut encoder = {
+            let slice: &'static mut [u8] = unsafe { &mut *storage.as_ptr() };
+            EcEnc::new(slice)
+        };
+        snapshot.restore(&mut encoder);
+        Self { encoder, storage }
+    }
+
+    /// Returns the number of whole bits emitted so far.
+    #[must_use]
+    pub fn tell(&self) -> i32 {
+        ec_tell(self.encoder.ctx()) as i32
+    }
+
+    /// Returns the final range-coder state (`rng`) used by Opus for diagnostics.
+    #[must_use]
+    pub fn range_final(&self) -> u32 {
+        self.encoder.ctx().rng
+    }
+
+    pub fn encode_bin(&mut self, low: u32, high: u32, bits: u32) {
+        self.encoder.encode_bin(low, high, bits);
+    }
+
+    pub fn encode_symbol_with_icdf(&mut self, symbol: usize, icdf_ctx: ICDFContext) {
+        let ICDFContext { total, dist_table } = icdf_ctx;
+        debug_assert!(symbol < dist_table.len(), "symbol index out of bounds");
+        let high = dist_table[symbol] as u32;
+        let low = if symbol > 0 {
+            dist_table[symbol - 1] as u32
+        } else {
+            0
+        };
+        self.encoder.encode(low, high, total);
+    }
+
+    pub fn encode_icdf16(&mut self, symbol: usize, icdf: &[u16], ftb: u32) {
+        debug_assert!(symbol < icdf.len(), "symbol index out of bounds");
+        self.encoder.enc_icdf16(symbol, icdf, ftb);
+    }
+
+    /// Encodes a symbol using the compact 8-bit cumulative distribution format
+    /// used by SILK's shell coder and related tables.
+    pub fn encode_icdf(&mut self, symbol: usize, icdf: &[u8], ftb: u32) {
+        debug_assert!(symbol < icdf.len(), "symbol index out of bounds");
+        self.encoder.enc_icdf(symbol, icdf, ftb);
+    }
+
+    /// Patches bits at the start of the encoded stream.
+    ///
+    /// Mirrors `ec_enc_patch_initial_bits`, allowing callers to reserve space
+    /// for header bits and fill them in once the final values are known.
+    pub fn patch_initial_bits(&mut self, value: u32, nbits: u32) {
+        if nbits == 0 {
+            return;
+        }
+        self.encoder.enc_patch_initial_bits(value, nbits);
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        self.encoder.enc_done();
+        let size = self.encoder.ctx().offs + self.encoder.ctx().end_offs;
+        if size < self.encoder.ctx().storage {
+            self.encoder.enc_shrink(size);
+        }
+        let size = size as usize;
+        let buffer = self.encoder.ctx().buffer();
+        buffer[..size].to_vec()
+    }
 }
 
 impl Default for RangeEncoder {
@@ -351,208 +440,21 @@ impl Default for RangeEncoder {
     }
 }
 
-impl RangeEncoder {
-    pub fn new() -> Self {
-        RangeEncoder {
-            data: Vec::new(),
-            range_size: EC_CODE_TOP,
-            low_value: 0,
-            rem: -1,
-            ext: 0,
-            end_window: 0,
-            nend_bits: 0,
-            nbits_total: (EC_CODE_BITS + 1) as i32,
-            tail: Vec::new(),
-        }
+impl Clone for RangeEncoder {
+    fn clone(&self) -> Self {
+        let snapshot = EcEncSnapshot::capture(&self.encoder);
+        Self::from_snapshot(&snapshot)
     }
+}
 
-    fn carry_out(&mut self, symbol: u32) {
-        if symbol == EC_SYM_MAX {
-            self.ext = self.ext.saturating_add(1);
-        } else {
-            let carry = (symbol >> EC_SYM_BITS) as u8;
-            if self.rem >= 0 {
-                let byte = (self.rem as u32 + u32::from(carry)) as u8;
-                self.data.push(byte);
-            }
-            if self.ext > 0 {
-                let repeated = ((EC_SYM_MAX + u32::from(carry)) & EC_SYM_MAX) as u8;
-                for _ in 0..self.ext {
-                    self.data.push(repeated);
-                }
-                self.ext = 0;
-            }
-            self.rem = (symbol & EC_SYM_MAX) as i32;
+impl Drop for RangeEncoder {
+    fn drop(&mut self) {
+        // SAFETY: `storage` was created from a `Box<[u8]>` via `Box::into_raw` and is
+        // only reconstructed once the encoder (which holds the unique borrow) has
+        // been dropped.
+        unsafe {
+            let _ = Box::from_raw(self.storage.as_ptr());
         }
-    }
-
-    fn normalize(&mut self) {
-        while self.range_size <= EC_CODE_BOT {
-            self.carry_out(self.low_value >> EC_CODE_SHIFT);
-            self.low_value = (self.low_value << EC_SYM_BITS) & (EC_CODE_TOP - 1);
-            self.range_size <<= EC_SYM_BITS;
-            self.nbits_total += EC_SYM_BITS as i32;
-        }
-    }
-
-    /// Returns the number of whole bits emitted so far.
-    #[must_use]
-    pub fn tell(&self) -> i32 {
-        self.nbits_total - ec_ilog(self.range_size)
-    }
-
-    /// Returns the final range-coder state (`rng`) used by Opus for diagnostics.
-    #[must_use]
-    pub fn range_final(&self) -> u32 {
-        self.range_size
-    }
-
-    pub fn encode_bin(&mut self, low: u32, high: u32, bits: u32) {
-        let r = self.range_size >> bits;
-        let total = 1u32 << bits;
-
-        if low > 0 {
-            let offset = u64::from(r) * u64::from(total - low);
-            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
-            let width = u64::from(r) * u64::from(high - low);
-            self.range_size = width as u32;
-        } else {
-            let offset = u64::from(r) * u64::from(total - high);
-            self.range_size -= offset as u32;
-        }
-
-        self.normalize();
-    }
-
-    pub fn encode_symbol_with_icdf(&mut self, symbol: usize, icdf_ctx: ICDFContext) {
-        let ICDFContext { total, dist_table } = icdf_ctx;
-        let scale = self.range_size / total;
-
-        let high = dist_table[symbol] as u32;
-        let low = if symbol > 0 {
-            dist_table[symbol - 1] as u32
-        } else {
-            0
-        };
-
-        if low > 0 {
-            let offset = u64::from(scale) * u64::from(total - low);
-            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
-            let width = u64::from(scale) * u64::from(high - low);
-            self.range_size = width as u32;
-        } else {
-            let offset = u64::from(scale) * u64::from(total - high);
-            self.range_size -= offset as u32;
-        }
-
-        self.normalize();
-    }
-
-    pub fn encode_icdf16(&mut self, symbol: usize, icdf: &[u16], ftb: u32) {
-        let r = self.range_size >> ftb;
-
-        if symbol > 0 {
-            let prev = u32::from(icdf[symbol - 1]);
-            let curr = u32::from(icdf[symbol]);
-            let offset = u64::from(r) * u64::from(prev);
-            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
-            self.range_size = (u64::from(r) * u64::from(prev - curr)) as u32;
-        } else {
-            let offset = u64::from(r) * u64::from(icdf[symbol]);
-            self.range_size -= offset as u32;
-        }
-
-        self.normalize();
-    }
-
-    /// Encodes a symbol using the compact 8-bit cumulative distribution format
-    /// used by SILK's shell coder and related tables.
-    pub fn encode_icdf(&mut self, symbol: usize, icdf: &[u8], ftb: u32) {
-        debug_assert!(symbol < icdf.len(), "symbol index out of bounds");
-
-        let r = self.range_size >> ftb;
-
-        if symbol > 0 {
-            let prev = u32::from(icdf[symbol - 1]);
-            let curr = u32::from(icdf[symbol]);
-            let offset = u64::from(r) * u64::from(prev);
-            self.low_value = self.low_value.wrapping_add(self.range_size - offset as u32);
-            self.range_size = (u64::from(r) * u64::from(prev - curr)) as u32;
-        } else {
-            let offset = u64::from(r) * u64::from(icdf[symbol]);
-            self.range_size -= offset as u32;
-        }
-
-        self.normalize();
-    }
-
-    /// Patches bits at the start of the encoded stream.
-    ///
-    /// Mirrors `ec_enc_patch_initial_bits`, allowing callers to reserve space
-    /// for header bits and fill them in once the final values are known.
-    pub fn patch_initial_bits(&mut self, value: u32, nbits: u32) {
-        assert!(nbits <= EC_SYM_BITS);
-        if nbits == 0 {
-            return;
-        }
-
-        let shift = EC_SYM_BITS - nbits;
-        let mask = ((1u32 << nbits) - 1) << shift;
-        let val_masked = (value & ((1u32 << nbits) - 1)) << shift;
-
-        if let Some(first) = self.data.first_mut() {
-            *first = ((u32::from(*first) & !mask) | val_masked) as u8;
-        } else if self.rem >= 0 {
-            let rem = self.rem as u32;
-            self.rem = ((rem & !mask) | val_masked) as i32;
-        } else if self.range_size <= (EC_CODE_TOP >> nbits) {
-            let mask_shifted = mask << EC_CODE_SHIFT;
-            self.low_value = (self.low_value & !mask_shifted) | (val_masked << EC_CODE_SHIFT);
-        } else {
-            panic!("cannot patch initial bits before any output was produced");
-        }
-    }
-
-    pub fn finish(mut self) -> Vec<u8> {
-        let mut l = EC_CODE_BITS as i32 - ec_ilog(self.range_size);
-        let mut mask = (EC_CODE_TOP - 1) >> l;
-        let mut end = (self.low_value + mask) & !mask;
-
-        if (end | mask) >= self.low_value + self.range_size {
-            l += 1;
-            mask >>= 1;
-            end = (self.low_value + mask) & !mask;
-        }
-
-        while l > 0 {
-            self.carry_out(end >> EC_CODE_SHIFT);
-            end = (end << EC_SYM_BITS) & (EC_CODE_TOP - 1);
-            l -= EC_SYM_BITS as i32;
-        }
-
-        if self.rem >= 0 || self.ext > 0 {
-            self.carry_out(0);
-        }
-
-        while self.nend_bits >= EC_SYM_BITS {
-            self.tail.push((self.end_window & EC_SYM_MAX) as u8);
-            self.end_window >>= EC_SYM_BITS;
-            self.nend_bits -= EC_SYM_BITS;
-        }
-
-        if self.nend_bits > 0 {
-            let byte = (self.end_window & ((1 << self.nend_bits) - 1)) as u8;
-            if let Some(last) = self.tail.last_mut() {
-                *last |= byte;
-            } else {
-                self.tail.push(byte);
-            }
-        }
-
-        self.tail.reverse();
-        self.data.extend_from_slice(&self.tail);
-
-        self.data
     }
 }
 
@@ -561,10 +463,12 @@ impl RangeEncoder {
 mod tests {
     use super::*;
     use crate::icdf;
+    use crate::celt::EcDec;
     use crate::silk::tables_other::SILK_UNIFORM4_ICDF;
     use crate::silk::tables_pulses_per_block::{
         SILK_SHELL_CODE_TABLE_OFFSETS, SILK_SHELL_CODE_TABLE0,
     };
+    use crate::silk::SilkRangeDecoder;
 
     const SILK_FRAME_TYPE_INACTIVE: ICDFContext = icdf!(256; 26, 256);
 
@@ -715,8 +619,8 @@ mod tests {
         encoder.encode_symbol_with_icdf(6, SILK_GAIN_LOW_BITS);
         encoder.encode_symbol_with_icdf(0, SILK_GAIN_DELTA);
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
 
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_FRAME_TYPE_INACTIVE), 1);
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_GAIN_HIGH_BITS[1]), 2);
@@ -730,8 +634,8 @@ mod tests {
         encoder.encode_icdf(2, &SILK_UNIFORM4_ICDF, 8);
         encoder.encode_icdf(0, &SILK_UNIFORM4_ICDF, 8);
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
 
         assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 2);
         assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 0);
@@ -747,8 +651,8 @@ mod tests {
         encoder.encode_icdf(2, icdf, 8);
         encoder.encode_icdf(1, icdf, 8);
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
 
         assert_eq!(decoder.decode_icdf(icdf, 8), 2);
         assert_eq!(decoder.decode_icdf(icdf, 8), 1);
@@ -764,8 +668,8 @@ mod tests {
             encoder.encode_icdf(0, &icdf, 8);
             encoder.patch_initial_bits(value, header_bits);
 
-            let payload = encoder.finish();
-            let mut decoder = RangeDecoder::init(&payload);
+            let mut storage = encoder.finish();
+            let mut decoder = EcDec::new(storage.as_mut_slice());
             let mut decoded = 0u32;
             for _ in 0..header_bits {
                 decoded = (decoded << 1) | decoder.decode_symbol_logp(1);
@@ -783,12 +687,12 @@ mod tests {
         encoder.encode_icdf(0, &SILK_UNIFORM4_ICDF, 8);
         let range_final = encoder.range_final();
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 2);
         assert_eq!(decoder.decode_symbol_with_icdf(SILK_FRAME_TYPE_INACTIVE), 1);
         assert_eq!(decoder.decode_icdf(&SILK_UNIFORM4_ICDF, 8), 0);
 
-        assert_eq!(decoder.range_size, range_final);
+        assert_eq!(decoder.range_final(), range_final);
     }
 }

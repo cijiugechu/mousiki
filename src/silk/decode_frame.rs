@@ -7,7 +7,7 @@
 
 use alloc::vec;
 
-use crate::range::RangeDecoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::cng::{ComfortNoiseInputs, PlcState, apply_cng};
 use crate::silk::decode_core::silk_decode_core;
 use crate::silk::decode_indices::{ConditionalCoding, DecoderIndicesState, SideInfoIndices};
@@ -53,7 +53,7 @@ impl DecodeFlag {
 /// state's frame length.
 pub fn silk_decode_frame(
     state: &mut DecoderState,
-    range_decoder: &mut RangeDecoder<'_>,
+    range_decoder: &mut impl SilkRangeDecoder,
     output: &mut [i16],
     lost_flag: DecodeFlag,
     cond_coding: ConditionalCoding,
@@ -158,7 +158,7 @@ pub fn silk_decode_frame(
 
 fn decode_side_information(
     state: &mut DecoderState,
-    range_decoder: &mut RangeDecoder<'_>,
+    range_decoder: &mut impl SilkRangeDecoder,
     frame_index: usize,
     decode_lbrr: bool,
     cond_coding: ConditionalCoding,
@@ -261,13 +261,15 @@ fn plc_summary(state: &DecoderState) -> PlcState {
 #[cfg(test)]
 mod tests {
     use super::{DecodeFlag, silk_decode_frame};
-    use crate::range::{RangeDecoder, RangeEncoder};
+    use crate::celt::EcDec;
+    use crate::range::RangeEncoder;
     use crate::silk::decode_indices::{ConditionalCoding, SideInfoIndices};
     use crate::silk::decoder_state::DecoderState;
     use crate::silk::encode_indices::EncoderIndicesState;
     use crate::silk::encode_pulses::silk_encode_pulses;
     use crate::silk::{FrameQuantizationOffsetType, FrameSignalType};
     use alloc::vec;
+    use alloc::vec::Vec;
 
     fn configured_decoder_state() -> DecoderState {
         let mut state = DecoderState::default();
@@ -282,7 +284,8 @@ mod tests {
     fn packet_loss_path_updates_loss_counter() {
         let mut state = configured_decoder_state();
         let frame_length = state.sample_rate.frame_length;
-        let mut decoder = RangeDecoder::init(&[]);
+        let mut storage = Vec::new();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         let mut output = vec![0i16; frame_length];
 
         let produced = silk_decode_frame(
@@ -335,9 +338,9 @@ mod tests {
             &mut pulses,
             frame_length,
         );
-        let payload = encoder.finish();
+        let mut payload = encoder.finish();
 
-        let mut decoder = RangeDecoder::init(&payload);
+        let mut decoder = EcDec::new(payload.as_mut_slice());
         state.vad_flags[0] = 1;
         let mut output = vec![0i16; frame_length];
         let produced = silk_decode_frame(

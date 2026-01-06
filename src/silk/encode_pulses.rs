@@ -242,9 +242,10 @@ mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
 
-    use crate::range::RangeDecoder;
+    use crate::celt::EcDec;
     use crate::silk::code_signs::silk_decode_signs;
     use crate::silk::shell_coder::silk_shell_decoder;
+    use crate::silk::SilkRangeDecoder;
 
     fn decode_reference(
         encoded: &[u8],
@@ -252,7 +253,8 @@ mod tests {
         quant_offset_type: i32,
         frame_length: usize,
     ) -> Vec<i8> {
-        let mut decoder = RangeDecoder::init(encoded);
+        let mut storage = encoded.to_vec();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         let signal_index = (signal_type >> 1) as usize;
         assert!(signal_index < SILK_RATE_LEVELS_ICDF.len());
         let rate_level_index =

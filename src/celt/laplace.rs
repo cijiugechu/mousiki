@@ -8,7 +8,8 @@
 
 use core::cmp::{max, min};
 
-use crate::range::{RangeDecoder, RangeEncoder};
+use crate::celt::EcDec;
+use crate::range::RangeEncoder;
 
 const LAPLACE_LOG_MINP: u32 = 0;
 const LAPLACE_MINP: u32 = 1 << LAPLACE_LOG_MINP;
@@ -69,7 +70,7 @@ pub(crate) fn ec_laplace_encode(enc: &mut RangeEncoder, value: &mut i32, mut fs:
     enc.encode_bin(fl, high, 15);
 }
 
-pub(crate) fn ec_laplace_decode(dec: &mut RangeDecoder, mut fs: u32, decay: u32) -> i32 {
+pub(crate) fn ec_laplace_decode(dec: &mut EcDec, mut fs: u32, decay: u32) -> i32 {
     let mut val = 0i32;
     let mut fl = 0u32;
     let fm = dec.decode_bin(15);
@@ -100,9 +101,8 @@ pub(crate) fn ec_laplace_decode(dec: &mut RangeDecoder, mut fs: u32, decay: u32)
         }
     }
 
-    let scale = dec.range_size >> 15;
     let high = (fl + fs).min(TOTAL_FREQ);
-    dec.update(scale, fl, high, TOTAL_FREQ);
+    dec.update(fl, high, TOTAL_FREQ);
 
     val
 }
@@ -143,13 +143,13 @@ pub(crate) fn ec_laplace_encode_p0(enc: &mut RangeEncoder, value: i32, p0: u16, 
     }
 }
 
-pub(crate) fn ec_laplace_decode_p0(dec: &mut RangeDecoder, p0: u16, decay: u16) -> i32 {
+pub(crate) fn ec_laplace_decode_p0(dec: &mut EcDec, p0: u16, decay: u16) -> i32 {
     let mut sign_icdf = [0u16; 3];
     sign_icdf[0] = 32768 - p0;
     sign_icdf[1] = sign_icdf[0] / 2;
     sign_icdf[2] = 0;
 
-    let mut sign = dec.decode_icdf16(&sign_icdf, 15) as i32;
+    let mut sign = dec.dec_icdf16(&sign_icdf, 15);
     if sign == 2 {
         sign = -1;
     }
@@ -166,7 +166,7 @@ pub(crate) fn ec_laplace_decode_p0(dec: &mut RangeDecoder, p0: u16, decay: u16) 
 
         let mut value = 1;
         loop {
-            let v = dec.decode_icdf16(&icdf, 15) as i32;
+            let v = dec.dec_icdf16(&icdf, 15);
             value += v;
             if v != 7 {
                 return sign * value;
@@ -213,8 +213,8 @@ mod tests {
             ec_laplace_encode(&mut encoder, value, fs, decay);
         }
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
 
         for expected in &encoded {
             let decoded = ec_laplace_decode(&mut decoder, fs, decay);
@@ -233,8 +233,8 @@ mod tests {
             ec_laplace_encode_p0(&mut encoder, value, p0, decay);
         }
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
 
         for &expected in &values {
             let decoded = ec_laplace_decode_p0(&mut decoder, p0, decay);
@@ -261,14 +261,14 @@ mod tests {
             decays[i] = (rng.next() % 11_000) + 5_000;
         }
 
-        let mut encoder = RangeEncoder::new();
+        let mut encoder = RangeEncoder::with_capacity(SAMPLES * 4);
         for i in 0..SAMPLES {
             let fs = laplace_start_freq(decays[i]);
             ec_laplace_encode(&mut encoder, &mut values[i], fs, decays[i]);
         }
 
-        let data = encoder.finish();
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
 
         for i in 0..SAMPLES {
             let fs = laplace_start_freq(decays[i]);

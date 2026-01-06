@@ -41,7 +41,8 @@ pub fn stereo_encode_mid_only(range_encoder: &mut RangeEncoder, mid_only: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::range::{RangeDecoder, RangeEncoder};
+    use crate::celt::EcDec;
+    use crate::range::RangeEncoder;
     use crate::silk::stereo_decode_pred::{stereo_decode_mid_only, stereo_decode_pred};
     use crate::silk::stereo_quant_pred::stereo_quant_pred;
 
@@ -53,9 +54,8 @@ mod tests {
         let mut encoder = RangeEncoder::new();
         stereo_encode_pred(&mut encoder, &indices);
         stereo_encode_mid_only(&mut encoder, true);
-        let data = encoder.finish();
-
-        let mut decoder = RangeDecoder::init(&data);
+        let mut storage = encoder.finish();
+        let mut decoder = EcDec::new(storage.as_mut_slice());
         let mut decoded = [0; 2];
         stereo_decode_pred(&mut decoder, &mut decoded);
         assert_eq!(decoded, predictors);

@@ -6,8 +6,8 @@
 
 use core::convert::TryFrom;
 
-use crate::range::RangeDecoder;
 use crate::silk::MAX_NB_SUBFR;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::code_signs::silk_decode_signs;
 use crate::silk::shell_coder::silk_shell_decoder;
 use crate::silk::tables_other::SILK_LSB_ICDF;
@@ -45,7 +45,7 @@ fn padded_frame_length(frame_length: usize) -> usize {
 
 /// Mirrors `silk_decode_pulses` from the reference C sources.
 pub fn silk_decode_pulses(
-    decoder: &mut RangeDecoder<'_>,
+    decoder: &mut impl SilkRangeDecoder,
     pulses: &mut [i16],
     signal_type: i32,
     quant_offset_type: i32,
@@ -162,7 +162,8 @@ mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
 
-    use crate::range::{RangeDecoder, RangeEncoder};
+    use crate::celt::EcDec;
+    use crate::range::RangeEncoder;
     use crate::silk::encode_pulses::silk_encode_pulses;
 
     fn reference_pulses(frame_length: usize) -> Vec<i8> {
@@ -190,9 +191,9 @@ mod tests {
             &mut encoder_pulses,
             frame_length,
         );
-        let payload = encoder.finish();
+        let mut payload = encoder.finish();
 
-        let mut decoder = RangeDecoder::init(&payload);
+        let mut decoder = EcDec::new(payload.as_mut_slice());
         let padded_length = padded_frame_length(frame_length);
         let mut decoded = vec![0i16; padded_length];
         silk_decode_pulses(

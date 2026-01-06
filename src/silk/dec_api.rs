@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::array::from_fn;
 use core::cmp::min;
 
-use crate::range::RangeDecoder;
+use crate::silk::SilkRangeDecoder;
 use crate::silk::decode_frame::{DecodeFlag, silk_decode_frame};
 use crate::silk::decode_indices::{ConditionalCoding, DecoderIndicesState, SideInfoIndices};
 use crate::silk::decode_pulses::silk_decode_pulses;
@@ -134,7 +134,7 @@ pub fn silk_decode(
     control: &mut DecControl,
     lost_flag: DecodeFlag,
     new_packet: bool,
-    range_decoder: &mut RangeDecoder<'_>,
+    range_decoder: &mut impl SilkRangeDecoder,
     samples_out: &mut [i16],
     arch: i32,
 ) -> Result<usize, SilkError> {
@@ -448,7 +448,7 @@ fn decode_vad_and_lbrr(
     decoder: &mut Decoder,
     control: &DecControl,
     lost_flag: DecodeFlag,
-    range_decoder: &mut RangeDecoder<'_>,
+    range_decoder: &mut impl SilkRangeDecoder,
     decode_only_middle: &mut bool,
 ) {
     let channels = usize::try_from(control.n_channels_internal).unwrap_or(1);
@@ -523,7 +523,7 @@ fn decode_vad_and_lbrr(
 
 fn decode_side_info(
     state: &mut DecoderState,
-    range_decoder: &mut RangeDecoder<'_>,
+    range_decoder: &mut impl SilkRangeDecoder,
     frame_index: usize,
     decode_lbrr: bool,
     coding: ConditionalCoding,
