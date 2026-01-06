@@ -2765,6 +2765,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "debug_assertions disabled in release"
+    )]
     #[should_panic]
     fn validate_celt_decoder_rejects_invalid_channel_count() {
         let e_bands = [0, 2, 5];
