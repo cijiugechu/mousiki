@@ -4,11 +4,6 @@ This note summarizes the missing pieces needed to run `opus-c/tests/test_opus_de
 against the Rust port, focusing on the hybrid (SILK+CELT) decode path.
 
 ## Current Gap Summary (updated)
-- Hybrid packets are still treated as CELT-only in `src/opus_decoder.rs`, so the
-  shared range-decoder path is not exercised for hybrid decode.
-- The CELT decoder (`src/celt/celt_decoder.rs`) still rejects external range decoders,
-  preventing reuse of the SILK range state for hybrid packets.
-- Redundancy + `range_final` handling is not aligned with `opus_decoder.c`.
 - Hybrid-specific decode tests from `opus-c/tests/test_opus_decode.c` are not ported.
 
 ## Step-by-Step Plan
@@ -39,17 +34,24 @@ against the Rust port, focusing on the hybrid (SILK+CELT) decode path.
      - `celt_decode_with_ec_dred` no longer rejects external range decoders.
      - Added `RangeDecoderHandle` to carry owned vs borrowed decoders through decode.
 
-3) **Restore the hybrid flow in the top-level decoder**
+3) **Restore the hybrid flow in the top-level decoder** (DONE)
    - In `src/opus_decoder.rs`, treat only `MODE_CELT_ONLY` as CELT-only.
    - For hybrid packets, create a single `EcDec` and pass it through SILK,
      then reuse the same decoder for CELT.
    - This also fixes hybrid FEC paths that are currently forced into PLC.
+   - Completed:
+     - Hybrid packets now reuse the shared `EcDec` for the CELT decode stage.
+     - `decode_as_celt_only` only flags `MODE_CELT_ONLY`, so hybrid FEC no longer
+       falls back to PLC.
 
-4) **Match redundancy + rangeFinal handling**
+4) **Match redundancy + rangeFinal handling** (DONE)
    - Replicate the reference logic that reduces decoder storage by
      `redundancy_bytes` and uses `ec_tell` for bounds checks.
    - Compute `range_final` from the shared decoder (`dec.ctx().rng`) and XOR
      with `redundant_rng`, mirroring `opus_decoder.c`.
+   - Completed:
+     - Shared `EcDec` storage is reduced when redundancy raw bits are present.
+     - Final range is computed from the shared decoder and XORed with redundancy RNG.
 
 5) **Update tests and porting status**
    - Port the hybrid sections of `opus-c/tests/test_opus_decode.c`.

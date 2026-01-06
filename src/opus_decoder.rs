@@ -84,8 +84,7 @@ fn opus_mode_to_int(mode: Mode) -> i32 {
 
 #[inline]
 fn decode_as_celt_only(mode: i32) -> bool {
-    // Hybrid packets are decoded as CELT-only until the shared range-decoder path is ported.
-    mode == MODE_CELT_ONLY || mode == MODE_HYBRID
+    mode == MODE_CELT_ONLY
 }
 
 fn smooth_fade(
@@ -476,6 +475,8 @@ impl<'mode> OpusDecoder<'mode> {
         let mut pcm_transition: Option<Vec<OpusRes>> = None;
         let mut redundant_audio: Option<Vec<OpusRes>> = None;
         let mut redundant_packet: Option<&[u8]> = None;
+        let mut range_storage: Option<Vec<u8>> = None;
+        let mut range_decoder: Option<EcDec<'_>> = None;
         let celt_only = if packet.is_some() {
             audiosize =
                 usize::try_from(self.frame_size).map_err(|_| OpusDecodeError::BadArgument)?;
@@ -565,7 +566,7 @@ impl<'mode> OpusDecoder<'mode> {
         }
 
         let celt_accum = !celt_only;
-        let mut range_final = 0u32;
+        let mut range_final: Option<u32> = None;
         let mut celt_final_range: Option<u32> = None;
 
         if !celt_only {
@@ -619,134 +620,155 @@ impl<'mode> OpusDecoder<'mode> {
                 silk_reset_decoder(&mut self.silk).map_err(|_| OpusDecodeError::InternalError)?;
             }
 
-            let mut range_storage = packet.unwrap_or(&[]).to_vec();
-            let mut range_decoder = EcDec::new(range_storage.as_mut_slice());
-            let mut silk_output = vec![0i16; pcm_silk_len.saturating_mul(channels)];
-            let mut decoded_samples = 0usize;
-            let mut write_offset = 0usize;
-            while decoded_samples < audiosize {
-                let new_packet = decoded_samples == 0;
-                let max_chunk = audiosize
-                    .checked_sub(decoded_samples)
-                    .ok_or(OpusDecodeError::BadArgument)?;
-                let samples_available = max_chunk
-                    .checked_mul(channels)
-                    .ok_or(OpusDecodeError::BadArgument)?;
-                if write_offset + samples_available > silk_output.len() {
-                    return Err(OpusDecodeError::BadArgument);
-                }
-                let result = silk_decode(
-                    &mut self.silk,
-                    control,
-                    if packet.is_some() {
-                        if decode_fec {
-                            DecodeFlag::Lbrr
-                        } else {
-                            DecodeFlag::Normal
-                        }
-                    } else {
-                        DecodeFlag::PacketLoss
-                    },
-                    new_packet,
-                    &mut range_decoder,
-                    &mut silk_output[write_offset..write_offset + samples_available],
-                    self.arch,
-                );
-
-                let written = match result {
-                    Ok(value) => value,
-                    Err(_) if packet.is_none() => {
-                        silk_output[write_offset..write_offset + samples_available].fill(0);
-                        max_chunk
+            let storage = range_storage.get_or_insert_with(|| packet.unwrap_or(&[]).to_vec());
+            range_decoder = Some(EcDec::new(storage.as_mut_slice()));
+            {
+                let range_dec = range_decoder
+                    .as_mut()
+                    .ok_or(OpusDecodeError::InternalError)?;
+                let mut silk_output = vec![0i16; pcm_silk_len.saturating_mul(channels)];
+                let mut decoded_samples = 0usize;
+                let mut write_offset = 0usize;
+                while decoded_samples < audiosize {
+                    let new_packet = decoded_samples == 0;
+                    let max_chunk = audiosize
+                        .checked_sub(decoded_samples)
+                        .ok_or(OpusDecodeError::BadArgument)?;
+                    let samples_available = max_chunk
+                        .checked_mul(channels)
+                        .ok_or(OpusDecodeError::BadArgument)?;
+                    if write_offset + samples_available > silk_output.len() {
+                        return Err(OpusDecodeError::BadArgument);
                     }
-                    Err(_) => return Err(OpusDecodeError::InternalError),
-                };
+                    let result = silk_decode(
+                        &mut self.silk,
+                        control,
+                        if packet.is_some() {
+                            if decode_fec {
+                                DecodeFlag::Lbrr
+                            } else {
+                                DecodeFlag::Normal
+                            }
+                        } else {
+                            DecodeFlag::PacketLoss
+                        },
+                        new_packet,
+                        range_dec,
+                        &mut silk_output[write_offset..write_offset + samples_available],
+                        self.arch,
+                    );
 
-                if written == 0 {
-                    return Err(OpusDecodeError::InternalError);
-                }
-                decoded_samples = decoded_samples
-                    .checked_add(written)
-                    .ok_or(OpusDecodeError::BadArgument)?;
-                write_offset = decoded_samples
-                    .checked_mul(channels)
-                    .ok_or(OpusDecodeError::BadArgument)?;
-            }
-
-            let silk_samples = decoded_samples
-                .checked_mul(channels)
-                .ok_or(OpusDecodeError::BadArgument)?;
-            if let Some(ref mut temp) = silk_pcm {
-                if temp.len() < silk_samples {
-                    return Err(OpusDecodeError::BufferTooSmall);
-                }
-                for (dst, &src) in temp.iter_mut().zip(silk_output.iter().take(silk_samples)) {
-                    *dst = silk_int16_to_res(src);
-                }
-            } else {
-                if pcm.len() < silk_samples {
-                    return Err(OpusDecodeError::BufferTooSmall);
-                }
-                for (dst, &src) in pcm
-                    .iter_mut()
-                    .take(silk_samples)
-                    .zip(silk_output.iter().take(silk_samples))
-                {
-                    *dst = silk_int16_to_res(src);
-                }
-            }
-
-            if let Some(temp) = silk_pcm {
-                let copy_len = audiosize
-                    .checked_mul(channels)
-                    .ok_or(OpusDecodeError::BadArgument)?;
-                if temp.len() < copy_len || pcm.len() < copy_len {
-                    return Err(OpusDecodeError::BufferTooSmall);
-                }
-                pcm[..copy_len].copy_from_slice(&temp[..copy_len]);
-            }
-
-            if !decode_fec && packet.is_some() && mode != MODE_SILK_ONLY {
-                let tell = range_decoder.tell();
-                let threshold = 17 + if mode == MODE_HYBRID { 20 } else { 0 };
-                if tell + threshold <= (8 * packet_len) as i32 {
-                    redundancy = if mode == MODE_HYBRID {
-                        range_decoder.decode_symbol_logp(12) != 0
-                    } else {
-                        true
+                    let written = match result {
+                        Ok(value) => value,
+                        Err(_) if packet.is_none() => {
+                            silk_output[write_offset..write_offset + samples_available].fill(0);
+                            max_chunk
+                        }
+                        Err(_) => return Err(OpusDecodeError::InternalError),
                     };
-                    if redundancy {
-                        celt_to_silk = range_decoder.decode_symbol_logp(1) != 0;
-                        let bytes = if mode == MODE_HYBRID {
-                            usize::try_from(range_decoder.decode_uint(256).saturating_add(2))
-                                .map_err(|_| OpusDecodeError::BadArgument)?
+
+                    if written == 0 {
+                        return Err(OpusDecodeError::InternalError);
+                    }
+                    decoded_samples = decoded_samples
+                        .checked_add(written)
+                        .ok_or(OpusDecodeError::BadArgument)?;
+                    write_offset = decoded_samples
+                        .checked_mul(channels)
+                        .ok_or(OpusDecodeError::BadArgument)?;
+                }
+
+                let silk_samples = decoded_samples
+                    .checked_mul(channels)
+                    .ok_or(OpusDecodeError::BadArgument)?;
+                if let Some(ref mut temp) = silk_pcm {
+                    if temp.len() < silk_samples {
+                        return Err(OpusDecodeError::BufferTooSmall);
+                    }
+                    for (dst, &src) in temp.iter_mut().zip(silk_output.iter().take(silk_samples))
+                    {
+                        *dst = silk_int16_to_res(src);
+                    }
+                } else {
+                    if pcm.len() < silk_samples {
+                        return Err(OpusDecodeError::BufferTooSmall);
+                    }
+                    for (dst, &src) in pcm
+                        .iter_mut()
+                        .take(silk_samples)
+                        .zip(silk_output.iter().take(silk_samples))
+                    {
+                        *dst = silk_int16_to_res(src);
+                    }
+                }
+
+                if let Some(temp) = silk_pcm {
+                    let copy_len = audiosize
+                        .checked_mul(channels)
+                        .ok_or(OpusDecodeError::BadArgument)?;
+                    if temp.len() < copy_len || pcm.len() < copy_len {
+                        return Err(OpusDecodeError::BufferTooSmall);
+                    }
+                    pcm[..copy_len].copy_from_slice(&temp[..copy_len]);
+                }
+
+                if !decode_fec && packet.is_some() && mode != MODE_SILK_ONLY {
+                    let tell = range_dec.tell();
+                    let threshold = 17 + if mode == MODE_HYBRID { 20 } else { 0 };
+                    if tell + threshold <= (8 * packet_len) as i32 {
+                        redundancy = if mode == MODE_HYBRID {
+                            range_dec.decode_symbol_logp(12) != 0
                         } else {
-                            let used_bytes = ((range_decoder.tell() + 7) >> 3) as usize;
-                            packet_len
-                                .checked_sub(used_bytes)
-                                .ok_or(OpusDecodeError::BadArgument)?
+                            true
                         };
-                        if bytes > packet_len {
-                            return Err(OpusDecodeError::BadArgument);
-                        }
-                        let cutoff = packet_len
-                            .checked_sub(bytes)
-                            .ok_or(OpusDecodeError::BadArgument)?;
-                        if let Some(data) = packet {
-                            redundant_packet = data.get(cutoff..cutoff + bytes);
-                        }
-                        packet_len = cutoff;
-                        if packet_len
-                            .checked_mul(8)
-                            .is_none_or(|value| value < range_decoder.tell() as usize)
-                        {
-                            packet_len = 0;
-                            redundancy = false;
-                            redundant_packet = None;
-                        } else if redundancy && redundant_packet.is_none() {
-                            return Err(OpusDecodeError::BadArgument);
+                        if redundancy {
+                            celt_to_silk = range_dec.decode_symbol_logp(1) != 0;
+                            let bytes = if mode == MODE_HYBRID {
+                                usize::try_from(range_dec.decode_uint(256).saturating_add(2))
+                                    .map_err(|_| OpusDecodeError::BadArgument)?
+                            } else {
+                                let used_bytes = ((range_dec.tell() + 7) >> 3) as usize;
+                                packet_len
+                                    .checked_sub(used_bytes)
+                                    .ok_or(OpusDecodeError::BadArgument)?
+                            };
+                            if bytes > packet_len {
+                                return Err(OpusDecodeError::BadArgument);
+                            }
+                            let mut redundancy_bytes = bytes;
+                            let cutoff = packet_len
+                                .checked_sub(bytes)
+                                .ok_or(OpusDecodeError::BadArgument)?;
+                            if let Some(data) = packet {
+                                redundant_packet = data.get(cutoff..cutoff + bytes);
+                            }
+                            packet_len = cutoff;
+                            if packet_len
+                                .checked_mul(8)
+                                .is_none_or(|value| value < range_dec.tell() as usize)
+                            {
+                                packet_len = 0;
+                                redundancy = false;
+                                redundant_packet = None;
+                                redundancy_bytes = 0;
+                            } else if redundancy && redundant_packet.is_none() {
+                                return Err(OpusDecodeError::BadArgument);
+                            }
+                            if redundancy_bytes > 0 {
+                                let bytes_u32 = u32::try_from(redundancy_bytes)
+                                    .map_err(|_| OpusDecodeError::BadArgument)?;
+                                let storage = range_dec.ctx().storage;
+                                if storage < bytes_u32 {
+                                    return Err(OpusDecodeError::BadArgument);
+                                }
+                                range_dec.ctx_mut().storage = storage - bytes_u32;
+                            }
                         }
                     }
+                }
+
+                if packet.is_some() && packet_len > 1 && (mode == MODE_SILK_ONLY || decode_fec) {
+                    range_final = Some(range_dec.range_final());
                 }
             }
 
@@ -765,9 +787,6 @@ impl<'mode> OpusDecoder<'mode> {
                 pcm_transition = Some(buffer);
             }
 
-            if packet.is_some() && packet_len > 1 {
-                range_final = range_decoder.range_final();
-            }
         }
 
         if let Some(data) = packet {
@@ -862,8 +881,21 @@ impl<'mode> OpusDecoder<'mode> {
             }
             let celt_frame = audiosize.min(f20);
             let celt_packet = if decode_fec { None } else { packet };
-            let celt_ret =
-                decode_celt_frame(&mut self.celt, celt_packet, pcm, celt_frame, celt_accum)?;
+            let celt_ret = if mode == MODE_HYBRID && celt_packet.is_some() {
+                let range_dec = range_decoder
+                    .as_mut()
+                    .ok_or(OpusDecodeError::InternalError)?;
+                decode_celt_frame_with_ec(
+                    &mut self.celt,
+                    celt_packet,
+                    pcm,
+                    celt_frame,
+                    Some(range_dec),
+                    celt_accum,
+                )?
+            } else {
+                decode_celt_frame(&mut self.celt, celt_packet, pcm, celt_frame, celt_accum)?
+            };
 
             if celt_ret != celt_frame {
                 return Err(OpusDecodeError::InternalError);
@@ -997,9 +1029,19 @@ impl<'mode> OpusDecoder<'mode> {
             }
         }
 
+        let final_range = if packet_len > 1 {
+            if let Some(range_value) = range_final {
+                range_value
+            } else {
+                celt_final_range.unwrap_or_default()
+            }
+        } else {
+            0
+        };
+
         self.prev_mode = mode;
         self.prev_redundancy = i32::from(redundancy && !celt_to_silk);
-        self.range_final = celt_final_range.unwrap_or(range_final) ^ redundant_rng;
+        self.range_final = final_range ^ redundant_rng;
 
         Ok(audiosize)
     }
@@ -1336,6 +1378,28 @@ fn map_celt_error(err: CeltDecodeError) -> OpusDecodeError {
     }
 }
 
+fn decode_celt_frame_with_ec<'mode, 'dec>(
+    decoder: &mut OwnedCeltDecoder<'mode>,
+    packet: Option<&[u8]>,
+    pcm: &mut [OpusRes],
+    frame_size: usize,
+    range_decoder: Option<&'dec mut EcDec<'dec>>,
+    accum: bool,
+) -> Result<usize, OpusDecodeError>
+where
+    'mode: 'dec,
+{
+    celt_decode_with_ec_dred(
+        decoder.decoder(),
+        packet,
+        pcm,
+        frame_size,
+        range_decoder,
+        accum,
+    )
+    .map_err(map_celt_error)
+}
+
 fn decode_celt_frame(
     decoder: &mut OwnedCeltDecoder<'_>,
     packet: Option<&[u8]>,
@@ -1343,8 +1407,7 @@ fn decode_celt_frame(
     frame_size: usize,
     accum: bool,
 ) -> Result<usize, OpusDecodeError> {
-    celt_decode_with_ec_dred(decoder.decoder(), packet, pcm, frame_size, None, accum)
-        .map_err(map_celt_error)
+    decode_celt_frame_with_ec(decoder, packet, pcm, frame_size, None, accum)
 }
 
 #[inline]
