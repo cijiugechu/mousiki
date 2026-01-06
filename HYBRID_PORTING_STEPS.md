@@ -29,11 +29,15 @@ against the Rust port, focusing on the hybrid (SILK+CELT) decode path.
      - `entdec` icdf decode logic matches the reference loop condition.
      - Laplace decode paths now use `EcDec`.
 
-2) **Allow CELT to accept an external range decoder**
+2) **Allow CELT to accept an external range decoder** (DONE)
    - In `src/celt/celt_decoder.rs`, remove the "external decoder is unsupported"
      guard in `celt_decode_with_ec_dred`.
    - Teach `prepare_frame` to reuse the supplied `EcDec` (no re-init), while
      preserving raw-bits handling.
+   - Completed:
+     - `prepare_frame` now accepts an optional external `EcDec` and reuses it.
+     - `celt_decode_with_ec_dred` no longer rejects external range decoders.
+     - Added `RangeDecoderHandle` to carry owned vs borrowed decoders through decode.
 
 3) **Restore the hybrid flow in the top-level decoder**
    - In `src/opus_decoder.rs`, treat only `MODE_CELT_ONLY` as CELT-only.

@@ -1246,6 +1246,12 @@ impl RangeDecoderState {
         &mut self.decoder
     }
 
+    /// Borrows the decoder using an arbitrary caller lifetime.
+    pub(crate) fn decoder_with_lifetime<'a>(&mut self) -> &mut EcDec<'a> {
+        // SAFETY: The backing buffer is owned by `self` and outlives the returned borrow.
+        unsafe { core::mem::transmute::<&mut EcDec<'static>, &mut EcDec<'a>>(&mut self.decoder) }
+    }
+
     /// Borrows the decoder using the mode lifetime expected by band quantisation helpers.
     pub(crate) fn decoder_for_mode<'mode>(
         &mut self,
@@ -1263,6 +1269,29 @@ impl Drop for RangeDecoderState {
         // been dropped.
         unsafe {
             let _ = Box::from_raw(self.storage.as_ptr());
+        }
+    }
+}
+
+/// Range decoder wrapper that can either own or borrow the underlying decoder.
+#[derive(Debug)]
+pub(crate) enum RangeDecoderHandle<'a> {
+    Owned(RangeDecoderState),
+    External(&'a mut EcDec<'a>),
+}
+
+impl<'a> RangeDecoderHandle<'a> {
+    fn new(packet: &[u8], external: Option<&'a mut EcDec<'a>>) -> Self {
+        match external {
+            Some(dec) => Self::External(dec),
+            None => Self::Owned(RangeDecoderState::new(packet)),
+        }
+    }
+
+    fn decoder(&mut self) -> &mut EcDec<'a> {
+        match self {
+            Self::Owned(state) => state.decoder_with_lifetime(),
+            Self::External(dec) => dec,
         }
     }
 }
@@ -1359,8 +1388,8 @@ pub(crate) fn validate_celt_decoder(decoder: &OpusCustomDecoder<'_>) {
 
 /// Metadata describing the parsed frame header and bit allocation.
 #[derive(Debug)]
-pub(crate) struct FramePreparation {
-    pub range_decoder: Option<RangeDecoderState>,
+pub(crate) struct FramePreparation<'a> {
+    pub range_decoder: Option<RangeDecoderHandle<'a>>,
     pub tf_res: Vec<OpusInt32>,
     pub cap: Vec<OpusInt32>,
     pub offsets: Vec<OpusInt32>,
@@ -1395,7 +1424,7 @@ pub(crate) struct FramePreparation {
     pub packet_loss: bool,
 }
 
-impl FramePreparation {
+impl<'a> FramePreparation<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new_packet_loss(
         start: usize,
@@ -1496,11 +1525,15 @@ fn tf_decode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_frame(
-    decoder: &mut OpusCustomDecoder<'_>,
+pub(crate) fn prepare_frame<'mode, 'dec>(
+    decoder: &mut OpusCustomDecoder<'mode>,
     packet: &[u8],
     frame_size: usize,
-) -> Result<FramePreparation, CeltDecodeError> {
+    range_decoder: Option<&'dec mut EcDec<'dec>>,
+) -> Result<FramePreparation<'dec>, CeltDecodeError>
+where
+    'mode: 'dec,
+{
     let cc = decoder.channels;
     let c = decoder.stream_channels;
     if cc == 0 || c == 0 || cc > MAX_CHANNELS {
@@ -1546,7 +1579,7 @@ pub(crate) fn prepare_frame(
         decoder.skip_plc = false;
     }
 
-    let mut range_decoder = RangeDecoderState::new(packet);
+    let mut range_decoder = RangeDecoderHandle::new(packet, range_decoder);
     let dec = range_decoder.decoder();
 
     if c == 1 {
@@ -1773,26 +1806,21 @@ fn res_to_int24(sample: OpusRes) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn celt_decode_with_ec_dred(
-    decoder: &mut OpusCustomDecoder<'_>,
+pub(crate) fn celt_decode_with_ec_dred<'mode, 'dec>(
+    decoder: &mut OpusCustomDecoder<'mode>,
     packet: Option<&[u8]>,
     pcm: &mut [OpusRes],
     frame_size: usize,
-    range_decoder: Option<&mut EcDec<'_>>,
+    range_decoder: Option<&'dec mut EcDec<'dec>>,
     accum: bool,
-) -> Result<usize, CeltDecodeError> {
-    // The reference implementation keeps the range decoder internal to the DRED
-    // helper, so passing an external instance would diverge from the validated
-    // control flow.  Mirror that constraint until the stand-alone range decoder
-    // path is ported.
-    if range_decoder.into_iter().next().is_some() {
-        return Err(CeltDecodeError::BadArgument);
-    }
-
+) -> Result<usize, CeltDecodeError>
+where
+    'mode: 'dec,
+{
     validate_celt_decoder(decoder);
 
     let data = packet.unwrap_or(&[]);
-    let mut frame = prepare_frame(decoder, data, frame_size)?;
+    let mut frame = prepare_frame(decoder, data, frame_size, range_decoder)?;
     let mode = decoder.mode;
     let nb_ebands = mode.num_ebands;
     let overlap = mode.overlap;
@@ -1901,7 +1929,7 @@ pub(crate) fn celt_decode_with_ec_dred(
     };
 
     {
-        let dec = range_state.decoder_for_mode(mode);
+        let dec = range_state.decoder();
         let mut coder = BandCodingState::Decoder(dec);
 
         quant_all_bands(
@@ -1931,7 +1959,7 @@ pub(crate) fn celt_decode_with_ec_dred(
         );
     }
     let mut anti_collapse_on = false;
-    let dec = range_state.decoder_for_mode(mode);
+    let dec = range_state.decoder();
 
     if anti_collapse_rsv > 0 {
         anti_collapse_on = dec.dec_bits(1) != 0;
@@ -2157,14 +2185,17 @@ pub(crate) fn celt_decode_with_ec_dred(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn celt_decode_with_ec(
-    decoder: &mut OpusCustomDecoder<'_>,
+pub(crate) fn celt_decode_with_ec<'mode, 'dec>(
+    decoder: &mut OpusCustomDecoder<'mode>,
     packet: Option<&[u8]>,
     pcm: &mut [OpusRes],
     frame_size: usize,
-    range_decoder: Option<&mut EcDec<'_>>,
+    range_decoder: Option<&'dec mut EcDec<'dec>>,
     accum: bool,
-) -> Result<usize, CeltDecodeError> {
+) -> Result<usize, CeltDecodeError>
+where
+    'mode: 'dec,
+{
     celt_decode_with_ec_dred(decoder, packet, pcm, frame_size, range_decoder, accum)
 }
 
@@ -3086,7 +3117,7 @@ mod tests {
             .init_decoder(&mode, 1, 1)
             .expect("decoder initialisation should succeed");
 
-        let frame = prepare_frame(&mut decoder, &[], mode.short_mdct_size)
+        let frame = prepare_frame(&mut decoder, &[], mode.short_mdct_size, None)
             .expect("packet loss preparation should succeed");
         assert!(frame.packet_loss);
     }
@@ -3117,7 +3148,7 @@ mod tests {
             .init_decoder(&mode, 1, 1)
             .expect("decoder initialisation should succeed");
 
-        let err = prepare_frame(&mut decoder, &[0u8; 2], mode.short_mdct_size + 1)
+        let err = prepare_frame(&mut decoder, &[0u8; 2], mode.short_mdct_size + 1, None)
             .expect_err("invalid frame size must be rejected");
         assert_eq!(err, CeltDecodeError::BadArgument);
     }
