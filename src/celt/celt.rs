@@ -143,7 +143,20 @@ pub(crate) fn comb_filter(
 
     if g0 == 0.0 && g1 == 0.0 {
         let src = &x[x_start..x_start + n];
-        y[..n].copy_from_slice(src);
+        let dst = &mut y[..n];
+        let elem_size = core::mem::size_of::<OpusVal32>();
+        let src_ptr = src.as_ptr() as usize;
+        let dst_ptr = dst.as_ptr() as usize;
+        let byte_len = n * elem_size;
+        let overlaps = src_ptr < dst_ptr + byte_len && dst_ptr < src_ptr + byte_len;
+        if overlaps {
+            // Allow overlap like memmove; comb_filter is often in-place.
+            unsafe {
+                core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), n);
+            }
+        } else {
+            dst.copy_from_slice(src);
+        }
         return;
     }
 

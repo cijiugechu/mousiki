@@ -262,7 +262,7 @@ fn quant_coarse_energy_impl(
     lfe: bool,
 ) -> i32 {
     assert!(lm < PRED_COEF.len());
-    assert_eq!(old_e_bands.len(), channels * mode.num_ebands);
+    assert!(old_e_bands.len() >= channels * mode.num_ebands);
     assert_eq!(e_bands.len(), channels * mode.num_ebands);
     assert_eq!(error.len(), channels * mode.num_ebands);
     assert!(end <= mode.num_ebands);
@@ -366,7 +366,7 @@ pub(crate) fn quant_coarse_energy(
     assert!(end <= mode.num_ebands);
     assert!(eff_end <= end);
     assert_eq!(e_bands.len(), channels * mode.num_ebands);
-    assert_eq!(old_e_bands.len(), channels * mode.num_ebands);
+    assert!(old_e_bands.len() >= channels * mode.num_ebands);
     assert_eq!(error.len(), channels * mode.num_ebands);
     assert!(lm < PRED_COEF.len());
 
@@ -494,7 +494,7 @@ pub(crate) fn unquant_coarse_energy(
     lm: usize,
 ) {
     assert!(end <= mode.num_ebands);
-    assert_eq!(old_e_bands.len(), channels * mode.num_ebands);
+    assert!(old_e_bands.len() >= channels * mode.num_ebands);
     assert!(lm < PRED_COEF.len());
 
     let stride = mode.num_ebands;

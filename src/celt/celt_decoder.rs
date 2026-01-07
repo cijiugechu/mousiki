@@ -2567,7 +2567,7 @@ pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
             decoder.end_band = value;
         }
         DecoderCtlRequest::SetChannels(value) => {
-            if value == 0 || value > decoder.channels {
+            if value == 0 || value > MAX_CHANNELS {
                 return Err(CeltDecoderCtlError::InvalidArgument);
             }
             decoder.stream_channels = value;

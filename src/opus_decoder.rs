@@ -14,7 +14,7 @@ use crate::celt::{CeltCoef, OpusCustomMode};
 use crate::celt::{
     CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
     EcDec, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
-    opus_custom_decoder_ctl, opus_select_arch,
+    opus_custom_decoder_ctl, opus_select_arch, resampling_factor,
 };
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::float2int;
@@ -365,6 +365,11 @@ impl<'mode> OpusDecoder<'mode> {
         let mode = canonical_mode().ok_or(OpusDecoderInitError::CeltInit)?;
         self.celt = opus_custom_decoder_create(mode, channels as usize)
             .map_err(|_| OpusDecoderInitError::CeltInit)?;
+        let downsample = resampling_factor(fs);
+        if downsample == 0 {
+            return Err(OpusDecoderInitError::BadArgument);
+        }
+        self.celt.decoder().downsample = downsample as i32;
 
         self.arch = opus_select_arch();
         self.reset_runtime_fields();
@@ -721,7 +726,7 @@ impl<'mode> OpusDecoder<'mode> {
                     pcm[..copy_len].copy_from_slice(&temp[..copy_len]);
                 }
 
-                if !decode_fec && packet.is_some() && mode != MODE_SILK_ONLY {
+                if !decode_fec && packet.is_some() && mode != MODE_CELT_ONLY {
                     let tell = range_dec.tell();
                     let threshold = 17 + if mode == MODE_HYBRID { 20 } else { 0 };
                     if tell + threshold <= (8 * packet_len) as i32 {
@@ -834,9 +839,14 @@ impl<'mode> OpusDecoder<'mode> {
             .map_err(|_| OpusDecodeError::BadArgument)?;
         }
 
+        let stream_channels =
+            usize::try_from(self.stream_channels).map_err(|_| OpusDecodeError::BadArgument)?;
+        if stream_channels == 0 || stream_channels > MAX_CHANNELS {
+            return Err(OpusDecodeError::BadArgument);
+        }
         opus_custom_decoder_ctl(
             self.celt.decoder(),
-            CeltDecoderCtlRequest::SetChannels(channels),
+            CeltDecoderCtlRequest::SetChannels(stream_channels),
         )
         .map_err(|_| OpusDecodeError::BadArgument)?;
 
@@ -1057,7 +1067,11 @@ impl<'mode> OpusDecoder<'mode> {
 
         self.prev_mode = mode;
         self.prev_redundancy = i32::from(redundancy && !celt_to_silk);
-        self.range_final = final_range ^ redundant_rng;
+        self.range_final = if packet_len > 1 {
+            final_range ^ redundant_rng
+        } else {
+            0
+        };
 
         Ok(audiosize)
     }

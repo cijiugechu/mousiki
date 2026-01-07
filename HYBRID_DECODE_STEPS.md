@@ -16,9 +16,12 @@ packet decode (shared SILK/CELT range-decoder path) in the Rust port.
    - Preserve external decoder ownership while asserting storage matches the
      trimmed packet length after redundancy handling.
 
-3) Validate hybrid control flow and redundancy parsing
-   - Match C logic for `redundancy`, `celt_to_silk`, and `bytes` extraction.
-   - Ensure the final range reported for hybrid packets mirrors `opus_decode_native`.
+3) Validate hybrid control flow and redundancy parsing (done)
+   - Match C logic for `redundancy`, `celt_to_silk`, and `bytes` extraction,
+     including shared range decoder storage trimming.
+   - Ensure the final range reported for hybrid packets mirrors
+     `opus_decode_native`, including redundancy XOR and CELT stream-channel
+     handling for mono outputs.
 
 4) Add hybrid decode tests
    - Use known-good hybrid packets to validate PCM output, `final_range`,

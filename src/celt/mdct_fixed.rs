@@ -427,7 +427,7 @@ pub fn clt_mdct_backward_fixed(
         sumval = sumval.wrapping_add(abs32(shr32(sample, 11)));
     }
 
-    let pre_shift = (29 - celt_zlog2(1 + maxval)).max(0);
+    let pre_shift = (29 - celt_zlog2(add32_ovflw(maxval, 1))).max(0);
     let mut post_shift = (19 - celt_ilog2(abs32(sumval))).max(0);
     post_shift = post_shift.min(pre_shift);
     let fft_shift = pre_shift - post_shift;
