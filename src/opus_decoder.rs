@@ -1563,6 +1563,14 @@ pub fn opus_decode(
         return Err(OpusDecodeError::BadArgument);
     }
 
+    if decode_fec || len == 0 || data.is_none() {
+        let fs = usize::try_from(decoder.fs).map_err(|_| OpusDecodeError::BadArgument)?;
+        let f2_5 = fs / 400;
+        if f2_5 == 0 || !frame_size.is_multiple_of(f2_5) {
+            return Err(OpusDecodeError::BadArgument);
+        }
+    }
+
     let mut frame_size = frame_size;
     if let Some(packet) = data {
         if len > packet.len() {
@@ -1628,6 +1636,14 @@ pub fn opus_decode24(
         return Err(OpusDecodeError::BadArgument);
     }
 
+    if decode_fec || len == 0 || data.is_none() {
+        let fs = usize::try_from(decoder.fs).map_err(|_| OpusDecodeError::BadArgument)?;
+        let f2_5 = fs / 400;
+        if f2_5 == 0 || !frame_size.is_multiple_of(f2_5) {
+            return Err(OpusDecodeError::BadArgument);
+        }
+    }
+
     let mut frame_size = frame_size;
     if let Some(packet) = data {
         if len > packet.len() {
@@ -1680,6 +1696,14 @@ pub fn opus_decode_float(
 ) -> Result<usize, OpusDecodeError> {
     if frame_size == 0 {
         return Err(OpusDecodeError::BadArgument);
+    }
+
+    if decode_fec || len == 0 || data.is_none() {
+        let fs = usize::try_from(decoder.fs).map_err(|_| OpusDecodeError::BadArgument)?;
+        let f2_5 = fs / 400;
+        if f2_5 == 0 || !frame_size.is_multiple_of(f2_5) {
+            return Err(OpusDecodeError::BadArgument);
+        }
     }
 
     opus_decode_native(

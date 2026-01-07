@@ -510,9 +510,14 @@ fn decode_vad_and_lbrr(
             };
             let indices = decode_side_info(state, range_decoder, frame, true, cond);
             let frame_len = state.sample_rate.frame_length;
+            let padded_len = if frame_len.is_multiple_of(16) {
+                frame_len
+            } else {
+                frame_len + (16 - (frame_len % 16))
+            };
             silk_decode_pulses(
                 range_decoder,
-                &mut temp_pulses[..frame_len],
+                &mut temp_pulses[..padded_len],
                 i32::from(indices.signal_type),
                 quant_offset_type(indices.quant_offset_type),
                 frame_len,

@@ -168,9 +168,7 @@ safely.
   `celt/celt_decoder.c`, denormalising the band energies, handling mono/stereo
   up/downmixing, applying the appropriate short or long block transforms, and
   saturating the time-domain output before the post-filter consumes it.
-- `celt_decode_with_ec_dred`, `celt_decode_with_ec` (currently requiring
-  `range_decoder == None` to mirror the DRED-only implementation until the
-  shared range-decoder path is ported), and
+- `celt_decode_with_ec_dred`, `celt_decode_with_ec`, and
   `opus_custom_decode{,24,_float}` &rarr; translate the main CELT decoding loop
   from `celt/celt_decoder.c`, including PVQ band reconstruction, anti-collapse
   handling, post-filter interpolation, deemphasis, and the PCM conversions

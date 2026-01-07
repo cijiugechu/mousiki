@@ -1,21 +1,30 @@
 # mousiki
 
-An Opus decoder library in Rust, ported from the Go implementation in `pion/opus`. The core crate is `#![no_std]` and performs zero heap allocations.
+A Rust port of the Xiph `opus-c` reference implementation. The core crate is
+`#![no_std]` and uses `alloc` (some APIs allocate).
 
+### Current coverage (high level)
+- Opus decode path mirrors `opus_decode_native`, including SILK/CELT/Hybrid, PLC/FEC,
+  final-range reporting, and packet parsing; multistream decode and projection
+  front-ends are wired.
+- Opus encode front-end supports SILK-only 10/20/40/60 ms packets (plus repacketized
+  >60 ms frames), CELT-only multiframe packing, and hybrid single-frame 10/20 ms
+  payloads.
+- Repacketizer, packet helpers, extension padding, mapping/projection matrices, and
+  tonality analysis are available.
 
-### Capabilities and limitations (current)
-- Mono only; stereo is not supported yet.
-- SILK-only mode; Hybrid and CELT are not supported yet.
-- Single-frame packets only; multi-frame/variable-frame packets currently return “unsupported”.
-- Output is 48 kHz PCM:
-  - Either `i16` little-endian (LE) or `f32`, depending on the API you call.
-  - A 20 ms frame yields 960 samples (mono), i.e., 1920 bytes for `i16` output.
+### Known gaps
+- Full encoder parity (hybrid multiframe, full CELT/HYBRID packing, remaining CTLs)
+  is still pending.
+- Fixed-point decode backend, SIMD back-ends, and optional DRED/Deep PLC paths are
+  not complete.
+- See `PORTING_STATUS.md` for detailed status.
 
 
 ## Quick start
 
 ### Run the examples
-- Decode Ogg Opus (mono, SILK-only) to a PCM file:
+- Decode Ogg Opus (SILK-only path used by `decoder::Decoder`) to a PCM file:
 
 ```bash
 cargo run --example decode -- testdata/tiny.ogg output_mono.pcm
@@ -27,8 +36,29 @@ cargo run --example decode -- testdata/tiny.ogg output_mono.pcm
 cargo run --example playback -- testdata/tiny.ogg
 ```
 
+### Run the tests
+- Full test suite:
+
+```bash
+cargo test --all-features
+```
+
+- Decode integration test (ported from `opus-c/tests/test_opus_decode.c`):
+
+```bash
+cargo test --all-features --test test_opus_decode
+```
+
+- Opt-in to the fuzz-heavy decode section (longer runtime), or to strict final-range checks:
+
+```bash
+TEST_OPUS_FUZZ=1 cargo test --all-features --test test_opus_decode
+TEST_OPUS_STRICT_FINAL_RANGE=1 cargo test --all-features --test test_opus_decode
+```
+
 ### Use in your code
-The snippet below decodes a single Opus packet into `i16` PCM (mono, 48 kHz):
+The snippet below uses the lightweight `decoder::Decoder` (SILK-only, single-frame)
+to decode a single Opus packet into `i16` PCM (mono, 48 kHz):
 
 ```rust
 use mousiki::decoder::Decoder;
@@ -58,17 +88,16 @@ let (_bandwidth, stereo) = decoder.decode_float32(packet, &mut pcm_f32)?;
 assert!(!stereo);
 ```
 
-Tip: If your input is an Ogg-encapsulated Opus stream, see the example `oggreader` usage to extract raw Opus packets before decoding.
+Tip: If you need the full Opus API surface (stereo, CELT/Hybrid, multistream),
+use `opus_decoder` instead of `decoder::Decoder`. For Ogg input, see the
+`oggreader` example to extract raw Opus packets.
 
 ## Compatibility and roadmap
-- Target environments: no_std, constrained memory, real-time systems, no dynamic allocation.
-- Implemented: SILK-only, mono, single-frame packets, 48 kHz output, basic examples (decode/playback).
-- Planned:
-  - Stereo support.
-  - Hybrid/CELT decode paths.
-  - Richer frame structures (multi-frame/variable-frame) support.
+- Target environments: no_std + alloc, constrained memory, real-time systems.
+- The `decoder::Decoder` path remains SILK-only and single-frame; the full Opus
+  API surface is exposed via `opus_decoder`/`opus_encoder`.
+- For detailed porting milestones, see `PORTING_STATUS.md`.
 
 ## License and acknowledgements
 - License: MIT (see `LICENSE`).
 - Thanks to the upstream `pion/opus` (Go) implementation and the community.
-

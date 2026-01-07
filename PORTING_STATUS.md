@@ -19,8 +19,7 @@ Current Rust coverage
   dispatch and packet validation are ported; the top-level decode glue now mirrors the
   `opus_decode_native` FEC/PLC/front-end control flow and invokes the translated
   per-frame decoder (SILK PLC/FEC plus CELT output on non-fixed builds), including the
-  CELT↔SILK transition smoothing and redundancy fades used during bandwidth switches; hybrid
-  packets are currently decoded as CELT-only until the shared range-decoder path is ported.
+  CELT↔SILK transition smoothing and redundancy fades used during bandwidth switches.
   Multistream decode now includes per-stream
   `opus_decode_native` dispatch and PCM routing. The multistream encoder front-end is
   available for generic layouts and wraps the current Rust `opus_encode` implementation
