@@ -23,11 +23,11 @@ packet decode (shared SILK/CELT range-decoder path) in the Rust port.
      `opus_decode_native`, including redundancy XOR and CELT stream-channel
      handling for mono outputs.
 
-4) Add hybrid decode tests
-   - Use known-good hybrid packets to validate PCM output, `final_range`,
-     transition smoothing, and PLC/FEC paths.
-   - Place tests alongside existing decoder tests (e.g., `src/opus_decoder.rs`
-     or `tests/`).
+4) Add hybrid decode tests (done)
+   - Added `tests/hybrid_decode.rs` with opus-c generated hybrid vectors to
+     validate `final_range`, hybrid transition PLC, and FEC decode paths.
+   - Stored reference packets/PCM in `tests/fixtures/hybrid_decode_vectors.rs`;
+     float PCM checks are gated to non-`fixed_point` builds.
 
 5) Update porting status docs
    - Remove the "hybrid packets decode as CELT-only" note from
