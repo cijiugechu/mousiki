@@ -538,6 +538,13 @@ impl<'mode> OpusDecoder<'mode> {
             celt_only
         };
 
+        if celt_only
+            && let Some(packet) = packet
+        {
+            let storage = range_storage.get_or_insert_with(|| packet.to_vec());
+            range_decoder = Some(EcDec::new(storage.as_mut_slice()));
+        }
+
         let prev_celt_only = decode_as_celt_only(self.prev_mode);
         if packet.is_some()
             && self.prev_mode > 0
@@ -620,8 +627,10 @@ impl<'mode> OpusDecoder<'mode> {
                 silk_reset_decoder(&mut self.silk).map_err(|_| OpusDecodeError::InternalError)?;
             }
 
-            let storage = range_storage.get_or_insert_with(|| packet.unwrap_or(&[]).to_vec());
-            range_decoder = Some(EcDec::new(storage.as_mut_slice()));
+            if range_decoder.is_none() {
+                let storage = range_storage.get_or_insert_with(|| packet.unwrap_or(&[]).to_vec());
+                range_decoder = Some(EcDec::new(storage.as_mut_slice()));
+            }
             {
                 let range_dec = range_decoder
                     .as_mut()
@@ -881,7 +890,7 @@ impl<'mode> OpusDecoder<'mode> {
             }
             let celt_frame = audiosize.min(f20);
             let celt_packet = if decode_fec { None } else { packet };
-            let celt_ret = if mode == MODE_HYBRID && celt_packet.is_some() {
+            let celt_ret = if celt_packet.is_some() && range_decoder.is_some() {
                 let range_dec = range_decoder
                     .as_mut()
                     .ok_or(OpusDecodeError::InternalError)?;
