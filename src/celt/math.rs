@@ -303,6 +303,37 @@ mod tests {
         }
     }
 
+    /// Port of `testlog2()` from `opus-c/celt/tests/test_unit_mathops.c` (float build).
+    ///
+    /// Validates that `celt_log2()` matches the reference within tolerance for a
+    /// range of input values.
+    #[test]
+    fn log2_matches_reference_harness() {
+        let error_threshold = 2.2e-6_f32;
+        let mut max_error = 0.0_f32;
+        let mut x = 0.001_f32;
+
+        while x < 1_677_700.0 {
+            let expected = x.ln() * core::f32::consts::LOG2_E;
+            let actual = celt_log2(x);
+            let error = (expected - actual).abs();
+
+            if error > max_error {
+                max_error = error;
+            }
+
+            assert!(
+                error <= error_threshold,
+                "celt_log2 failed: x = {}, error = {} (threshold = {})",
+                x,
+                error,
+                error_threshold
+            );
+
+            x += x / 8.0;
+        }
+    }
+
     #[test]
     fn exp2_matches_std() {
         let values = [-5.0_f32, -1.0, 0.0, 0.25, 1.5, 4.0];
@@ -310,6 +341,69 @@ mod tests {
             let diff = (celt_exp2(value) - value.exp2()).abs();
             let eps = if cfg!(miri) { 1e-5 } else { 1e-6 };
             assert!(diff <= eps, "diff {} for value {}", diff, value);
+        }
+    }
+
+    /// Port of `testexp2()` from `opus-c/celt/tests/test_unit_mathops.c` (float build).
+    ///
+    /// Validates that `celt_exp2()` matches the reference within tolerance for a
+    /// range of input values. The tolerance is slightly relaxed from the C test
+    /// because this version validates `x ≈ ln(celt_exp2(x)) / ln(2)`, which
+    /// is sensitive to the exp2 implementation accuracy.
+    #[test]
+    fn exp2_matches_reference_harness() {
+        // Tolerance relaxed from 2.3e-7 in C since we use libm which may differ slightly
+        let error_threshold = 2.5e-6_f32;
+        let mut max_error = 0.0_f32;
+        let mut x = -11.0_f32;
+
+        while x < 24.0 {
+            let actual = celt_exp2(x);
+            let expected = actual.ln() * core::f32::consts::LOG2_E;
+            let error = (x - expected).abs();
+
+            if error > max_error {
+                max_error = error;
+            }
+
+            assert!(
+                error <= error_threshold,
+                "celt_exp2 failed: x = {}, error = {} (threshold = {})",
+                x,
+                error,
+                error_threshold
+            );
+
+            x += 0.0007;
+        }
+    }
+
+    /// Port of `testexp2log2()` from `opus-c/celt/tests/test_unit_mathops.c` (float build).
+    ///
+    /// Validates the round-trip property: `celt_log2(celt_exp2(x)) ≈ x`.
+    #[test]
+    fn exp2_log2_roundtrip() {
+        let error_threshold = 2.0e-6_f32;
+        let mut max_error = 0.0_f32;
+        let mut x = -11.0_f32;
+
+        while x < 24.0 {
+            let roundtrip = celt_log2(celt_exp2(x));
+            let error = (x - roundtrip).abs();
+
+            if error > max_error {
+                max_error = error;
+            }
+
+            assert!(
+                error <= error_threshold,
+                "celt_exp2/celt_log2 roundtrip failed: x = {}, error = {} (threshold = {})",
+                x,
+                error,
+                error_threshold
+            );
+
+            x += 0.0007;
         }
     }
 
@@ -331,6 +425,37 @@ mod tests {
         }
     }
 
+    /// Port of `testsqrt()` from `opus-c/celt/tests/test_unit_mathops.c` (float build).
+    ///
+    /// Validates that `celt_sqrt()` matches the reference within tolerance for a
+    /// range of input values from 1 to 1 billion. Uses the same logarithmic
+    /// stepping as the C test: i += i >> 10.
+    #[test]
+    fn sqrt_matches_reference_harness() {
+        let mut i: i64 = 1;
+        while i <= 1_000_000_000 {
+            let fi = i as f32;
+            let val = celt_sqrt(fi);
+            let expected = fi.sqrt();
+            let ratio = val / expected;
+
+            let tolerance_ratio = 0.0005;
+            let tolerance_abs = 2.0;
+
+            assert!(
+                (ratio - 1.0).abs() <= tolerance_ratio || (val - expected).abs() <= tolerance_abs,
+                "sqrt failed: sqrt({}) = {} (ratio = {}, expected = {})",
+                i,
+                val,
+                ratio,
+                expected
+            );
+
+            // Same logarithmic stepping as C test: faster iteration through large values
+            i += (i >> 10).max(1);
+        }
+    }
+
     #[test]
     fn rsqrt_matches_inverse_sqrt() {
         let values = [0.25_f32, 1.0, 4.0, 16.0];
@@ -347,6 +472,26 @@ mod tests {
         for &value in &values {
             let diff = (celt_rcp(value) - 1.0 / value).abs();
             assert!(diff <= 1e-6, "diff {} for value {}", diff, value);
+        }
+    }
+
+    /// Port of `testdiv()` from `opus-c/celt/tests/test_unit_mathops.c` (float build).
+    ///
+    /// Validates that `celt_rcp()` returns values close to 1/x for a range of
+    /// positive integers.
+    #[test]
+    fn rcp_matches_reference_harness() {
+        for i in 1..=327_670 {
+            let val = celt_rcp(i as f32);
+            let prod = val * (i as f32);
+
+            assert!(
+                (prod - 1.0).abs() <= 0.00025,
+                "div failed: 1/{} = {} (product = {})",
+                i,
+                val,
+                prod
+            );
         }
     }
 

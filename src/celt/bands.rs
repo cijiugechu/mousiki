@@ -3303,6 +3303,92 @@ mod tests {
         }
     }
 
+    /// Port of `testbitexactcos()` from `opus-c/celt/tests/test_unit_mathops.c`.
+    ///
+    /// Validates that `bitexact_cos()` produces bit-exact results matching the
+    /// reference implementation, including checksum, monotonicity bounds, and
+    /// specific sample values at key input points.
+    #[test]
+    fn bitexact_cos_matches_reference() {
+        let mut chk: i32 = 0;
+        let mut max_d: i32 = 0;
+        let mut min_d: i32 = 32_767;
+        let mut last: i32 = 32_767;
+
+        for i in 64..=16_320 {
+            let q = i32::from(bitexact_cos(i));
+            chk ^= q * i32::from(i);
+            let d = last - q;
+            if d > max_d {
+                max_d = d;
+            }
+            if d < min_d {
+                min_d = d;
+            }
+            last = q;
+        }
+
+        // Reference values from the C test
+        assert_eq!(chk, 89_408_644, "checksum mismatch");
+        assert_eq!(max_d, 5, "max_d mismatch");
+        assert_eq!(min_d, 0, "min_d mismatch");
+        assert_eq!(bitexact_cos(64), 32_767, "bitexact_cos(64) mismatch");
+        assert_eq!(bitexact_cos(16_320), 200, "bitexact_cos(16320) mismatch");
+        assert_eq!(bitexact_cos(8_192), 23_171, "bitexact_cos(8192) mismatch");
+    }
+
+    /// Port of `testbitexactlog2tan()` from `opus-c/celt/tests/test_unit_mathops.c`.
+    ///
+    /// Validates that `bitexact_log2tan()` produces bit-exact results including
+    /// checksum, monotonicity bounds, antisymmetry, and specific sample values.
+    #[test]
+    fn bitexact_log2tan_matches_reference() {
+        let mut fail = false;
+        let mut chk: i32 = 0;
+        let mut max_d: i32 = 0;
+        let mut min_d: i32 = 15_059;
+        let mut last: i32 = 15_059;
+
+        for i in 64..8_193 {
+            let mid = i32::from(bitexact_cos(i));
+            let side = i32::from(bitexact_cos(16_384 - i));
+            let q = bitexact_log2tan(mid, side);
+            chk ^= q * i32::from(i);
+            let d = last - q;
+            if q != -bitexact_log2tan(side, mid) {
+                fail = true;
+            }
+            if d > max_d {
+                max_d = d;
+            }
+            if d < min_d {
+                min_d = d;
+            }
+            last = q;
+        }
+
+        // Reference values from the C test
+        assert_eq!(chk, 15_821_257, "checksum mismatch");
+        assert_eq!(max_d, 61, "max_d mismatch");
+        assert_eq!(min_d, -2, "min_d mismatch");
+        assert!(!fail, "antisymmetry check failed");
+        assert_eq!(
+            bitexact_log2tan(32_767, 200),
+            15_059,
+            "bitexact_log2tan(32767,200) mismatch"
+        );
+        assert_eq!(
+            bitexact_log2tan(30_274, 12_540),
+            2_611,
+            "bitexact_log2tan(30274,12540) mismatch"
+        );
+        assert_eq!(
+            bitexact_log2tan(23_171, 23_171),
+            0,
+            "bitexact_log2tan(23171,23171) mismatch"
+        );
+    }
+
     #[test]
     fn bitexact_cos_matches_reference_samples() {
         let inputs = [-16_383, -12_000, -6_000, -1, 0, 1, 6_000, 12_000, 16_383];

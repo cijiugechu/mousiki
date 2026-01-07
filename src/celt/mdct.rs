@@ -359,4 +359,60 @@ mod tests {
             }
         }
     }
+
+    /// Tests MDCT for multiple transform sizes.
+    ///
+    /// This is an adapted port of `test_unit_mdct.c` that validates the
+    /// forward and backward MDCT transforms match the naive reference
+    /// implementation across various sizes used by Opus.
+    #[test]
+    fn mdct_multiple_sizes() {
+        // Test power-of-2 sizes up to a reasonable limit
+        for &n in &[32usize, 64, 128, 256, 512] {
+            let mdct = MdctLookup::new(n, 0);
+            let overlap = n / 2;
+            let window = make_sine_window(overlap);
+
+            // Tolerance scales with size due to accumulated floating point errors
+            let tol = 1e-3 + (n as f32) * 1e-5;
+
+            // Test forward transform
+            let mut input = vec![0.0f32; overlap + n];
+            for (i, sample) in input.iter_mut().enumerate() {
+                *sample = ((i as f32 * 0.37) + (i as f32 * 0.13).cos()).sin();
+            }
+            let mut output = vec![0.0f32; n / 2];
+            clt_mdct_forward(&mdct, &input, &mut output, &window, overlap, 0, 1);
+            let reference = reference_forward(&mdct, &input, &window, overlap, 0, 1);
+            for (j, (lhs, rhs)) in output.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (lhs - rhs).abs() < tol,
+                    "forward n={} bin {}: {} vs {}",
+                    n,
+                    j,
+                    lhs,
+                    rhs
+                );
+            }
+
+            // Test backward transform
+            let mut freq = vec![0.0f32; n / 2];
+            for (i, sample) in freq.iter_mut().enumerate() {
+                *sample = (i as f32 * 0.19).cos();
+            }
+            let mut time = vec![0.0f32; overlap.max((overlap >> 1) + n / 2)];
+            clt_mdct_backward(&mdct, &freq, &mut time, &window, overlap, 0, 1);
+            let reference_back = reference_backward(&mdct, &freq, &window, overlap, 0, 1);
+            for (j, (lhs, rhs)) in time.iter().zip(reference_back.iter()).enumerate() {
+                assert!(
+                    (lhs - rhs).abs() < tol,
+                    "backward n={} sample {}: {} vs {}",
+                    n,
+                    j,
+                    lhs,
+                    rhs
+                );
+            }
+        }
+    }
 }

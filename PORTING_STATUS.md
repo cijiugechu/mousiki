@@ -110,6 +110,36 @@ Remaining modules to port
 - Demos/tests/tools: `opus_demo.c`, `opus_compare.c`, and other CLI/test harnesses are not
   reproduced in Rust; `test_opus_encode.c` is ported as `tests/test_opus_encode.rs`.
 
+Ported unit tests
+-----------------
+The following `opus-c/celt/tests/` and `opus-c/tests/` unit tests are ported:
+
+| C test file                | Rust location                       | Notes                                    |
+|----------------------------|-------------------------------------|------------------------------------------|
+| `test_unit_types.c`        | `tests/celt_unit_types.rs`          | Type size validation                     |
+| `test_unit_laplace.c`      | `src/celt/laplace.rs` (inline)      | Laplace encode/decode roundtrip          |
+| `test_unit_mathops.c`      | `src/celt/math.rs`, `src/celt/bands.rs` (inline) | log2, exp2, sqrt, rcp, bitexact_cos, bitexact_log2tan |
+| `test_unit_entropy.c`      | `src/celt/entenc.rs` (inline)       | Entropy coder uint/bits/patch/overflow   |
+| `test_unit_cwrs32.c`       | `src/celt/cwrs.rs` (inline)         | CWRS encode/decode roundtrip             |
+| `test_unit_rotation.c`     | `src/celt/vq.rs` (inline)           | exp_rotation forward/inverse SNR         |
+| `test_unit_mdct.c`         | `src/celt/mdct.rs` (inline)         | MDCT forward/backward vs naive reference |
+| `test_unit_dft.c`          | `src/celt/kiss_fft.rs` (inline)     | FFT/IFFT vs naive DFT SNR                |
+| `test_unit_LPC_inv_pred_gain.c` | `tests/lpc_inv_pred_gain.rs`  | SILK LPC inverse prediction gain         |
+| `test_opus_decode.c`       | `tests/test_opus_decode.rs`         | Decoder fuzzing, soft-clip               |
+| `test_opus_encode.c`       | `tests/test_opus_encode.rs`         | Encoder settings fuzzing                 |
+| `test_opus_padding.c`      | `tests/opus_padding.rs`             | Padding overflow vulnerability test      |
+| `test_opus_extensions.c`   | `tests/extensions.rs`               | Packet extension parse/generate          |
+| `test_opus_projection.c`   | `tests/test_opus_projection.rs`, `src/mapping_matrix.rs` | Projection encoder/decoder, matrix ops |
+
+Tests not yet ported:
+- `test_opus_api.c` — comprehensive API surface tests (encoder/decoder/multistream/repacketizer CTLs)
+- `test_opus_dred.c` — DRED decoder fuzzing (requires `dred` feature)
+
+Partially ported tests:
+- `test_opus_custom.c` → `src/celt/celt_encoder.rs` (inline tests, `custom_modes` feature)
+  The Opus Custom tests cover mode creation, encoder/decoder initialization, CTL operations,
+  and PCM processing. Full encode/decode roundtrip tests pending CELT encoder bitstream port.
+
 Porting plan (tracked work)
 ---------------------------
 - Step 1 (done): map `test_opus_encode` call chain and identify missing APIs/CTLs/features.

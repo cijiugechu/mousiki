@@ -495,6 +495,81 @@ mod tests {
         }
     }
 
+    /// Port of `test_unit_cwrs32.c` from opus-c.
+    ///
+    /// Tests the CWRS (Combinations With Replacement Sum) encode/decode
+    /// roundtrip by iterating through all combinations for various (n, k)
+    /// configurations. For each combination index, verifies that:
+    /// 1. cwrsi produces a pulse vector with sum equal to k
+    /// 2. icwrs converts the pulse vector back to the original index
+    /// 3. The total combination count matches the expected value
+    #[test]
+    fn cwrs_roundtrip_comprehensive() {
+        use super::{cwrsi, icwrs, ncwrs_urow};
+
+        // Test dimensions matching the C test's pn[] table (non-CUSTOM_MODES variant)
+        // Reduced set for reasonable test time
+        const PN: &[usize] = &[
+            2, 3, 4, 6, 8, 9, 11, 12, 16, 18, 22, 24, 32, 36, 44, 48,
+        ];
+
+        // Maximum k values for each n (from C test's pkmax[])
+        const PKMAX: &[usize] = &[
+            128, 128, 128, 88, 36, 26, 18, 16, 12, 11, 9, 9, 7, 7, 6, 6,
+        ];
+
+        for (t, &n) in PN.iter().enumerate() {
+            // Test up to the maximum k value for this n
+            let max_k = PKMAX[t].min(32); // Cap at 32 for reasonable test time
+
+            for k in 1..=max_k {
+                // Compute the total number of combinations V(n, k)
+                let mut u_ref = vec![0u32; k + 2];
+                let nc = ncwrs_urow(n, k, &mut u_ref);
+
+                // Only test a subset of combinations for large nc to keep test time reasonable
+                let inc = (nc / 20_000).max(1);
+
+                let mut i = 0u32;
+                while i < nc {
+                    // Decode: convert index to pulse vector
+                    let mut u = vec![0u32; k + 2];
+                    let _ = ncwrs_urow(n, k, &mut u);
+                    let mut y = vec![0i32; n];
+                    cwrsi(n, k, i, &mut y, &mut u);
+
+                    // Verify pulse sum equals k
+                    let sy: usize = y.iter().map(|&v| v.unsigned_abs() as usize).sum();
+                    assert_eq!(
+                        sy, k,
+                        "N={} pulse count mismatch in cwrsi ({} != {})",
+                        n, sy, k
+                    );
+
+                    // Encode: convert pulse vector back to index
+                    let mut u2 = vec![0u32; k + 2];
+                    let (ii, v) = icwrs(&y, n, k, &mut u2);
+
+                    // Verify index roundtrip
+                    assert_eq!(
+                        ii, i,
+                        "Combination-index mismatch ({} != {}) for N={}, K={}",
+                        ii, i, n, k
+                    );
+
+                    // Verify combination count
+                    assert_eq!(
+                        v, nc,
+                        "Combination count mismatch ({} != {}) for N={}, K={}",
+                        v, nc, n, k
+                    );
+
+                    i += inc;
+                }
+            }
+        }
+    }
+
     fn reference_required_bits(n: usize, max_k: usize, frac: OpusInt32) -> Vec<OpusInt16> {
         let mut bits = vec![0i16; max_k + 1];
         if n == 1 {

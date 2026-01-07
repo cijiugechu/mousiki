@@ -401,9 +401,11 @@ impl<'a> core::ops::DerefMut for EcEnc<'a> {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use super::EcEnc;
     use crate::celt::entcode::{EC_CODE_BITS, EC_CODE_TOP, EC_WINDOW_SIZE};
+    use crate::celt::entdec::EcDec;
 
     #[test]
     fn encoder_initialises_like_reference() {
@@ -463,5 +465,372 @@ mod tests {
         assert_eq!(enc.buf[3], 0b1011);
         assert_eq!(enc.error, 0);
         assert!(enc.nend_bits < EC_WINDOW_SIZE as i32);
+    }
+
+    /// Port of the first section of `test_unit_entropy.c` from opus-c.
+    ///
+    /// Tests encoding/decoding of raw unsigned integers (ec_enc_uint/ec_dec_uint)
+    /// for various base values from 2 to 1023.
+    #[test]
+    fn entropy_uint_roundtrip() {
+        const DATA_SIZE: usize = 1_000_000;
+        let mut buf = vec![0u8; DATA_SIZE];
+
+        // Encode all possible values for each base from 2 to 1023
+        {
+            let mut enc = EcEnc::new(&mut buf);
+            for ft in 2..1024u32 {
+                for i in 0..ft {
+                    enc.enc_uint(i, ft);
+                }
+            }
+            enc.enc_done();
+            assert_eq!(enc.error, 0, "encoding error");
+        }
+
+        // Decode and verify all values
+        {
+            let mut dec = EcDec::new(&mut buf);
+            for ft in 2..1024u32 {
+                for i in 0..ft {
+                    let sym = dec.dec_uint(ft);
+                    assert_eq!(
+                        sym, i,
+                        "decoded {} instead of {} with ft of {}",
+                        sym, i, ft
+                    );
+                }
+            }
+        }
+    }
+
+    /// Port of the raw bits encoding section from `test_unit_entropy.c`.
+    ///
+    /// Tests that encoding and decoding raw bits produces exact matches
+    /// and uses exactly the expected number of bits.
+    #[test]
+    fn entropy_raw_bits_roundtrip() {
+        use crate::celt::entcode::ec_tell;
+
+        const DATA_SIZE: usize = 1_000_000;
+        let mut buf = vec![0u8; DATA_SIZE];
+
+        // Encode raw bits for bit widths 1 to 15
+        {
+            let mut enc = EcEnc::new(&mut buf);
+            for ftb in 1..16u32 {
+                for i in 0..(1u32 << ftb) {
+                    let nbits_before = ec_tell(&enc);
+                    enc.enc_bits(i, ftb);
+                    let nbits_after = ec_tell(&enc);
+                    assert_eq!(
+                        nbits_after - nbits_before,
+                        ftb as i32,
+                        "used {} bits to encode {} bits directly",
+                        nbits_after - nbits_before,
+                        ftb
+                    );
+                }
+            }
+            enc.enc_done();
+            assert_eq!(enc.error, 0);
+        }
+
+        // Decode and verify raw bits
+        {
+            let mut dec = EcDec::new(&mut buf);
+            for ftb in 1..16u32 {
+                for i in 0..(1u32 << ftb) {
+                    let sym = dec.dec_bits(ftb);
+                    assert_eq!(
+                        sym, i,
+                        "decoded {} instead of {} with ftb of {}",
+                        sym, i, ftb
+                    );
+                }
+            }
+        }
+    }
+
+    /// Port of the `patch_initial_bits` test from `test_unit_entropy.c`.
+    ///
+    /// Tests that patching initial bits works correctly in various scenarios.
+    #[test]
+    fn entropy_patch_initial_bits() {
+        const DATA_SIZE: usize = 10_000;
+        let mut buf = vec![0u8; DATA_SIZE];
+
+        // Test case 1: patch works correctly
+        {
+            let mut enc = EcEnc::new(&mut buf);
+            enc.enc_bit_logp(0, 1);
+            enc.enc_bit_logp(0, 1);
+            enc.enc_bit_logp(0, 1);
+            enc.enc_bit_logp(0, 1);
+            enc.enc_bit_logp(0, 2);
+            enc.enc_patch_initial_bits(3, 2);
+            assert_eq!(enc.error, 0, "patch_initial_bits failed");
+
+            // Patching more bits than available should fail
+            enc.enc_patch_initial_bits(0, 5);
+            assert_ne!(enc.error, 0, "patch_initial_bits didn't fail when it should have");
+            enc.enc_done();
+            assert_eq!(enc.range_bytes(), 1);
+            assert_eq!(buf[0], 192);
+        }
+
+        // Test case 2: different bit patterns
+        {
+            let mut enc = EcEnc::new(&mut buf);
+            enc.enc_bit_logp(0, 1);
+            enc.enc_bit_logp(0, 1);
+            enc.enc_bit_logp(1, 6);
+            enc.enc_bit_logp(0, 2);
+            enc.enc_patch_initial_bits(0, 2);
+            assert_eq!(enc.error, 0, "patch_initial_bits failed");
+            enc.enc_done();
+            assert_eq!(enc.range_bytes(), 2);
+            assert_eq!(buf[0], 63);
+        }
+    }
+
+    /// Port of the raw bits overfill test from `test_unit_entropy.c`.
+    ///
+    /// Tests that attempting to encode more raw bits than buffer size
+    /// results in an error.
+    #[test]
+    fn entropy_raw_bits_overfill() {
+        let mut buf = vec![0u8; 2];
+
+        // Test 1: 48 raw bits should overflow 16-bit buffer
+        {
+            let mut enc = EcEnc::new(&mut buf);
+            enc.enc_bit_logp(0, 2);
+            for _ in 0..48 {
+                enc.enc_bits(0, 1);
+            }
+            enc.enc_done();
+            assert_ne!(enc.error, 0, "raw bits overfill didn't fail when it should have");
+        }
+
+        // Test 2: 17 raw bits in two bytes should fail
+        {
+            let mut enc = EcEnc::new(&mut buf);
+            for _ in 0..17 {
+                enc.enc_bits(0, 1);
+            }
+            enc.enc_done();
+            assert_ne!(enc.error, 0, "17 raw bits encoded in two bytes");
+        }
+    }
+
+    /// Simple LCG for reproducible pseudo-random sequences.
+    struct Lcg(u32);
+
+    impl Lcg {
+        fn new(seed: u32) -> Self {
+            Self(seed)
+        }
+
+        fn next(&mut self) -> u32 {
+            self.0 = self.0.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            self.0
+        }
+    }
+
+    /// Port of the random stream tests from `test_unit_entropy.c`.
+    ///
+    /// Tests encoding and decoding of random unsigned integer sequences
+    /// with various base values and stream sizes. Also validates that
+    /// the bit-counting (tell) functions are consistent between encoder
+    /// and decoder.
+    #[test]
+    fn entropy_random_uint_streams() {
+        use crate::celt::entcode::ec_tell_frac;
+
+        const DATA_SIZE: usize = 10_000;
+        const NUM_ITERATIONS: usize = 1_000; // Reduced from C's 409600 for speed
+        const SEED: u32 = 12345;
+
+        let mut buf = vec![0u8; DATA_SIZE];
+        let mut rng = Lcg::new(SEED);
+
+        for iteration in 0..NUM_ITERATIONS {
+            // Generate random parameters (matching C's rand() behavior with RAND_MAX)
+            let shift1 = (rng.next() % 11) as u32;
+            let divisor = u32::MAX.wrapping_shr(shift1).saturating_add(1);
+            let ft = rng.next().wrapping_div(divisor.max(1)).saturating_add(10);
+            let shift2 = (rng.next() % 9) as u32;
+            let divisor2 = u32::MAX.wrapping_shr(shift2).saturating_add(1);
+            let sz = (rng.next().wrapping_div(divisor2.max(1))) as usize;
+            let zeros = (rng.next() % 13) == 0;
+
+            // Generate random data
+            let data: Vec<u32> = (0..sz)
+                .map(|_| {
+                    if zeros {
+                        0
+                    } else {
+                        rng.next() % ft
+                    }
+                })
+                .collect();
+
+            // Encode
+            let mut enc = EcEnc::new(&mut buf);
+            let mut tells: Vec<u32> = Vec::with_capacity(sz + 1);
+            tells.push(ec_tell_frac(&enc));
+            for &value in &data {
+                enc.enc_uint(value, ft);
+                tells.push(ec_tell_frac(&enc));
+            }
+
+            // Optionally pad to byte boundary
+            if rng.next() % 2 == 0 {
+                use crate::celt::entcode::ec_tell;
+                while ec_tell(&enc) % 8 != 0 {
+                    enc.enc_uint(rng.next() % 2, 2);
+                }
+            }
+
+            enc.enc_done();
+            assert_eq!(enc.error, 0, "encoding error at iteration {}", iteration);
+
+            // Decode and verify
+            let mut dec = EcDec::new(&mut buf);
+            assert_eq!(
+                ec_tell_frac(&dec),
+                tells[0],
+                "tell mismatch at symbol 0, iteration {}",
+                iteration
+            );
+
+            for (j, &expected) in data.iter().enumerate() {
+                let sym = dec.dec_uint(ft);
+                assert_eq!(
+                    sym, expected,
+                    "decoded {} instead of {} with ft of {} at position {} of {} (iteration {})",
+                    sym, expected, ft, j, sz, iteration
+                );
+                assert_eq!(
+                    ec_tell_frac(&dec),
+                    tells[j + 1],
+                    "tell mismatch at symbol {}, iteration {}",
+                    j + 1,
+                    iteration
+                );
+            }
+        }
+    }
+
+    /// Port of the encode/decode method compatibility test from `test_unit_entropy.c`.
+    ///
+    /// Tests that different encoding methods (encode, encode_bin, enc_bit_logp, enc_icdf)
+    /// produce correct results when decoded with the same method family.
+    #[test]
+    fn entropy_method_compatibility() {
+        const DATA_SIZE: usize = 10_000;
+        const NUM_ITERATIONS: usize = 1_000; // Reduced from C's 409600 for speed
+        const SEED: u32 = 54321;
+
+        let mut buf = vec![0u8; DATA_SIZE];
+        let mut rng = Lcg::new(SEED);
+
+        for iteration in 0..NUM_ITERATIONS {
+            let shift = (rng.next() % 9) as u32;
+            let divisor = u32::MAX.wrapping_shr(shift).saturating_add(1);
+            let sz = rng.next().wrapping_div(divisor.max(1)) as usize;
+            let sz = sz.min(500); // Limit size for reasonable test time
+
+            // Generate random data and parameters
+            let divisor_half = u32::MAX.wrapping_shr(1).saturating_add(1);
+            let data: Vec<u32> = (0..sz)
+                .map(|_| rng.next().wrapping_div(divisor_half.max(1)))
+                .collect();
+            let logp1: Vec<u32> = (0..sz).map(|_| (rng.next() % 15) + 1).collect();
+            let enc_method: Vec<u32> = (0..sz)
+                .map(|_| {
+                    let divisor4 = u32::MAX.wrapping_shr(2).saturating_add(1);
+                    rng.next().wrapping_div(divisor4.max(1))
+                })
+                .collect();
+
+            // Encode using various methods
+            let mut enc = EcEnc::new(&mut buf);
+
+            for j in 0..sz {
+                let d = data[j];
+                let logp = logp1[j];
+                let ft = 1u32 << logp;
+
+                match enc_method[j] % 4 {
+                    0 => {
+                        // ec_encode
+                        let (fl, fh) = if d != 0 { (ft - 1, ft) } else { (0, 1) };
+                        enc.encode(fl, fh, ft);
+                    }
+                    1 => {
+                        // ec_encode_bin
+                        let (fl, fh) = if d != 0 { (ft - 1, ft) } else { (0, 1) };
+                        enc.encode_bin(fl, fh, logp);
+                    }
+                    2 => {
+                        // ec_enc_bit_logp
+                        enc.enc_bit_logp(d as i32, logp);
+                    }
+                    _ => {
+                        // ec_enc_icdf
+                        let icdf = [1u8, 0];
+                        enc.enc_icdf(d as usize, &icdf, logp);
+                    }
+                }
+            }
+            enc.enc_done();
+            assert_eq!(enc.error, 0, "encoding error at iteration {}", iteration);
+
+            // Decode using the SAME method as encoding (to ensure roundtrip)
+            let mut dec = EcDec::new(&mut buf);
+
+            for j in 0..sz {
+                let expected = data[j];
+                let logp = logp1[j];
+                let ft = 1u32 << logp;
+
+                // Use the same decode method as encode method
+                let sym = match enc_method[j] % 4 {
+                    0 => {
+                        // ec_decode
+                        let fs = dec.decode(ft);
+                        let s = if fs >= ft - 1 { 1 } else { 0 };
+                        let (fl, fh) = if s != 0 { (ft - 1, ft) } else { (0, 1) };
+                        dec.update(fl, fh, ft);
+                        s
+                    }
+                    1 => {
+                        // ec_decode_bin
+                        let fs = dec.decode_bin(logp);
+                        let s = if fs >= ft - 1 { 1 } else { 0 };
+                        let (fl, fh) = if s != 0 { (ft - 1, ft) } else { (0, 1) };
+                        dec.update(fl, fh, ft);
+                        s
+                    }
+                    2 => {
+                        // ec_dec_bit_logp
+                        dec.dec_bit_logp(logp) as u32
+                    }
+                    _ => {
+                        // ec_dec_icdf
+                        let icdf = [1u8, 0];
+                        dec.dec_icdf(&icdf, logp) as u32
+                    }
+                };
+
+                assert_eq!(
+                    sym, expected,
+                    "decoded {} instead of {} at position {} of {} (iteration {})",
+                    sym, expected, j, sz, iteration
+                );
+            }
+        }
     }
 }
