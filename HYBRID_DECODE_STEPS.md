@@ -12,11 +12,9 @@ packet decode (shared SILK/CELT range-decoder path) in the Rust port.
    - The CELT decode call uses `decode_celt_frame_with_ec(...)` whenever a
      shared decoder exists, avoiding internal reinitialization.
 
-2) Align CELT external-decoder handling with C
-   - When an external decoder is provided, avoid altering its state or buffer
-     ownership semantics.
-   - Verify `packet_len`, `tell`, `ctx.storage`, and `range_final` match C after
-     redundancy-byte trimming and decoder handoff.
+2) Align CELT external-decoder handling with C (done)
+   - Preserve external decoder ownership while asserting storage matches the
+     trimmed packet length after redundancy handling.
 
 3) Validate hybrid control flow and redundancy parsing
    - Match C logic for `redundancy`, `celt_to_silk`, and `bytes` extraction.

@@ -1581,6 +1581,11 @@ where
 
     let mut range_decoder = RangeDecoderHandle::new(packet, range_decoder);
     let dec = range_decoder.decoder();
+    debug_assert_eq!(
+        dec.ctx().storage as usize,
+        packet.len(),
+        "range decoder storage must match packet length",
+    );
 
     if c == 1 {
         for band in 0..nb_ebands {

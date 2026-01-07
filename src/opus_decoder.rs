@@ -805,6 +805,16 @@ impl<'mode> OpusDecoder<'mode> {
             packet = Some(&data[..packet_len]);
         }
 
+        if packet_len > 1
+            && let Some(range_dec) = range_decoder.as_ref()
+        {
+            debug_assert_eq!(
+                range_dec.ctx().storage as usize,
+                packet_len,
+                "range decoder storage must match packet length",
+            );
+        }
+
         let mut start_band = 0;
         if !celt_only {
             start_band = 17;
@@ -891,15 +901,12 @@ impl<'mode> OpusDecoder<'mode> {
             let celt_frame = audiosize.min(f20);
             let celt_packet = if decode_fec { None } else { packet };
             let celt_ret = if celt_packet.is_some() && range_decoder.is_some() {
-                let range_dec = range_decoder
-                    .as_mut()
-                    .ok_or(OpusDecodeError::InternalError)?;
                 decode_celt_frame_with_ec(
                     &mut self.celt,
                     celt_packet,
                     pcm,
                     celt_frame,
-                    Some(range_dec),
+                    range_decoder.as_mut(),
                     celt_accum,
                 )?
             } else {
