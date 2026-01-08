@@ -46,13 +46,13 @@ const NORM_SCALING: OpusVal16 = 1.0;
 
 /// Shared context mirroring the state tracked by `struct band_ctx` in `celt/bands.c`.
 #[derive(Debug, Clone)]
-pub(crate) struct BandCtx<'a> {
+pub(crate) struct BandCtx<'mode, 'band> {
     /// Whether the caller is encoding (`true`) or decoding (`false`).
     pub encode: bool,
     /// When `true`, the quantiser should resynthesise the canonical unit vector.
     pub resynth: bool,
     /// Active CELT mode driving the band configuration.
-    pub mode: &'a OpusCustomMode<'a>,
+    pub mode: &'mode OpusCustomMode<'mode>,
     /// Index of the band currently being processed.
     pub band: usize,
     /// First band where intensity stereo becomes active.
@@ -64,7 +64,7 @@ pub(crate) struct BandCtx<'a> {
     /// Remaining fractional bits available to the band quantiser.
     pub remaining_bits: i32,
     /// Per-band energy targets.
-    pub band_e: &'a [CeltGlog],
+    pub band_e: &'band [CeltGlog],
     /// Random seed used for collapse prevention.
     pub seed: u32,
     /// Architecture hint for platform-specific optimisations.
@@ -226,8 +226,8 @@ fn mask_from_bits(bits: i32) -> u32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_theta<'a, 'b>(
-    ctx: &mut BandCtx<'a>,
+pub(crate) fn compute_theta(
+    ctx: &mut BandCtx<'_, '_>,
     sctx: &mut SplitCtx,
     x: &mut [OpusVal16],
     y: &mut [OpusVal16],
@@ -238,7 +238,7 @@ pub(crate) fn compute_theta<'a, 'b>(
     lm: i32,
     stereo: bool,
     fill: &mut u32,
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
 ) {
     debug_assert!(n > 0, "band size must be positive");
     debug_assert!(x.len() >= n, "mid buffer shorter than band length");
@@ -600,10 +600,10 @@ pub(crate) fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bo
     qn
 }
 
-fn quant_band_n1_channel<'a, 'b>(
-    ctx: &mut BandCtx<'a>,
+fn quant_band_n1_channel(
+    ctx: &mut BandCtx<'_, '_>,
     samples: &mut [OpusVal16],
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
 ) {
     assert!(
         !samples.is_empty(),
@@ -639,12 +639,12 @@ fn quant_band_n1_channel<'a, 'b>(
 /// sign bit when enough range coder budget is available. The helper optionally
 /// resynthesises the canonical unit vector so that future spreading and collapse
 /// prevention logic can operate on the reconstructed coefficients.
-pub(crate) fn quant_band_n1<'a, 'b>(
-    ctx: &mut BandCtx<'a>,
+pub(crate) fn quant_band_n1(
+    ctx: &mut BandCtx<'_, '_>,
     x: &mut [OpusVal16],
     y: Option<&mut [OpusVal16]>,
     lowband_out: Option<&mut [OpusVal16]>,
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
 ) -> usize {
     debug_assert_eq!(ctx.encode, coder.is_encoder());
 
@@ -661,8 +661,8 @@ pub(crate) fn quant_band_n1<'a, 'b>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn quant_partition<'a, 'b>(
-    ctx: &mut BandCtx<'a>,
+fn quant_partition(
+    ctx: &mut BandCtx<'_, '_>,
     x: &mut [OpusVal16],
     n: usize,
     mut b: i32,
@@ -671,7 +671,7 @@ fn quant_partition<'a, 'b>(
     mut lm: i32,
     gain: OpusVal32,
     mut fill: u32,
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
 ) -> u32 {
     debug_assert!(n > 0, "partition length must be positive");
     debug_assert!(
@@ -866,8 +866,8 @@ fn quant_partition<'a, 'b>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn quant_band<'a, 'b>(
-    ctx: &mut BandCtx<'a>,
+fn quant_band(
+    ctx: &mut BandCtx<'_, '_>,
     x: &mut [OpusVal16],
     n: usize,
     b: i32,
@@ -878,7 +878,7 @@ fn quant_band<'a, 'b>(
     gain: OpusVal32,
     mut lowband_scratch: Option<&mut [OpusVal16]>,
     mut fill: u32,
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
 ) -> u32 {
     debug_assert!(x.len() >= n, "quant_band expects at least n coefficients");
     if let Some(ref slice) = lowband_input {
@@ -1029,8 +1029,8 @@ fn quant_band<'a, 'b>(
 const MIN_STEREO_ENERGY: OpusVal32 = 1e-10;
 
 #[allow(clippy::too_many_arguments)]
-fn quant_band_stereo<'a, 'b>(
-    ctx: &mut BandCtx<'a>,
+fn quant_band_stereo(
+    ctx: &mut BandCtx<'_, '_>,
     x: &mut [OpusVal16],
     y: &mut [OpusVal16],
     n: usize,
@@ -1041,7 +1041,7 @@ fn quant_band_stereo<'a, 'b>(
     mut lowband_out: Option<&mut [OpusVal16]>,
     mut lowband_scratch: Option<&mut [OpusVal16]>,
     fill: u32,
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
 ) -> u32 {
     debug_assert!(
         x.len() >= n && y.len() >= n,
@@ -1255,15 +1255,15 @@ fn quant_band_stereo<'a, 'b>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn quant_all_bands<'a, 'b>(
+pub(crate) fn quant_all_bands(
     encode: bool,
-    mode: &'a OpusCustomMode<'a>,
+    mode: &OpusCustomMode<'_>,
     start: usize,
     end: usize,
     x: &mut [OpusVal16],
     mut y: Option<&mut [OpusVal16]>,
     collapse_masks: &mut [u8],
-    band_e: &'a [CeltGlog],
+    band_e: &[CeltGlog],
     pulses: &[i32],
     short_blocks: bool,
     spread: i32,
@@ -1272,7 +1272,7 @@ pub(crate) fn quant_all_bands<'a, 'b>(
     tf_res: &[i32],
     total_bits: i32,
     mut balance: i32,
-    coder: &mut BandCodingState<'a, 'b>,
+    coder: &mut BandCodingState<'_, '_>,
     lm: i32,
     coded_bands: usize,
     seed: &mut u32,

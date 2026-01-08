@@ -225,7 +225,12 @@ pub(crate) fn comb_filter(
     if g1 == 0.0 {
         if overlap < n {
             let src = &x[x_start + overlap..x_start + n];
-            y[overlap..n].copy_from_slice(src);
+            let dst = &mut y[overlap..n];
+            let len = n - overlap;
+            // Use memmove semantics to allow overlap between src and dst.
+            unsafe {
+                core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), len);
+            }
         }
         return;
     }

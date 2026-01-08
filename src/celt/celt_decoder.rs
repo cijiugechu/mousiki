@@ -871,6 +871,20 @@ const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 /// Scalar used to decode the post-filter gain from the coarse index.
 const POSTFILTER_GAIN_SCALE: OpusVal16 = 0.09375;
 
+const FROM_OPUS_TABLE: [u8; 16] = [
+    0x80, 0x88, 0x90, 0x98, 0x40, 0x48, 0x50, 0x58, 0x20, 0x28, 0x30, 0x38, 0x00, 0x08,
+    0x10, 0x18,
+];
+
+fn from_opus(value: u8) -> Option<u8> {
+    if value < 0x80 {
+        None
+    } else {
+        let idx = ((value >> 3) as usize).saturating_sub(16);
+        FROM_OPUS_TABLE.get(idx).map(|mapped| mapped | (value & 0x7))
+    }
+}
+
 const VERY_SMALL: CeltSig = 1.0e-30;
 const INV_CELT_SIG_SCALE: f32 = 1.0 / CELT_SIG_SCALE;
 
@@ -1535,7 +1549,7 @@ where
     'mode: 'dec,
 {
     let cc = decoder.channels;
-    let c = decoder.stream_channels;
+    let mut c = decoder.stream_channels;
     if cc == 0 || c == 0 || cc > MAX_CHANNELS {
         return Err(CeltDecodeError::BadArgument);
     }
@@ -1547,21 +1561,91 @@ where
     let mode = decoder.mode;
     let nb_ebands = mode.num_ebands;
     let start = decoder.start_band as usize;
-    let end = decoder.end_band as usize;
+    let mut end = decoder.end_band as usize;
 
     let downsample = decoder.downsample as usize;
-    let scaled_frame = frame_size
+    let mut scaled_frame = frame_size
         .checked_mul(downsample)
         .ok_or(CeltDecodeError::BadArgument)?;
+    let mut packet = packet;
+    let mut header_lm: Option<usize> = None;
+
+    if decoder.signalling != 0 && !packet.is_empty() {
+        let mut data0 = packet[0];
+        if mode.sample_rate == 48_000 && mode.short_mdct_size == 120 {
+            data0 = from_opus(data0).ok_or(CeltDecodeError::InvalidPacket)?;
+        }
+        end = max(1, mode.effective_ebands.saturating_sub(2 * (data0 as usize >> 5)));
+        decoder.end_band = end as i32;
+        c = 1 + ((data0 >> 2) & 0x1) as usize;
+        header_lm = Some(((data0 >> 3) & 0x3) as usize);
+
+        if (packet[0] & 0x03) == 0x03 {
+            packet = packet.get(1..).ok_or(CeltDecodeError::InvalidPacket)?;
+            if packet.is_empty() {
+                return Err(CeltDecodeError::InvalidPacket);
+            }
+            if (packet[0] & 0x40) != 0 {
+                packet = packet.get(1..).ok_or(CeltDecodeError::InvalidPacket)?;
+                if packet.is_empty() {
+                    return Err(CeltDecodeError::InvalidPacket);
+                }
+                let mut len = packet.len() as i32;
+                let mut padding = 0i32;
+                loop {
+                    if packet.is_empty() {
+                        return Err(CeltDecodeError::InvalidPacket);
+                    }
+                    let p = packet[0];
+                    packet = &packet[1..];
+                    len -= 1;
+                    let tmp = if p == 255 { 254 } else { p as i32 };
+                    len -= tmp;
+                    padding += tmp;
+                    if p != 255 {
+                        break;
+                    }
+                }
+                padding -= 1;
+                if len <= 0 || padding < 0 {
+                    return Err(CeltDecodeError::InvalidPacket);
+                }
+                packet = packet
+                    .get(..len as usize)
+                    .ok_or(CeltDecodeError::InvalidPacket)?;
+            }
+        } else {
+            packet = packet.get(1..).ok_or(CeltDecodeError::InvalidPacket)?;
+        }
+
+        let lm = header_lm.unwrap_or(0);
+        if lm > mode.max_lm {
+            return Err(CeltDecodeError::InvalidPacket);
+        }
+        let required = mode.short_mdct_size << lm;
+        if scaled_frame < required {
+            return Err(CeltDecodeError::BadArgument);
+        }
+        scaled_frame = required;
+    }
+
     if scaled_frame > (mode.short_mdct_size << mode.max_lm) {
         return Err(CeltDecodeError::BadArgument);
     }
 
-    let lm = (0..=mode.max_lm)
-        .find(|&cand| mode.short_mdct_size << cand == scaled_frame)
-        .ok_or(CeltDecodeError::BadArgument)?;
+    let lm = if let Some(lm) = header_lm {
+        lm
+    } else {
+        (0..=mode.max_lm)
+            .find(|&cand| mode.short_mdct_size << cand == scaled_frame)
+            .ok_or(CeltDecodeError::BadArgument)?
+    };
     let m = 1 << lm;
     let n = m * mode.short_mdct_size;
+
+    if c == 0 || c > MAX_CHANNELS {
+        return Err(CeltDecodeError::BadArgument);
+    }
 
     if packet.len() > 1275 {
         return Err(CeltDecodeError::BadArgument);
@@ -1580,12 +1664,15 @@ where
     }
 
     let mut range_decoder = RangeDecoderHandle::new(packet, range_decoder);
+    let is_owned = matches!(&range_decoder, RangeDecoderHandle::Owned(_));
     let dec = range_decoder.decoder();
-    debug_assert_eq!(
-        dec.ctx().storage as usize,
-        packet.len(),
-        "range decoder storage must match packet length",
-    );
+    if is_owned {
+        debug_assert_eq!(
+            dec.ctx().storage as usize,
+            packet.len(),
+            "range decoder storage must match packet length",
+        );
+    }
 
     if c == 1 {
         for band in 0..nb_ebands {
@@ -3152,6 +3239,7 @@ mod tests {
         let mut decoder = alloc
             .init_decoder(&mode, 1, 1)
             .expect("decoder initialisation should succeed");
+        decoder.signalling = 0;
 
         let err = prepare_frame(&mut decoder, &[0u8; 2], mode.short_mdct_size + 1, None)
             .expect_err("invalid frame size must be rejected");

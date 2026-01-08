@@ -14,25 +14,32 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::bands::{compute_band_energies, haar1};
-use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, resampling_factor};
+use crate::celt::bands::{
+    BandCodingState, compute_band_energies, haar1, hysteresis_decision, normalise_bands,
+    quant_all_bands, spreading_decision,
+};
+use crate::celt::celt::{
+    COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
+};
 use crate::celt::cpu_support::opus_select_arch;
-use crate::celt::entcode::{BITRES, ec_tell};
+use crate::celt::entcode::{BITRES, ec_ilog, ec_tell, ec_tell_frac};
 use crate::celt::entenc::EcEnc;
-use crate::celt::float_cast::{CELT_SIG_SCALE, float2int16};
+use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
-use crate::celt::math::{celt_exp2, celt_log2, celt_sqrt, frac_div32_q29};
+use crate::celt::math::{celt_exp2, celt_log2, celt_maxabs16, celt_rcp, celt_sqrt, frac_div32_q29};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
-use crate::celt::quant_bands::{E_MEANS, amp2_log2};
+use crate::celt::quant_bands::{E_MEANS, amp2_log2, quant_coarse_energy, quant_energy_finalise, quant_fine_energy};
+use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt16,
     OpusInt32, OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
+use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
 use alloc::boxed::Box;
 use core::cmp::{max, min};
 use core::f32::consts::FRAC_1_SQRT_2;
@@ -64,6 +71,29 @@ const PREEMPHASIS_CLIP_LIMIT: CeltSig = 65_536.0;
 
 /// Special bitrate value used by Opus to request the maximum possible rate.
 const OPUS_BITRATE_MAX: OpusInt32 = -1;
+
+const TRIM_ICDF: [u8; 11] = [126, 124, 119, 109, 87, 41, 19, 9, 4, 2, 0];
+const SPREAD_ICDF: [u8; 4] = [25, 23, 2, 0];
+const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
+
+const TO_OPUS_TABLE: [u8; 20] = [
+    0xE0, 0xE8, 0xF0, 0xF8, 0xC0, 0xC8, 0xD0, 0xD8, 0xA0, 0xA8, 0xB0, 0xB8, 0x00, 0x00,
+    0x00, 0x00, 0x80, 0x88, 0x90, 0x98,
+];
+const FROM_OPUS_TABLE: [u8; 16] = [
+    0x80, 0x88, 0x90, 0x98, 0x40, 0x48, 0x50, 0x58, 0x20, 0x28, 0x30, 0x38, 0x00, 0x08,
+    0x10, 0x18,
+];
+
+fn to_opus(value: u8) -> Option<u8> {
+    if value < 0xA0 {
+        let mapped = TO_OPUS_TABLE[(value >> 3) as usize];
+        if mapped != 0 {
+            return Some(mapped | (value & 0x7));
+        }
+    }
+    None
+}
 
 /// Errors that can be reported while initialising a CELT encoder instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +300,11 @@ pub(crate) fn opus_custom_encoder_create<'mode>(
     let ptr = Box::into_raw(alloc);
     // SAFETY: `ptr` originates from `Box::into_raw` and remains valid until it is
     // reconstructed below. The pointer is never null.
-    let result = unsafe { (*ptr).init_encoder_for_rate(mode, channels, channels, sampling_rate, rng_seed) };
+    let result = if sampling_rate == mode.sample_rate {
+        unsafe { (*ptr).init_custom_encoder(mode, channels, channels, rng_seed) }
+    } else {
+        unsafe { (*ptr).init_encoder_for_rate(mode, channels, channels, sampling_rate, rng_seed) }
+    };
     match result {
         Ok(encoder) => {
             // SAFETY: Rebuilds the `Box` returned by `Box::into_raw` so the
@@ -717,7 +751,7 @@ fn compute_mdcts(
     assert!(transform_len.is_multiple_of(2));
     let frame_len = transform_len >> 1;
 
-    let channel_input_stride = block_count * transform_len + overlap;
+    let channel_input_stride = block_count * frame_len + overlap;
     let channel_output_stride = block_count * frame_len;
 
     assert!(input.len() >= total_channels * channel_input_stride);
@@ -728,10 +762,10 @@ fn compute_mdcts(
         let output_base = channel * channel_output_stride;
 
         for block in 0..block_count {
-            let input_offset = input_base + block * transform_len;
-            let output_offset = output_base + block;
-            let input_end = input_offset + overlap + transform_len;
-            let output_end = output_base + channel_output_stride;
+        let input_offset = input_base + block * frame_len;
+        let output_offset = output_base + block;
+        let input_end = input_offset + overlap + frame_len;
+        let output_end = output_base + channel_output_stride;
 
             clt_mdct_forward(
                 &mode.mdct,
@@ -1612,7 +1646,6 @@ fn dynalloc_analysis(
 fn run_prefilter(
     encoder: &mut OpusCustomEncoder<'_>,
     input: &mut [CeltSig],
-    prefilter_mem: &mut [CeltSig],
     channels: usize,
     n: usize,
     prefilter_tapset: i32,
@@ -1639,7 +1672,7 @@ fn run_prefilter(
         "time buffer must expose channels * (n + overlap) samples",
     );
     assert!(
-        prefilter_mem.len() >= channels * history_len,
+        encoder.prefilter_mem.len() >= channels * history_len,
         "prefilter history must expose channels * COMBFILTER_MAXPERIOD samples",
     );
 
@@ -1647,7 +1680,7 @@ fn run_prefilter(
     for ch in 0..channels {
         let pre_offset = ch * (n + history_len);
         let pre_slice = &mut pre[pre_offset..pre_offset + history_len + n];
-        let history = &prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        let history = &encoder.prefilter_mem[ch * history_len..(ch + 1) * history_len];
         pre_slice[..history_len].copy_from_slice(history);
 
         let input_offset = ch * stride;
@@ -1910,7 +1943,7 @@ fn run_prefilter(
 
         let pre_offset = ch * (n + history_len);
         let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
-        let mem = &mut prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        let mem = &mut encoder.prefilter_mem[ch * history_len..(ch + 1) * history_len];
         if n > history_len {
             mem.copy_from_slice(&pre_channel[n..n + history_len]);
         } else {
@@ -2296,12 +2329,1003 @@ fn encode_internal(
     Ok(())
 }
 
-/// Minimal Rust translation of the reference `celt_encode_with_ec()` entry point.
+#[allow(clippy::too_many_arguments)]
+fn celt_encode_with_ec_inner<'a>(
+    encoder: &mut OpusCustomEncoder<'_>,
+    pcm: &[CeltSig],
+    enc: &mut EcEnc<'a>,
+    use_external: bool,
+    header_bytes: usize,
+    mut nb_compressed_bytes: usize,
+    frame_size_internal: usize,
+    upsample: usize,
+    lm: usize,
+    m: usize,
+    n: usize,
+    start: usize,
+    end: i32,
+    hybrid: bool,
+) -> Result<usize, CeltEncodeError> {
+    let mode = encoder.mode;
+    let nb_ebands = mode.num_ebands;
+    let overlap = mode.overlap;
+    let cc = encoder.channels;
+    let c = encoder.stream_channels;
+
+    let mut tell0_frac = 1u32;
+    let mut tell = 1i32;
+    let mut nb_filled_bytes = 0i32;
+    if use_external {
+        tell0_frac = ec_tell_frac(enc.ctx());
+        tell = ec_tell(enc.ctx());
+        nb_filled_bytes = (tell + 4) >> 3;
+    }
+
+    let mut vbr_rate = 0i32;
+    let effective_bytes: i32;
+    if encoder.use_vbr && encoder.bitrate != OPUS_BITRATE_MAX {
+        let den = (mode.sample_rate >> BITRES) as i32;
+        vbr_rate = (encoder.bitrate * frame_size_internal as i32 + (den >> 1)) / den;
+        if encoder.signalling != 0 && !use_external {
+            vbr_rate -= 8 << BITRES;
+        }
+        effective_bytes = vbr_rate >> (3 + BITRES);
+    } else {
+        let mut tmp = encoder.bitrate.saturating_mul(frame_size_internal as i32);
+        if tell > 1 {
+            tmp = tmp.saturating_add(tell.saturating_mul(mode.sample_rate));
+        }
+        if encoder.bitrate != OPUS_BITRATE_MAX {
+            let extra = if encoder.signalling != 0 && !use_external { 1 } else { 0 };
+            let target = (tmp + 4 * mode.sample_rate) / (8 * mode.sample_rate) - extra;
+            nb_compressed_bytes = max(2, min(nb_compressed_bytes as i32, target)) as usize;
+            enc.enc_shrink(nb_compressed_bytes as OpusUint32);
+        }
+        effective_bytes = nb_compressed_bytes as i32 - nb_filled_bytes;
+    }
+
+    let mut nb_available_bytes = nb_compressed_bytes as i32 - nb_filled_bytes;
+    let shift = 3i32 - lm as i32;
+    let base_rate = nb_compressed_bytes as i32 * 8 * 50;
+    let mut equiv_rate = if shift >= 0 {
+        base_rate << shift
+    } else {
+        base_rate >> (-shift)
+    };
+    let lfe_adjust = (40 * c as i32 + 20) * ((400 >> lm) - 50);
+    equiv_rate -= lfe_adjust;
+    if encoder.bitrate != OPUS_BITRATE_MAX {
+        equiv_rate = min(equiv_rate, encoder.bitrate - lfe_adjust);
+    }
+
+    if vbr_rate > 0 && encoder.constrained_vbr {
+        let vbr_bound = vbr_rate;
+        let min_bytes = if tell == 1 { 2 } else { 0 };
+        let max_allowed = min(
+            max(
+                min_bytes,
+                (vbr_rate + vbr_bound - encoder.vbr_reservoir) >> (BITRES + 3),
+            ),
+            nb_available_bytes,
+        );
+        if max_allowed < nb_available_bytes {
+            nb_compressed_bytes = (nb_filled_bytes + max_allowed) as usize;
+            nb_available_bytes = max_allowed;
+            enc.enc_shrink(nb_compressed_bytes as OpusUint32);
+        }
+    }
+
+    let mut total_bits = nb_compressed_bytes as i32 * 8;
+    let eff_end = min(end as usize, mode.effective_ebands);
+
+    let sample_span = c * (n.saturating_sub(overlap)) / upsample;
+    let overlap_span = c * overlap / upsample;
+    let mut sample_max = encoder.overlap_max.max(celt_maxabs_res(&pcm[..sample_span]));
+    encoder.overlap_max = celt_maxabs_res(&pcm[sample_span..sample_span + overlap_span]);
+    sample_max = sample_max.max(encoder.overlap_max);
+
+    #[cfg(feature = "fixed_point")]
+    let mut silence = sample_max == 0.0;
+    #[cfg(not(feature = "fixed_point"))]
+    let mut silence = sample_max <= (1.0 / ((1u32 << encoder.lsb_depth) as f32));
+
+    if tell == 1 {
+        enc.enc_bit_logp(silence as i32, 15);
+    } else {
+        silence = false;
+    }
+
+    if silence {
+        if vbr_rate > 0 {
+            nb_compressed_bytes = min(nb_compressed_bytes, (nb_filled_bytes + 2) as usize);
+            total_bits = nb_compressed_bytes as i32 * 8;
+            nb_available_bytes = 2;
+            enc.enc_shrink(nb_compressed_bytes as OpusUint32);
+        }
+        let consumed = ec_tell(enc.ctx());
+        enc.ctx_mut().nbits_total += total_bits - consumed;
+        tell = total_bits;
+    }
+
+    let mut input = vec![0.0f32; cc * (n + overlap)];
+    for ch in 0..cc {
+        let input_offset = ch * (n + overlap);
+        let prefilter_offset = (ch + 1) * COMBFILTER_MAXPERIOD - overlap;
+        let input_slice = &mut input[input_offset + overlap..input_offset + overlap + n];
+        let channel_pcm = &pcm[ch..];
+
+        let need_clip = encoder.clip && sample_max > PREEMPHASIS_CLIP_LIMIT;
+        celt_preemphasis(
+            channel_pcm,
+            input_slice,
+            n,
+            cc,
+            upsample,
+            &mode.pre_emphasis,
+            &mut encoder.preemph_mem_encoder[ch],
+            need_clip,
+        );
+        input[input_offset..input_offset + overlap].copy_from_slice(
+            &encoder.prefilter_mem[prefilter_offset..prefilter_offset + overlap],
+        );
+    }
+
+    let mut toneishness = 0.0f32;
+    let tone_freq = tone_detect(&input, cc, n + overlap, &mut toneishness, mode.sample_rate);
+
+    let mut tf_estimate = 0.0f32;
+    let mut tf_chan = 0usize;
+    let mut weak_transient = false;
+    let mut is_transient = false;
+    let mut short_blocks = 0usize;
+
+    if encoder.complexity >= 1 && !encoder.lfe {
+        let allow_weak = hybrid && effective_bytes < 15 && encoder.silk_info.signal_type != 2;
+        is_transient = transient_analysis(
+            &input,
+            n + overlap,
+            cc,
+            &mut tf_estimate,
+            &mut tf_chan,
+            allow_weak,
+            &mut weak_transient,
+            tone_freq,
+            toneishness,
+        );
+    }
+
+    let mut pitch_index = COMBFILTER_MINPERIOD as i32;
+    let mut gain1 = 0.0;
+    let mut qg = 0;
+    let mut pitch_change = false;
+    let prefilter_tapset = encoder.tapset_decision;
+    let enabled = ((encoder.lfe && nb_available_bytes > 3)
+        || nb_available_bytes > 12 * c as i32)
+        && !hybrid
+        && !silence
+        && tell + 16 <= total_bits
+        && !encoder.disable_prefilter
+        && encoder.complexity >= 5;
+
+    let analysis = encoder.analysis.clone();
+    let pf_on = run_prefilter(
+        encoder,
+        &mut input,
+        cc,
+        n,
+        prefilter_tapset,
+        &mut pitch_index,
+        &mut gain1,
+        &mut qg,
+        enabled,
+        tf_estimate,
+        nb_available_bytes,
+        &analysis,
+        tone_freq,
+        toneishness,
+    );
+
+    if (gain1 > 0.4 || encoder.prefilter_gain > 0.4)
+        && (!encoder.analysis.valid || encoder.analysis.tonality > 0.3)
+        && (pitch_index > (1.26 * encoder.prefilter_period as f32) as i32
+            || pitch_index < (0.79 * encoder.prefilter_period as f32) as i32)
+    {
+        pitch_change = true;
+    }
+
+    if !pf_on {
+        if !hybrid && tell + 16 <= total_bits {
+            enc.enc_bit_logp(0, 1);
+        }
+    } else {
+        enc.enc_bit_logp(1, 1);
+        pitch_index += 1;
+        let octave = ec_ilog(pitch_index as u32) - 5;
+        enc.enc_uint(octave as u32, 6);
+        enc.enc_bits(
+            (pitch_index - (16 << octave)) as u32,
+            (4 + octave) as u32,
+        );
+        pitch_index -= 1;
+        enc.enc_bits(qg as u32, 3);
+        enc.enc_icdf(prefilter_tapset.max(0) as usize, &TAPSET_ICDF, 2);
+    }
+
+    let mut transient_got_disabled = false;
+    if lm > 0 && ec_tell(enc.ctx()) + 3 <= total_bits {
+        if is_transient {
+            short_blocks = m;
+        }
+    } else {
+        is_transient = false;
+        transient_got_disabled = true;
+    }
+
+    let mut freq = vec![0.0f32; cc * n];
+    let mut band_e = vec![0.0f32; nb_ebands * c];
+    let mut band_log_e = vec![0.0f32; nb_ebands * c];
+    let mut band_log_e2 = vec![0.0f32; nb_ebands * c];
+
+    let second_mdct = short_blocks != 0 && encoder.complexity >= 8;
+    if second_mdct {
+        compute_mdcts(
+            mode,
+            0,
+            &input,
+            &mut freq,
+            c,
+            cc,
+            lm,
+            upsample,
+            encoder.arch,
+        );
+        compute_band_energies(mode, &freq[..c * n], &mut band_e, eff_end, c, lm, encoder.arch);
+        amp2_log2(
+            mode,
+            eff_end,
+            end as usize,
+            &band_e,
+            &mut band_log_e2,
+            c,
+        );
+        for channel in 0..c {
+            let base = channel * nb_ebands;
+            for band in 0..end as usize {
+                band_log_e2[base + band] += 0.5 * lm as f32;
+            }
+        }
+    }
+
+    compute_mdcts(
+        mode,
+        short_blocks,
+        &input,
+        &mut freq,
+        c,
+        cc,
+        lm,
+        upsample,
+        encoder.arch,
+    );
+    debug_assert!(
+        !freq[0].is_nan() && (c == 1 || !freq[n].is_nan()),
+        "MDCT should not produce NaN coefficients",
+    );
+
+    if cc == 2 && c == 1 {
+        tf_chan = 0;
+    }
+    compute_band_energies(mode, &freq[..c * n], &mut band_e, eff_end, c, lm, encoder.arch);
+
+    if encoder.lfe {
+        for band in 2..end as usize {
+            band_e[band] = band_e[band].min(1e-4 * band_e[0]).max(1e-15);
+        }
+    }
+
+    amp2_log2(
+        mode,
+        eff_end,
+        end as usize,
+        &band_e,
+        &mut band_log_e,
+        c,
+    );
+
+    let mut surround_dynalloc = vec![0.0f32; nb_ebands * c];
+    let mut surround_masking = 0.0f32;
+    let mut temporal_vbr = 0.0f32;
+    let mut surround_trim = 0.0f32;
+
+    if !hybrid && encoder.energy_mask.is_some() && !encoder.lfe {
+        let mask_end = max(2, encoder.last_coded_bands) as usize;
+        let mut mask_avg = 0.0f32;
+        let mut diff = 0.0f32;
+        let mut count = 0.0f32;
+        if let Some(mask) = encoder.energy_mask {
+            for channel in 0..c {
+                let base = channel * nb_ebands;
+                for band in 0..mask_end {
+                    let mut value = mask[base + band].clamp(-2.0, 0.25);
+                    if value > 0.0 {
+                        value *= 0.5;
+                    }
+                    let width = (mode.e_bands[band + 1] - mode.e_bands[band]) as f32;
+                    mask_avg += value * width;
+                    count += width;
+                    diff += value * (1 + 2 * band as i32 - mask_end as i32) as f32;
+                }
+            }
+            debug_assert!(count > 0.0);
+            mask_avg = mask_avg / count + 0.2;
+            diff = diff
+                * 6.0
+                / (c as f32
+                    * (mask_end as f32 - 1.0)
+                    * (mask_end as f32 + 1.0)
+                    * mask_end as f32);
+            diff *= 0.5;
+            diff = diff.clamp(-0.031, 0.031);
+            let mut midband = 0usize;
+            while midband + 1 < nb_ebands
+                && mode.e_bands[midband + 1] < mode.e_bands[mask_end] / 2
+            {
+                midband += 1;
+            }
+            let mut count_dynalloc = 0;
+            for band in 0..mask_end {
+                let lin = mask_avg + diff * (band as i32 - midband as i32) as f32;
+                let mut unmask = if c == 2 {
+                    mask[band].max(mask[nb_ebands + band])
+                } else {
+                    mask[band]
+                };
+                unmask = unmask.min(0.0);
+                unmask -= lin;
+                if unmask > 0.25 {
+                    surround_dynalloc[band] = unmask - 0.25;
+                    count_dynalloc += 1;
+                }
+            }
+            if count_dynalloc >= 3 {
+                mask_avg += 0.25;
+                if mask_avg > 0.0 {
+                    mask_avg = 0.0;
+                    diff = 0.0;
+                    surround_dynalloc[..mask_end].fill(0.0);
+                } else {
+                    for band in 0..mask_end {
+                        surround_dynalloc[band] = (surround_dynalloc[band] - 0.25).max(0.0);
+                    }
+                }
+            }
+            mask_avg += 0.2;
+            surround_trim = 64.0 * diff;
+            surround_masking = mask_avg;
+        }
+    }
+
+    if !encoder.lfe {
+        let mut follow = -10.0f32;
+        let mut frame_avg = 0.0f32;
+        let offset = if short_blocks != 0 { 0.5 * lm as f32 } else { 0.0 };
+        for band in start..end as usize {
+            let mut candidate = band_log_e[band] - offset;
+            if c == 2 {
+                candidate = candidate.max(band_log_e[nb_ebands + band] - offset);
+            }
+            follow = follow.max(candidate).max(follow - 1.0);
+            frame_avg += follow;
+        }
+        if end as usize > start {
+            frame_avg /= (end as usize - start) as f32;
+        }
+        temporal_vbr = (frame_avg * 32.0) - encoder.spec_avg;
+        temporal_vbr = temporal_vbr.clamp(-1.5, 3.0);
+        encoder.spec_avg += 0.02 * temporal_vbr;
+    }
+
+    if !second_mdct {
+        band_log_e2.copy_from_slice(&band_log_e);
+    }
+
+    if lm > 0
+        && ec_tell(enc.ctx()) + 3 <= total_bits
+        && !is_transient
+        && encoder.complexity >= 5
+        && !encoder.lfe
+        && !hybrid
+    {
+        if patch_transient_decision(
+            &band_log_e,
+            encoder.old_band_e,
+            nb_ebands,
+            start,
+            end as usize,
+            c,
+        ) {
+            is_transient = true;
+            short_blocks = m;
+            compute_mdcts(
+                mode,
+                short_blocks,
+                &input,
+                &mut freq,
+                c,
+                cc,
+                lm,
+                upsample,
+                encoder.arch,
+            );
+            compute_band_energies(
+                mode,
+                &freq[..c * n],
+                &mut band_e,
+                eff_end,
+                c,
+                lm,
+                encoder.arch,
+            );
+            amp2_log2(
+                mode,
+                eff_end,
+                end as usize,
+                &band_e,
+                &mut band_log_e,
+                c,
+            );
+            for channel in 0..c {
+                let base = channel * nb_ebands;
+                for band in 0..end as usize {
+                    band_log_e2[base + band] += 0.5 * lm as f32;
+                }
+            }
+            tf_estimate = 0.2;
+        }
+    }
+
+    if lm > 0 && ec_tell(enc.ctx()) + 3 <= total_bits {
+        enc.enc_bit_logp(is_transient as i32, 3);
+    }
+
+    let mut x = vec![0.0f32; c * n];
+    normalise_bands(mode, &freq[..c * n], &mut x, &band_e, eff_end, c, m);
+
+    let enable_tf_analysis = effective_bytes >= 15 * c as i32
+        && !hybrid
+        && encoder.complexity >= 2
+        && !encoder.lfe
+        && toneishness < 0.98;
+
+    let mut offsets = vec![0i32; nb_ebands];
+    let mut importance = vec![0i32; nb_ebands];
+    let mut spread_weight = vec![0i32; nb_ebands];
+    let mut tot_boost = 0i32;
+
+    let max_depth = dynalloc_analysis(
+        &band_log_e,
+        &band_log_e2,
+        encoder.old_band_e,
+        nb_ebands,
+        start,
+        end as usize,
+        c,
+        &mut offsets,
+        encoder.lsb_depth,
+        mode.log_n,
+        is_transient,
+        encoder.use_vbr,
+        encoder.constrained_vbr,
+        mode.e_bands,
+        lm as i32,
+        effective_bytes,
+        &mut tot_boost,
+        encoder.lfe,
+        &mut surround_dynalloc,
+        &encoder.analysis,
+        &mut importance,
+        &mut spread_weight,
+        tone_freq,
+        toneishness,
+    );
+
+    let mut tf_res = vec![0i32; nb_ebands];
+    let tf_select = if enable_tf_analysis {
+        let lambda = max(80, 20480 / effective_bytes + 2);
+        let tf_select = tf_analysis(
+            mode,
+            eff_end,
+            is_transient,
+            &mut tf_res,
+            lambda,
+            &x,
+            n,
+            lm,
+            tf_estimate,
+            tf_chan,
+            &importance,
+        );
+        for band in eff_end..end as usize {
+            tf_res[band] = tf_res[eff_end - 1];
+        }
+        tf_select
+    } else if hybrid && weak_transient {
+        for band in 0..end as usize {
+            tf_res[band] = 1;
+        }
+        0
+    } else if hybrid && effective_bytes < 15 && encoder.silk_info.signal_type != 2 {
+        for band in 0..end as usize {
+            tf_res[band] = 0;
+        }
+        is_transient as i32
+    } else {
+        for band in 0..end as usize {
+            tf_res[band] = is_transient as i32;
+        }
+        0
+    };
+
+    let mut error = vec![0.0f32; c * nb_ebands];
+    for channel in 0..c {
+        let base = channel * nb_ebands;
+        for band in start..end as usize {
+            if (band_log_e[base + band] - encoder.old_band_e[base + band]).abs() < 2.0 {
+                band_log_e[base + band] -= 0.25 * encoder.energy_error[base + band];
+            }
+        }
+    }
+
+    quant_coarse_energy(
+        mode,
+        start,
+        end as usize,
+        eff_end,
+        &band_log_e,
+        encoder.old_band_e,
+        total_bits as u32,
+        &mut error,
+        enc,
+        c,
+        lm,
+        nb_available_bytes,
+        encoder.force_intra,
+        &mut encoder.delayed_intra,
+        encoder.complexity >= 4,
+        encoder.loss_rate,
+        encoder.lfe,
+    );
+
+    tf_encode(start, end as usize, is_transient, &mut tf_res, lm, tf_select, enc);
+
+    if ec_tell(enc.ctx()) + 4 <= total_bits {
+        if encoder.lfe {
+            encoder.tapset_decision = 0;
+            encoder.spread_decision = SPREAD_NORMAL;
+        } else if hybrid {
+            encoder.spread_decision = if encoder.complexity == 0 {
+                SPREAD_NONE
+            } else if is_transient {
+                SPREAD_NORMAL
+            } else {
+                SPREAD_AGGRESSIVE
+            };
+        } else if short_blocks != 0 || encoder.complexity < 3 || nb_available_bytes < 10 * c as i32
+        {
+            encoder.spread_decision = if encoder.complexity == 0 {
+                SPREAD_NONE
+            } else {
+                SPREAD_NORMAL
+            };
+        } else {
+            encoder.spread_decision = spreading_decision(
+                mode,
+                &x,
+                &mut encoder.tonal_average,
+                encoder.spread_decision,
+                &mut encoder.hf_average,
+                &mut encoder.tapset_decision,
+                pf_on && short_blocks == 0,
+                eff_end,
+                c,
+                m,
+                &spread_weight,
+            );
+        }
+        enc.enc_icdf(encoder.spread_decision as usize, &SPREAD_ICDF, 5);
+    } else {
+        encoder.spread_decision = SPREAD_NORMAL;
+    }
+
+    if encoder.lfe && !offsets.is_empty() {
+        offsets[0] = min(8, effective_bytes / 3);
+    }
+
+    let mut cap = vec![0i32; nb_ebands];
+    init_caps(mode, &mut cap, lm, c);
+
+    let mut dynalloc_logp = 6i32;
+    total_bits <<= BITRES;
+    let mut total_boost = 0i32;
+    let mut tell_frac = ec_tell_frac(enc.ctx()) as i32;
+
+    for band in start..end as usize {
+        let width = (c as i32 * (mode.e_bands[band + 1] - mode.e_bands[band]) as i32) << lm;
+        let quanta = min(width << BITRES, max((6 << BITRES) as i32, width));
+        let mut dynalloc_loop_logp = dynalloc_logp;
+        let mut boost = 0i32;
+        let mut j = 0i32;
+        while tell_frac + (dynalloc_loop_logp << BITRES) < total_bits - total_boost
+            && boost < cap[band]
+        {
+            let flag = (j < offsets[band]) as i32;
+            enc.enc_bit_logp(flag, dynalloc_loop_logp as u32);
+            tell_frac = ec_tell_frac(enc.ctx()) as i32;
+            if flag == 0 {
+                break;
+            }
+            boost += quanta;
+            total_boost += quanta;
+            dynalloc_loop_logp = 1;
+            j += 1;
+        }
+        if j > 0 {
+            dynalloc_logp = max(2, dynalloc_logp - 1);
+        }
+        offsets[band] = boost;
+    }
+
+    let mut dual_stereo = 0;
+    if c == 2 {
+        if lm != 0 {
+            dual_stereo = stereo_analysis(mode, &x, lm, n) as i32;
+        }
+        static INTENSITY_THRESHOLDS: [OpusVal16; 21] = [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 16.0, 24.0, 36.0, 44.0, 50.0, 56.0, 62.0,
+            67.0, 72.0, 79.0, 88.0, 106.0, 134.0,
+        ];
+        static INTENSITY_HYSTERESIS: [OpusVal16; 21] = [
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0,
+            4.0, 5.0, 6.0, 8.0, 8.0,
+        ];
+
+        let intensity = hysteresis_decision(
+            (equiv_rate / 1000) as f32,
+            &INTENSITY_THRESHOLDS,
+            &INTENSITY_HYSTERESIS,
+            encoder.intensity as usize,
+        );
+        encoder.intensity = intensity.min(end as usize).max(start) as i32;
+    }
+
+    let mut alloc_trim = 5;
+    if tell_frac + ((6 << BITRES) as i32) <= total_bits - total_boost {
+        if start > 0 || encoder.lfe {
+            encoder.stereo_saving = 0.0;
+            alloc_trim = 5;
+        } else {
+            alloc_trim = alloc_trim_analysis(
+                mode,
+                &x,
+                &band_log_e,
+                end as usize,
+                lm,
+                c,
+                n,
+                &encoder.analysis,
+                &mut encoder.stereo_saving,
+                tf_estimate,
+                encoder.intensity.max(0) as usize,
+                surround_trim,
+                equiv_rate,
+                encoder.arch,
+            );
+        }
+        enc.enc_icdf(alloc_trim as usize, &TRIM_ICDF, 7);
+        tell_frac = ec_tell_frac(enc.ctx()) as i32;
+    }
+
+    if vbr_rate > 0 {
+        let lm_diff = mode.max_lm as i32 - lm as i32;
+        let lm_shift = lm_diff.max(0) as u32;
+        let mut base_target = if !hybrid {
+            vbr_rate - ((40 * c as i32 + 20) << BITRES)
+        } else {
+            max(0, vbr_rate - ((9 * c as i32 + 4) << BITRES))
+        };
+        if encoder.constrained_vbr {
+            base_target += encoder.vbr_offset >> lm_shift;
+        }
+
+        let mut target = if !hybrid {
+            compute_vbr(
+                mode,
+                &encoder.analysis,
+                base_target,
+                lm as i32,
+                equiv_rate,
+                encoder.last_coded_bands,
+                c,
+                encoder.intensity,
+                encoder.constrained_vbr,
+                encoder.stereo_saving,
+                tot_boost,
+                tf_estimate,
+                pitch_change,
+                max_depth,
+                encoder.lfe,
+                encoder.energy_mask.is_some(),
+                surround_masking,
+                temporal_vbr,
+            )
+        } else {
+            let mut target = base_target;
+            let frame_shift = 3u32.saturating_sub(lm as u32);
+            if encoder.silk_info.offset < 100 {
+                target += (12 << BITRES) >> frame_shift;
+            }
+            if encoder.silk_info.offset > 100 {
+                target -= (18 << BITRES) >> frame_shift;
+            }
+            target += ((tf_estimate - 0.25) * (50 << BITRES) as f32) as i32;
+            if tf_estimate > 0.7 {
+                target = max(target, 50 << BITRES);
+            }
+            target
+        };
+
+        target += tell_frac;
+        let mut min_allowed =
+            ((tell_frac + total_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
+        if hybrid {
+            min_allowed = max(
+                min_allowed,
+                (tell0_frac as i32 + (37 << BITRES) + total_boost + (1 << (BITRES + 3)) - 1)
+                    >> (BITRES + 3),
+            );
+        }
+
+        nb_available_bytes = (target + (1 << (BITRES + 2))) >> (BITRES + 3);
+        nb_available_bytes = max(min_allowed, nb_available_bytes);
+        nb_available_bytes = min(nb_compressed_bytes as i32, nb_available_bytes);
+
+        let mut delta = target - vbr_rate;
+        target = nb_available_bytes << (BITRES + 3);
+
+        if silence {
+            nb_available_bytes = 2;
+            target = 2 * 8 << BITRES;
+            delta = 0;
+        }
+
+        let alpha = if encoder.vbr_count < 970 {
+            encoder.vbr_count += 1;
+            celt_rcp((encoder.vbr_count + 20) as f32)
+        } else {
+            0.001
+        };
+        if encoder.constrained_vbr {
+            encoder.vbr_reservoir += target - vbr_rate;
+            let drift_scale = 1i32 << lm_shift;
+            encoder.vbr_drift += (alpha
+                * ((delta * drift_scale) - encoder.vbr_offset - encoder.vbr_drift) as f32)
+                as i32;
+            encoder.vbr_offset = -encoder.vbr_drift;
+        }
+
+        if encoder.constrained_vbr && encoder.vbr_reservoir < 0 {
+            let adjust = (-encoder.vbr_reservoir) / (8 << BITRES);
+            if !silence {
+                nb_available_bytes += adjust;
+            }
+            encoder.vbr_reservoir = 0;
+        }
+        nb_compressed_bytes = min(nb_compressed_bytes, nb_available_bytes as usize);
+        enc.enc_shrink(nb_compressed_bytes as OpusUint32);
+    }
+
+    let mut fine_quant = vec![0i32; nb_ebands];
+    let mut pulses = vec![0i32; nb_ebands];
+    let mut fine_priority = vec![0i32; nb_ebands];
+
+    let mut bits =
+        ((nb_compressed_bytes as i32 * 8) << BITRES) - ec_tell_frac(enc.ctx()) as i32 - 1;
+    let anti_collapse_rsv =
+        if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << BITRES) {
+            1 << BITRES
+        } else {
+            0
+        };
+    bits -= anti_collapse_rsv;
+
+    let mut signal_bandwidth = end as i32 - 1;
+    if encoder.analysis.valid {
+        let min_bandwidth = if equiv_rate < 32_000 * c as i32 {
+            13
+        } else if equiv_rate < 48_000 * c as i32 {
+            16
+        } else if equiv_rate < 60_000 * c as i32 {
+            18
+        } else if equiv_rate < 80_000 * c as i32 {
+            19
+        } else {
+            20
+        };
+        signal_bandwidth = max(encoder.analysis.bandwidth, min_bandwidth);
+    }
+    if encoder.lfe {
+        signal_bandwidth = 1;
+    }
+
+    let mut balance = 0;
+    let coded_bands = clt_compute_allocation(
+        mode,
+        start,
+        end as usize,
+        &offsets,
+        &cap,
+        alloc_trim,
+        &mut encoder.intensity,
+        &mut dual_stereo,
+        bits,
+        &mut balance,
+        &mut pulses,
+        &mut fine_quant,
+        &mut fine_priority,
+        c as i32,
+        lm as i32,
+        Some(enc),
+        None,
+        encoder.last_coded_bands,
+        signal_bandwidth,
+    );
+
+    if encoder.last_coded_bands != 0 {
+        encoder.last_coded_bands = min(
+            encoder.last_coded_bands + 1,
+            max(encoder.last_coded_bands - 1, coded_bands),
+        );
+    } else {
+        encoder.last_coded_bands = coded_bands;
+    }
+
+    quant_fine_energy(
+        mode,
+        start,
+        end as usize,
+        encoder.old_band_e,
+        &mut error,
+        &fine_quant,
+        enc,
+        c,
+    );
+
+    let mut collapse_masks = vec![0u8; c * nb_ebands];
+    let total_available = (nb_compressed_bytes as i32 * (8 << BITRES)) - anti_collapse_rsv;
+
+    let (x0, x1) = if c == 2 {
+        let (left, right) = x.split_at_mut(n);
+        (left, Some(right))
+    } else {
+        (&mut x[..], None)
+    };
+
+    {
+        let mut coder = BandCodingState::Encoder(enc);
+        quant_all_bands(
+            true,
+            mode,
+            start,
+            end as usize,
+            x0,
+            x1,
+            &mut collapse_masks,
+            &band_e,
+            &pulses,
+            short_blocks != 0,
+            encoder.spread_decision,
+            dual_stereo != 0,
+            encoder.intensity.max(0) as usize,
+            &tf_res,
+            total_available,
+            balance,
+            &mut coder,
+            lm as i32,
+            coded_bands.max(0) as usize,
+            &mut encoder.rng,
+            encoder.complexity,
+            encoder.arch,
+            encoder.disable_inv,
+        );
+    }
+
+    if anti_collapse_rsv > 0 {
+        let anti_collapse_on = encoder.consec_transient < 2;
+        enc.enc_bits(anti_collapse_on as u32, 1);
+    }
+
+    let remaining_bits = nb_compressed_bytes as i32 * 8 - ec_tell(enc.ctx());
+    quant_energy_finalise(
+        mode,
+        start,
+        end as usize,
+        encoder.old_band_e,
+        &mut error,
+        &fine_quant,
+        &fine_priority,
+        remaining_bits,
+        enc,
+        c,
+    );
+
+    encoder.energy_error.fill(0.0);
+    for channel in 0..c {
+        let base = channel * nb_ebands;
+        for band in start..end as usize {
+            let idx = base + band;
+            encoder.energy_error[idx] = error[idx].clamp(-0.5, 0.5);
+        }
+    }
+
+    if silence {
+        for value in encoder.old_band_e.iter_mut().take(c * nb_ebands) {
+            *value = -28.0;
+        }
+    }
+
+    encoder.prefilter_period = pitch_index;
+    encoder.prefilter_gain = gain1;
+    encoder.prefilter_tapset = prefilter_tapset;
+
+    if cc == 2 && c == 1 {
+        let (left, right) = encoder.old_band_e.split_at_mut(nb_ebands);
+        right[..nb_ebands].copy_from_slice(&left[..nb_ebands]);
+    }
+
+    if !is_transient {
+        let span = cc * nb_ebands;
+        encoder.old_log_e2[..span].copy_from_slice(&encoder.old_log_e[..span]);
+        encoder.old_log_e[..span].copy_from_slice(&encoder.old_band_e[..span]);
+    } else {
+        for idx in 0..cc * nb_ebands {
+            encoder.old_log_e[idx] = encoder.old_log_e[idx].min(encoder.old_band_e[idx]);
+        }
+    }
+
+    for channel in 0..cc {
+        let base = channel * nb_ebands;
+        for band in 0..start {
+            encoder.old_band_e[base + band] = 0.0;
+            encoder.old_log_e[base + band] = -28.0;
+            encoder.old_log_e2[base + band] = -28.0;
+        }
+        for band in end as usize..nb_ebands {
+            encoder.old_band_e[base + band] = 0.0;
+            encoder.old_log_e[base + band] = -28.0;
+            encoder.old_log_e2[base + band] = -28.0;
+        }
+    }
+
+    if is_transient || transient_got_disabled {
+        encoder.consec_transient += 1;
+    } else {
+        encoder.consec_transient = 0;
+    }
+
+    encoder.rng = enc.ctx().rng;
+    enc.enc_done();
+    if enc.ctx().error != 0 {
+        return Err(CeltEncodeError::MissingOutput);
+    }
+
+    Ok(nb_compressed_bytes + header_bytes)
+}
+
+/// Rust translation of the reference `celt_encode_with_ec()` entry point.
 ///
-/// The implementation focuses on the analysis scaffolding required by later
-/// ports. It performs the PCM pre-emphasis, MDCT evaluation, and band energy
-/// computation so that the encoder state remains internally consistent even
-/// though the full bitstream packing path is still pending.
+/// The implementation mirrors the analysis, allocation, and bitstream packing
+/// stages used by the float CELT encoder so custom-mode packets can be encoded
+/// and decoded by the Rust port.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn celt_encode_with_ec(
     encoder: &mut OpusCustomEncoder<'_>,
@@ -2312,30 +3336,107 @@ pub(crate) fn celt_encode_with_ec(
 ) -> Result<usize, CeltEncodeError> {
     let pcm = pcm.ok_or(CeltEncodeError::InsufficientPcm)?;
 
+    let mode = encoder.mode;
+    let cc = encoder.channels;
+    let c = encoder.stream_channels;
+    debug_assert!(cc > 0 && cc <= MAX_CHANNELS);
+    debug_assert!(c > 0 && c <= cc);
+
+    let start = encoder.start_band.max(0) as usize;
+    let mut end = encoder.end_band;
+    let hybrid = start != 0;
+
+    let upsample = encoder.upsample.max(1) as usize;
+    let frame_size_internal = frame_size
+        .checked_mul(upsample)
+        .ok_or(CeltEncodeError::InvalidFrameSize)?;
+
+    let mut lm = None;
+    let mut current_size = mode.short_mdct_size;
+    for cand in 0..=mode.max_lm {
+        if current_size == frame_size_internal {
+            lm = Some(cand);
+            break;
+        }
+        current_size <<= 1;
+    }
+    let lm = lm.ok_or(CeltEncodeError::InvalidFrameSize)?;
+    let m = 1usize << lm;
+    let n = m * mode.short_mdct_size;
+
+    let sample_count = frame_size_internal / upsample;
+    if pcm.len() < cc * sample_count {
+        return Err(CeltEncodeError::InsufficientPcm);
+    }
+
+    let use_external = range_encoder.is_some();
+    let mut output_buf = compressed;
+    let mut nb_compressed_bytes = if let Some(enc) = range_encoder.as_ref() {
+        enc.ctx().storage as usize
+    } else {
+        output_buf.as_ref().map(|buf| buf.len()).unwrap_or(0)
+    };
+    if nb_compressed_bytes < 2 {
+        return Err(CeltEncodeError::MissingOutput);
+    }
+
+    let mut header_bytes = 0usize;
+    if !use_external && encoder.signalling != 0 {
+        let buf = output_buf.take().ok_or(CeltEncodeError::MissingOutput)?;
+        let tmp = ((mode.effective_ebands as i32 - end) >> 1).max(0);
+        end = (mode.effective_ebands as i32 - tmp).max(1);
+        encoder.end_band = end;
+        let mut header =
+            ((tmp as u8) << 5) | ((lm as u8) << 3) | (((c == 2) as u8) << 2);
+        if mode.sample_rate == 48_000 && mode.short_mdct_size == 120 {
+            header = to_opus(header).ok_or(CeltEncodeError::InvalidFrameSize)?;
+        }
+        let (slot, rest) = buf.split_at_mut(1);
+        slot[0] = header;
+        output_buf = Some(rest);
+        header_bytes = 1;
+        nb_compressed_bytes = nb_compressed_bytes.saturating_sub(1);
+    }
+
+    nb_compressed_bytes = nb_compressed_bytes.min(1275);
+
     if let Some(enc) = range_encoder {
-        encode_internal(encoder, pcm, frame_size, enc)?;
-        enc.enc_done();
-        let error = enc.ctx().error;
-        encoder.rng = enc.ctx().rng;
-        if error != 0 {
-            return Err(CeltEncodeError::MissingOutput);
-        }
-        return Ok(enc.range_bytes() as usize);
+        return celt_encode_with_ec_inner(
+            encoder,
+            pcm,
+            enc,
+            use_external,
+            header_bytes,
+            nb_compressed_bytes,
+            frame_size_internal,
+            upsample,
+            lm,
+            m,
+            n,
+            start,
+            end,
+            hybrid,
+        );
     }
 
-    if let Some(buf) = compressed {
-        let mut local = EcEnc::new(buf);
-        encode_internal(encoder, pcm, frame_size, &mut local)?;
-        local.enc_done();
-        let error = local.ctx().error;
-        encoder.rng = local.ctx().rng;
-        if error != 0 {
-            return Err(CeltEncodeError::MissingOutput);
-        }
-        return Ok(local.range_bytes() as usize);
-    }
-
-    Err(CeltEncodeError::MissingOutput)
+    let buf = output_buf.ok_or(CeltEncodeError::MissingOutput)?;
+    let mut local_enc = EcEnc::new(buf);
+    celt_encode_with_ec_inner(
+        encoder,
+        pcm,
+        &mut local_enc,
+        use_external,
+        header_bytes,
+        nb_compressed_bytes,
+        frame_size_internal,
+        upsample,
+        lm,
+        m,
+        n,
+        start,
+        end,
+        hybrid,
+    )
 }
 
 fn required_pcm_samples(channels: usize, frame_size: usize) -> Result<usize, CeltEncodeError> {
@@ -2344,28 +3445,28 @@ fn required_pcm_samples(channels: usize, frame_size: usize) -> Result<usize, Cel
         .ok_or(CeltEncodeError::InsufficientPcm)
 }
 
+fn celt_maxabs_res(samples: &[OpusRes]) -> OpusRes {
+    celt_maxabs16(samples)
+}
+
 fn convert_i16_to_celt_sig(pcm: &[OpusInt16], required: usize) -> Vec<CeltSig> {
+    let scale = 1.0 / CELT_SIG_SCALE;
     pcm.iter()
         .take(required)
-        .map(|&sample| CeltSig::from(sample))
+        .map(|&sample| (sample as CeltSig) * scale)
         .collect()
 }
 
 fn convert_i24_to_celt_sig(pcm: &[OpusInt32], required: usize) -> Vec<CeltSig> {
+    let scale = 1.0 / (CELT_SIG_SCALE * 256.0);
     pcm.iter()
         .take(required)
-        .map(|&sample| {
-            let rounded = (sample + (1 << 7)) >> 8;
-            rounded.clamp(-32_768, 32_767) as CeltSig
-        })
+        .map(|&sample| (sample as CeltSig) * scale)
         .collect()
 }
 
 fn convert_f32_to_celt_sig(pcm: &[f32], required: usize) -> Vec<CeltSig> {
-    pcm.iter()
-        .take(required)
-        .map(|&sample| CeltSig::from(float2int16(sample)))
-        .collect()
+    pcm.iter().take(required).copied().collect()
 }
 
 fn encode_with_converted_pcm(
@@ -2666,8 +3767,8 @@ pub(crate) fn normalize_tone_input(x: &mut [OpusVal16]) {
 
     let mut ac0: OpusInt32 = x.len() as OpusInt32;
     for &sample in x.iter() {
-        let sample32: OpusInt32 = sample as OpusInt32;
-        ac0 = ac0.wrapping_add((sample32 * sample32) >> 10);
+        let sample16: OpusInt32 = sample as i16 as OpusInt32;
+        ac0 = ac0.wrapping_add((sample16 * sample16) >> 10);
     }
 
     let shift = 5 - ((28 - celt_ilog2(ac0)) >> 1);
@@ -2750,13 +3851,14 @@ fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::{
         COMBFILTER_MAXPERIOD, CeltEncodeError, CeltEncoderAlloc, CeltEncoderInitError, CeltSig,
         EncoderCtlRequest, MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode,
         OpusUint32, PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis,
-        convert_f32_to_celt_sig, convert_i16_to_celt_sig, convert_i24_to_celt_sig, float2int16,
-        opus_custom_encode, opus_custom_encoder_destroy, opus_custom_encoder_init,
-        opus_custom_encoder_init_arch,
+        convert_f32_to_celt_sig, convert_i16_to_celt_sig, convert_i24_to_celt_sig, opus_custom_encode,
+        opus_custom_encoder_destroy, opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
     use super::{
         CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, dynalloc_analysis,
@@ -2774,13 +3876,16 @@ mod tests {
     use crate::celt::modes::{
         compute_preemphasis, opus_custom_mode_create, opus_custom_mode_find_static,
     };
-    use crate::celt::types::{AnalysisInfo, OpusRes};
+    use crate::celt::types::{AnalysisInfo, OpusCustomDecoder, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
+    use alloc::format;
+    use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
     use core::f32::consts::{FRAC_1_SQRT_2, PI};
     use libm::floorf;
     use libm::sinf;
+    use std::env;
 
     const EPSILON: f32 = 1e-6;
 
@@ -2877,7 +3982,7 @@ mod tests {
         let transform_len = mode.mdct.effective_len(shift);
         let frame_len = transform_len >> 1;
         let overlap = mode.overlap;
-        let channel_input_stride = block_count * transform_len + overlap;
+        let channel_input_stride = block_count * frame_len + overlap;
         let channel_output_stride = block_count * frame_len;
         let mut input = vec![0.0; total_channels * channel_input_stride];
         for (index, sample) in input.iter_mut().enumerate() {
@@ -2890,7 +3995,7 @@ mod tests {
             let output_offset = channel * channel_output_stride;
             crate::celt::mdct::clt_mdct_forward(
                 &mode.mdct,
-                &input[input_offset..input_offset + overlap + transform_len],
+                &input[input_offset..input_offset + overlap + frame_len],
                 &mut expected[output_offset..output_offset + channel_output_stride],
                 mode.window,
                 overlap,
@@ -2927,7 +4032,7 @@ mod tests {
         let transform_len = mode.mdct.effective_len(shift);
         let frame_len = transform_len >> 1;
         let overlap = mode.overlap;
-        let channel_input_stride = block_count * transform_len + overlap;
+        let channel_input_stride = block_count * frame_len + overlap;
         let channel_output_stride = block_count * frame_len;
         let mut input = vec![0.0; total_channels * channel_input_stride];
         for (index, sample) in input.iter_mut().enumerate() {
@@ -2977,7 +4082,7 @@ mod tests {
         let transform_len = mode.mdct.effective_len(shift);
         let frame_len = transform_len >> 1;
         let overlap = mode.overlap;
-        let channel_input_stride = block_count * transform_len + overlap;
+        let channel_input_stride = block_count * frame_len + overlap;
         let channel_output_stride = block_count * frame_len;
         let mut input = vec![0.0; total_channels * channel_input_stride];
         for (index, sample) in input.iter_mut().enumerate() {
@@ -3906,31 +5011,32 @@ mod tests {
     }
 
     #[test]
-    fn convert_i16_to_celt_sig_preserves_values() {
+    fn convert_i16_to_celt_sig_scales_to_opus_res() {
         let input = [0i16, -32_768, 32_767, 1_234];
         let converted = convert_i16_to_celt_sig(&input, input.len());
-        assert_eq!(converted, vec![0.0, -32_768.0, 32_767.0, 1_234.0]);
+        let scale = 1.0 / CELT_SIG_SCALE;
+        for (value, &sample) in converted.iter().zip(&input) {
+            let expected = sample as f32 * scale;
+            assert!((value - expected).abs() < 1e-6);
+        }
     }
 
     #[test]
-    fn convert_i24_to_celt_sig_matches_reference_shift() {
+    fn convert_i24_to_celt_sig_scales_to_opus_res() {
         let input = [0i32, 100_000, -150_000, 255, -255, 8_388_607, -8_388_608];
         let converted = convert_i24_to_celt_sig(&input, input.len());
-        assert_eq!(
-            converted,
-            vec![0.0, 391.0, -586.0, 1.0, -1.0, 32_767.0, -32_768.0]
-        );
+        let scale = 1.0 / (CELT_SIG_SCALE * 256.0);
+        for (value, &sample) in converted.iter().zip(&input) {
+            let expected = sample as f32 * scale;
+            assert!((value - expected).abs() < 1e-6);
+        }
     }
 
     #[test]
-    fn convert_f32_to_celt_sig_matches_float2int16() {
+    fn convert_f32_to_celt_sig_preserves_samples() {
         let input = [0.0f32, 0.5 / CELT_SIG_SCALE, -1.5];
         let converted = convert_f32_to_celt_sig(&input, input.len());
-        let expected: Vec<CeltSig> = input
-            .iter()
-            .map(|&sample| CeltSig::from(float2int16(sample)))
-            .collect();
-        assert_eq!(converted, expected);
+        assert_eq!(converted, input.to_vec());
     }
 
     #[test]
@@ -4043,11 +5149,24 @@ mod tests {
     // =========================================================================
 
     use super::super::celt_decoder::{
-        opus_custom_decode, opus_custom_decode24, opus_custom_decode_float,
-        opus_custom_decoder_create,
+        CeltDecodeError, opus_custom_decode, opus_custom_decode24,
+        opus_custom_decode_float, opus_custom_decoder_create,
     };
     use super::{opus_custom_encode24, opus_custom_encode_float, opus_custom_encoder_create};
+    use crate::opus_decoder::{
+        OpusDecodeError, OpusDecoder, opus_decode, opus_decode24, opus_decode_float,
+        opus_decoder_create,
+    };
+    use crate::opus_encoder::{
+        OpusEncoder, OpusEncoderCtlRequest, opus_encode, opus_encode24, opus_encode_float,
+        opus_encoder_create, opus_encoder_ctl,
+    };
     use core::f64::consts::PI as PI_F64;
+
+    const MAX_PACKET: usize = 1500;
+    const OPUS_APPLICATION_RESTRICTED_LOWDELAY: i32 = 2051;
+    const SINE_SWEEP_AMPLITUDE: f64 = 0.5;
+    const FULL_SINE_SWEEP_DURATION_S: f64 = 60.0;
 
     /// Simple LCG for deterministic pseudo-random numbers.
     struct FastRand {
@@ -4103,11 +5222,389 @@ mod tests {
         output
     }
 
+    fn generate_sine_sweep_i32(
+        amplitude: f64,
+        sample_rate: usize,
+        channels: usize,
+        duration_seconds: f64,
+        bit_depth: u32,
+    ) -> Vec<i32> {
+        let num_samples = (duration_seconds * sample_rate as f64 + 0.5) as usize;
+        let start_freq = 100.0;
+        let end_freq = sample_rate as f64 / 2.0;
+        let max_sample_value = ((1u64 << (bit_depth - 1)) - 1) as f64;
+
+        let mut output = vec![0i32; num_samples * channels];
+        let b = ((end_freq + start_freq) / start_freq).ln() / duration_seconds;
+        let a = start_freq / b;
+
+        for i in 0..num_samples {
+            let t = i as f64 / sample_rate as f64;
+            let sample = amplitude * (2.0 * PI_F64 * a * (b * t).exp() - b * t - 1.0).sin();
+            let sample_i32 = (sample * max_sample_value + 0.5).floor() as i32;
+            for ch in 0..channels {
+                output[i * channels + ch] = sample_i32;
+            }
+        }
+
+        output
+    }
+
+    fn generate_sine_sweep_f32(
+        amplitude: f64,
+        sample_rate: usize,
+        channels: usize,
+        duration_seconds: f64,
+    ) -> Vec<f32> {
+        let num_samples = (duration_seconds * sample_rate as f64 + 0.5) as usize;
+        let start_freq = 100.0;
+        let end_freq = sample_rate as f64 / 2.0;
+
+        let mut output = vec![0.0f32; num_samples * channels];
+        let b = ((end_freq + start_freq) / start_freq).ln() / duration_seconds;
+        let a = start_freq / b;
+
+        for i in 0..num_samples {
+            let t = i as f64 / sample_rate as f64;
+            let sample = amplitude * (2.0 * PI_F64 * a * (b * t).exp() - b * t - 1.0).sin();
+            let sample_f32 = sample as f32;
+            for ch in 0..channels {
+                output[i * channels + ch] = sample_f32;
+            }
+        }
+
+        output
+    }
+
+    fn seed_from_env() -> u32 {
+        env::var("SEED")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0xC0DEC0DE)
+    }
+
+    fn no_fuzz() -> bool {
+        if env::var_os("TEST_OPUS_FUZZ").is_some() {
+            return false;
+        }
+        env::var_os("TEST_OPUS_NOFUZZ").is_some() || cfg!(debug_assertions)
+    }
+
+    fn custom_fuzz_settings() -> (usize, usize, f64) {
+        if env::var_os("TEST_OPUS_FUZZ").is_some() {
+            return (5, 40, FULL_SINE_SWEEP_DURATION_S);
+        }
+        if no_fuzz() {
+            return (1, 4, 0.5);
+        }
+        (3, 12, 2.0)
+    }
+
+    fn rand_f64(rng: &mut FastRand) -> f64 {
+        rng.next() as f64 / (u32::MAX as f64 + 1.0)
+    }
+
+    struct TestCustomParams {
+        sample_rate: i32,
+        num_channels: usize,
+        frame_size: usize,
+        float_encode: bool,
+        float_decode: bool,
+        custom_encode: bool,
+        custom_decode: bool,
+        encoder_bit_depth: i32,
+        decoder_bit_depth: i32,
+    }
+
+    fn run_custom_test<'a>(
+        params: &TestCustomParams,
+        duration_seconds: f64,
+        mut custom_encoder: Option<&mut OpusCustomEncoder<'a>>,
+        mut opus_encoder: Option<&mut OpusEncoder<'a>>,
+        mut custom_decoder: Option<&mut OpusCustomDecoder<'a>>,
+        mut opus_decoder: Option<&mut OpusDecoder<'a>>,
+        mut custom_decoder_corrupt: Option<&mut OpusCustomDecoder<'a>>,
+        mut opus_decoder_corrupt: Option<&mut OpusDecoder<'a>>,
+        rng: &mut FastRand,
+    ) -> Result<(), String> {
+        let sample_rate = params.sample_rate as usize;
+        let channels = params.num_channels;
+        let frame_size = params.frame_size;
+        let min_duration = frame_size as f64 / sample_rate as f64;
+        let duration = duration_seconds.max(min_duration);
+
+        let mut input_samples = (duration * sample_rate as f64 + 0.5) as usize;
+        if input_samples < frame_size {
+            input_samples = frame_size;
+        }
+        let input_len = input_samples * channels;
+
+        let input_f32 = if params.float_encode {
+            Some(generate_sine_sweep_f32(
+                SINE_SWEEP_AMPLITUDE,
+                sample_rate,
+                channels,
+                duration,
+            ))
+        } else {
+            None
+        };
+        let input_i32 = if !params.float_encode && params.encoder_bit_depth == 24 {
+            Some(generate_sine_sweep_i32(
+                SINE_SWEEP_AMPLITUDE,
+                sample_rate,
+                channels,
+                duration,
+                24,
+            ))
+        } else {
+            None
+        };
+        let input_i16 = if !params.float_encode && params.encoder_bit_depth != 24 {
+            Some(generate_sine_sweep_i16(
+                SINE_SWEEP_AMPLITUDE,
+                sample_rate,
+                channels,
+                duration,
+            ))
+        } else {
+            None
+        };
+
+        let mut output_f32 = if params.float_decode {
+            Some(vec![0.0f32; input_len])
+        } else {
+            None
+        };
+        let mut output_i32 = if !params.float_decode && params.decoder_bit_depth == 24 {
+            Some(vec![0i32; input_len])
+        } else {
+            None
+        };
+        let mut output_i16 = if !params.float_decode && params.decoder_bit_depth != 24 {
+            Some(vec![0i16; input_len])
+        } else {
+            None
+        };
+
+        let mut packet = vec![0u8; MAX_PACKET + 257];
+        let mut packet_corrupt = vec![0u8; MAX_PACKET + 257];
+        let mut scratch = vec![0i16; frame_size * channels];
+
+        let mut samp_count = 0usize;
+        while samp_count + frame_size <= input_samples {
+            let offset = samp_count * channels;
+            let end = offset + frame_size * channels;
+
+            let len = if params.custom_encode {
+                let enc = match custom_encoder.as_mut() {
+                    Some(enc) => enc,
+                    None => return Err(String::from("missing custom encoder")),
+                };
+                if params.float_encode {
+                    let input = input_f32.as_ref().ok_or("missing float input")?;
+                    opus_custom_encode_float(
+                        enc,
+                        &input[offset..end],
+                        frame_size,
+                        &mut packet,
+                        MAX_PACKET,
+                    )
+                    .map_err(|err| format!("opus_custom_encode_float failed: {err:?}"))?
+                } else if params.encoder_bit_depth == 24 {
+                    let input = input_i32.as_ref().ok_or("missing int24 input")?;
+                    opus_custom_encode24(
+                        enc,
+                        &input[offset..end],
+                        frame_size,
+                        &mut packet,
+                        MAX_PACKET,
+                    )
+                    .map_err(|err| format!("opus_custom_encode24 failed: {err:?}"))?
+                } else {
+                    let input = input_i16.as_ref().ok_or("missing int16 input")?;
+                    opus_custom_encode(
+                        enc,
+                        &input[offset..end],
+                        frame_size,
+                        &mut packet,
+                        MAX_PACKET,
+                    )
+                    .map_err(|err| format!("opus_custom_encode failed: {err:?}"))?
+                }
+            } else {
+                let enc = match opus_encoder.as_mut() {
+                    Some(enc) => enc,
+                    None => return Err(String::from("missing opus encoder")),
+                };
+                let packet_slice = &mut packet[..MAX_PACKET];
+                if params.float_encode {
+                    let input = input_f32.as_ref().ok_or("missing float input")?;
+                    opus_encode_float(enc, &input[offset..end], frame_size, packet_slice)
+                        .map_err(|err| format!("opus_encode_float failed: {err:?}"))?
+                } else if params.encoder_bit_depth == 24 {
+                    let input = input_i32.as_ref().ok_or("missing int24 input")?;
+                    opus_encode24(enc, &input[offset..end], frame_size, packet_slice)
+                        .map_err(|err| format!("opus_encode24 failed: {err:?}"))?
+                } else {
+                    let input = input_i16.as_ref().ok_or("missing int16 input")?;
+                    opus_encode(enc, &input[offset..end], frame_size, packet_slice)
+                        .map_err(|err| format!("opus_encode failed: {err:?}"))?
+                }
+            };
+
+            if len == 0 {
+                return Err(String::from("encoder returned 0 bytes"));
+            }
+            if len > MAX_PACKET {
+                return Err(format!("encoded length {len} exceeds max packet size"));
+            }
+
+            packet_corrupt.copy_from_slice(&packet);
+
+            for error_pos in 0..5usize {
+                if error_pos < len && rng.next() % 5 == 0 {
+                    packet_corrupt[error_pos] = (rng.next() & 0xFF) as u8;
+                }
+            }
+
+            let ber_1 = (1.0 - 100.0 * (1e-10 + rand_f64(rng)).ln()) as i32;
+            let mut len2 = (1.0 - (len as f64) * (1e-10 + rand_f64(rng)).ln()) as i32;
+            if len2 < 0 {
+                len2 = 0;
+            }
+            let len2 = len.min(len2 as usize);
+
+            let mut error_pos = 0i32;
+            loop {
+                let increment =
+                    (-(ber_1 as f64) * (1e-10 + rand_f64(rng)).ln()) as i32;
+                error_pos += increment;
+                if error_pos >= (len2 * 8) as i32 {
+                    break;
+                }
+                let byte = (error_pos / 8) as usize;
+                let bit = (error_pos & 7) as u8;
+                if byte < packet_corrupt.len() {
+                    packet_corrupt[byte] ^= 1u8 << bit;
+                }
+            }
+
+            let corrupt_slice = &packet_corrupt[..len2];
+            if params.custom_decode {
+                let dec = match custom_decoder_corrupt.as_mut() {
+                    Some(dec) => dec,
+                    None => return Err(String::from("missing custom decoder (corrupt)")),
+                };
+                let result =
+                    opus_custom_decode(dec, Some(corrupt_slice), &mut scratch, frame_size);
+                if !matches!(
+                    result,
+                    Ok(_)
+                        | Err(
+                            CeltDecodeError::BadArgument
+                                | CeltDecodeError::InvalidPacket
+                                | CeltDecodeError::PacketLoss,
+                        )
+                ) {
+                    return Err(format!("opus_custom_decode corrupt failed: {result:?}"));
+                }
+            } else {
+                let dec = match opus_decoder_corrupt.as_mut() {
+                    Some(dec) => dec,
+                    None => return Err(String::from("missing opus decoder (corrupt)")),
+                };
+                let result = opus_decode(
+                    dec,
+                    Some(corrupt_slice),
+                    len2,
+                    &mut scratch,
+                    frame_size,
+                    false,
+                );
+                if !matches!(
+                    result,
+                    Ok(_)
+                        | Err(
+                            OpusDecodeError::BadArgument
+                                | OpusDecodeError::InvalidPacket
+                                | OpusDecodeError::BufferTooSmall,
+                        )
+                ) {
+                    return Err(format!("opus_decode corrupt failed: {result:?}"));
+                }
+            }
+
+            let packet_slice = &packet[..len];
+            let samples_decoded = if params.float_decode {
+                let output = output_f32.as_mut().ok_or("missing float output")?;
+                let out_slice = &mut output[offset..end];
+                if params.custom_decode {
+                    let dec = match custom_decoder.as_mut() {
+                        Some(dec) => dec,
+                        None => return Err(String::from("missing custom decoder")),
+                    };
+                    opus_custom_decode_float(dec, Some(packet_slice), out_slice, frame_size)
+                        .map_err(|err| format!("opus_custom_decode_float failed: {err:?}"))?
+                } else {
+                    let dec = match opus_decoder.as_mut() {
+                        Some(dec) => dec,
+                        None => return Err(String::from("missing opus decoder")),
+                    };
+                    opus_decode_float(dec, Some(packet_slice), len, out_slice, frame_size, false)
+                        .map_err(|err| format!("opus_decode_float failed: {err:?}"))?
+                }
+            } else if params.decoder_bit_depth == 24 {
+                let output = output_i32.as_mut().ok_or("missing int24 output")?;
+                let out_slice = &mut output[offset..end];
+                if params.custom_decode {
+                    let dec = match custom_decoder.as_mut() {
+                        Some(dec) => dec,
+                        None => return Err(String::from("missing custom decoder")),
+                    };
+                    opus_custom_decode24(dec, Some(packet_slice), out_slice, frame_size)
+                        .map_err(|err| format!("opus_custom_decode24 failed: {err:?}"))?
+                } else {
+                    let dec = match opus_decoder.as_mut() {
+                        Some(dec) => dec,
+                        None => return Err(String::from("missing opus decoder")),
+                    };
+                    opus_decode24(dec, Some(packet_slice), len, out_slice, frame_size, false)
+                        .map_err(|err| format!("opus_decode24 failed: {err:?}"))?
+                }
+            } else {
+                let output = output_i16.as_mut().ok_or("missing int16 output")?;
+                let out_slice = &mut output[offset..end];
+                if params.custom_decode {
+                    let dec = match custom_decoder.as_mut() {
+                        Some(dec) => dec,
+                        None => return Err(String::from("missing custom decoder")),
+                    };
+                    opus_custom_decode(dec, Some(packet_slice), out_slice, frame_size)
+                        .map_err(|err| format!("opus_custom_decode failed: {err:?}"))?
+                } else {
+                    let dec = match opus_decoder.as_mut() {
+                        Some(dec) => dec,
+                        None => return Err(String::from("missing opus decoder")),
+                    };
+                    opus_decode(dec, Some(packet_slice), len, out_slice, frame_size, false)
+                        .map_err(|err| format!("opus_decode failed: {err:?}"))?
+                }
+            };
+
+            if samples_decoded != frame_size {
+                return Err(format!(
+                    "decode returned {samples_decoded} samples (expected {frame_size})"
+                ));
+            }
+
+            samp_count += frame_size;
+        }
+
+        Ok(())
+    }
+
     /// Tests OpusCustom encoder/decoder creation with various configurations.
-    ///
-    /// Note: The CELT encoder's bitstream generation is not yet fully ported,
-    /// so this test only verifies that encoder/decoder creation and configuration
-    /// work correctly for all supported sample rates and frame sizes.
     #[cfg(feature = "custom_modes")]
     #[test]
     fn opus_custom_encoder_decoder_creation_various_configs() {
@@ -4177,10 +5674,6 @@ mod tests {
     }
 
     /// Tests that the encoder processes PCM without panicking.
-    ///
-    /// Note: The CELT encoder's bitstream generation is not yet fully ported,
-    /// so the encode function may return 0 bytes. This test verifies the
-    /// encoder doesn't crash when processing audio.
     #[cfg(feature = "custom_modes")]
     #[test]
     fn opus_custom_encode_processes_pcm_without_panic() {
@@ -4195,8 +5688,6 @@ mod tests {
         let mut packet = vec![0u8; 1500];
         let packet_cap = packet.len();
 
-        // This should not panic, even if the encoder returns 0 bytes
-        // (bitstream generation is not yet complete)
         let result = opus_custom_encode(&mut encoder, &input, 960, &mut packet, packet_cap);
         assert!(result.is_ok(), "Encode should not fail");
     }
@@ -4263,8 +5754,6 @@ mod tests {
     }
 
     /// Tests float encoding processes PCM without panicking.
-    ///
-    /// Note: The CELT encoder's bitstream generation is not yet fully ported.
     #[cfg(feature = "custom_modes")]
     #[test]
     fn opus_custom_float_encode_processes_without_panic() {
@@ -4288,8 +5777,6 @@ mod tests {
     }
 
     /// Tests 24-bit encoding processes PCM without panicking.
-    ///
-    /// Note: The CELT encoder's bitstream generation is not yet fully ported.
     #[cfg(feature = "custom_modes")]
     #[test]
     fn opus_custom_24bit_encode_processes_without_panic() {
@@ -4341,5 +5828,245 @@ mod tests {
         let mut output = vec![0i32; 960];
         let _result = opus_custom_decode24(&mut decoder, None, &mut output, 960);
         // PLC may succeed or fail depending on decoder state
+    }
+
+    #[cfg(feature = "custom_modes")]
+    #[test]
+    #[cfg_attr(miri, ignore = "custom fuzz test is too slow under Miri")]
+    fn opus_custom_encode_decode_roundtrip() {
+        let seed = seed_from_env();
+        let (num_encoders_to_fuzz, num_setting_changes, duration_seconds) =
+            custom_fuzz_settings();
+        let mut rng = FastRand::new(seed);
+
+        let sampling_rates = [8000, 12000, 16000, 24000, 48000];
+        let channels = [1usize, 2];
+        let bitrates = [
+            6000,
+            12000,
+            16000,
+            24000,
+            32000,
+            48000,
+            64000,
+            96000,
+            510000,
+            OPUS_BITRATE_MAX,
+        ];
+        let use_vbr = [false, true, true];
+        let vbr_constraints = [false, true, true];
+        let complexities = [0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let packet_loss_perc = [0i32, 1, 2, 5];
+        let lsb_depths = [8i32, 24];
+        let frame_sizes_ms_x2 = [5usize, 10, 20, 40];
+        #[cfg(not(feature = "fixed_point"))]
+        let use_float_encode = [false, true];
+        #[cfg(not(feature = "fixed_point"))]
+        let use_float_decode = [false, true];
+        let use_custom_encode = [false, true];
+        let use_custom_decode = [false, true];
+        let encoder_bit_depths = [16i32, 24];
+        let decoder_bit_depths = [16i32, 24];
+
+        for _ in 0..num_encoders_to_fuzz {
+            let sample_rate = rng.rand_sample(&sampling_rates);
+            let mut params = TestCustomParams {
+                sample_rate,
+                num_channels: 1,
+                frame_size: 0,
+                float_encode: false,
+                float_decode: false,
+                custom_encode: true,
+                custom_decode: true,
+                encoder_bit_depth: 16,
+                decoder_bit_depth: 16,
+            };
+
+            if sample_rate == 48_000 {
+                params.custom_encode = rng.rand_sample(&use_custom_encode);
+                params.custom_decode = rng.rand_sample(&use_custom_decode);
+                if !(params.custom_encode || params.custom_decode) {
+                    continue;
+                }
+            }
+
+            params.num_channels = rng.rand_sample(&channels);
+            let frame_size_ms_x2 = rng.rand_sample(&frame_sizes_ms_x2);
+            params.frame_size = frame_size_ms_x2 * sample_rate as usize / 2000;
+
+            if (sample_rate == 8000 || sample_rate == 12000) && frame_size_ms_x2 == 5 {
+                continue;
+            }
+
+            let owned_mode = if params.custom_encode || params.custom_decode {
+                match opus_custom_mode_create(sample_rate, params.frame_size) {
+                    Ok(mode) => Some(mode),
+                    Err(_) => continue,
+                }
+            } else {
+                None
+            };
+            let mode_ref = owned_mode.as_ref().map(|mode| mode.mode());
+
+            let mut custom_encoder = if params.custom_encode {
+                let mode = mode_ref.as_ref().expect("custom mode");
+                Some(
+                    opus_custom_encoder_create(
+                        mode,
+                        sample_rate as i32,
+                        params.num_channels,
+                        rng.next(),
+                    )
+                    .unwrap_or_else(|err| panic!("custom encoder create failed: {err:?}")),
+                )
+            } else {
+                None
+            };
+            let mut opus_encoder = if !params.custom_encode {
+                Some(
+                    opus_encoder_create(
+                        sample_rate as i32,
+                        params.num_channels as i32,
+                        OPUS_APPLICATION_RESTRICTED_LOWDELAY,
+                    )
+                    .unwrap_or_else(|err| panic!("opus encoder create failed: {err:?}")),
+                )
+            } else {
+                None
+            };
+
+            let mut custom_decoder = if params.custom_decode {
+                let mode = mode_ref.as_ref().expect("custom mode");
+                Some(
+                    opus_custom_decoder_create(mode, params.num_channels)
+                        .unwrap_or_else(|err| panic!("custom decoder create failed: {err:?}")),
+                )
+            } else {
+                None
+            };
+            let mut custom_decoder_copy = if params.custom_decode {
+                let mode = mode_ref.as_ref().expect("custom mode");
+                Some(
+                    opus_custom_decoder_create(mode, params.num_channels)
+                        .unwrap_or_else(|err| panic!("custom decoder copy failed: {err:?}")),
+                )
+            } else {
+                None
+            };
+            let mut opus_decoder = if !params.custom_decode {
+                Some(
+                    opus_decoder_create(sample_rate as i32, params.num_channels as i32)
+                        .unwrap_or_else(|err| panic!("opus decoder create failed: {err:?}")),
+                )
+            } else {
+                None
+            };
+            let mut opus_decoder_copy = if !params.custom_decode {
+                Some(
+                    opus_decoder_create(sample_rate as i32, params.num_channels as i32)
+                        .unwrap_or_else(|err| panic!("opus decoder copy failed: {err:?}")),
+                )
+            } else {
+                None
+            };
+
+            for _ in 0..num_setting_changes {
+                let bitrate = rng.rand_sample(&bitrates);
+                let vbr = rng.rand_sample(&use_vbr);
+                let vbr_constraint = rng.rand_sample(&vbr_constraints);
+                let complexity = rng.rand_sample(&complexities);
+                let pkt_loss = rng.rand_sample(&packet_loss_perc);
+                let lsb_depth = rng.rand_sample(&lsb_depths);
+
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    params.float_encode = rng.rand_sample(&use_float_encode);
+                    params.float_decode = rng.rand_sample(&use_float_decode);
+                }
+                #[cfg(feature = "fixed_point")]
+                {
+                    params.float_encode = false;
+                    params.float_decode = false;
+                }
+                params.encoder_bit_depth = rng.rand_sample(&encoder_bit_depths);
+                params.decoder_bit_depth = rng.rand_sample(&decoder_bit_depths);
+
+                let context = format!(
+                    "test_opus_custom: {} kHz, {} ch, float_encode: {}, float_decode: {}, \
+encoder_bit_depth: {}, decoder_bit_depth: {}, custom_encode: {}, custom_decode: {}, \
+{} bps, vbr: {}, vbr constraint: {}, complexity: {}, pkt loss: {}%, lsb depth: {}, ({}/2) ms",
+                    sample_rate / 1000,
+                    params.num_channels,
+                    params.float_encode as i32,
+                    params.float_decode as i32,
+                    params.encoder_bit_depth,
+                    params.decoder_bit_depth,
+                    params.custom_encode as i32,
+                    params.custom_decode as i32,
+                    bitrate,
+                    vbr as i32,
+                    vbr_constraint as i32,
+                    complexity,
+                    pkt_loss,
+                    lsb_depth,
+                    frame_size_ms_x2
+                );
+
+                if params.custom_encode {
+                    let enc = custom_encoder.as_mut().expect("custom encoder");
+                    opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetBitrate(bitrate))
+                        .unwrap_or_else(|err| panic!("{context}: set bitrate failed: {err:?}"));
+                    opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetVbr(vbr))
+                        .unwrap_or_else(|err| panic!("{context}: set vbr failed: {err:?}"));
+                    opus_custom_encoder_ctl(
+                        enc,
+                        EncoderCtlRequest::SetVbrConstraint(vbr_constraint),
+                    )
+                    .unwrap_or_else(|err| {
+                        panic!("{context}: set vbr constraint failed: {err:?}")
+                    });
+                    opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetComplexity(complexity))
+                        .unwrap_or_else(|err| panic!("{context}: set complexity failed: {err:?}"));
+                    opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetPacketLossPerc(pkt_loss))
+                        .unwrap_or_else(|err| {
+                            panic!("{context}: set packet loss failed: {err:?}")
+                        });
+                    opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetLsbDepth(lsb_depth))
+                        .unwrap_or_else(|err| panic!("{context}: set lsb depth failed: {err:?}"));
+                } else {
+                    let enc = opus_encoder.as_mut().expect("opus encoder");
+                    opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetBitrate(bitrate))
+                        .unwrap_or_else(|err| panic!("{context}: set bitrate failed: {err:?}"));
+                    opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetVbr(vbr))
+                        .unwrap_or_else(|err| panic!("{context}: set vbr failed: {err:?}"));
+                    opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetVbrConstraint(vbr_constraint))
+                        .unwrap_or_else(|err| {
+                            panic!("{context}: set vbr constraint failed: {err:?}")
+                        });
+                    opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetComplexity(complexity))
+                        .unwrap_or_else(|err| panic!("{context}: set complexity failed: {err:?}"));
+                    opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetPacketLossPerc(pkt_loss))
+                        .unwrap_or_else(|err| {
+                            panic!("{context}: set packet loss failed: {err:?}")
+                        });
+                    opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetLsbDepth(lsb_depth))
+                        .unwrap_or_else(|err| panic!("{context}: set lsb depth failed: {err:?}"));
+                }
+
+                if let Err(err) = run_custom_test(
+                    &params,
+                    duration_seconds,
+                    custom_encoder.as_mut().map(|enc| &mut **enc),
+                    opus_encoder.as_mut(),
+                    custom_decoder.as_mut().map(|dec| &mut **dec),
+                    opus_decoder.as_mut(),
+                    custom_decoder_copy.as_mut().map(|dec| &mut **dec),
+                    opus_decoder_copy.as_mut(),
+                    &mut rng,
+                ) {
+                    panic!("{context} failed: {err} (seed {seed})");
+                }
+            }
+        }
     }
 }

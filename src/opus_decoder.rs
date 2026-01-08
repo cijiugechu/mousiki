@@ -370,6 +370,11 @@ impl<'mode> OpusDecoder<'mode> {
             return Err(OpusDecoderInitError::BadArgument);
         }
         self.celt.decoder().downsample = downsample as i32;
+        opus_custom_decoder_ctl(
+            self.celt.decoder(),
+            CeltDecoderCtlRequest::SetSignalling(0),
+        )
+        .map_err(|_| OpusDecoderInitError::CeltInit)?;
 
         self.arch = opus_select_arch();
         self.reset_runtime_fields();

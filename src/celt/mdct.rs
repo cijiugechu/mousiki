@@ -210,7 +210,8 @@ pub fn clt_mdct_forward(
 
     assert!(input.len() >= overlap + n2);
     assert!(window.len() >= overlap);
-    assert!(output.len() >= stride * n2);
+    let required = (n2 - 1) * stride + 1;
+    assert!(output.len() >= required);
     assert!(stride > 0);
 
     let twiddles = lookup.twiddles(shift);

@@ -217,10 +217,13 @@ pub(crate) fn loss_distortion(
     bands_per_channel: usize,
     channels: usize,
 ) -> f32 {
-    assert_eq!(
-        e_bands.len(),
-        old_e_bands.len(),
-        "energy buffers must match"
+    assert!(
+        e_bands.len() >= channels * bands_per_channel,
+        "energy buffers must cover channel bands"
+    );
+    assert!(
+        old_e_bands.len() >= channels * bands_per_channel,
+        "energy buffers must cover channel bands"
     );
     assert!(
         end <= bands_per_channel,
@@ -636,7 +639,14 @@ pub(crate) fn quant_fine_energy(
     enc: &mut EcEnc<'_>,
     channels: usize,
 ) {
-    assert_eq!(old_ebands.len(), error.len(), "band buffers must align");
+    assert!(
+        old_ebands.len() >= channels * mode.num_ebands,
+        "insufficient band data"
+    );
+    assert!(
+        error.len() >= channels * mode.num_ebands,
+        "insufficient band data"
+    );
     assert!(start <= end, "start band must not exceed end band");
     assert!(end <= mode.num_ebands, "band range exceeds mode span");
     assert!(fine_quant.len() >= end, "fine quantiser metadata too short");
@@ -693,7 +703,14 @@ pub(crate) fn quant_energy_finalise(
     enc: &mut EcEnc<'_>,
     channels: usize,
 ) {
-    assert_eq!(old_ebands.len(), error.len(), "band buffers must align");
+    assert!(
+        old_ebands.len() >= channels * mode.num_ebands,
+        "insufficient band data"
+    );
+    assert!(
+        error.len() >= channels * mode.num_ebands,
+        "insufficient band data"
+    );
     assert!(start <= end, "start band must not exceed end band");
     assert!(end <= mode.num_ebands, "band range exceeds mode span");
     assert!(fine_quant.len() >= end, "fine quantiser metadata too short");
