@@ -15,7 +15,7 @@ use crate::analysis::{
 use crate::celt::AnalysisInfo;
 use crate::celt::{
     CeltEncoderCtlError, CeltEncoderInitError, EncoderCtlRequest as CeltEncoderCtlRequest,
-    OwnedCeltEncoder, canonical_mode, opus_custom_encoder_create, opus_custom_encoder_ctl,
+    OpusRes, OwnedCeltEncoder, canonical_mode, opus_custom_encoder_create, opus_custom_encoder_ctl,
     opus_select_arch,
 };
 use crate::opus_multistream::{OPUS_AUTO, OPUS_BITRATE_MAX};
@@ -25,8 +25,12 @@ use crate::repacketizer::{OpusRepacketizer, RepacketizerError};
 use crate::silk::enc_api::{PrefillMode, silk_encode, silk_init_encoder};
 use crate::silk::errors::SilkError;
 use crate::silk::EncControl as SilkEncControl;
+use crate::silk::lin2log::lin2log;
+use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
 
 const MAX_CHANNELS: usize = 2;
+const MAX_ENCODER_BUFFER: usize = 480;
+const DELAY_BUFFER_SAMPLES: usize = MAX_ENCODER_BUFFER * 2;
 
 pub(crate) const MODE_SILK_ONLY: i32 = 1000;
 #[allow(dead_code)]
@@ -226,7 +230,8 @@ fn align(value: usize) -> usize {
 }
 
 #[repr(C)]
-struct StereoWidthStateLayout {
+#[derive(Clone, Copy, Debug, Default)]
+struct StereoWidthState {
     xx: f32,
     xy: f32,
     yy: f32,
@@ -276,8 +281,8 @@ struct OpusEncoderLayout {
     silk_bw_switch: i32,
     first: i32,
     energy_masking: *const f32,
-    width_mem: StereoWidthStateLayout,
-    delay_buffer: [f32; 960],
+    width_mem: StereoWidthState,
+    delay_buffer: [OpusRes; DELAY_BUFFER_SAMPLES],
     #[cfg(not(feature = "fixed_point"))]
     detected_bandwidth: i32,
     #[cfg(not(feature = "fixed_point"))]
@@ -360,11 +365,27 @@ pub struct OpusEncoder<'mode> {
     max_bandwidth: i32,
     signal_type: i32,
     user_forced_mode: i32,
+    voice_ratio: i32,
     lsb_depth: i32,
     variable_duration: i32,
     prediction_disabled: bool,
+    hybrid_stereo_width_q14: i16,
+    variable_hp_smth2_q15: i32,
+    prev_hb_gain: f32,
+    hp_mem: [f32; 4],
     mode: i32,
+    prev_mode: i32,
+    prev_channels: i32,
+    prev_framesize: i32,
     bandwidth: Bandwidth,
+    auto_bandwidth: i32,
+    silk_bw_switch: bool,
+    first: bool,
+    width_mem: StereoWidthState,
+    delay_buffer: [OpusRes; DELAY_BUFFER_SAMPLES],
+    #[cfg(not(feature = "fixed_point"))]
+    detected_bandwidth: i32,
+    nonfinal_frame: bool,
     range_final: u32,
     dred_duration: i32,
 }
@@ -431,12 +452,30 @@ impl<'mode> OpusEncoder<'mode> {
         self.max_bandwidth = OPUS_BANDWIDTH_FULLBAND;
         self.signal_type = OPUS_AUTO;
         self.user_forced_mode = OPUS_AUTO;
+        self.voice_ratio = -1;
         self.lsb_depth = 24;
         self.variable_duration = OPUS_FRAMESIZE_ARG;
         self.prediction_disabled = false;
 
-        self.mode = MODE_SILK_ONLY;
-        self.bandwidth = Bandwidth::Wide;
+        self.hybrid_stereo_width_q14 = 1_i16 << 14;
+        self.variable_hp_smth2_q15 = lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8;
+        self.prev_hb_gain = 1.0;
+        self.hp_mem = [0.0; 4];
+        self.mode = MODE_HYBRID;
+        self.prev_mode = 0;
+        self.prev_channels = 0;
+        self.prev_framesize = 0;
+        self.bandwidth = Bandwidth::Full;
+        self.auto_bandwidth = 0;
+        self.silk_bw_switch = false;
+        self.first = true;
+        self.width_mem = StereoWidthState::default();
+        self.delay_buffer = [OpusRes::default(); DELAY_BUFFER_SAMPLES];
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            self.detected_bandwidth = 0;
+        }
+        self.nonfinal_frame = false;
         self.range_final = 0;
         self.dred_duration = 0;
 
@@ -459,6 +498,26 @@ impl<'mode> OpusEncoder<'mode> {
         self.analysis_info = AnalysisInfo::default();
         self.dred_duration = 0;
         self.silk_mode.use_dred = 0;
+        self.stream_channels = self.channels;
+        self.hybrid_stereo_width_q14 = 1_i16 << 14;
+        self.prev_hb_gain = 1.0;
+        self.first = true;
+        self.mode = MODE_HYBRID;
+        self.bandwidth = Bandwidth::Full;
+        self.variable_hp_smth2_q15 = lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8;
+        self.hp_mem = [0.0; 4];
+        self.prev_mode = 0;
+        self.prev_channels = 0;
+        self.prev_framesize = 0;
+        self.auto_bandwidth = 0;
+        self.silk_bw_switch = false;
+        self.width_mem = StereoWidthState::default();
+        self.delay_buffer = [OpusRes::default(); DELAY_BUFFER_SAMPLES];
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            self.detected_bandwidth = 0;
+        }
+        self.nonfinal_frame = false;
         self.range_final = 0;
         Ok(())
     }
@@ -704,11 +763,27 @@ pub fn opus_encoder_create<'mode>(
         max_bandwidth: OPUS_BANDWIDTH_FULLBAND,
         signal_type: OPUS_AUTO,
         user_forced_mode: OPUS_AUTO,
+        voice_ratio: 0,
         lsb_depth: 24,
         variable_duration: OPUS_FRAMESIZE_ARG,
         prediction_disabled: false,
+        hybrid_stereo_width_q14: 0,
+        variable_hp_smth2_q15: 0,
+        prev_hb_gain: 0.0,
+        hp_mem: [0.0; 4],
         mode: MODE_SILK_ONLY,
+        prev_mode: 0,
+        prev_channels: 0,
+        prev_framesize: 0,
         bandwidth: Bandwidth::Wide,
+        auto_bandwidth: 0,
+        silk_bw_switch: false,
+        first: false,
+        width_mem: StereoWidthState::default(),
+        delay_buffer: [OpusRes::default(); DELAY_BUFFER_SAMPLES],
+        #[cfg(not(feature = "fixed_point"))]
+        detected_bandwidth: 0,
+        nonfinal_frame: false,
         range_final: 0,
         dred_duration: 0,
     };
@@ -1230,10 +1305,11 @@ pub fn opus_encode_float(
 mod tests {
     use alloc::vec;
     use super::{
-        DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY, OPUS_BANDWIDTH_NARROWBAND,
-        OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_SIGNAL_MUSIC, OpusEncodeError,
-        OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode,
-        opus_encode24, opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
+        DELAY_BUFFER_SAMPLES, DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY,
+        OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_FRAMESIZE_20_MS,
+        OPUS_SIGNAL_MUSIC, OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest,
+        OpusEncoderInitError, lin2log, opus_encode, opus_encode24, opus_encoder_create,
+        opus_encoder_ctl, opus_encoder_get_size, VARIABLE_HP_MIN_CUTOFF_HZ,
     };
     use crate::packet::{
         Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode,
@@ -1260,6 +1336,38 @@ mod tests {
             opus_encoder_create(48_000, 1, 123).unwrap_err(),
             OpusEncoderInitError::BadArgument
         );
+    }
+
+    #[test]
+    fn init_sets_hybrid_state_defaults() {
+        let enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+
+        assert_eq!(enc.voice_ratio, -1);
+        assert_eq!(enc.hybrid_stereo_width_q14, 1_i16 << 14);
+        assert_eq!(
+            enc.variable_hp_smth2_q15,
+            lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
+        );
+        assert_eq!(enc.prev_hb_gain, 1.0);
+        assert!(enc.hp_mem.iter().all(|&value| value == 0.0));
+        assert_eq!(enc.mode, MODE_HYBRID);
+        assert_eq!(enc.bandwidth, Bandwidth::Full);
+        assert_eq!(enc.auto_bandwidth, 0);
+        assert_eq!(enc.prev_mode, 0);
+        assert_eq!(enc.prev_channels, 0);
+        assert_eq!(enc.prev_framesize, 0);
+        assert!(!enc.silk_bw_switch);
+        assert!(enc.first);
+        assert_eq!(enc.delay_buffer.len(), DELAY_BUFFER_SAMPLES);
+        assert!(enc.delay_buffer.iter().all(|&value| value == 0.0));
+        assert_eq!(enc.width_mem.xx, 0.0);
+        assert_eq!(enc.width_mem.xy, 0.0);
+        assert_eq!(enc.width_mem.yy, 0.0);
+        assert_eq!(enc.width_mem.smoothed_width, 0.0);
+        assert_eq!(enc.width_mem.max_follower, 0.0);
+        assert!(!enc.nonfinal_frame);
+        #[cfg(not(feature = "fixed_point"))]
+        assert_eq!(enc.detected_bandwidth, 0);
     }
 
     #[test]

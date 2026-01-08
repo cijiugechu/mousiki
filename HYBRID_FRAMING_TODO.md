@@ -5,7 +5,7 @@ using `opus-c/src/opus_encoder.c` as the reference.
 
 ## Step-by-step checklist
 
-1. **Expand encoder state and initialization**
+1. **Expand encoder state and initialization** (done)
    - Mirror the Hybrid-related fields and defaults from the C encoder state.
    - Key fields: `hybrid_stereo_width_Q14`, `width_mem`, `delay_buffer`,
      `hp_mem`, `variable_hp_smth2_Q15`, `prev_hb_gain`, `auto_bandwidth`,

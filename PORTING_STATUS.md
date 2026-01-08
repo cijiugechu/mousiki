@@ -33,7 +33,9 @@ Current Rust coverage
   prediction disable, phase inversion disable, forced mode), plus a basic `opus_encode`
   implementation that emits SILK-only 10/20/40/60 ms packets (and repacketized >60 ms frames),
   plus CELT-only multiframe payloads, with updated TOC/final-range handling; hybrid remains
-  limited to single-frame 10/20 ms payloads. Unit tests cover
+  limited to single-frame 10/20 ms payloads, but the hybrid-related encoder state/initialisation
+  fields now mirror the C defaults (stereo width, delay buffer, HP state, bandwidth flags,
+  voice ratio, and transition tracking). Unit tests cover
   the encoder CTL round-trips, validation cases, and TOC/frame-size outputs.
 - Feature-gated Deep REDundancy (DRED) stubs are available in `src/dred.rs`, with matching
   encoder/multistream CTLs gated behind the `dred` feature.
