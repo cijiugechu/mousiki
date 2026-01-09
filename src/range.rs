@@ -411,6 +411,22 @@ impl RangeEncoder {
         self.encoder.enc_icdf(symbol, icdf, ftb);
     }
 
+    pub(crate) fn encode_bit_logp(&mut self, value: i32, logp: u32) {
+        self.encoder.enc_bit_logp(value, logp);
+    }
+
+    pub(crate) fn encode_uint(&mut self, value: u32, total: u32) {
+        self.encoder.enc_uint(value, total);
+    }
+
+    pub(crate) fn shrink(&mut self, size: usize) {
+        self.encoder.enc_shrink(size as u32);
+    }
+
+    pub(crate) fn encoder_mut(&mut self) -> &mut EcEnc<'static> {
+        &mut self.encoder
+    }
+
     /// Patches bits at the start of the encoded stream.
     ///
     /// Mirrors `ec_enc_patch_initial_bits`, allowing callers to reserve space
@@ -428,6 +444,13 @@ impl RangeEncoder {
         if size < self.encoder.ctx().storage {
             self.encoder.enc_shrink(size);
         }
+        let size = size as usize;
+        let buffer = self.encoder.ctx().buffer();
+        buffer[..size].to_vec()
+    }
+
+    pub(crate) fn finish_without_done(self) -> Vec<u8> {
+        let size = self.encoder.ctx().offs + self.encoder.ctx().end_offs;
         let size = size as usize;
         let buffer = self.encoder.ctx().buffer();
         buffer[..size].to_vec()

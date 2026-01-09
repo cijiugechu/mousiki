@@ -3449,7 +3449,7 @@ fn celt_maxabs_res(samples: &[OpusRes]) -> OpusRes {
     celt_maxabs16(samples)
 }
 
-fn convert_i16_to_celt_sig(pcm: &[OpusInt16], required: usize) -> Vec<CeltSig> {
+pub(crate) fn convert_i16_to_celt_sig(pcm: &[OpusInt16], required: usize) -> Vec<CeltSig> {
     let scale = 1.0 / CELT_SIG_SCALE;
     pcm.iter()
         .take(required)
