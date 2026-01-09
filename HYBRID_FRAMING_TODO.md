@@ -13,7 +13,7 @@ using `opus-c/src/opus_encoder.c` as the reference.
      `first`, `nonfinal_frame`, `detected_bandwidth`, `voice_ratio`.
    - Rust file: `src/opus_encoder.rs`.
 
-2. **Port Hybrid helper functions and wire them in**
+2. **Port Hybrid helper functions and wire them in** (done)
    - Required helpers from `opus-c/src/opus_encoder.c`:
      - `compute_silk_rate_for_hybrid`
      - `compute_redundancy_bytes`
@@ -21,7 +21,8 @@ using `opus-c/src/opus_encoder.c` as the reference.
      - `decide_fec`
      - `compute_stereo_width`
      - `user_bitrate_to_bitrate`
-   - These drive mode/bandwidth decisions and redundancy sizing.
+   - Wired into `opus_encode()` for bitrate derivation, stereo width tracking,
+     FEC decision, and redundancy sizing (still before full hybrid framing).
    - Rust file: `src/opus_encoder.rs`.
 
 3. **Implement full mode/bandwidth/channel selection (encode_native)**

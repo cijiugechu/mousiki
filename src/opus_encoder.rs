@@ -14,9 +14,9 @@ use crate::analysis::{
 };
 use crate::celt::AnalysisInfo;
 use crate::celt::{
-    CeltEncoderCtlError, CeltEncoderInitError, EncoderCtlRequest as CeltEncoderCtlRequest,
-    OpusRes, OwnedCeltEncoder, canonical_mode, opus_custom_encoder_create, opus_custom_encoder_ctl,
-    opus_select_arch,
+    CELT_SIG_SCALE, CeltEncoderCtlError, CeltEncoderInitError,
+    EncoderCtlRequest as CeltEncoderCtlRequest, OpusRes, OwnedCeltEncoder, canonical_mode,
+    celt_sqrt, frac_div32, opus_custom_encoder_create, opus_custom_encoder_ctl, opus_select_arch,
 };
 use crate::opus_multistream::{OPUS_AUTO, OPUS_BITRATE_MAX};
 use crate::packet::Bandwidth;
@@ -55,6 +55,19 @@ pub(crate) const OPUS_FRAMESIZE_100_MS: i32 = 5008;
 pub(crate) const OPUS_FRAMESIZE_120_MS: i32 = 5009;
 
 const DRED_MAX_FRAMES: i32 = 104;
+const FEC_THRESHOLDS: [i32; 10] = [
+    12_000, 1_000, 14_000, 1_000, 16_000, 1_000, 20_000, 1_000, 22_000, 1_000,
+];
+const FEC_RATE_SCALE_Q16: i32 = 655;
+const SILK_RATE_TABLE: [[i32; 5]; 7] = [
+    [0, 0, 0, 0, 0],
+    [12_000, 10_000, 10_000, 11_000, 11_000],
+    [16_000, 13_500, 13_500, 15_000, 15_000],
+    [20_000, 16_000, 16_000, 18_000, 18_000],
+    [24_000, 18_000, 18_000, 21_000, 21_000],
+    [32_000, 22_000, 22_000, 28_000, 28_000],
+    [64_000, 38_000, 38_000, 50_000, 50_000],
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpusApplication {
@@ -631,6 +644,254 @@ fn frame_size_select(frame_size: i32, variable_duration: i32, fs: i32) -> Option
     valid.then_some(new_size)
 }
 
+fn user_bitrate_to_bitrate(encoder: &OpusEncoder<'_>, mut frame_size: i32, max_data_bytes: i32) -> i32 {
+    if frame_size == 0 {
+        frame_size = encoder.fs / 400;
+    }
+    if encoder.user_bitrate_bps == OPUS_AUTO {
+        let base = i64::from(60 * encoder.fs / frame_size);
+        let channels = i64::from(encoder.channels * encoder.fs);
+        (base + channels).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    } else if encoder.user_bitrate_bps == OPUS_BITRATE_MAX {
+        let bitrate =
+            i64::from(max_data_bytes) * 8 * i64::from(encoder.fs) / i64::from(frame_size);
+        bitrate.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    } else {
+        encoder.user_bitrate_bps
+    }
+}
+
+fn compute_stereo_width(
+    pcm: &[i16],
+    frame_size: usize,
+    fs: i32,
+    mem: &mut StereoWidthState,
+) -> f32 {
+    let frame_rate = fs / frame_size as i32;
+    if frame_rate <= 0 {
+        return 0.0;
+    }
+    let short_alpha = 1.0 - 25.0 / (frame_rate.max(50) as f32);
+    let mut xx = 0.0f32;
+    let mut xy = 0.0f32;
+    let mut yy = 0.0f32;
+    let scale = 1.0 / CELT_SIG_SCALE;
+
+    for i in (0..frame_size.saturating_sub(3)).step_by(4) {
+        let mut pxx = 0.0f32;
+        let mut pxy = 0.0f32;
+        let mut pyy = 0.0f32;
+
+        let x0 = f32::from(pcm[2 * i]) * scale;
+        let y0 = f32::from(pcm[2 * i + 1]) * scale;
+        pxx += x0 * x0;
+        pxy += x0 * y0;
+        pyy += y0 * y0;
+
+        let x1 = f32::from(pcm[2 * i + 2]) * scale;
+        let y1 = f32::from(pcm[2 * i + 3]) * scale;
+        pxx += x1 * x1;
+        pxy += x1 * y1;
+        pyy += y1 * y1;
+
+        let x2 = f32::from(pcm[2 * i + 4]) * scale;
+        let y2 = f32::from(pcm[2 * i + 5]) * scale;
+        pxx += x2 * x2;
+        pxy += x2 * y2;
+        pyy += y2 * y2;
+
+        let x3 = f32::from(pcm[2 * i + 6]) * scale;
+        let y3 = f32::from(pcm[2 * i + 7]) * scale;
+        pxx += x3 * x3;
+        pxy += x3 * y3;
+        pyy += y3 * y3;
+
+        xx += pxx;
+        xy += pxy;
+        yy += pyy;
+    }
+
+    if xx >= 1.0e9 || xx.is_nan() || yy >= 1.0e9 || yy.is_nan() {
+        xx = 0.0;
+        xy = 0.0;
+        yy = 0.0;
+    }
+
+    mem.xx += short_alpha * (xx - mem.xx);
+    mem.xy += short_alpha * (xy - mem.xy);
+    mem.yy += short_alpha * (yy - mem.yy);
+    mem.xx = mem.xx.max(0.0);
+    mem.xy = mem.xy.max(0.0);
+    mem.yy = mem.yy.max(0.0);
+
+    const WIDTH_THRESHOLD: f32 = 8.0e-4;
+    const EPSILON: f32 = 1.0e-15;
+    if mem.xx.max(mem.yy) > WIDTH_THRESHOLD {
+        let sqrt_xx = celt_sqrt(mem.xx);
+        let sqrt_yy = celt_sqrt(mem.yy);
+        let qrrt_xx = celt_sqrt(sqrt_xx);
+        let qrrt_yy = celt_sqrt(sqrt_yy);
+        mem.xy = mem.xy.min(sqrt_xx * sqrt_yy);
+        let corr = frac_div32(mem.xy, EPSILON + sqrt_xx * sqrt_yy);
+        let ldiff = (qrrt_xx - qrrt_yy).abs() / (EPSILON + qrrt_xx + qrrt_yy);
+        let width = celt_sqrt((1.0 - corr * corr).max(0.0)).min(1.0) * ldiff;
+        mem.smoothed_width += (width - mem.smoothed_width) / frame_rate as f32;
+        mem.max_follower =
+            (mem.max_follower - 0.02 / frame_rate as f32).max(mem.smoothed_width);
+    }
+
+    (20.0 * mem.max_follower).min(1.0)
+}
+
+fn decide_fec(
+    use_in_band_fec: bool,
+    packet_loss_perc: i32,
+    last_fec: bool,
+    mode: i32,
+    bandwidth: &mut i32,
+    rate: i32,
+) -> bool {
+    if !use_in_band_fec || packet_loss_perc == 0 || mode == MODE_CELT_ONLY {
+        return false;
+    }
+
+    let orig_bandwidth = *bandwidth;
+    loop {
+        let idx = usize::try_from(2 * (*bandwidth - OPUS_BANDWIDTH_NARROWBAND)).unwrap_or(0);
+        let mut lbrr_rate_thres_bps = *FEC_THRESHOLDS.get(idx).unwrap_or(&0);
+        let hysteresis = *FEC_THRESHOLDS.get(idx + 1).unwrap_or(&0);
+        if last_fec {
+            lbrr_rate_thres_bps -= hysteresis;
+        }
+        if !last_fec {
+            lbrr_rate_thres_bps += hysteresis;
+        }
+
+        let loss_scale = 125 - packet_loss_perc.min(25);
+        let scaled = (i64::from(lbrr_rate_thres_bps) * i64::from(loss_scale)
+            * i64::from(FEC_RATE_SCALE_Q16))
+            >> 16;
+        lbrr_rate_thres_bps = scaled.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+
+        if rate > lbrr_rate_thres_bps {
+            return true;
+        }
+        if packet_loss_perc <= 5 {
+            return false;
+        }
+        if *bandwidth > OPUS_BANDWIDTH_NARROWBAND {
+            *bandwidth -= 1;
+        } else {
+            break;
+        }
+    }
+
+    *bandwidth = orig_bandwidth;
+    false
+}
+
+fn compute_silk_rate_for_hybrid(
+    mut rate: i32,
+    bandwidth: i32,
+    frame_20ms: bool,
+    vbr: bool,
+    fec: bool,
+    channels: i32,
+) -> i32 {
+    rate /= channels;
+    let entry = 1 + i32::from(frame_20ms) + 2 * i32::from(fec);
+
+    let mut idx = 1;
+    while idx < SILK_RATE_TABLE.len() && SILK_RATE_TABLE[idx][0] <= rate {
+        idx += 1;
+    }
+
+    let mut silk_rate = if idx == SILK_RATE_TABLE.len() {
+        let base = SILK_RATE_TABLE[idx - 1][entry as usize];
+        base + (rate - SILK_RATE_TABLE[idx - 1][0]) / 2
+    } else {
+        let lo = SILK_RATE_TABLE[idx - 1][entry as usize];
+        let hi = SILK_RATE_TABLE[idx][entry as usize];
+        let x0 = SILK_RATE_TABLE[idx - 1][0];
+        let x1 = SILK_RATE_TABLE[idx][0];
+        let num = i64::from(lo) * i64::from(x1 - rate) + i64::from(hi) * i64::from(rate - x0);
+        (num / i64::from(x1 - x0)) as i32
+    };
+
+    if !vbr {
+        silk_rate += 100;
+    }
+    if bandwidth == OPUS_BANDWIDTH_SUPERWIDEBAND {
+        silk_rate += 300;
+    }
+    silk_rate *= channels;
+    if channels == 2 && rate >= 12_000 {
+        silk_rate -= 1_000;
+    }
+    silk_rate
+}
+
+fn compute_equiv_rate(
+    bitrate: i32,
+    channels: i32,
+    frame_rate: i32,
+    vbr: bool,
+    mode: i32,
+    complexity: i32,
+    loss: i32,
+) -> i32 {
+    let mut equiv = i64::from(bitrate);
+    if frame_rate > 50 {
+        equiv -= i64::from((40 * channels + 20) * (frame_rate - 50));
+    }
+    if !vbr {
+        equiv -= equiv / 12;
+    }
+    equiv = equiv * i64::from(90 + complexity) / 100;
+    if mode == MODE_SILK_ONLY || mode == MODE_HYBRID {
+        if complexity < 2 {
+            equiv = equiv * 4 / 5;
+        }
+        equiv -= equiv * i64::from(loss) / i64::from(6 * loss + 10);
+    } else if mode == MODE_CELT_ONLY {
+        if complexity < 5 {
+            equiv = equiv * 9 / 10;
+        }
+    } else {
+        equiv -= equiv * i64::from(loss) / i64::from(12 * loss + 20);
+    }
+    equiv.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn compute_redundancy_bytes(
+    max_data_bytes: i32,
+    bitrate_bps: i32,
+    frame_rate: i32,
+    channels: i32,
+) -> i32 {
+    if frame_rate <= 0 {
+        return 0;
+    }
+    let base_bits = i64::from(40 * channels + 20);
+    let mut redundancy_rate =
+        i64::from(bitrate_bps) + base_bits * i64::from(200 - frame_rate);
+    redundancy_rate = 3 * redundancy_rate / 2;
+    let mut redundancy_bytes = redundancy_rate / 1_600;
+
+    let available_bits = i64::from(max_data_bytes) * 8 - 2 * base_bits;
+    let denom = i64::from(240 + 48_000 / frame_rate);
+    let redundancy_bytes_cap = (available_bits * 240 / denom + base_bits) / 8;
+    redundancy_bytes = redundancy_bytes.min(redundancy_bytes_cap);
+
+    if redundancy_bytes > i64::from(4 + 8 * channels) {
+        redundancy_bytes = redundancy_bytes.min(257);
+    } else {
+        redundancy_bytes = 0;
+    }
+
+    redundancy_bytes.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 fn select_bandwidth(user_bandwidth: i32, max_bandwidth: i32) -> Bandwidth {
     let requested = if user_bandwidth == OPUS_AUTO {
         max_bandwidth
@@ -1040,6 +1301,13 @@ pub fn opus_encode(
         .checked_div(frame_size_i32)
         .ok_or(OpusEncodeError::BadArgument)?;
 
+    let max_data_bytes_i32 = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    encoder.bitrate_bps = user_bitrate_to_bitrate(encoder, frame_size_i32, max_data_bytes_i32);
+
+    if encoder.channels == 2 && encoder.force_channels != 1 {
+        let _ = compute_stereo_width(&pcm[..required], frame_size, encoder.fs, &mut encoder.width_mem);
+    }
+
     let max_payload_bytes = data.len().saturating_sub(1);
 
     let stream_channels = if encoder.force_channels == OPUS_AUTO {
@@ -1062,6 +1330,7 @@ pub fn opus_encode(
             mode = MODE_SILK_ONLY;
         }
     }
+    let requested_mode = mode;
     if mode == MODE_HYBRID {
         // Hybrid framing is not fully ported yet; fall back to CELT-only packets for now.
         mode = MODE_CELT_ONLY;
@@ -1102,6 +1371,43 @@ pub fn opus_encode(
     }
 
     let mut bandwidth = select_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
+    let equiv_rate = compute_equiv_rate(
+        encoder.bitrate_bps,
+        encoder.stream_channels,
+        frame_rate,
+        encoder.use_vbr,
+        mode,
+        encoder.complexity,
+        encoder.packet_loss_perc,
+    );
+    let mut bandwidth_int = bandwidth.to_opus_int();
+    let use_fec = decide_fec(
+        encoder.inband_fec,
+        encoder.packet_loss_perc,
+        encoder.silk_mode.lbrr_coded != 0,
+        mode,
+        &mut bandwidth_int,
+        equiv_rate,
+    );
+    encoder.silk_mode.lbrr_coded = i32::from(use_fec);
+    bandwidth = Bandwidth::from_opus_int(bandwidth_int).unwrap_or(bandwidth);
+    if requested_mode == MODE_HYBRID {
+        let frame_20ms = frame_size_i32 == encoder.fs / 50;
+        let _ = compute_silk_rate_for_hybrid(
+            encoder.bitrate_bps,
+            bandwidth.to_opus_int(),
+            frame_20ms,
+            encoder.use_vbr,
+            use_fec,
+            encoder.stream_channels,
+        );
+    }
+    let _redundancy_bytes = compute_redundancy_bytes(
+        max_data_bytes_i32,
+        encoder.bitrate_bps,
+        frame_rate,
+        encoder.stream_channels,
+    );
 
     match mode {
         MODE_SILK_ONLY => {
@@ -1306,10 +1612,13 @@ mod tests {
     use alloc::vec;
     use super::{
         DELAY_BUFFER_SAMPLES, DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY,
-        OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_FRAMESIZE_20_MS,
-        OPUS_SIGNAL_MUSIC, OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest,
-        OpusEncoderInitError, lin2log, opus_encode, opus_encode24, opus_encoder_create,
-        opus_encoder_ctl, opus_encoder_get_size, VARIABLE_HP_MIN_CUTOFF_HZ,
+        OPUS_AUTO, OPUS_BITRATE_MAX, OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND,
+        OPUS_BANDWIDTH_WIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_SIGNAL_MUSIC, OpusEncodeError,
+        OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, StereoWidthState,
+        compute_equiv_rate, compute_redundancy_bytes, compute_silk_rate_for_hybrid,
+        compute_stereo_width, decide_fec, lin2log, opus_encode, opus_encode24,
+        opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size, user_bitrate_to_bitrate,
+        VARIABLE_HP_MIN_CUTOFF_HZ,
     };
     use crate::packet::{
         Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode,
@@ -1575,5 +1884,78 @@ mod tests {
         let mut out = vec![0u8; 1500];
         let result = opus_encode24(&mut enc, &pcm, 960, &mut out);
         assert!(result.is_ok(), "opus_encode24 should accept int24 input");
+    }
+
+    #[test]
+    fn user_bitrate_to_bitrate_respects_auto_and_max() {
+        let mut enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        let frame_size = 960;
+        let max_data_bytes = 200;
+
+        enc.user_bitrate_bps = OPUS_AUTO;
+        let expected_auto = 60 * 48_000 / frame_size + 48_000 * 2;
+        assert_eq!(
+            user_bitrate_to_bitrate(&enc, frame_size, max_data_bytes),
+            expected_auto
+        );
+
+        enc.user_bitrate_bps = OPUS_BITRATE_MAX;
+        let expected_max = max_data_bytes * 8 * 48_000 / frame_size;
+        assert_eq!(
+            user_bitrate_to_bitrate(&enc, frame_size, max_data_bytes),
+            expected_max
+        );
+
+        enc.user_bitrate_bps = 12_345;
+        assert_eq!(
+            user_bitrate_to_bitrate(&enc, frame_size, max_data_bytes),
+            12_345
+        );
+    }
+
+    #[test]
+    fn compute_equiv_rate_matches_reference_math() {
+        let equiv = compute_equiv_rate(10_000, 1, 100, true, MODE_CELT_ONLY, 10, 0);
+        assert_eq!(equiv, 7_000);
+    }
+
+    #[test]
+    fn decide_fec_restores_bandwidth_when_unavailable() {
+        let mut bandwidth = OPUS_BANDWIDTH_WIDEBAND;
+        let enabled = decide_fec(true, 20, false, MODE_SILK_ONLY, &mut bandwidth, 1_000);
+        assert!(!enabled);
+        assert_eq!(bandwidth, OPUS_BANDWIDTH_WIDEBAND);
+    }
+
+    #[test]
+    fn compute_redundancy_bytes_respects_caps() {
+        let redundancy = compute_redundancy_bytes(100, 20_000, 50, 1);
+        assert_eq!(redundancy, 24);
+    }
+
+    #[test]
+    fn compute_silk_rate_for_hybrid_from_table() {
+        let silk_rate = compute_silk_rate_for_hybrid(
+            24_000,
+            OPUS_BANDWIDTH_SUPERWIDEBAND,
+            true,
+            true,
+            false,
+            1,
+        );
+        assert_eq!(silk_rate, 18_300);
+    }
+
+    #[test]
+    fn compute_stereo_width_stays_zero_for_silence() {
+        let pcm = vec![0i16; 2 * 96];
+        let mut mem = StereoWidthState::default();
+        let width = compute_stereo_width(&pcm, 96, 48_000, &mut mem);
+        assert_eq!(width, 0.0);
+        assert_eq!(mem.xx, 0.0);
+        assert_eq!(mem.xy, 0.0);
+        assert_eq!(mem.yy, 0.0);
+        assert_eq!(mem.smoothed_width, 0.0);
+        assert_eq!(mem.max_follower, 0.0);
     }
 }
