@@ -25,7 +25,7 @@ using `opus-c/src/opus_encoder.c` as the reference.
      FEC decision, and redundancy sizing (still before full hybrid framing).
    - Rust file: `src/opus_encoder.rs`.
 
-3. **Implement full mode/bandwidth/channel selection (encode_native)**
+3. **Implement full mode/bandwidth/channel selection (encode_native)** (done)
    - Replicate `opus_encode_native()` decision flow:
      - auto mode selection, including Hybrid eligibility
      - bandwidth auto-selection and constraints
