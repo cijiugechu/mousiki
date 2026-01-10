@@ -10,12 +10,12 @@ processing path beyond framing/packetization.
    - Rust now stages PCM with delay history and exposes the missing fields.
    - Target: `src/opus_encoder.rs` (with a focused unit test).
 
-2. Port high-pass filtering and DC rejection on the input PCM.
+2. ✅ Port high-pass filtering and DC rejection on the input PCM.
    - C computes `hp_freq_smth1` and updates `variable_HP_smth2_Q15`, then calls
      `hp_cutoff()` (VoIP) or `dc_reject()` (music).
-   - Rust initializes `hp_mem` and `variable_hp_smth2_q15` but never applies
-     these filters.
-   - Target: `src/opus_encoder.rs` (and a new helper module if needed).
+   - Rust now updates `variable_hp_smth2_q15`, computes cut-off, and applies
+     `hp_cutoff()`/`dc_reject()` during PCM staging with unit tests.
+   - Target: `src/opus_encoder.rs`.
 
 3. Port HB gain computation and apply `gain_fade()`.
    - C computes `HB_gain` in hybrid and fades between frames using

@@ -27,7 +27,8 @@ use crate::silk::enc_api::{PrefillMode, silk_encode, silk_init_encoder};
 use crate::silk::errors::SilkError;
 use crate::silk::EncControl as SilkEncControl;
 use crate::silk::lin2log::lin2log;
-use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
+use crate::silk::log2lin::log2lin;
+use crate::silk::tuning_parameters::{VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2};
 
 const MAX_CHANNELS: usize = 2;
 const MAX_ENCODER_BUFFER: usize = 480;
@@ -92,6 +93,12 @@ const STEREO_VOICE_THRESHOLD: i32 = 19_000;
 const STEREO_MUSIC_THRESHOLD: i32 = 17_000;
 const MODE_THRESHOLDS: [[i32; 2]; 2] = [[64_000, 10_000], [44_000, 10_000]];
 const Q15_ONE: i32 = 1 << 15;
+const VARIABLE_HP_SMTH_COEF2_Q16: i32 =
+    (VARIABLE_HP_SMTH_COEF2 * ((1 << 16) as f32) + 0.5) as i32;
+const HP_CUTOFF_COEF_Q19: i32 =
+    (1.5 * core::f32::consts::PI / 1000.0 * ((1 << 19) as f32) + 0.5) as i32;
+const HP_CUTOFF_R_COEF_Q9: i32 = (0.92 * ((1 << 9) as f32) + 0.5) as i32;
+const VERY_SMALL: f32 = 1.0e-30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpusApplication {
@@ -1009,6 +1016,153 @@ fn prepare_pcm_buffer(
     Ok(needed)
 }
 
+fn smulww(a: i32, b: i32) -> i32 {
+    ((i64::from(a) * i64::from(b)) >> 16) as i32
+}
+
+fn smlawb(a: i32, b: i32, c: i32) -> i32 {
+    a.wrapping_add(((i64::from(b) * i64::from(c as i16)) >> 16) as i32)
+}
+
+fn update_high_pass_state(encoder: &mut OpusEncoder<'_>, mode: i32) -> i32 {
+    let hp_freq_smth1 = if mode == MODE_CELT_ONLY {
+        lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8
+    } else {
+        encoder.silk.state_fxx[0].common().variable_hp_smth1_q15
+    };
+
+    encoder.variable_hp_smth2_q15 = smlawb(
+        encoder.variable_hp_smth2_q15,
+        hp_freq_smth1 - encoder.variable_hp_smth2_q15,
+        VARIABLE_HP_SMTH_COEF2_Q16,
+    );
+
+    log2lin(encoder.variable_hp_smth2_q15 >> 8)
+}
+
+fn hp_cutoff(
+    input: &[i16],
+    cutoff_hz: i32,
+    output: &mut [OpusRes],
+    hp_mem: &mut [f32; 4],
+    len: usize,
+    channels: usize,
+    fs: i32,
+) {
+    assert!(channels == 1 || channels == 2, "unsupported channel count");
+    let expected = len.saturating_mul(channels);
+    assert!(input.len() >= expected, "input buffer too small");
+    assert!(output.len() >= expected, "output buffer too small");
+
+    debug_assert!(fs > 0);
+    let fs_div = fs / 1000;
+    debug_assert!(fs_div > 0);
+    debug_assert!(cutoff_hz <= i32::MAX / HP_CUTOFF_COEF_Q19);
+    let fc_q19 = (HP_CUTOFF_COEF_Q19 * cutoff_hz) / fs_div;
+    debug_assert!(fc_q19 > 0 && fc_q19 < 32768);
+
+    let r_q28 = (1 << 28) - (HP_CUTOFF_R_COEF_Q9 * fc_q19);
+    let b_q28 = [r_q28, -2 * r_q28, r_q28];
+    let r_q22 = r_q28 >> 6;
+    let fc_sq_q22 = smulww(fc_q19, fc_q19);
+    let a_q28 = [
+        smulww(r_q22, fc_sq_q22 - (2 << 22)),
+        smulww(r_q22, r_q22),
+    ];
+
+    let scale_q28 = 1.0 / ((1u64 << 28) as f32);
+    let b0 = b_q28[0] as f32 * scale_q28;
+    let b1 = b_q28[1] as f32 * scale_q28;
+    let b2 = b_q28[2] as f32 * scale_q28;
+    let a0 = a_q28[0] as f32 * scale_q28;
+    let a1 = a_q28[1] as f32 * scale_q28;
+    let scale = 1.0 / CELT_SIG_SCALE;
+
+    if channels == 2 {
+        let mut s0 = hp_mem[0];
+        let mut s1 = hp_mem[1];
+        let mut s2 = hp_mem[2];
+        let mut s3 = hp_mem[3];
+        for i in 0..len {
+            let idx = i * 2;
+            let x0 = f32::from(input[idx]) * scale;
+            let x1 = f32::from(input[idx + 1]) * scale;
+
+            let vout0 = s0 + b0 * x0;
+            s0 = s1 - vout0 * a0 + b1 * x0;
+            s1 = -vout0 * a1 + b2 * x0 + VERY_SMALL;
+            output[idx] = vout0;
+
+            let vout1 = s2 + b0 * x1;
+            s2 = s3 - vout1 * a0 + b1 * x1;
+            s3 = -vout1 * a1 + b2 * x1 + VERY_SMALL;
+            output[idx + 1] = vout1;
+        }
+        hp_mem[0] = s0;
+        hp_mem[1] = s1;
+        hp_mem[2] = s2;
+        hp_mem[3] = s3;
+    } else {
+        let mut s0 = hp_mem[0];
+        let mut s1 = hp_mem[1];
+        for i in 0..len {
+            let x = f32::from(input[i]) * scale;
+            let vout = s0 + b0 * x;
+            s0 = s1 - vout * a0 + b1 * x;
+            s1 = -vout * a1 + b2 * x + VERY_SMALL;
+            output[i] = vout;
+        }
+        hp_mem[0] = s0;
+        hp_mem[1] = s1;
+    }
+}
+
+fn dc_reject(
+    input: &[i16],
+    cutoff_hz: i32,
+    output: &mut [OpusRes],
+    hp_mem: &mut [f32; 4],
+    len: usize,
+    channels: usize,
+    fs: i32,
+) {
+    assert!(channels == 1 || channels == 2, "unsupported channel count");
+    let expected = len.saturating_mul(channels);
+    assert!(input.len() >= expected, "input buffer too small");
+    assert!(output.len() >= expected, "output buffer too small");
+
+    let coef = 6.3f32 * cutoff_hz as f32 / fs as f32;
+    let coef2 = 1.0 - coef;
+    let scale = 1.0 / CELT_SIG_SCALE;
+
+    if channels == 2 {
+        let mut m0 = hp_mem[0];
+        let mut m2 = hp_mem[2];
+        for i in 0..len {
+            let idx = i * 2;
+            let x0 = f32::from(input[idx]) * scale;
+            let x1 = f32::from(input[idx + 1]) * scale;
+            let out0 = x0 - m0;
+            let out1 = x1 - m2;
+            m0 = coef * x0 + VERY_SMALL + coef2 * m0;
+            m2 = coef * x1 + VERY_SMALL + coef2 * m2;
+            output[idx] = out0;
+            output[idx + 1] = out1;
+        }
+        hp_mem[0] = m0;
+        hp_mem[2] = m2;
+    } else {
+        let mut m0 = hp_mem[0];
+        for i in 0..len {
+            let x = f32::from(input[i]) * scale;
+            let y = x - m0;
+            m0 = coef * x + VERY_SMALL + coef2 * m0;
+            output[i] = y;
+        }
+        hp_mem[0] = m0;
+    }
+}
+
 fn encode_frame_native<'mode>(
     encoder: &mut OpusEncoder<'mode>,
     pcm: &[i16],
@@ -1046,6 +1200,38 @@ fn encode_frame_native<'mode>(
     let pcm_buf_len =
         prepare_pcm_buffer(encoder, pcm, frame_size, channels, &mut pcm_buf_storage)?;
     let pcm_buf = &mut pcm_buf_storage[..pcm_buf_len];
+    let total_buffer = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
+        0
+    } else {
+        encoder.delay_compensation
+    };
+    let total_buffer = usize::try_from(total_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let delay_len = total_buffer
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let cutoff_hz = update_high_pass_state(encoder, mode);
+    let filtered_pcm = &mut pcm_buf[delay_len..delay_len + required];
+    if encoder.application == OpusApplication::Voip {
+        hp_cutoff(
+            pcm,
+            cutoff_hz,
+            filtered_pcm,
+            &mut encoder.hp_mem,
+            frame_size,
+            channels,
+            encoder.fs,
+        );
+    } else {
+        dc_reject(
+            pcm,
+            3,
+            filtered_pcm,
+            &mut encoder.hp_mem,
+            frame_size,
+            channels,
+            encoder.fs,
+        );
+    }
 
     #[cfg(feature = "fixed_point")]
     let _ = is_silence;
@@ -2638,9 +2824,10 @@ mod tests {
         CELT_SIG_SCALE, MAX_PCM_BUF_SAMPLES, OpusEncodeError, OpusRes,
         OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, StereoWidthState,
         compute_equiv_rate, compute_redundancy_bytes, compute_silk_rate_for_hybrid,
-        compute_stereo_width, decide_fec, lin2log, opus_encode, opus_encode24,
-        opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size, user_bitrate_to_bitrate,
-        VARIABLE_HP_MIN_CUTOFF_HZ,
+        compute_stereo_width, dc_reject, decide_fec, hp_cutoff, lin2log, log2lin,
+        opus_encode, opus_encode24, opus_encoder_create, opus_encoder_ctl,
+        opus_encoder_get_size, update_high_pass_state, user_bitrate_to_bitrate,
+        VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2_Q16, VERY_SMALL,
     };
     use crate::packet::{
         Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode, opus_packet_get_nb_frames,
@@ -2727,6 +2914,87 @@ mod tests {
         );
         let expected = f32::from(pcm[0]) * (1.0 / CELT_SIG_SCALE);
         assert_eq!(scratch[delay_len], expected);
+    }
+
+    #[test]
+    fn update_high_pass_state_smooths_towards_silk_target() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        let prev = lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8;
+        let target = lin2log(80) << 8;
+        enc.variable_hp_smth2_q15 = prev;
+        enc.silk.state_fxx[0].common_mut().variable_hp_smth1_q15 = target;
+
+        let expected = prev
+            + (((i64::from(target - prev) * i64::from(VARIABLE_HP_SMTH_COEF2_Q16 as i16)) >> 16)
+                as i32);
+        let cutoff = update_high_pass_state(&mut enc, MODE_HYBRID);
+
+        assert_eq!(enc.variable_hp_smth2_q15, expected);
+        assert_eq!(cutoff, log2lin(expected >> 8));
+    }
+
+    #[test]
+    fn update_high_pass_state_uses_min_cutoff_for_celt() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        let prev = lin2log(80) << 8;
+        let target = lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8;
+        enc.variable_hp_smth2_q15 = prev;
+        enc.silk.state_fxx[0].common_mut().variable_hp_smth1_q15 = lin2log(100) << 8;
+
+        let expected = prev
+            + (((i64::from(target - prev) * i64::from(VARIABLE_HP_SMTH_COEF2_Q16 as i16)) >> 16)
+                as i32);
+        let cutoff = update_high_pass_state(&mut enc, MODE_CELT_ONLY);
+
+        assert_eq!(enc.variable_hp_smth2_q15, expected);
+        assert_eq!(cutoff, log2lin(expected >> 8));
+    }
+
+    #[test]
+    fn dc_reject_matches_reference_steps() {
+        let pcm = [1000i16; 3];
+        let mut out = [0.0f32; 3];
+        let mut mem = [0.0f32; 4];
+
+        dc_reject(&pcm, 3, &mut out, &mut mem, 3, 1, 48_000);
+
+        let scale = 1.0 / CELT_SIG_SCALE;
+        let x = 1000.0 * scale;
+        let coef = 6.3f32 * 3.0 / 48_000.0;
+        let coef2 = 1.0 - coef;
+        let mut m0 = 0.0f32;
+        let mut expected = [0.0f32; 3];
+        for value in expected.iter_mut() {
+            *value = x - m0;
+            m0 = coef * x + VERY_SMALL + coef2 * m0;
+        }
+
+        for idx in 0..3 {
+            assert!((out[idx] - expected[idx]).abs() < 1.0e-6);
+        }
+        assert!((mem[0] - m0).abs() < 1.0e-6);
+        assert_eq!(mem[2], 0.0);
+    }
+
+    #[test]
+    fn hp_cutoff_modifies_signal_and_state() {
+        let pcm = [1000i16; 16];
+        let mut out = [0.0f32; 16];
+        let mut mem = [0.0f32; 4];
+
+        hp_cutoff(
+            &pcm,
+            VARIABLE_HP_MIN_CUTOFF_HZ,
+            &mut out,
+            &mut mem,
+            16,
+            1,
+            48_000,
+        );
+
+        let reference = 1000.0 * (1.0 / CELT_SIG_SCALE);
+        assert!(out.iter().any(|&value| (value - reference).abs() > 1.0e-6));
+        assert!(mem[0] != 0.0 || mem[1] != 0.0);
     }
 
     #[test]
