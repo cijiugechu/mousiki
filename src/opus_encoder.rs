@@ -5,12 +5,12 @@
 //! SILK-only packets. Hybrid/CELT modes will be wired once the remaining CELT
 //! bitstream packing path is ported.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(not(feature = "fixed_point"))]
 use crate::analysis::{
     TonalityAnalysisState, run_analysis, tonality_analysis_init, tonality_analysis_reset,
+    tonality_get_info,
 };
 use crate::celt::AnalysisInfo;
 use crate::celt::{
@@ -22,7 +22,7 @@ use crate::celt::{
 use crate::opus_multistream::{OPUS_AUTO, OPUS_BITRATE_MAX};
 use crate::packet::Bandwidth;
 use crate::range::RangeEncoder;
-use crate::repacketizer::{OpusRepacketizer, RepacketizerError};
+use crate::repacketizer::{opus_packet_pad, OpusRepacketizer, RepacketizerError};
 use crate::silk::enc_api::{PrefillMode, silk_encode, silk_init_encoder};
 use crate::silk::errors::SilkError;
 use crate::silk::EncControl as SilkEncControl;
@@ -32,6 +32,8 @@ use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
 const MAX_CHANNELS: usize = 2;
 const MAX_ENCODER_BUFFER: usize = 480;
 const DELAY_BUFFER_SAMPLES: usize = MAX_ENCODER_BUFFER * 2;
+const MAX_PACKET_BYTES: i32 = 1276 * 6;
+const MAX_REPACKETIZER_BYTES: usize = MAX_PACKET_BYTES as usize + 6;
 
 pub(crate) const MODE_SILK_ONLY: i32 = 1000;
 #[allow(dead_code)]
@@ -939,814 +941,49 @@ fn finish_encode(encoder: &mut OpusEncoder<'_>, mode: i32, to_celt: bool, frame_
     encoder.first = false;
 }
 
-fn encode_multiframe(
-    encoder: &mut OpusEncoder<'_>,
-    pcm: &[i16],
-    frame_size: usize,
-    enc_frame_size: usize,
-    forced_mode: i32,
-    data: &mut [u8],
-) -> Result<usize, OpusEncodeError> {
-    if enc_frame_size == 0 || !frame_size.is_multiple_of(enc_frame_size) {
-        return Err(OpusEncodeError::Unimplemented);
-    }
-
-    let nb_frames = frame_size / enc_frame_size;
-    if !(1..=6).contains(&nb_frames) {
-        return Err(OpusEncodeError::Unimplemented);
-    }
-
-    let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
-    let max_header_bytes = if nb_frames == 2 {
-        3
-    } else {
-        2 + (nb_frames - 1) * 2
-    };
-    let nb_frames_i32 = i32::try_from(nb_frames).map_err(|_| OpusEncodeError::BadArgument)?;
-    let max_header_bytes_i32 =
-        i32::try_from(max_header_bytes).map_err(|_| OpusEncodeError::BadArgument)?;
-    let mut remaining = max_data_bytes
-        .checked_add(nb_frames_i32)
-        .and_then(|value| value.checked_sub(max_header_bytes_i32))
-        .ok_or(OpusEncodeError::BufferTooSmall)?;
-    if remaining < 2 * nb_frames_i32 {
-        return Err(OpusEncodeError::BufferTooSmall);
-    }
-
-    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
-    let mut repacketizer = OpusRepacketizer::new();
-    repacketizer.opus_repacketizer_init();
-    let mut tmp = vec![0u8; data.len()];
-
-    let saved_duration = encoder.variable_duration;
-    let saved_mode = encoder.user_forced_mode;
-    encoder.variable_duration = OPUS_FRAMESIZE_ARG;
-    encoder.user_forced_mode = forced_mode;
-    let result = (|| {
-        for frame_idx in 0..nb_frames {
-            let frames_left = nb_frames - frame_idx;
-            let frame_max = (remaining / i32::try_from(frames_left).unwrap_or(1))
-                .max(2) as usize;
-            if frame_max > tmp.len() {
-                return Err(OpusEncodeError::BufferTooSmall);
-            }
-            let start = frame_idx
-                .checked_mul(enc_frame_size)
-                .and_then(|value| value.checked_mul(channels))
-                .ok_or(OpusEncodeError::BadArgument)?;
-            let end = start
-                .checked_add(enc_frame_size * channels)
-                .ok_or(OpusEncodeError::BadArgument)?;
-            let len = opus_encode(
-                encoder,
-                &pcm[start..end],
-                enc_frame_size,
-                &mut tmp[..frame_max],
-            )?;
-            repacketizer
-                .opus_repacketizer_cat(&tmp[..len], len)
-                .map_err(|err| match err {
-                    RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
-                    _ => OpusEncodeError::InternalError,
-                })?;
-            remaining = remaining.saturating_sub(len as i32);
-        }
-
-        let maxlen = data.len();
-        repacketizer
-            .opus_repacketizer_out(&mut data[..], maxlen)
-            .map_err(|err| match err {
-                RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
-                _ => OpusEncodeError::InternalError,
-            })
-    })();
-    encoder.variable_duration = saved_duration;
-    encoder.user_forced_mode = saved_mode;
-    result
-}
-
-pub fn opus_encoder_create<'mode>(
-    fs: i32,
-    channels: i32,
-    application: i32,
-) -> Result<OpusEncoder<'mode>, OpusEncoderInitError> {
-    if !matches!(fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000)
-        || !matches!(channels, 1 | 2)
-        || OpusApplication::from_opus_int(application).is_none()
-    {
-        return Err(OpusEncoderInitError::BadArgument);
-    }
-
-    let mode = canonical_mode().ok_or(OpusEncoderInitError::CeltInit)?;
-    let celt = opus_custom_encoder_create(mode, fs, channels as usize, 0)
-        .map_err(|_| OpusEncoderInitError::CeltInit)?;
-
-    let mut encoder = OpusEncoder {
-        celt,
-        silk: crate::silk::encoder::state::Encoder::default(),
-        silk_mode: SilkEncControl::default(),
-        #[cfg(not(feature = "fixed_point"))]
-        analysis: TonalityAnalysisState::new(fs),
-        analysis_info: AnalysisInfo::default(),
-        application: OpusApplication::Voip,
-        channels,
-        stream_channels: channels,
-        fs,
-        arch: opus_select_arch(),
-        use_vbr: true,
-        vbr_constraint: true,
-        user_bitrate_bps: OPUS_AUTO,
-        bitrate_bps: 0,
-        packet_loss_perc: 0,
-        complexity: 9,
-        inband_fec: false,
-        use_dtx: false,
-        fec_config: 0,
-        force_channels: OPUS_AUTO,
-        user_bandwidth: OPUS_AUTO,
-        max_bandwidth: OPUS_BANDWIDTH_FULLBAND,
-        signal_type: OPUS_AUTO,
-        user_forced_mode: OPUS_AUTO,
-        voice_ratio: 0,
-        lsb_depth: 24,
-        variable_duration: OPUS_FRAMESIZE_ARG,
-        prediction_disabled: false,
-        hybrid_stereo_width_q14: 0,
-        variable_hp_smth2_q15: 0,
-        prev_hb_gain: 0.0,
-        hp_mem: [0.0; 4],
-        mode: MODE_SILK_ONLY,
-        prev_mode: 0,
-        prev_channels: 0,
-        prev_framesize: 0,
-        bandwidth: Bandwidth::Wide,
-        auto_bandwidth: 0,
-        silk_bw_switch: false,
-        first: false,
-        width_mem: StereoWidthState::default(),
-        delay_buffer: [OpusRes::default(); DELAY_BUFFER_SAMPLES],
-        #[cfg(not(feature = "fixed_point"))]
-        detected_bandwidth: 0,
-        nonfinal_frame: false,
-        range_final: 0,
-        dred_duration: 0,
-    };
-
-    encoder.init(fs, channels, application)?;
-    Ok(encoder)
-}
-
-fn max_internal_sample_rate_for_bandwidth(user_bandwidth: i32, max_bandwidth: i32) -> i32 {
-    let selected = if user_bandwidth == OPUS_AUTO {
-        max_bandwidth
-    } else {
-        user_bandwidth
-    };
-    match selected {
-        OPUS_BANDWIDTH_NARROWBAND => 8_000,
-        OPUS_BANDWIDTH_MEDIUMBAND => 12_000,
-        OPUS_BANDWIDTH_WIDEBAND | OPUS_BANDWIDTH_SUPERWIDEBAND | OPUS_BANDWIDTH_FULLBAND => 16_000,
-        _ => 16_000,
-    }
-}
-
-fn is_valid_bandwidth(value: i32) -> bool {
-    matches!(
-        value,
-        OPUS_BANDWIDTH_NARROWBAND
-            | OPUS_BANDWIDTH_MEDIUMBAND
-            | OPUS_BANDWIDTH_WIDEBAND
-            | OPUS_BANDWIDTH_SUPERWIDEBAND
-            | OPUS_BANDWIDTH_FULLBAND
-    )
-}
-
-fn is_valid_signal(value: i32) -> bool {
-    matches!(value, OPUS_AUTO | OPUS_SIGNAL_VOICE | OPUS_SIGNAL_MUSIC)
-}
-
-fn is_valid_expert_frame_duration(value: i32) -> bool {
-    matches!(
-        value,
-        OPUS_FRAMESIZE_ARG
-            | OPUS_FRAMESIZE_2_5_MS
-            | OPUS_FRAMESIZE_5_MS
-            | OPUS_FRAMESIZE_10_MS
-            | OPUS_FRAMESIZE_20_MS
-            | OPUS_FRAMESIZE_40_MS
-            | OPUS_FRAMESIZE_60_MS
-            | OPUS_FRAMESIZE_80_MS
-            | OPUS_FRAMESIZE_100_MS
-            | OPUS_FRAMESIZE_120_MS
-    )
-}
-
-pub fn opus_encoder_ctl<'req>(
-    encoder: &mut OpusEncoder<'_>,
-    request: OpusEncoderCtlRequest<'req>,
-) -> Result<(), OpusEncoderCtlError> {
-    match request {
-        OpusEncoderCtlRequest::SetBitrate(value) => {
-            if value != OPUS_AUTO && value != OPUS_BITRATE_MAX && value <= 0 {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.user_bitrate_bps = value;
-            if value != OPUS_AUTO {
-                encoder.bitrate_bps = value;
-            }
-        }
-        OpusEncoderCtlRequest::GetBitrate(out) => {
-            *out = encoder.user_bitrate_bps;
-        }
-        OpusEncoderCtlRequest::SetForceChannels(value) => {
-            if value != OPUS_AUTO && (value < 1 || value > encoder.channels) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.force_channels = value;
-        }
-        OpusEncoderCtlRequest::GetForceChannels(out) => {
-            *out = encoder.force_channels;
-        }
-        OpusEncoderCtlRequest::SetMaxBandwidth(value) => {
-            if !is_valid_bandwidth(value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.max_bandwidth = value;
-            encoder.silk_mode.max_internal_sample_rate =
-                max_internal_sample_rate_for_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
-        }
-        OpusEncoderCtlRequest::GetMaxBandwidth(out) => {
-            *out = encoder.max_bandwidth;
-        }
-        OpusEncoderCtlRequest::SetBandwidth(value) => {
-            if value != OPUS_AUTO && !is_valid_bandwidth(value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.user_bandwidth = value;
-            encoder.silk_mode.max_internal_sample_rate =
-                max_internal_sample_rate_for_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
-        }
-        OpusEncoderCtlRequest::GetBandwidth(out) => {
-            *out = encoder.bandwidth.to_opus_int();
-        }
-        OpusEncoderCtlRequest::SetVbr(value) => {
-            encoder.use_vbr = value;
-        }
-        OpusEncoderCtlRequest::GetVbr(out) => {
-            *out = encoder.use_vbr;
-        }
-        OpusEncoderCtlRequest::SetVbrConstraint(value) => {
-            encoder.vbr_constraint = value;
-        }
-        OpusEncoderCtlRequest::GetVbrConstraint(out) => {
-            *out = encoder.vbr_constraint;
-        }
-        OpusEncoderCtlRequest::SetComplexity(value) => {
-            if !(0..=10).contains(&value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.complexity = value;
-            opus_custom_encoder_ctl(encoder.celt.encoder(), CeltEncoderCtlRequest::SetComplexity(value))?;
-        }
-        OpusEncoderCtlRequest::GetComplexity(out) => {
-            *out = encoder.complexity;
-        }
-        OpusEncoderCtlRequest::SetSignal(value) => {
-            if !is_valid_signal(value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.signal_type = value;
-        }
-        OpusEncoderCtlRequest::GetSignal(out) => {
-            *out = encoder.signal_type;
-        }
-        OpusEncoderCtlRequest::SetPacketLossPerc(value) => {
-            if !(0..=100).contains(&value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.packet_loss_perc = value;
-        }
-        OpusEncoderCtlRequest::GetPacketLossPerc(out) => {
-            *out = encoder.packet_loss_perc;
-        }
-        OpusEncoderCtlRequest::SetInbandFec(value) => {
-            encoder.inband_fec = value;
-        }
-        OpusEncoderCtlRequest::GetInbandFec(out) => {
-            *out = encoder.inband_fec;
-        }
-        OpusEncoderCtlRequest::SetDtx(value) => {
-            encoder.use_dtx = value;
-        }
-        OpusEncoderCtlRequest::GetDtx(out) => {
-            *out = encoder.use_dtx;
-        }
-        OpusEncoderCtlRequest::SetLsbDepth(value) => {
-            if !(8..=24).contains(&value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.lsb_depth = value;
-        }
-        OpusEncoderCtlRequest::GetLsbDepth(out) => {
-            *out = encoder.lsb_depth;
-        }
-        OpusEncoderCtlRequest::SetExpertFrameDuration(value) => {
-            if !is_valid_expert_frame_duration(value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.variable_duration = value;
-        }
-        OpusEncoderCtlRequest::GetExpertFrameDuration(out) => {
-            *out = encoder.variable_duration;
-        }
-        OpusEncoderCtlRequest::SetPredictionDisabled(value) => {
-            encoder.prediction_disabled = value;
-            encoder.silk_mode.reduced_dependency = value;
-        }
-        OpusEncoderCtlRequest::GetPredictionDisabled(out) => {
-            *out = encoder.prediction_disabled;
-        }
-        OpusEncoderCtlRequest::SetPhaseInversionDisabled(value) => {
-            opus_custom_encoder_ctl(
-                encoder.celt.encoder(),
-                CeltEncoderCtlRequest::SetPhaseInversionDisabled(value),
-            )?;
-        }
-        OpusEncoderCtlRequest::GetPhaseInversionDisabled(out) => {
-            opus_custom_encoder_ctl(
-                encoder.celt.encoder(),
-                CeltEncoderCtlRequest::GetPhaseInversionDisabled(out),
-            )?;
-        }
-        OpusEncoderCtlRequest::SetDredDuration(value) => {
-            if !cfg!(feature = "dred") {
-                return Err(OpusEncoderCtlError::Unimplemented);
-            }
-            if !(0..=DRED_MAX_FRAMES).contains(&value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.dred_duration = value;
-            encoder.silk_mode.use_dred = if value > 0 { 1 } else { 0 };
-        }
-        OpusEncoderCtlRequest::GetDredDuration(out) => {
-            if !cfg!(feature = "dred") {
-                return Err(OpusEncoderCtlError::Unimplemented);
-            }
-            *out = encoder.dred_duration;
-        }
-        OpusEncoderCtlRequest::SetForceMode(value) => {
-            if value != OPUS_AUTO && !(MODE_SILK_ONLY..=MODE_CELT_ONLY).contains(&value) {
-                return Err(OpusEncoderCtlError::BadArgument);
-            }
-            encoder.user_forced_mode = value;
-        }
-        OpusEncoderCtlRequest::GetFinalRange(out) => {
-            *out = encoder.range_final;
-        }
-        OpusEncoderCtlRequest::ResetState => {
-            encoder.reset_state()?;
-        }
-    }
-    Ok(())
-}
-
-pub fn opus_encode(
-    encoder: &mut OpusEncoder<'_>,
+fn encode_frame_native<'mode>(
+    encoder: &mut OpusEncoder<'mode>,
     pcm: &[i16],
     frame_size: usize,
     data: &mut [u8],
+    lsb_depth: i32,
+    silk_use_dtx: bool,
+    is_silence: bool,
+    redundancy: bool,
+    celt_to_silk: bool,
+    prefill: PrefillMode,
+    bandwidth_int: i32,
+    mode: i32,
+    to_celt: bool,
 ) -> Result<usize, OpusEncodeError> {
-    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
-    if channels == 0 || channels > MAX_CHANNELS || frame_size == 0 {
-        return Err(OpusEncodeError::BadArgument);
-    }
-    let required_input = channels
-        .checked_mul(frame_size)
-        .ok_or(OpusEncodeError::BadArgument)?;
-    if pcm.len() < required_input {
-        return Err(OpusEncodeError::BadArgument);
-    }
     if data.len() < 2 {
         return Err(OpusEncodeError::BufferTooSmall);
     }
 
-    let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
-    let frame_size_i32 = frame_size_select(frame_size_i32, encoder.variable_duration, encoder.fs)
-        .ok_or(OpusEncodeError::BadArgument)?;
-    let frame_size = usize::try_from(frame_size_i32).map_err(|_| OpusEncodeError::BadArgument)?;
-
+    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
     let required = channels
         .checked_mul(frame_size)
         .ok_or(OpusEncodeError::BadArgument)?;
+    if pcm.len() < required {
+        return Err(OpusEncodeError::BadArgument);
+    }
 
+    let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
     let frame_rate = encoder
         .fs
         .checked_div(frame_size_i32)
         .ok_or(OpusEncodeError::BadArgument)?;
+    let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
 
-    let mut max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
-    max_data_bytes = max_data_bytes.min(1276 * 6);
-    encoder.bitrate_bps = user_bitrate_to_bitrate(encoder, frame_size_i32, max_data_bytes);
-
-    let lsb_depth = encoder.lsb_depth.min(16);
-
-    let mut stereo_width = 0.0f32;
-    if encoder.channels == 2 && encoder.force_channels != 1 {
-        stereo_width = compute_stereo_width(
-            &pcm[..required],
-            frame_size,
-            encoder.fs,
-            &mut encoder.width_mem,
-        );
-    }
-    let stereo_width_q15 =
-        libm::roundf(stereo_width * Q15_ONE as f32).clamp(0.0, Q15_ONE as f32) as i32;
-
-    #[cfg(not(feature = "fixed_point"))]
-    let mut is_silence = false;
-    #[cfg(not(feature = "fixed_point"))]
-    {
-        encoder.analysis_info.valid = false;
-        if encoder.silk_mode.complexity >= 7 && encoder.fs >= 16_000 {
-            is_silence = is_digital_silence(&pcm[..required], frame_size, channels, lsb_depth);
-            encoder.analysis.application = encoder.application.to_opus_int();
-            run_analysis(
-                &mut encoder.analysis,
-                encoder.celt.mode,
-                Some(&pcm[..required]),
-                frame_size,
-                frame_size,
-                0,
-                -1,
-                encoder.channels,
-                encoder.fs,
-                lsb_depth,
-                &mut encoder.analysis_info,
-            );
-        } else {
-            tonality_analysis_reset(&mut encoder.analysis);
-        }
-
-        if !is_silence {
-            encoder.voice_ratio = -1;
-        }
-        encoder.detected_bandwidth = 0;
-        if encoder.analysis_info.valid {
-            if encoder.signal_type == OPUS_AUTO {
-                let prob = if encoder.prev_mode == 0 {
-                    encoder.analysis_info.music_prob
-                } else if encoder.prev_mode == MODE_CELT_ONLY {
-                    encoder.analysis_info.music_prob_max
-                } else {
-                    encoder.analysis_info.music_prob_min
-                };
-                encoder.voice_ratio = (0.5 + 100.0 * (1.0 - prob)).floor() as i32;
-            }
-
-            let analysis_bandwidth = encoder.analysis_info.bandwidth;
-            encoder.detected_bandwidth = if analysis_bandwidth <= 12 {
-                OPUS_BANDWIDTH_NARROWBAND
-            } else if analysis_bandwidth <= 14 {
-                OPUS_BANDWIDTH_MEDIUMBAND
-            } else if analysis_bandwidth <= 16 {
-                OPUS_BANDWIDTH_WIDEBAND
-            } else if analysis_bandwidth <= 18 {
-                OPUS_BANDWIDTH_SUPERWIDEBAND
-            } else {
-                OPUS_BANDWIDTH_FULLBAND
-            };
-        }
-    }
     #[cfg(feature = "fixed_point")]
-    {
-        encoder.voice_ratio = -1;
-    }
-
-    let mut equiv_rate = compute_equiv_rate(
-        encoder.bitrate_bps,
-        encoder.channels,
-        frame_rate,
-        encoder.use_vbr,
-        0,
-        encoder.complexity,
-        encoder.packet_loss_perc,
-    );
-
-    let voice_est = if encoder.signal_type == OPUS_SIGNAL_VOICE {
-        127
-    } else if encoder.signal_type == OPUS_SIGNAL_MUSIC {
-        0
-    } else if encoder.voice_ratio >= 0 {
-        let mut est = (encoder.voice_ratio * 327) >> 8;
-        if matches!(encoder.application, OpusApplication::Audio) {
-            est = est.min(115);
-        }
-        est
-    } else if matches!(encoder.application, OpusApplication::Voip) {
-        115
-    } else {
-        48
-    };
-
-    let prev_stream_channels = encoder.stream_channels;
-    let stream_channels = if encoder.force_channels != OPUS_AUTO && encoder.channels == 2 {
-        encoder.force_channels
-    } else if encoder.channels == 2 {
-        let mut stereo_threshold = STEREO_MUSIC_THRESHOLD
-            + ((i64::from(voice_est) * i64::from(voice_est)
-                * i64::from(STEREO_VOICE_THRESHOLD - STEREO_MUSIC_THRESHOLD))
-                >> 14) as i32;
-        if prev_stream_channels == 2 {
-            stereo_threshold -= 1000;
-        } else {
-            stereo_threshold += 1000;
-        }
-        if equiv_rate > stereo_threshold { 2 } else { 1 }
-    } else {
-        encoder.channels
-    };
-    encoder.stream_channels = stream_channels;
-
-    equiv_rate = compute_equiv_rate(
-        encoder.bitrate_bps,
-        encoder.stream_channels,
-        frame_rate,
-        encoder.use_vbr,
-        0,
-        encoder.complexity,
-        encoder.packet_loss_perc,
-    );
-
-    #[cfg(not(feature = "fixed_point"))]
-    let silk_use_dtx = encoder.use_dtx && !(encoder.analysis_info.valid || is_silence);
-    #[cfg(feature = "fixed_point")]
-    let silk_use_dtx = encoder.use_dtx;
-    encoder.silk_mode.use_dtx = i32::from(silk_use_dtx);
-
-    let mut mode = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
-        MODE_CELT_ONLY
-    } else if encoder.user_forced_mode != OPUS_AUTO {
-        encoder.user_forced_mode
-    } else {
-        let q15_one_minus = Q15_ONE - stereo_width_q15;
-        let mode_voice = ((i64::from(q15_one_minus) * i64::from(MODE_THRESHOLDS[0][0])
-            + i64::from(stereo_width_q15) * i64::from(MODE_THRESHOLDS[1][0]))
-            >> 15) as i32;
-        let mode_music = ((i64::from(q15_one_minus) * i64::from(MODE_THRESHOLDS[1][1])
-            + i64::from(stereo_width_q15) * i64::from(MODE_THRESHOLDS[1][1]))
-            >> 15) as i32;
-
-        let mut threshold = mode_music
-            + ((i64::from(voice_est)
-                * i64::from(voice_est)
-                * i64::from(mode_voice - mode_music))
-                >> 14) as i32;
-        if matches!(encoder.application, OpusApplication::Voip) {
-            threshold += 8000;
-        }
-        if encoder.prev_mode == MODE_CELT_ONLY {
-            threshold -= 4000;
-        } else if encoder.prev_mode > 0 {
-            threshold += 4000;
-        }
-
-        let mut selected = if equiv_rate >= threshold {
-            MODE_CELT_ONLY
-        } else {
-            MODE_SILK_ONLY
-        };
-
-        if encoder.inband_fec
-            && encoder.packet_loss_perc > (128 - voice_est) >> 4
-            && (encoder.fec_config != 2 || voice_est > 25)
-        {
-            selected = MODE_SILK_ONLY;
-        }
-        if silk_use_dtx && voice_est > 100 {
-            selected = MODE_SILK_ONLY;
-        }
-        let rate_threshold = if frame_rate > 50 { 9000 } else { 6000 };
-        let threshold_bytes =
-            i64::from(rate_threshold) * i64::from(frame_size_i32) / i64::from(encoder.fs * 8);
-        if i64::from(max_data_bytes) < threshold_bytes {
-            selected = MODE_CELT_ONLY;
-        }
-        selected
-    };
-
-    let min_celt = encoder.fs / 100;
-    if mode != MODE_CELT_ONLY && frame_size_i32 < min_celt {
-        mode = MODE_CELT_ONLY;
-    }
-
-    let mut redundancy = false;
-    let mut celt_to_silk = false;
-    let mut to_celt = false;
-    let mut prefill = PrefillMode::None;
-    if encoder.user_forced_mode != MODE_CELT_ONLY
-        && encoder.prev_mode > 0
-        && ((mode != MODE_CELT_ONLY && encoder.prev_mode == MODE_CELT_ONLY)
-            || (mode == MODE_CELT_ONLY && encoder.prev_mode != MODE_CELT_ONLY))
-    {
-        redundancy = true;
-        celt_to_silk = mode != MODE_CELT_ONLY;
-        if !celt_to_silk {
-            if frame_size_i32 >= min_celt {
-                mode = encoder.prev_mode;
-                to_celt = true;
-            } else {
-                redundancy = false;
-            }
-        }
-    }
-
-    if encoder.stream_channels == 1
-        && encoder.prev_channels == 2
-        && !encoder.silk_mode.to_mono
-        && mode != MODE_CELT_ONLY
-        && encoder.prev_mode != MODE_CELT_ONLY
-    {
-        encoder.silk_mode.to_mono = true;
-        encoder.stream_channels = 2;
-    } else {
-        encoder.silk_mode.to_mono = false;
-    }
-
-    equiv_rate = compute_equiv_rate(
-        encoder.bitrate_bps,
-        encoder.stream_channels,
-        frame_rate,
-        encoder.use_vbr,
-        mode,
-        encoder.complexity,
-        encoder.packet_loss_perc,
-    );
-
-    if mode != MODE_CELT_ONLY && encoder.prev_mode == MODE_CELT_ONLY {
-        let mut dummy = SilkEncControl::default();
-        silk_init_encoder(&mut encoder.silk, encoder.arch, &mut dummy)?;
-        prefill = PrefillMode::Prefill;
-    }
-
-    let mut bandwidth_int = encoder.bandwidth.to_opus_int();
-    if mode == MODE_CELT_ONLY || encoder.first || encoder.silk_mode.allow_bandwidth_switch {
-        let (voice_thresholds, music_thresholds) =
-            if encoder.channels == 2 && encoder.force_channels != 1 {
-                (
-                    &STEREO_VOICE_BANDWIDTH_THRESHOLDS,
-                    &STEREO_MUSIC_BANDWIDTH_THRESHOLDS,
-                )
-            } else {
-                (&MONO_VOICE_BANDWIDTH_THRESHOLDS, &MONO_MUSIC_BANDWIDTH_THRESHOLDS)
-            };
-        let mut bandwidth_thresholds = [0i32; 8];
-        for i in 0..bandwidth_thresholds.len() {
-            bandwidth_thresholds[i] = music_thresholds[i]
-                + ((i64::from(voice_est)
-                    * i64::from(voice_est)
-                    * i64::from(voice_thresholds[i] - music_thresholds[i]))
-                    >> 14) as i32;
-        }
-
-        bandwidth_int = OPUS_BANDWIDTH_FULLBAND;
-        loop {
-            let idx = usize::try_from(2 * (bandwidth_int - OPUS_BANDWIDTH_MEDIUMBAND))
-                .unwrap_or(0);
-            let mut threshold = *bandwidth_thresholds.get(idx).unwrap_or(&0);
-            let hysteresis = *bandwidth_thresholds.get(idx + 1).unwrap_or(&0);
-            if !encoder.first {
-                if encoder.auto_bandwidth >= bandwidth_int {
-                    threshold -= hysteresis;
-                } else {
-                    threshold += hysteresis;
-                }
-            }
-            if equiv_rate >= threshold {
-                break;
-            }
-            if bandwidth_int <= OPUS_BANDWIDTH_NARROWBAND {
-                break;
-            }
-            bandwidth_int -= 1;
-        }
-        if bandwidth_int == OPUS_BANDWIDTH_MEDIUMBAND {
-            bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
-        }
-        encoder.auto_bandwidth = bandwidth_int;
-        if !encoder.first
-            && mode != MODE_CELT_ONLY
-            && !encoder.silk_mode.in_wb_mode_without_variable_lp
-            && bandwidth_int > OPUS_BANDWIDTH_WIDEBAND
-        {
-            bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
-        }
-    }
-
-    if bandwidth_int > encoder.max_bandwidth {
-        bandwidth_int = encoder.max_bandwidth;
-    }
-    if encoder.user_bandwidth != OPUS_AUTO {
-        bandwidth_int = encoder.user_bandwidth;
-    }
-    let max_rate = frame_rate.saturating_mul(max_data_bytes).saturating_mul(8);
-    if mode != MODE_CELT_ONLY && max_rate < 15_000 {
-        bandwidth_int = bandwidth_int.min(OPUS_BANDWIDTH_WIDEBAND);
-    }
-    if encoder.fs <= 24_000 && bandwidth_int > OPUS_BANDWIDTH_SUPERWIDEBAND {
-        bandwidth_int = OPUS_BANDWIDTH_SUPERWIDEBAND;
-    }
-    if encoder.fs <= 16_000 && bandwidth_int > OPUS_BANDWIDTH_WIDEBAND {
-        bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
-    }
-    if encoder.fs <= 12_000 && bandwidth_int > OPUS_BANDWIDTH_MEDIUMBAND {
-        bandwidth_int = OPUS_BANDWIDTH_MEDIUMBAND;
-    }
-    if encoder.fs <= 8_000 && bandwidth_int > OPUS_BANDWIDTH_NARROWBAND {
-        bandwidth_int = OPUS_BANDWIDTH_NARROWBAND;
-    }
-    #[cfg(not(feature = "fixed_point"))]
-    if encoder.detected_bandwidth != 0 && encoder.user_bandwidth == OPUS_AUTO {
-        let min_detected_bandwidth = if equiv_rate
-            <= 18_000 * encoder.stream_channels
-            && mode == MODE_CELT_ONLY
-        {
-            OPUS_BANDWIDTH_NARROWBAND
-        } else if equiv_rate <= 24_000 * encoder.stream_channels && mode == MODE_CELT_ONLY {
-            OPUS_BANDWIDTH_MEDIUMBAND
-        } else if equiv_rate <= 30_000 * encoder.stream_channels {
-            OPUS_BANDWIDTH_WIDEBAND
-        } else if equiv_rate <= 44_000 * encoder.stream_channels {
-            OPUS_BANDWIDTH_SUPERWIDEBAND
-        } else {
-            OPUS_BANDWIDTH_FULLBAND
-        };
-        encoder.detected_bandwidth = encoder.detected_bandwidth.max(min_detected_bandwidth);
-        bandwidth_int = bandwidth_int.min(encoder.detected_bandwidth);
-    }
-
-    let use_fec = decide_fec(
-        encoder.inband_fec,
-        encoder.packet_loss_perc,
-        encoder.silk_mode.lbrr_coded != 0,
-        mode,
-        &mut bandwidth_int,
-        equiv_rate,
-    );
-    encoder.silk_mode.lbrr_coded = i32::from(use_fec);
-
-    if mode == MODE_CELT_ONLY && bandwidth_int == OPUS_BANDWIDTH_MEDIUMBAND {
-        bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
-    }
-
-    let curr_bandwidth_int = bandwidth_int;
-    if mode == MODE_SILK_ONLY && curr_bandwidth_int > OPUS_BANDWIDTH_WIDEBAND {
-        mode = MODE_HYBRID;
-    }
-    if mode == MODE_HYBRID && curr_bandwidth_int <= OPUS_BANDWIDTH_WIDEBAND {
-        mode = MODE_SILK_ONLY;
-    }
+    let _ = is_silence;
 
     let mut bandwidth = Bandwidth::from_opus_int(bandwidth_int).unwrap_or(Bandwidth::Wide);
-    encoder.bandwidth = bandwidth;
 
     let max_frame_bytes_i32 = max_data_bytes.min(1276);
     let max_frame_bytes =
         usize::try_from(max_frame_bytes_i32).map_err(|_| OpusEncodeError::BadArgument)?;
     let max_payload_bytes = max_frame_bytes.saturating_sub(1);
-
-    let max_celt = usize::try_from(encoder.fs / 50).map_err(|_| OpusEncodeError::BadArgument)?;
-    if mode != MODE_SILK_ONLY && frame_size > max_celt {
-        if mode == MODE_CELT_ONLY {
-            return encode_multiframe(encoder, pcm, frame_size, max_celt, mode, data);
-        }
-        if mode == MODE_HYBRID {
-            return encode_multiframe(encoder, pcm, frame_size, max_celt, MODE_CELT_ONLY, data);
-        }
-        return Err(OpusEncodeError::Unimplemented);
-    }
-    if mode == MODE_SILK_ONLY && frame_size * 2 != max_celt {
-        let multiples = frame_size / max_celt;
-        if !frame_size.is_multiple_of(max_celt) || !(1..=6).contains(&multiples) {
-            return Err(OpusEncodeError::Unimplemented);
-        }
-    }
-
-    if mode == MODE_SILK_ONLY && frame_size > max_celt * 3 {
-        let fs = encoder.fs;
-        let enc_frame_size_i32 = if frame_size_i32 == 2 * fs / 25 {
-            fs / 25
-        } else if frame_size_i32 == 3 * fs / 25 {
-            3 * fs / 50
-        } else {
-            fs / 50
-        };
-        if enc_frame_size_i32 <= 0 || frame_size_i32 % enc_frame_size_i32 != 0 {
-            return Err(OpusEncodeError::Unimplemented);
-        }
-        let enc_frame_size = usize::try_from(enc_frame_size_i32)
-            .map_err(|_| OpusEncodeError::BadArgument)?;
-        return encode_multiframe(encoder, pcm, frame_size, enc_frame_size, mode, data);
-    }
 
     match mode {
         MODE_SILK_ONLY => {
@@ -2143,11 +1380,9 @@ pub fn opus_encode(
             .map_err(|_| OpusEncodeError::InternalError)?;
 
             #[cfg(not(feature = "fixed_point"))]
-            opus_custom_encoder_ctl(
-                encoder.celt.encoder(),
-                CeltEncoderCtlRequest::SetAnalysis(&encoder.analysis_info),
-            )
-            .map_err(|_| OpusEncodeError::InternalError)?;
+            {
+                encoder.celt.encoder().analysis = encoder.analysis_info.clone();
+            }
 
             encoder.celt.encoder().silk_info = SilkInfo {
                 signal_type: i32::from(encoder.silk_mode.signal_type),
@@ -2375,6 +1610,900 @@ pub fn opus_encode(
     }
 }
 
+pub fn opus_encoder_create<'mode>(
+    fs: i32,
+    channels: i32,
+    application: i32,
+) -> Result<OpusEncoder<'mode>, OpusEncoderInitError> {
+    if !matches!(fs, 48_000 | 24_000 | 16_000 | 12_000 | 8_000)
+        || !matches!(channels, 1 | 2)
+        || OpusApplication::from_opus_int(application).is_none()
+    {
+        return Err(OpusEncoderInitError::BadArgument);
+    }
+
+    let mode = canonical_mode().ok_or(OpusEncoderInitError::CeltInit)?;
+    let celt = opus_custom_encoder_create(mode, fs, channels as usize, 0)
+        .map_err(|_| OpusEncoderInitError::CeltInit)?;
+
+    let mut encoder = OpusEncoder {
+        celt,
+        silk: crate::silk::encoder::state::Encoder::default(),
+        silk_mode: SilkEncControl::default(),
+        #[cfg(not(feature = "fixed_point"))]
+        analysis: TonalityAnalysisState::new(fs),
+        analysis_info: AnalysisInfo::default(),
+        application: OpusApplication::Voip,
+        channels,
+        stream_channels: channels,
+        fs,
+        arch: opus_select_arch(),
+        use_vbr: true,
+        vbr_constraint: true,
+        user_bitrate_bps: OPUS_AUTO,
+        bitrate_bps: 0,
+        packet_loss_perc: 0,
+        complexity: 9,
+        inband_fec: false,
+        use_dtx: false,
+        fec_config: 0,
+        force_channels: OPUS_AUTO,
+        user_bandwidth: OPUS_AUTO,
+        max_bandwidth: OPUS_BANDWIDTH_FULLBAND,
+        signal_type: OPUS_AUTO,
+        user_forced_mode: OPUS_AUTO,
+        voice_ratio: 0,
+        lsb_depth: 24,
+        variable_duration: OPUS_FRAMESIZE_ARG,
+        prediction_disabled: false,
+        hybrid_stereo_width_q14: 0,
+        variable_hp_smth2_q15: 0,
+        prev_hb_gain: 0.0,
+        hp_mem: [0.0; 4],
+        mode: MODE_SILK_ONLY,
+        prev_mode: 0,
+        prev_channels: 0,
+        prev_framesize: 0,
+        bandwidth: Bandwidth::Wide,
+        auto_bandwidth: 0,
+        silk_bw_switch: false,
+        first: false,
+        width_mem: StereoWidthState::default(),
+        delay_buffer: [OpusRes::default(); DELAY_BUFFER_SAMPLES],
+        #[cfg(not(feature = "fixed_point"))]
+        detected_bandwidth: 0,
+        nonfinal_frame: false,
+        range_final: 0,
+        dred_duration: 0,
+    };
+
+    encoder.init(fs, channels, application)?;
+    Ok(encoder)
+}
+
+fn max_internal_sample_rate_for_bandwidth(user_bandwidth: i32, max_bandwidth: i32) -> i32 {
+    let selected = if user_bandwidth == OPUS_AUTO {
+        max_bandwidth
+    } else {
+        user_bandwidth
+    };
+    match selected {
+        OPUS_BANDWIDTH_NARROWBAND => 8_000,
+        OPUS_BANDWIDTH_MEDIUMBAND => 12_000,
+        OPUS_BANDWIDTH_WIDEBAND | OPUS_BANDWIDTH_SUPERWIDEBAND | OPUS_BANDWIDTH_FULLBAND => 16_000,
+        _ => 16_000,
+    }
+}
+
+fn is_valid_bandwidth(value: i32) -> bool {
+    matches!(
+        value,
+        OPUS_BANDWIDTH_NARROWBAND
+            | OPUS_BANDWIDTH_MEDIUMBAND
+            | OPUS_BANDWIDTH_WIDEBAND
+            | OPUS_BANDWIDTH_SUPERWIDEBAND
+            | OPUS_BANDWIDTH_FULLBAND
+    )
+}
+
+fn is_valid_signal(value: i32) -> bool {
+    matches!(value, OPUS_AUTO | OPUS_SIGNAL_VOICE | OPUS_SIGNAL_MUSIC)
+}
+
+fn is_valid_expert_frame_duration(value: i32) -> bool {
+    matches!(
+        value,
+        OPUS_FRAMESIZE_ARG
+            | OPUS_FRAMESIZE_2_5_MS
+            | OPUS_FRAMESIZE_5_MS
+            | OPUS_FRAMESIZE_10_MS
+            | OPUS_FRAMESIZE_20_MS
+            | OPUS_FRAMESIZE_40_MS
+            | OPUS_FRAMESIZE_60_MS
+            | OPUS_FRAMESIZE_80_MS
+            | OPUS_FRAMESIZE_100_MS
+            | OPUS_FRAMESIZE_120_MS
+    )
+}
+
+pub fn opus_encoder_ctl<'req>(
+    encoder: &mut OpusEncoder<'_>,
+    request: OpusEncoderCtlRequest<'req>,
+) -> Result<(), OpusEncoderCtlError> {
+    match request {
+        OpusEncoderCtlRequest::SetBitrate(value) => {
+            if value != OPUS_AUTO && value != OPUS_BITRATE_MAX && value <= 0 {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.user_bitrate_bps = value;
+            if value != OPUS_AUTO {
+                encoder.bitrate_bps = value;
+            }
+        }
+        OpusEncoderCtlRequest::GetBitrate(out) => {
+            *out = encoder.user_bitrate_bps;
+        }
+        OpusEncoderCtlRequest::SetForceChannels(value) => {
+            if value != OPUS_AUTO && (value < 1 || value > encoder.channels) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.force_channels = value;
+        }
+        OpusEncoderCtlRequest::GetForceChannels(out) => {
+            *out = encoder.force_channels;
+        }
+        OpusEncoderCtlRequest::SetMaxBandwidth(value) => {
+            if !is_valid_bandwidth(value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.max_bandwidth = value;
+            encoder.silk_mode.max_internal_sample_rate =
+                max_internal_sample_rate_for_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
+        }
+        OpusEncoderCtlRequest::GetMaxBandwidth(out) => {
+            *out = encoder.max_bandwidth;
+        }
+        OpusEncoderCtlRequest::SetBandwidth(value) => {
+            if value != OPUS_AUTO && !is_valid_bandwidth(value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.user_bandwidth = value;
+            encoder.silk_mode.max_internal_sample_rate =
+                max_internal_sample_rate_for_bandwidth(encoder.user_bandwidth, encoder.max_bandwidth);
+        }
+        OpusEncoderCtlRequest::GetBandwidth(out) => {
+            *out = encoder.bandwidth.to_opus_int();
+        }
+        OpusEncoderCtlRequest::SetVbr(value) => {
+            encoder.use_vbr = value;
+        }
+        OpusEncoderCtlRequest::GetVbr(out) => {
+            *out = encoder.use_vbr;
+        }
+        OpusEncoderCtlRequest::SetVbrConstraint(value) => {
+            encoder.vbr_constraint = value;
+        }
+        OpusEncoderCtlRequest::GetVbrConstraint(out) => {
+            *out = encoder.vbr_constraint;
+        }
+        OpusEncoderCtlRequest::SetComplexity(value) => {
+            if !(0..=10).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.complexity = value;
+            opus_custom_encoder_ctl(encoder.celt.encoder(), CeltEncoderCtlRequest::SetComplexity(value))?;
+        }
+        OpusEncoderCtlRequest::GetComplexity(out) => {
+            *out = encoder.complexity;
+        }
+        OpusEncoderCtlRequest::SetSignal(value) => {
+            if !is_valid_signal(value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.signal_type = value;
+        }
+        OpusEncoderCtlRequest::GetSignal(out) => {
+            *out = encoder.signal_type;
+        }
+        OpusEncoderCtlRequest::SetPacketLossPerc(value) => {
+            if !(0..=100).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.packet_loss_perc = value;
+        }
+        OpusEncoderCtlRequest::GetPacketLossPerc(out) => {
+            *out = encoder.packet_loss_perc;
+        }
+        OpusEncoderCtlRequest::SetInbandFec(value) => {
+            encoder.inband_fec = value;
+        }
+        OpusEncoderCtlRequest::GetInbandFec(out) => {
+            *out = encoder.inband_fec;
+        }
+        OpusEncoderCtlRequest::SetDtx(value) => {
+            encoder.use_dtx = value;
+        }
+        OpusEncoderCtlRequest::GetDtx(out) => {
+            *out = encoder.use_dtx;
+        }
+        OpusEncoderCtlRequest::SetLsbDepth(value) => {
+            if !(8..=24).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.lsb_depth = value;
+        }
+        OpusEncoderCtlRequest::GetLsbDepth(out) => {
+            *out = encoder.lsb_depth;
+        }
+        OpusEncoderCtlRequest::SetExpertFrameDuration(value) => {
+            if !is_valid_expert_frame_duration(value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.variable_duration = value;
+        }
+        OpusEncoderCtlRequest::GetExpertFrameDuration(out) => {
+            *out = encoder.variable_duration;
+        }
+        OpusEncoderCtlRequest::SetPredictionDisabled(value) => {
+            encoder.prediction_disabled = value;
+            encoder.silk_mode.reduced_dependency = value;
+        }
+        OpusEncoderCtlRequest::GetPredictionDisabled(out) => {
+            *out = encoder.prediction_disabled;
+        }
+        OpusEncoderCtlRequest::SetPhaseInversionDisabled(value) => {
+            opus_custom_encoder_ctl(
+                encoder.celt.encoder(),
+                CeltEncoderCtlRequest::SetPhaseInversionDisabled(value),
+            )?;
+        }
+        OpusEncoderCtlRequest::GetPhaseInversionDisabled(out) => {
+            opus_custom_encoder_ctl(
+                encoder.celt.encoder(),
+                CeltEncoderCtlRequest::GetPhaseInversionDisabled(out),
+            )?;
+        }
+        OpusEncoderCtlRequest::SetDredDuration(value) => {
+            if !cfg!(feature = "dred") {
+                return Err(OpusEncoderCtlError::Unimplemented);
+            }
+            if !(0..=DRED_MAX_FRAMES).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.dred_duration = value;
+            encoder.silk_mode.use_dred = if value > 0 { 1 } else { 0 };
+        }
+        OpusEncoderCtlRequest::GetDredDuration(out) => {
+            if !cfg!(feature = "dred") {
+                return Err(OpusEncoderCtlError::Unimplemented);
+            }
+            *out = encoder.dred_duration;
+        }
+        OpusEncoderCtlRequest::SetForceMode(value) => {
+            if value != OPUS_AUTO && !(MODE_SILK_ONLY..=MODE_CELT_ONLY).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.user_forced_mode = value;
+        }
+        OpusEncoderCtlRequest::GetFinalRange(out) => {
+            *out = encoder.range_final;
+        }
+        OpusEncoderCtlRequest::ResetState => {
+            encoder.reset_state()?;
+        }
+    }
+    Ok(())
+}
+
+pub fn opus_encode(
+    encoder: &mut OpusEncoder<'_>,
+    pcm: &[i16],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusEncodeError> {
+    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
+    if channels == 0 || channels > MAX_CHANNELS || frame_size == 0 {
+        return Err(OpusEncodeError::BadArgument);
+    }
+    let required_input = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if pcm.len() < required_input {
+        return Err(OpusEncodeError::BadArgument);
+    }
+    if data.len() < 2 {
+        return Err(OpusEncodeError::BufferTooSmall);
+    }
+
+    let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
+    let frame_size_i32 = frame_size_select(frame_size_i32, encoder.variable_duration, encoder.fs)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let frame_size = usize::try_from(frame_size_i32).map_err(|_| OpusEncodeError::BadArgument)?;
+
+    let required = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusEncodeError::BadArgument)?;
+
+    let frame_rate = encoder
+        .fs
+        .checked_div(frame_size_i32)
+        .ok_or(OpusEncodeError::BadArgument)?;
+
+    let mut max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    max_data_bytes = max_data_bytes.min(MAX_PACKET_BYTES);
+    encoder.bitrate_bps = user_bitrate_to_bitrate(encoder, frame_size_i32, max_data_bytes);
+
+    let lsb_depth = encoder.lsb_depth.min(16);
+
+    let mut stereo_width = 0.0f32;
+    if encoder.channels == 2 && encoder.force_channels != 1 {
+        stereo_width = compute_stereo_width(
+            &pcm[..required],
+            frame_size,
+            encoder.fs,
+            &mut encoder.width_mem,
+        );
+    }
+    let stereo_width_q15 =
+        libm::roundf(stereo_width * Q15_ONE as f32).clamp(0.0, Q15_ONE as f32) as i32;
+
+    #[cfg(not(feature = "fixed_point"))]
+    let mut is_silence = false;
+    #[cfg(feature = "fixed_point")]
+    let is_silence = false;
+    #[cfg(not(feature = "fixed_point"))]
+    let mut analysis_read_state = None;
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        encoder.analysis_info.valid = false;
+        if encoder.silk_mode.complexity >= 7 && encoder.fs >= 16_000 {
+            is_silence = is_digital_silence(&pcm[..required], frame_size, channels, lsb_depth);
+            analysis_read_state = Some(encoder.analysis.snapshot_read_state());
+            encoder.analysis.application = encoder.application.to_opus_int();
+            run_analysis(
+                &mut encoder.analysis,
+                encoder.celt.mode,
+                Some(&pcm[..required]),
+                frame_size,
+                frame_size,
+                0,
+                -1,
+                encoder.channels,
+                encoder.fs,
+                lsb_depth,
+                &mut encoder.analysis_info,
+            );
+        } else {
+            tonality_analysis_reset(&mut encoder.analysis);
+        }
+
+        if !is_silence {
+            encoder.voice_ratio = -1;
+        }
+        encoder.detected_bandwidth = 0;
+        if encoder.analysis_info.valid {
+            if encoder.signal_type == OPUS_AUTO {
+                let prob = if encoder.prev_mode == 0 {
+                    encoder.analysis_info.music_prob
+                } else if encoder.prev_mode == MODE_CELT_ONLY {
+                    encoder.analysis_info.music_prob_max
+                } else {
+                    encoder.analysis_info.music_prob_min
+                };
+                encoder.voice_ratio = libm::floorf(0.5 + 100.0 * (1.0 - prob)) as i32;
+            }
+
+            let analysis_bandwidth = encoder.analysis_info.bandwidth;
+            encoder.detected_bandwidth = if analysis_bandwidth <= 12 {
+                OPUS_BANDWIDTH_NARROWBAND
+            } else if analysis_bandwidth <= 14 {
+                OPUS_BANDWIDTH_MEDIUMBAND
+            } else if analysis_bandwidth <= 16 {
+                OPUS_BANDWIDTH_WIDEBAND
+            } else if analysis_bandwidth <= 18 {
+                OPUS_BANDWIDTH_SUPERWIDEBAND
+            } else {
+                OPUS_BANDWIDTH_FULLBAND
+            };
+        }
+    }
+    #[cfg(feature = "fixed_point")]
+    {
+        encoder.voice_ratio = -1;
+    }
+
+    let mut equiv_rate = compute_equiv_rate(
+        encoder.bitrate_bps,
+        encoder.channels,
+        frame_rate,
+        encoder.use_vbr,
+        0,
+        encoder.complexity,
+        encoder.packet_loss_perc,
+    );
+
+    let voice_est = if encoder.signal_type == OPUS_SIGNAL_VOICE {
+        127
+    } else if encoder.signal_type == OPUS_SIGNAL_MUSIC {
+        0
+    } else if encoder.voice_ratio >= 0 {
+        let mut est = (encoder.voice_ratio * 327) >> 8;
+        if matches!(encoder.application, OpusApplication::Audio) {
+            est = est.min(115);
+        }
+        est
+    } else if matches!(encoder.application, OpusApplication::Voip) {
+        115
+    } else {
+        48
+    };
+
+    let prev_stream_channels = encoder.stream_channels;
+    let stream_channels = if encoder.force_channels != OPUS_AUTO && encoder.channels == 2 {
+        encoder.force_channels
+    } else if encoder.channels == 2 {
+        let mut stereo_threshold = STEREO_MUSIC_THRESHOLD
+            + ((i64::from(voice_est) * i64::from(voice_est)
+                * i64::from(STEREO_VOICE_THRESHOLD - STEREO_MUSIC_THRESHOLD))
+                >> 14) as i32;
+        if prev_stream_channels == 2 {
+            stereo_threshold -= 1000;
+        } else {
+            stereo_threshold += 1000;
+        }
+        if equiv_rate > stereo_threshold { 2 } else { 1 }
+    } else {
+        encoder.channels
+    };
+    encoder.stream_channels = stream_channels;
+
+    equiv_rate = compute_equiv_rate(
+        encoder.bitrate_bps,
+        encoder.stream_channels,
+        frame_rate,
+        encoder.use_vbr,
+        0,
+        encoder.complexity,
+        encoder.packet_loss_perc,
+    );
+
+    #[cfg(not(feature = "fixed_point"))]
+    let silk_use_dtx = encoder.use_dtx && !(encoder.analysis_info.valid || is_silence);
+    #[cfg(feature = "fixed_point")]
+    let silk_use_dtx = encoder.use_dtx;
+    encoder.silk_mode.use_dtx = i32::from(silk_use_dtx);
+
+    let mut mode = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
+        MODE_CELT_ONLY
+    } else if encoder.user_forced_mode != OPUS_AUTO {
+        encoder.user_forced_mode
+    } else {
+        let q15_one_minus = Q15_ONE - stereo_width_q15;
+        let mode_voice = ((i64::from(q15_one_minus) * i64::from(MODE_THRESHOLDS[0][0])
+            + i64::from(stereo_width_q15) * i64::from(MODE_THRESHOLDS[1][0]))
+            >> 15) as i32;
+        let mode_music = ((i64::from(q15_one_minus) * i64::from(MODE_THRESHOLDS[1][1])
+            + i64::from(stereo_width_q15) * i64::from(MODE_THRESHOLDS[1][1]))
+            >> 15) as i32;
+
+        let mut threshold = mode_music
+            + ((i64::from(voice_est)
+                * i64::from(voice_est)
+                * i64::from(mode_voice - mode_music))
+                >> 14) as i32;
+        if matches!(encoder.application, OpusApplication::Voip) {
+            threshold += 8000;
+        }
+        if encoder.prev_mode == MODE_CELT_ONLY {
+            threshold -= 4000;
+        } else if encoder.prev_mode > 0 {
+            threshold += 4000;
+        }
+
+        let mut selected = if equiv_rate >= threshold {
+            MODE_CELT_ONLY
+        } else {
+            MODE_SILK_ONLY
+        };
+
+        if encoder.inband_fec
+            && encoder.packet_loss_perc > (128 - voice_est) >> 4
+            && (encoder.fec_config != 2 || voice_est > 25)
+        {
+            selected = MODE_SILK_ONLY;
+        }
+        if silk_use_dtx && voice_est > 100 {
+            selected = MODE_SILK_ONLY;
+        }
+        let rate_threshold = if frame_rate > 50 { 9000 } else { 6000 };
+        let threshold_bytes =
+            i64::from(rate_threshold) * i64::from(frame_size_i32) / i64::from(encoder.fs * 8);
+        if i64::from(max_data_bytes) < threshold_bytes {
+            selected = MODE_CELT_ONLY;
+        }
+        selected
+    };
+
+    let min_celt = encoder.fs / 100;
+    if mode != MODE_CELT_ONLY && frame_size_i32 < min_celt {
+        mode = MODE_CELT_ONLY;
+    }
+
+    let mut redundancy = false;
+    let mut celt_to_silk = false;
+    let mut to_celt = false;
+    let mut prefill = PrefillMode::None;
+    if encoder.user_forced_mode != MODE_CELT_ONLY
+        && encoder.prev_mode > 0
+        && ((mode != MODE_CELT_ONLY && encoder.prev_mode == MODE_CELT_ONLY)
+            || (mode == MODE_CELT_ONLY && encoder.prev_mode != MODE_CELT_ONLY))
+    {
+        redundancy = true;
+        celt_to_silk = mode != MODE_CELT_ONLY;
+        if !celt_to_silk {
+            if frame_size_i32 >= min_celt {
+                mode = encoder.prev_mode;
+                to_celt = true;
+            } else {
+                redundancy = false;
+            }
+        }
+    }
+
+    if encoder.stream_channels == 1
+        && encoder.prev_channels == 2
+        && !encoder.silk_mode.to_mono
+        && mode != MODE_CELT_ONLY
+        && encoder.prev_mode != MODE_CELT_ONLY
+    {
+        encoder.silk_mode.to_mono = true;
+        encoder.stream_channels = 2;
+    } else {
+        encoder.silk_mode.to_mono = false;
+    }
+
+    equiv_rate = compute_equiv_rate(
+        encoder.bitrate_bps,
+        encoder.stream_channels,
+        frame_rate,
+        encoder.use_vbr,
+        mode,
+        encoder.complexity,
+        encoder.packet_loss_perc,
+    );
+
+    if mode != MODE_CELT_ONLY && encoder.prev_mode == MODE_CELT_ONLY {
+        let mut dummy = SilkEncControl::default();
+        silk_init_encoder(&mut encoder.silk, encoder.arch, &mut dummy)?;
+        prefill = PrefillMode::Prefill;
+    }
+
+    let mut bandwidth_int = encoder.bandwidth.to_opus_int();
+    if mode == MODE_CELT_ONLY || encoder.first || encoder.silk_mode.allow_bandwidth_switch {
+        let (voice_thresholds, music_thresholds) =
+            if encoder.channels == 2 && encoder.force_channels != 1 {
+                (
+                    &STEREO_VOICE_BANDWIDTH_THRESHOLDS,
+                    &STEREO_MUSIC_BANDWIDTH_THRESHOLDS,
+                )
+            } else {
+                (&MONO_VOICE_BANDWIDTH_THRESHOLDS, &MONO_MUSIC_BANDWIDTH_THRESHOLDS)
+            };
+        let mut bandwidth_thresholds = [0i32; 8];
+        for i in 0..bandwidth_thresholds.len() {
+            bandwidth_thresholds[i] = music_thresholds[i]
+                + ((i64::from(voice_est)
+                    * i64::from(voice_est)
+                    * i64::from(voice_thresholds[i] - music_thresholds[i]))
+                    >> 14) as i32;
+        }
+
+        bandwidth_int = OPUS_BANDWIDTH_FULLBAND;
+        loop {
+            let idx = usize::try_from(2 * (bandwidth_int - OPUS_BANDWIDTH_MEDIUMBAND))
+                .unwrap_or(0);
+            let mut threshold = *bandwidth_thresholds.get(idx).unwrap_or(&0);
+            let hysteresis = *bandwidth_thresholds.get(idx + 1).unwrap_or(&0);
+            if !encoder.first {
+                if encoder.auto_bandwidth >= bandwidth_int {
+                    threshold -= hysteresis;
+                } else {
+                    threshold += hysteresis;
+                }
+            }
+            if equiv_rate >= threshold {
+                break;
+            }
+            if bandwidth_int <= OPUS_BANDWIDTH_NARROWBAND {
+                break;
+            }
+            bandwidth_int -= 1;
+        }
+        if bandwidth_int == OPUS_BANDWIDTH_MEDIUMBAND {
+            bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
+        }
+        encoder.auto_bandwidth = bandwidth_int;
+        if !encoder.first
+            && mode != MODE_CELT_ONLY
+            && !encoder.silk_mode.in_wb_mode_without_variable_lp
+            && bandwidth_int > OPUS_BANDWIDTH_WIDEBAND
+        {
+            bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
+        }
+    }
+
+    if bandwidth_int > encoder.max_bandwidth {
+        bandwidth_int = encoder.max_bandwidth;
+    }
+    if encoder.user_bandwidth != OPUS_AUTO {
+        bandwidth_int = encoder.user_bandwidth;
+    }
+    let max_rate = frame_rate.saturating_mul(max_data_bytes).saturating_mul(8);
+    if mode != MODE_CELT_ONLY && max_rate < 15_000 {
+        bandwidth_int = bandwidth_int.min(OPUS_BANDWIDTH_WIDEBAND);
+    }
+    if encoder.fs <= 24_000 && bandwidth_int > OPUS_BANDWIDTH_SUPERWIDEBAND {
+        bandwidth_int = OPUS_BANDWIDTH_SUPERWIDEBAND;
+    }
+    if encoder.fs <= 16_000 && bandwidth_int > OPUS_BANDWIDTH_WIDEBAND {
+        bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
+    }
+    if encoder.fs <= 12_000 && bandwidth_int > OPUS_BANDWIDTH_MEDIUMBAND {
+        bandwidth_int = OPUS_BANDWIDTH_MEDIUMBAND;
+    }
+    if encoder.fs <= 8_000 && bandwidth_int > OPUS_BANDWIDTH_NARROWBAND {
+        bandwidth_int = OPUS_BANDWIDTH_NARROWBAND;
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    if encoder.detected_bandwidth != 0 && encoder.user_bandwidth == OPUS_AUTO {
+        let min_detected_bandwidth = if equiv_rate
+            <= 18_000 * encoder.stream_channels
+            && mode == MODE_CELT_ONLY
+        {
+            OPUS_BANDWIDTH_NARROWBAND
+        } else if equiv_rate <= 24_000 * encoder.stream_channels && mode == MODE_CELT_ONLY {
+            OPUS_BANDWIDTH_MEDIUMBAND
+        } else if equiv_rate <= 30_000 * encoder.stream_channels {
+            OPUS_BANDWIDTH_WIDEBAND
+        } else if equiv_rate <= 44_000 * encoder.stream_channels {
+            OPUS_BANDWIDTH_SUPERWIDEBAND
+        } else {
+            OPUS_BANDWIDTH_FULLBAND
+        };
+        encoder.detected_bandwidth = encoder.detected_bandwidth.max(min_detected_bandwidth);
+        bandwidth_int = bandwidth_int.min(encoder.detected_bandwidth);
+    }
+
+    let use_fec = decide_fec(
+        encoder.inband_fec,
+        encoder.packet_loss_perc,
+        encoder.silk_mode.lbrr_coded != 0,
+        mode,
+        &mut bandwidth_int,
+        equiv_rate,
+    );
+    encoder.silk_mode.lbrr_coded = i32::from(use_fec);
+
+    if mode == MODE_CELT_ONLY && bandwidth_int == OPUS_BANDWIDTH_MEDIUMBAND {
+        bandwidth_int = OPUS_BANDWIDTH_WIDEBAND;
+    }
+
+    let curr_bandwidth_int = bandwidth_int;
+    if mode == MODE_SILK_ONLY && curr_bandwidth_int > OPUS_BANDWIDTH_WIDEBAND {
+        mode = MODE_HYBRID;
+    }
+    if mode == MODE_HYBRID && curr_bandwidth_int <= OPUS_BANDWIDTH_WIDEBAND {
+        mode = MODE_SILK_ONLY;
+    }
+
+    let bandwidth = Bandwidth::from_opus_int(bandwidth_int).unwrap_or(Bandwidth::Wide);
+    encoder.bandwidth = bandwidth;
+
+    let max_celt = usize::try_from(encoder.fs / 50).map_err(|_| OpusEncodeError::BadArgument)?;
+    if mode == MODE_SILK_ONLY && frame_size * 2 != max_celt {
+        let multiples = frame_size / max_celt;
+        if !frame_size.is_multiple_of(max_celt) || !(1..=6).contains(&multiples) {
+            return Err(OpusEncodeError::Unimplemented);
+        }
+    }
+
+    if (frame_size > max_celt && mode != MODE_SILK_ONLY) || frame_size > max_celt * 3 {
+        let fs = encoder.fs;
+        let enc_frame_size_i32 = if mode == MODE_SILK_ONLY {
+            if frame_size_i32 == 2 * fs / 25 {
+                fs / 25
+            } else if frame_size_i32 == 3 * fs / 25 {
+                3 * fs / 50
+            } else {
+                fs / 50
+            }
+        } else {
+            fs / 50
+        };
+        if enc_frame_size_i32 <= 0 || frame_size_i32 % enc_frame_size_i32 != 0 {
+            return Err(OpusEncodeError::Unimplemented);
+        }
+        let enc_frame_size = usize::try_from(enc_frame_size_i32)
+            .map_err(|_| OpusEncodeError::BadArgument)?;
+        let nb_frames = frame_size / enc_frame_size;
+        if !(1..=6).contains(&nb_frames) {
+            return Err(OpusEncodeError::Unimplemented);
+        }
+
+        #[cfg(not(feature = "fixed_point"))]
+        if let Some(read_state) = analysis_read_state {
+            encoder.analysis.restore_read_state(read_state);
+        }
+
+        let max_header_bytes = if nb_frames == 2 {
+            3
+        } else {
+            2 + (nb_frames - 1) * 2
+        };
+        let nb_frames_i32 = i32::try_from(nb_frames).map_err(|_| OpusEncodeError::BadArgument)?;
+        let max_header_bytes_i32 =
+            i32::try_from(max_header_bytes).map_err(|_| OpusEncodeError::BadArgument)?;
+        let max_len_sum = nb_frames_i32
+            .checked_add(max_data_bytes)
+            .and_then(|value| value.checked_sub(max_header_bytes_i32))
+            .ok_or(OpusEncodeError::BufferTooSmall)?;
+        if max_len_sum < 2 * nb_frames_i32 {
+            return Err(OpusEncodeError::BufferTooSmall);
+        }
+        let max_len_sum_usize =
+            usize::try_from(max_len_sum).map_err(|_| OpusEncodeError::BadArgument)?;
+        if max_len_sum_usize > MAX_REPACKETIZER_BYTES {
+            return Err(OpusEncodeError::BufferTooSmall);
+        }
+
+        let mut tmp_data = [0u8; MAX_REPACKETIZER_BYTES];
+        let tmp_data = &mut tmp_data[..max_len_sum_usize];
+        let mut repacketizer = OpusRepacketizer::new();
+        repacketizer.opus_repacketizer_init();
+
+        let bak_to_mono = encoder.silk_mode.to_mono;
+        if bak_to_mono {
+            encoder.force_channels = 1;
+        } else {
+            encoder.prev_channels = encoder.stream_channels;
+        }
+
+        let mut tot_size = 0i32;
+        let mut dtx_count = 0usize;
+        for frame_idx in 0..nb_frames {
+            encoder.silk_mode.to_mono = false;
+            encoder.nonfinal_frame = frame_idx < nb_frames - 1;
+            let frame_to_celt = to_celt && frame_idx == nb_frames - 1;
+            let frame_redundancy = redundancy && (frame_to_celt || (!to_celt && frame_idx == 0));
+
+            let frames_left =
+                i32::try_from(nb_frames - frame_idx).map_err(|_| OpusEncodeError::BadArgument)?;
+            let max_len_per_frame = (max_len_sum - tot_size) / frames_left;
+            let mut curr_max = max_len_per_frame;
+            if encoder.use_vbr {
+                let rate_bytes =
+                    (i64::from(encoder.bitrate_bps) * i64::from(enc_frame_size_i32))
+                        / (8 * i64::from(encoder.fs));
+                let rate_bytes =
+                    rate_bytes.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                curr_max = curr_max.min(rate_bytes);
+            }
+            if curr_max < 2 {
+                return Err(OpusEncodeError::BufferTooSmall);
+            }
+
+            let tot_size_usize =
+                usize::try_from(tot_size).map_err(|_| OpusEncodeError::BadArgument)?;
+            let max_len_per_frame_usize =
+                usize::try_from(max_len_per_frame).map_err(|_| OpusEncodeError::BadArgument)?;
+            if tot_size_usize + max_len_per_frame_usize > tmp_data.len() {
+                return Err(OpusEncodeError::BufferTooSmall);
+            }
+            let curr_max_usize =
+                usize::try_from(curr_max).map_err(|_| OpusEncodeError::BadArgument)?;
+
+            #[cfg(not(feature = "fixed_point"))]
+            if analysis_read_state.is_some() {
+                tonality_get_info(&mut encoder.analysis, &mut encoder.analysis_info, enc_frame_size);
+            }
+
+            let start = frame_idx
+                .checked_mul(enc_frame_size)
+                .and_then(|value| value.checked_mul(channels))
+                .ok_or(OpusEncodeError::BadArgument)?;
+            let end = start
+                .checked_add(enc_frame_size * channels)
+                .ok_or(OpusEncodeError::BadArgument)?;
+            let frame_buf =
+                &mut tmp_data[tot_size_usize..tot_size_usize + max_len_per_frame_usize];
+            let len = match encode_frame_native(
+                encoder,
+                &pcm[start..end],
+                enc_frame_size,
+                &mut frame_buf[..curr_max_usize],
+                lsb_depth,
+                silk_use_dtx,
+                is_silence,
+                frame_redundancy,
+                celt_to_silk,
+                prefill,
+                bandwidth_int,
+                mode,
+                frame_to_celt,
+            ) {
+                Ok(len) => len,
+                Err(OpusEncodeError::BufferTooSmall) if curr_max < max_len_per_frame => {
+                    encode_frame_native(
+                        encoder,
+                        &pcm[start..end],
+                        enc_frame_size,
+                        &mut frame_buf[..max_len_per_frame_usize],
+                        lsb_depth,
+                        silk_use_dtx,
+                        is_silence,
+                        frame_redundancy,
+                        celt_to_silk,
+                        prefill,
+                        bandwidth_int,
+                        mode,
+                        frame_to_celt,
+                    )?
+                }
+                Err(err) => return Err(err),
+            };
+            if len == 1 {
+                dtx_count += 1;
+            }
+            repacketizer
+                .opus_repacketizer_cat(&frame_buf[..len], len)
+                .map_err(|err| match err {
+                    RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                    _ => OpusEncodeError::InternalError,
+                })?;
+            tot_size = tot_size.saturating_add(len as i32);
+        }
+
+        let maxlen = usize::try_from(max_data_bytes).map_err(|_| OpusEncodeError::BadArgument)?;
+        if maxlen > data.len() {
+            return Err(OpusEncodeError::BufferTooSmall);
+        }
+        let mut written = repacketizer
+            .opus_repacketizer_out(&mut data[..], maxlen)
+            .map_err(|err| match err {
+                RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                _ => OpusEncodeError::InternalError,
+            })?;
+        if !encoder.use_vbr && dtx_count != nb_frames {
+            opus_packet_pad(data, written, maxlen).map_err(|err| match err {
+                RepacketizerError::BufferTooSmall => OpusEncodeError::BufferTooSmall,
+                _ => OpusEncodeError::InternalError,
+            })?;
+            written = maxlen;
+        }
+
+        encoder.silk_mode.to_mono = bak_to_mono;
+        encoder.nonfinal_frame = false;
+        return Ok(written);
+    }
+
+    encoder.nonfinal_frame = false;
+    encode_frame_native(
+        encoder,
+        &pcm[..required],
+        frame_size,
+        data,
+        lsb_depth,
+        silk_use_dtx,
+        is_silence,
+        redundancy,
+        celt_to_silk,
+        prefill,
+        bandwidth_int,
+        mode,
+        to_celt,
+    )
+}
+
 /// Wrapper for encoding 24-bit PCM stored in `i32`, mirroring `opus_encode24`.
 pub fn opus_encode24(
     encoder: &mut OpusEncoder<'_>,
@@ -2432,7 +2561,8 @@ mod tests {
     use super::{
         DELAY_BUFFER_SAMPLES, DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY,
         OPUS_AUTO, OPUS_BITRATE_MAX, OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND,
-        OPUS_BANDWIDTH_WIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_SIGNAL_MUSIC, OpusEncodeError,
+        OPUS_BANDWIDTH_WIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_FRAMESIZE_40_MS, OPUS_SIGNAL_MUSIC,
+        OpusEncodeError,
         OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, StereoWidthState,
         compute_equiv_rate, compute_redundancy_bytes, compute_silk_rate_for_hybrid,
         compute_stereo_width, decide_fec, lin2log, opus_encode, opus_encode24,
@@ -2440,7 +2570,7 @@ mod tests {
         VARIABLE_HP_MIN_CUTOFF_HZ,
     };
     use crate::packet::{
-        Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode,
+        Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode, opus_packet_get_nb_frames,
         opus_packet_get_samples_per_frame,
     };
 
@@ -2534,6 +2664,25 @@ mod tests {
         let len = opus_encode(&mut enc, &pcm, 960, &mut out).expect("encode");
         assert!(len >= 1);
         assert_eq!(opus_packet_get_mode(&out[..len]).unwrap(), crate::packet::Mode::HYBRID);
+        assert_eq!(opus_packet_get_samples_per_frame(&out[..len], 48_000).unwrap(), 960);
+    }
+
+    #[test]
+    fn encodes_hybrid_multiframe_packet() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_HYBRID)).unwrap();
+        opus_encoder_ctl(
+            &mut enc,
+            OpusEncoderCtlRequest::SetExpertFrameDuration(OPUS_FRAMESIZE_40_MS),
+        )
+        .unwrap();
+        let pcm = [0i16; 1920];
+        let mut out = [0u8; 4000];
+
+        let len = opus_encode(&mut enc, &pcm, 1920, &mut out).expect("encode");
+        assert!(len >= 1);
+        assert_eq!(opus_packet_get_mode(&out[..len]).unwrap(), crate::packet::Mode::HYBRID);
+        assert_eq!(opus_packet_get_nb_frames(&out[..len], len).unwrap(), 2);
         assert_eq!(opus_packet_get_samples_per_frame(&out[..len], 48_000).unwrap(), 960);
     }
 

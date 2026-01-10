@@ -44,19 +44,21 @@ using `opus-c/src/opus_encoder.c` as the reference.
    - Rust files: `src/opus_encoder.rs`, `src/celt/celt_encoder.rs`,
      `src/range.rs`.
 
-5. **Handle Hybrid multi-frame and long-frame repacketization** (partial)
+5. **Handle Hybrid multi-frame and long-frame repacketization** (done)
    - Port the multi-frame path in `opus_encode_native()` for
      `frame_size > 20 ms` in Hybrid/CELT modes.
    - Ensure per-frame `to_celt` is only requested on the last frame.
-   - Current state: long-frame Hybrid falls back to CELT-only multiframe;
-     Hybrid multiframe packing still missing.
-   - Rust file: `src/opus_encoder.rs`.
+   - Preserve tonality analysis read state when splitting frames.
+   - Rust files: `src/opus_encoder.rs`, `src/analysis.rs`.
 
 6. **Update and add tests** (partial)
    - Replace the current test that asserts Hybrid outputs CELT-only.
    - Add Hybrid framing vectors/expectations (TOC, bandwidth, final range).
    - Add Hybrid multi-frame and redundancy transition tests.
-   - Rust files: `tests/test_opus_encode.rs`, plus new fixtures if needed.
+   - Current state: added a Hybrid multiframe packet test in the encoder unit
+     tests; remaining vector/transition coverage still missing.
+   - Rust files: `src/opus_encoder.rs`, `tests/test_opus_encode.rs`, plus new
+     fixtures if needed.
 
 ## Reference locations
 

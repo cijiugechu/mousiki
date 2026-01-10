@@ -310,6 +310,18 @@ impl TonalityAnalysisState {
         self.downmix_state.fill(0.0);
         self.info = core::array::from_fn(|_| AnalysisInfo::default());
     }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn snapshot_read_state(&self) -> (usize, i32) {
+        (self.read_pos, self.read_subframe)
+    }
+
+    #[inline]
+    pub(crate) fn restore_read_state(&mut self, state: (usize, i32)) {
+        self.read_pos = state.0;
+        self.read_subframe = state.1;
+    }
 }
 
 pub(crate) fn tonality_analysis_init(state: &mut TonalityAnalysisState, fs: i32) {
