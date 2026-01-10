@@ -4,11 +4,11 @@ This checklist captures remaining hybrid-encode path deltas after comparing
 `opus-c/src/opus_encoder.c` to the Rust port. It focuses on the hybrid
 processing path beyond framing/packetization.
 
-1. Wire `delay_buffer` into the PCM preparation path.
+1. ✅ Wire `delay_buffer` into the PCM preparation path.
    - C uses `delay_buffer` + `encoder_buffer`/`delay_compensation` to build
      `pcm_buf` before encoding and to keep overlap history.
-   - Rust defines the fields but does not use them in `opus_encode()`.
-   - Target: `src/opus_encoder.rs`.
+   - Rust now stages PCM with delay history and exposes the missing fields.
+   - Target: `src/opus_encoder.rs` (with a focused unit test).
 
 2. Port high-pass filtering and DC rejection on the input PCM.
    - C computes `hp_freq_smth1` and updates `variable_HP_smth2_Q15`, then calls
