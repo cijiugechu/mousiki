@@ -12,7 +12,7 @@ use mousiki::opus_multistream::{
     opus_multistream_encoder_get_encoder_state,
 };
 use mousiki::packet::{
-    opus_packet_get_mode, opus_packet_get_nb_frames, opus_packet_get_samples_per_frame,
+    Mode, opus_packet_get_mode, opus_packet_get_nb_frames, opus_packet_get_samples_per_frame,
     opus_packet_parse,
 };
 use mousiki::repacketizer::{
@@ -1270,6 +1270,86 @@ fn opus_encode_hybrid_round_trip() {
     )
     .expect("decode");
     assert_eq!(decoded, frame_size);
+}
+
+#[test]
+fn opus_encode_hybrid_multiframe_round_trip() {
+    let sampling_rate = 48_000usize;
+    let channels = 1usize;
+    let frame_size = 2 * sampling_rate / 50;
+
+    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
+        .expect("encoder");
+    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_HYBRID))
+        .expect("force hybrid");
+    opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetExpertFrameDuration(OPUS_FRAMESIZE_40_MS),
+    )
+    .expect("set frame duration");
+
+    let mut dec = opus_decoder_create(sampling_rate as i32, channels as i32).expect("decoder");
+
+    let mut inbuf = vec![0i16; frame_size * channels];
+    let mut rng = FastRand::new(0xDEC0DE04);
+    generate_music(&mut inbuf, frame_size, &mut rng);
+
+    let mut packet = vec![0u8; MAX_PACKET];
+    let mut outbuf = vec![0i16; MAX_FRAME_SAMP * channels];
+    let len = opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode");
+    assert_eq!(opus_packet_get_mode(&packet[..len]).unwrap(), Mode::HYBRID);
+    assert_eq!(opus_packet_get_nb_frames(&packet[..len], len).unwrap(), 2);
+    assert_eq!(
+        opus_packet_get_samples_per_frame(&packet[..len], 48_000).unwrap(),
+        sampling_rate / 50
+    );
+
+    let decoded = opus_decode(
+        &mut dec,
+        Some(&packet[..len]),
+        len,
+        &mut outbuf,
+        MAX_FRAME_SAMP,
+        false,
+    )
+    .expect("decode");
+    assert_eq!(decoded, frame_size);
+}
+
+#[test]
+fn opus_encode_hybrid_to_celt_transition_emits_bridge_frame() {
+    let sampling_rate = 48_000usize;
+    let channels = 1usize;
+    let frame_size = sampling_rate / 50;
+
+    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
+        .expect("encoder");
+    opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetBandwidth(OPUS_BANDWIDTH_FULLBAND),
+    )
+    .expect("set bandwidth");
+
+    let mut rng = FastRand::new(0xDEC0DE05);
+    let mut packet = vec![0u8; MAX_PACKET];
+    let mut inbuf = vec![0i16; frame_size * channels];
+
+    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(12_000))
+        .expect("set low bitrate");
+    generate_music(&mut inbuf, frame_size, &mut rng);
+    let len = opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode hybrid");
+    assert_eq!(opus_packet_get_mode(&packet[..len]).unwrap(), Mode::HYBRID);
+
+    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(256_000))
+        .expect("set high bitrate");
+    generate_music(&mut inbuf, frame_size, &mut rng);
+    let len =
+        opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode transition");
+    assert_eq!(opus_packet_get_mode(&packet[..len]).unwrap(), Mode::HYBRID);
+
+    generate_music(&mut inbuf, frame_size, &mut rng);
+    let len = opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode celt");
+    assert_eq!(opus_packet_get_mode(&packet[..len]).unwrap(), Mode::CELT);
 }
 
 #[test]

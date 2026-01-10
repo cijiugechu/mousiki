@@ -1,6 +1,10 @@
 use mousiki::opus_decoder::{
     opus_decode_float, opus_decoder_create, opus_decoder_ctl, OpusDecoderCtlRequest,
 };
+use mousiki::packet::{
+    Bandwidth, Mode, opus_packet_get_bandwidth, opus_packet_get_mode,
+    opus_packet_get_samples_per_frame,
+};
 
 const FRAME_SIZE: usize = 960;
 #[cfg(not(feature = "fixed_point"))]
@@ -11,6 +15,37 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/hybrid_decode_vectors.rs"
 ));
+
+#[test]
+fn hybrid_packet_metadata_matches_reference() {
+    assert_eq!(
+        opus_packet_get_mode(&TRANSITION_SILK_PACKET).expect("packet mode"),
+        Mode::SILK
+    );
+    assert_eq!(
+        opus_packet_get_bandwidth(&TRANSITION_SILK_PACKET).expect("packet bandwidth"),
+        Bandwidth::Wide
+    );
+    assert_eq!(
+        opus_packet_get_samples_per_frame(&TRANSITION_SILK_PACKET, 48_000).expect("frame size"),
+        FRAME_SIZE
+    );
+
+    for packet in [&TRANSITION_HYBRID_PACKET[..], &FEC_PREV_PACKET[..], &FEC_PACKET[..]] {
+        assert_eq!(
+            opus_packet_get_mode(packet).expect("packet mode"),
+            Mode::HYBRID
+        );
+        assert_eq!(
+            opus_packet_get_bandwidth(packet).expect("packet bandwidth"),
+            Bandwidth::Full
+        );
+        assert_eq!(
+            opus_packet_get_samples_per_frame(packet, 48_000).expect("frame size"),
+            FRAME_SIZE
+        );
+    }
+}
 
 #[test]
 fn hybrid_transition_final_range_matches_reference() {

@@ -51,14 +51,14 @@ using `opus-c/src/opus_encoder.c` as the reference.
    - Preserve tonality analysis read state when splitting frames.
    - Rust files: `src/opus_encoder.rs`, `src/analysis.rs`.
 
-6. **Update and add tests** (partial)
+6. **Update and add tests** (done)
    - Replace the current test that asserts Hybrid outputs CELT-only.
    - Add Hybrid framing vectors/expectations (TOC, bandwidth, final range).
    - Add Hybrid multi-frame and redundancy transition tests.
-   - Current state: added a Hybrid multiframe packet test in the encoder unit
-     tests; remaining vector/transition coverage still missing.
-   - Rust files: `src/opus_encoder.rs`, `tests/test_opus_encode.rs`, plus new
-     fixtures if needed.
+   - Added packet metadata checks for hybrid vectors (mode/bandwidth/samples).
+   - Added Hybrid multiframe round-trip and hybrid->CELT bridge frame tests.
+   - Rust files: `src/opus_encoder.rs`, `tests/hybrid_decode.rs`,
+     `tests/test_opus_encode.rs`.
 
 ## Reference locations
 
