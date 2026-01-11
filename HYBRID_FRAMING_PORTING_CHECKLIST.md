@@ -17,11 +17,12 @@ processing path beyond framing/packetization.
      `hp_cutoff()`/`dc_reject()` during PCM staging with unit tests.
    - Target: `src/opus_encoder.rs`.
 
-3. Port HB gain computation and apply `gain_fade()`.
+3. ✅ Port HB gain computation and apply `gain_fade()`.
    - C computes `HB_gain` in hybrid and fades between frames using
      `gain_fade()`, tracking `prev_hb_gain`.
-   - Rust tracks `prev_hb_gain` but does not apply any gain fade.
-   - Target: `src/opus_encoder.rs` + helper implementation.
+   - Rust now computes `hb_gain` based on CELT bitrate allocation and applies
+     `gain_fade()` to smoothly transition between frames before CELT encoding.
+   - Target: `src/opus_encoder.rs`.
 
 4. Port hybrid stereo width handling via `stereo_fade()`.
    - C uses `hybrid_stereo_width_Q14` and `silk_mode.stereoWidth_Q14` to

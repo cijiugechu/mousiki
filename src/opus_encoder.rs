@@ -14,10 +14,10 @@ use crate::analysis::{
 };
 use crate::celt::AnalysisInfo;
 use crate::celt::{
-    CELT_SIG_SCALE, CeltEncodeError, CeltEncoderCtlError, CeltEncoderInitError, SilkInfo,
-    EncoderCtlRequest as CeltEncoderCtlRequest, OpusRes, OwnedCeltEncoder, canonical_mode,
-    celt_encode_with_ec, celt_sqrt, frac_div32, opus_custom_encoder_create,
-    opus_custom_encoder_ctl, opus_select_arch,
+    CELT_SIG_SCALE, CeltCoef, CeltEncodeError, CeltEncoderCtlError, CeltEncoderInitError,
+    EncoderCtlRequest as CeltEncoderCtlRequest, OpusRes, OwnedCeltEncoder, SilkInfo,
+    canonical_mode, celt_encode_with_ec, celt_exp2, celt_sqrt, frac_div32,
+    opus_custom_encoder_create, opus_custom_encoder_ctl, opus_select_arch,
 };
 use crate::opus_multistream::{OPUS_AUTO, OPUS_BITRATE_MAX};
 use crate::packet::Bandwidth;
@@ -1163,6 +1163,56 @@ fn dc_reject(
     }
 }
 
+/// Applies a smooth gain transition from `g1` to `g2` over the overlap region,
+/// then constant `g2` for the remainder of the frame. This mirrors the C
+/// `gain_fade()` function used in the hybrid encoder path to attenuate the
+/// CELT high-band when it receives fewer bits.
+///
+/// The overlap region uses a squared-window interpolation to avoid
+/// discontinuities when switching between gain values across frames.
+#[allow(clippy::too_many_arguments)]
+fn gain_fade(
+    pcm: &mut [OpusRes],
+    g1: f32,
+    g2: f32,
+    overlap48: usize,
+    frame_size: usize,
+    channels: usize,
+    window: &[CeltCoef],
+    fs: i32,
+) {
+    debug_assert!(channels == 1 || channels == 2);
+    debug_assert!(fs > 0);
+
+    let inc = (48_000 / fs) as usize;
+    let overlap = overlap48 / inc;
+    let overlap_samples = overlap.min(frame_size);
+
+    if channels == 1 {
+        for (sample, pcm_val) in pcm.iter_mut().enumerate().take(overlap_samples) {
+            let w = window.get(sample * inc).copied().unwrap_or(0.0);
+            let w_sq = w * w;
+            let g = w_sq * g2 + (1.0 - w_sq) * g1;
+            *pcm_val *= g;
+        }
+    } else {
+        for sample in 0..overlap_samples {
+            let w = window.get(sample * inc).copied().unwrap_or(0.0);
+            let w_sq = w * w;
+            let g = w_sq * g2 + (1.0 - w_sq) * g1;
+            pcm[sample * 2] *= g;
+            pcm[sample * 2 + 1] *= g;
+        }
+    }
+
+    // Apply constant g2 to the remainder of the frame
+    for c in 0..channels {
+        for sample in overlap..frame_size {
+            pcm[sample * channels + c] *= g2;
+        }
+    }
+}
+
 fn encode_frame_native<'mode>(
     encoder: &mut OpusEncoder<'mode>,
     pcm: &[i16],
@@ -1475,6 +1525,12 @@ fn encode_frame_native<'mode>(
             )
             .clamp(5_000, 80_000);
 
+            // Compute HB gain: increasingly attenuate high band when CELT gets fewer bits.
+            // Note: When energy_masking is implemented (for surround), this should check
+            // for energy_masking and skip the attenuation if present.
+            let celt_rate = total_bitrate - encoder.silk_mode.bit_rate;
+            let hb_gain = 1.0 - 0.5 * celt_exp2(-celt_rate as f32 / 1024.0);
+
             if encoder.silk_mode.use_cbr != 0 {
                 let other_bits = (encoder.silk_mode.max_bits
                     - encoder.silk_mode.bit_rate * frame_size_i32 / encoder.fs)
@@ -1645,6 +1701,24 @@ fn encode_frame_native<'mode>(
                 signal_type: i32::from(encoder.silk_mode.signal_type),
                 offset: encoder.silk_mode.offset,
             };
+
+            // Apply HB gain fade after all SILK processing is done.
+            // This smoothly transitions gain between frames to avoid discontinuities.
+            if encoder.prev_hb_gain < 1.0 || hb_gain < 1.0 {
+                let overlap48 = encoder.celt.mode.overlap;
+                let window = encoder.celt.mode.window;
+                gain_fade(
+                    &mut pcm_buf[..required],
+                    encoder.prev_hb_gain,
+                    hb_gain,
+                    overlap48,
+                    frame_size,
+                    channels,
+                    window,
+                    encoder.fs,
+                );
+            }
+            encoder.prev_hb_gain = hb_gain;
 
             let celt_pcm = &pcm_buf[..required];
 
@@ -2817,6 +2891,7 @@ pub fn opus_encode_float(
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
     use super::{
         DELAY_BUFFER_SAMPLES, DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY,
         OPUS_AUTO, OPUS_BITRATE_MAX, OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND,
@@ -3315,5 +3390,137 @@ mod tests {
         assert_eq!(mem.yy, 0.0);
         assert_eq!(mem.smoothed_width, 0.0);
         assert_eq!(mem.max_follower, 0.0);
+    }
+
+    #[test]
+    fn gain_fade_unity_gain_preserves_signal() {
+        // When both gains are 1.0, the signal should be unchanged
+        let original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let mut pcm = original.clone();
+        let window = vec![0.5f32; 120]; // Typical overlap window
+
+        super::gain_fade(&mut pcm, 1.0, 1.0, 120, 8, 1, &window, 48_000);
+
+        for (i, &val) in pcm.iter().enumerate() {
+            assert!(
+                (val - original[i]).abs() < 1e-6,
+                "Sample {} changed from {} to {} with unity gain",
+                i,
+                original[i],
+                val
+            );
+        }
+    }
+
+    #[test]
+    fn gain_fade_applies_constant_gain_after_overlap() {
+        // After the overlap region, constant g2 should be applied
+        let mut pcm = vec![1.0; 960]; // 20ms at 48kHz mono
+        let window = vec![1.0f32; 120]; // Full overlap window (120 samples at 48kHz)
+        let g2 = 0.5;
+
+        super::gain_fade(&mut pcm, 1.0, g2, 120, 960, 1, &window, 48_000);
+
+        // Samples after the overlap region should have g2 applied
+        for &val in &pcm[120..] {
+            assert!(
+                (val - g2).abs() < 1e-6,
+                "Post-overlap sample should be {} but got {}",
+                g2,
+                val
+            );
+        }
+    }
+
+    #[test]
+    fn gain_fade_stereo_applies_to_both_channels() {
+        // Both channels should get the same gain applied
+        let mut pcm = vec![1.0; 960 * 2]; // 20ms at 48kHz stereo
+        let window = vec![1.0f32; 120];
+        let g2 = 0.5;
+
+        super::gain_fade(&mut pcm, 1.0, g2, 120, 960, 2, &window, 48_000);
+
+        // After overlap, both channels should have g2
+        for i in 120..960 {
+            let left = pcm[i * 2];
+            let right = pcm[i * 2 + 1];
+            assert!(
+                (left - g2).abs() < 1e-6 && (right - g2).abs() < 1e-6,
+                "Sample {}: left={}, right={}, expected {}",
+                i,
+                left,
+                right,
+                g2
+            );
+        }
+    }
+
+    #[test]
+    fn gain_fade_interpolates_in_overlap_region() {
+        // In the overlap region, gain should smoothly transition from g1 to g2
+        let mut pcm = vec![1.0; 240]; // Larger than overlap
+        // Create a window that ramps from 0 to 1 (simplified)
+        let window: Vec<f32> = (0..120).map(|i| i as f32 / 119.0).collect();
+        let g1 = 1.0;
+        let g2 = 0.5;
+
+        super::gain_fade(&mut pcm, g1, g2, 120, 240, 1, &window, 48_000);
+
+        // First sample: w=0, w_sq=0, g = 0*g2 + 1*g1 = g1
+        assert!(
+            (pcm[0] - g1).abs() < 1e-6,
+            "First sample should be close to g1={}, got {}",
+            g1,
+            pcm[0]
+        );
+
+        // Last overlap sample: w≈1, w_sq≈1, g ≈ g2
+        let last_overlap = 119;
+        assert!(
+            (pcm[last_overlap] - g2).abs() < 0.02,
+            "Last overlap sample should be close to g2={}, got {}",
+            g2,
+            pcm[last_overlap]
+        );
+    }
+
+    #[test]
+    fn hb_gain_computation_matches_expected_values() {
+        // Test the HB_gain formula: 1.0 - 0.5 * celt_exp2(-celt_rate / 1024.0)
+        use crate::celt::celt_exp2;
+
+        // At high CELT rates, HB_gain should approach 1.0
+        let high_celt_rate = 32_000i32;
+        let hb_gain_high = 1.0 - 0.5 * celt_exp2(-high_celt_rate as f32 / 1024.0);
+        assert!(
+            hb_gain_high > 0.99,
+            "High CELT rate should give HB_gain near 1.0, got {}",
+            hb_gain_high
+        );
+
+        // At low CELT rates, HB_gain should be lower
+        let low_celt_rate = 2_000i32;
+        let hb_gain_low = 1.0 - 0.5 * celt_exp2(-low_celt_rate as f32 / 1024.0);
+        assert!(
+            hb_gain_low < hb_gain_high,
+            "Low CELT rate ({}) should give lower HB_gain than high rate ({})",
+            hb_gain_low,
+            hb_gain_high
+        );
+        assert!(
+            hb_gain_low > 0.3,
+            "Low CELT rate HB_gain should still be positive, got {}",
+            hb_gain_low
+        );
+
+        // At zero CELT rate, HB_gain = 1.0 - 0.5 * exp2(0) = 1.0 - 0.5 = 0.5
+        let zero_celt_rate = 0i32;
+        let hb_gain_zero = 1.0 - 0.5 * celt_exp2(-zero_celt_rate as f32 / 1024.0);
+        assert!(
+            (hb_gain_zero - 0.5).abs() < 1e-6,
+            "Zero CELT rate should give HB_gain=0.5, got {}",
+            hb_gain_zero
+        );
     }
 }
