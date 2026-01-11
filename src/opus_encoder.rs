@@ -1213,6 +1213,59 @@ fn gain_fade(
     }
 }
 
+/// Applies a smooth stereo width transition from `g1` to `g2` over the overlap
+/// region, then constant `g2` for the remainder of the frame. This mirrors the
+/// C `stereo_fade()` function used to attenuate stereo width at low bitrates.
+///
+/// Unlike `gain_fade()` which scales all samples, this function operates on the
+/// stereo difference signal (L-R)/2, reducing stereo separation when width < 1.0.
+/// A width of 1.0 preserves full stereo, while 0.0 collapses to mono.
+#[allow(clippy::too_many_arguments)]
+fn stereo_fade(
+    pcm: &mut [OpusRes],
+    g1: f32,
+    g2: f32,
+    overlap48: usize,
+    frame_size: usize,
+    channels: usize,
+    window: &[CeltCoef],
+    fs: i32,
+) {
+    debug_assert_eq!(channels, 2, "stereo_fade requires stereo input");
+    debug_assert!(fs > 0);
+
+    let inc = (48_000 / fs) as usize;
+    let overlap = overlap48 / inc;
+    let overlap_samples = overlap.min(frame_size);
+
+    // Invert gains: we attenuate the difference signal, so g=0 means full stereo
+    // and g=1 means mono. The input g1/g2 are stereo widths where 1=full stereo.
+    let g1 = 1.0 - g1;
+    let g2 = 1.0 - g2;
+
+    // Overlap region: interpolate between g1 and g2 using squared window
+    for sample in 0..overlap_samples {
+        let w = window.get(sample * inc).copied().unwrap_or(0.0);
+        let w_sq = w * w;
+        let g = w_sq * g2 + (1.0 - w_sq) * g1;
+
+        let left = pcm[sample * 2];
+        let right = pcm[sample * 2 + 1];
+        let diff = (left - right) * 0.5;
+        pcm[sample * 2] = left - g * diff;
+        pcm[sample * 2 + 1] = right + g * diff;
+    }
+
+    // After overlap: apply constant g2 to the difference signal
+    for sample in overlap_samples..frame_size {
+        let left = pcm[sample * 2];
+        let right = pcm[sample * 2 + 1];
+        let diff = (left - right) * 0.5;
+        pcm[sample * 2] = left - g2 * diff;
+        pcm[sample * 2 + 1] = right + g2 * diff;
+    }
+}
+
 fn encode_frame_native<'mode>(
     encoder: &mut OpusEncoder<'mode>,
     pcm: &[i16],
@@ -1227,6 +1280,7 @@ fn encode_frame_native<'mode>(
     bandwidth_int: i32,
     mode: i32,
     to_celt: bool,
+    equiv_rate: i32,
 ) -> Result<usize, OpusEncodeError> {
     if data.len() < 2 {
         return Err(OpusEncodeError::BufferTooSmall);
@@ -1719,6 +1773,46 @@ fn encode_frame_native<'mode>(
                 );
             }
             encoder.prev_hb_gain = hb_gain;
+
+            // Compute stereo width for non-hybrid or mono modes.
+            // In hybrid mode, silk_mode.stereo_width_q14 is already set by SILK encoder.
+            if mode != MODE_HYBRID || encoder.stream_channels == 1 {
+                encoder.silk_mode.stereo_width_q14 = if equiv_rate > 32000 {
+                    16384
+                } else if equiv_rate < 16000 {
+                    0
+                } else {
+                    16384 - 2048 * (32000 - equiv_rate) / (equiv_rate - 14000)
+                };
+            }
+
+            // Apply stereo width reduction at low bitrates.
+            // This must happen after buffer copying to avoid affecting the SILK part.
+            // Note: When energy_masking is implemented (for surround), this should
+            // also check for energy_masking and skip the attenuation if present.
+            if encoder.channels == 2 {
+                let prev_width = encoder.hybrid_stereo_width_q14;
+                let curr_width = encoder.silk_mode.stereo_width_q14 as i16;
+
+                if prev_width < (1 << 14) || curr_width < (1 << 14) {
+                    let g1 = f32::from(prev_width) / 16384.0;
+                    let g2 = f32::from(curr_width) / 16384.0;
+                    let overlap48 = encoder.celt.mode.overlap;
+                    let window = encoder.celt.mode.window;
+
+                    stereo_fade(
+                        &mut pcm_buf[..required],
+                        g1,
+                        g2,
+                        overlap48,
+                        frame_size,
+                        channels,
+                        window,
+                        encoder.fs,
+                    );
+                    encoder.hybrid_stereo_width_q14 = curr_width;
+                }
+            }
 
             let celt_pcm = &pcm_buf[..required];
 
@@ -2763,6 +2857,7 @@ pub fn opus_encode(
                 bandwidth_int,
                 mode,
                 frame_to_celt,
+                equiv_rate,
             ) {
                 Ok(len) => len,
                 Err(OpusEncodeError::BufferTooSmall) if curr_max < max_len_per_frame => {
@@ -2780,6 +2875,7 @@ pub fn opus_encode(
                         bandwidth_int,
                         mode,
                         frame_to_celt,
+                        equiv_rate,
                     )?
                 }
                 Err(err) => return Err(err),
@@ -2834,6 +2930,7 @@ pub fn opus_encode(
         bandwidth_int,
         mode,
         to_celt,
+        equiv_rate,
     )
 }
 
@@ -3521,6 +3618,142 @@ mod tests {
             (hb_gain_zero - 0.5).abs() < 1e-6,
             "Zero CELT rate should give HB_gain=0.5, got {}",
             hb_gain_zero
+        );
+    }
+
+    #[test]
+    fn stereo_fade_unity_width_preserves_signal() {
+        // When both widths are 1.0 (full stereo), the signal should be unchanged
+        // because g1 = g2 = 1.0 - 1.0 = 0.0, so no difference attenuation occurs
+        let original = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let mut pcm = original.clone();
+        let window = vec![0.5f32; 120];
+
+        super::stereo_fade(&mut pcm, 1.0, 1.0, 120, 4, 2, &window, 48_000);
+
+        for (i, &val) in pcm.iter().enumerate() {
+            assert!(
+                (val - original[i]).abs() < 1e-6,
+                "Sample {} changed from {} to {} with unity width",
+                i,
+                original[i],
+                val
+            );
+        }
+    }
+
+    #[test]
+    fn stereo_fade_zero_width_collapses_to_mono() {
+        // When width is 0.0, g = 1.0 - 0.0 = 1.0, so full difference attenuation
+        // L' = L - diff = L - (L-R)/2 = (L+R)/2
+        // R' = R + diff = R + (L-R)/2 = (L+R)/2
+        // So L' = R' = mid signal
+        let mut pcm = vec![
+            4.0, 2.0,  // Sample 0: L=4, R=2, mid=(4+2)/2=3
+            6.0, 0.0,  // Sample 1: L=6, R=0, mid=(6+0)/2=3
+            10.0, 2.0, // Sample 2: L=10, R=2, mid=(10+2)/2=6
+            8.0, 4.0,  // Sample 3: L=8, R=4, mid=(8+4)/2=6
+        ];
+        let window = vec![1.0f32; 120]; // Full window so overlap uses g2 immediately
+
+        super::stereo_fade(&mut pcm, 0.0, 0.0, 120, 4, 2, &window, 48_000);
+
+        // All samples should collapse to mono (L = R = mid)
+        for i in 0..4 {
+            let left = pcm[i * 2];
+            let right = pcm[i * 2 + 1];
+            assert!(
+                (left - right).abs() < 1e-6,
+                "Sample {}: L={} should equal R={} for mono collapse",
+                i,
+                left,
+                right
+            );
+        }
+        // Check specific expected values
+        assert!((pcm[0] - 3.0).abs() < 1e-6, "Sample 0 mid should be 3.0");
+        assert!((pcm[2] - 3.0).abs() < 1e-6, "Sample 1 mid should be 3.0");
+        assert!((pcm[4] - 6.0).abs() < 1e-6, "Sample 2 mid should be 6.0");
+        assert!((pcm[6] - 6.0).abs() < 1e-6, "Sample 3 mid should be 6.0");
+    }
+
+    #[test]
+    fn stereo_fade_applies_constant_after_overlap() {
+        // After the overlap region, constant g2 should be applied
+        let mut pcm = vec![0.0; 960 * 2]; // 20ms at 48kHz stereo
+        // Set up stereo signal: L=1.0, R=-1.0 for all samples
+        for i in 0..960 {
+            pcm[i * 2] = 1.0;
+            pcm[i * 2 + 1] = -1.0;
+        }
+        let window = vec![1.0f32; 120];
+        let g2 = 0.5; // Half stereo width
+
+        super::stereo_fade(&mut pcm, 1.0, g2, 120, 960, 2, &window, 48_000);
+
+        // After overlap, with g2=0.5, inverted g2 = 0.5
+        // diff = (1.0 - (-1.0)) / 2 = 1.0
+        // L' = 1.0 - 0.5 * 1.0 = 0.5
+        // R' = -1.0 + 0.5 * 1.0 = -0.5
+        for i in 120..960 {
+            let left = pcm[i * 2];
+            let right = pcm[i * 2 + 1];
+            assert!(
+                (left - 0.5).abs() < 1e-6,
+                "Sample {} left should be 0.5, got {}",
+                i,
+                left
+            );
+            assert!(
+                (right - (-0.5)).abs() < 1e-6,
+                "Sample {} right should be -0.5, got {}",
+                i,
+                right
+            );
+        }
+    }
+
+    #[test]
+    fn stereo_fade_interpolates_in_overlap_region() {
+        // In the overlap region, width should smoothly transition from g1 to g2
+        let mut pcm = vec![0.0; 240 * 2];
+        // Set up stereo signal: L=1.0, R=-1.0
+        for i in 0..240 {
+            pcm[i * 2] = 1.0;
+            pcm[i * 2 + 1] = -1.0;
+        }
+        // Window ramps from 0 to 1
+        let window: Vec<f32> = (0..120).map(|i| i as f32 / 119.0).collect();
+        let g1 = 1.0; // Full stereo
+        let g2 = 0.0; // Mono
+
+        super::stereo_fade(&mut pcm, g1, g2, 120, 240, 2, &window, 48_000);
+
+        // First sample: w=0, w_sq=0, inverted_g = 0*1.0 + 1*0.0 = 0.0 (full stereo)
+        // So L and R should be unchanged
+        assert!(
+            (pcm[0] - 1.0).abs() < 1e-6,
+            "First sample L should be 1.0, got {}",
+            pcm[0]
+        );
+        assert!(
+            (pcm[1] - (-1.0)).abs() < 1e-6,
+            "First sample R should be -1.0, got {}",
+            pcm[1]
+        );
+
+        // Last overlap sample: w≈1, w_sq≈1, inverted_g ≈ 1.0 (mono)
+        // So L and R should be close to 0 (mid of 1.0 and -1.0)
+        let last = 119;
+        assert!(
+            pcm[last * 2].abs() < 0.02,
+            "Last overlap L should be near 0, got {}",
+            pcm[last * 2]
+        );
+        assert!(
+            pcm[last * 2 + 1].abs() < 0.02,
+            "Last overlap R should be near 0, got {}",
+            pcm[last * 2 + 1]
         );
     }
 }

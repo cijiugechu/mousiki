@@ -24,11 +24,13 @@ processing path beyond framing/packetization.
      `gain_fade()` to smoothly transition between frames before CELT encoding.
    - Target: `src/opus_encoder.rs`.
 
-4. Port hybrid stereo width handling via `stereo_fade()`.
+4. ✅ Port hybrid stereo width handling via `stereo_fade()`.
    - C uses `hybrid_stereo_width_Q14` and `silk_mode.stereoWidth_Q14` to
      attenuate stereo width at low bitrates.
-   - Rust never uses `hybrid_stereo_width_q14`.
-   - Target: `src/opus_encoder.rs` + helper implementation.
+   - Rust now computes stereo width based on equiv_rate and applies
+     `stereo_fade()` to smoothly transition between frames, tracking
+     `hybrid_stereo_width_q14` for frame-to-frame continuity.
+   - Target: `src/opus_encoder.rs`.
 
 5. Port `energy_masking` influence on SILK/Hybrid bit allocation.
    - C applies surround masking to adjust `silk_mode.bitRate` and HB gain.
