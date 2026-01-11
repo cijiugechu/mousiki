@@ -224,6 +224,9 @@ pub enum OpusEncoderCtlRequest<'req> {
     SetForceMode(i32),
     GetFinalRange(&'req mut u32),
     ResetState,
+    SetLfe(bool),
+    GetLfe(&'req mut bool),
+    SetEnergyMask(*const f32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,6 +438,8 @@ pub struct OpusEncoder<'mode> {
     nonfinal_frame: bool,
     range_final: u32,
     dred_duration: i32,
+    energy_masking: *const f32,
+    lfe: bool,
 }
 
 impl<'mode> OpusEncoder<'mode> {
@@ -528,6 +533,8 @@ impl<'mode> OpusEncoder<'mode> {
         self.nonfinal_frame = false;
         self.range_final = 0;
         self.dred_duration = 0;
+        self.energy_masking = core::ptr::null();
+        self.lfe = false;
 
         #[cfg(not(feature = "fixed_point"))]
         {
@@ -866,6 +873,39 @@ fn compute_silk_rate_for_hybrid(
         silk_rate -= 1_000;
     }
     silk_rate
+}
+
+/// Computes the surround masking rate offset for SILK bitrate adjustment.
+///
+/// This adjusts the SILK bitrate based on the psychoacoustic masking depth
+/// computed from the energy_masking array. The masking array has 21 bands per channel.
+///
+/// Returns the rate offset in bits per second (can be negative).
+fn compute_surround_masking_rate_offset(energy_masking: &[f32], bandwidth: i32, channels: i32) -> i32 {
+    let (end, srate): (usize, i32) = match bandwidth {
+        OPUS_BANDWIDTH_NARROWBAND => (13, 8000),
+        OPUS_BANDWIDTH_MEDIUMBAND => (15, 12000),
+        _ => (17, 16000),
+    };
+
+    let channels_usize = channels as usize;
+    let mut mask_sum: f32 = 0.0;
+
+    for c in 0..channels_usize {
+        for i in 0..end {
+            let idx = 21 * c + i;
+            if idx < energy_masking.len() {
+                let mut mask = energy_masking[idx].clamp(-2.0, 0.5);
+                if mask > 0.0 {
+                    mask *= 0.5;
+                }
+                mask_sum += mask;
+            }
+        }
+    }
+
+    let masking_depth = mask_sum / (end * channels_usize) as f32 + 0.2;
+    (srate as f32 * masking_depth) as i32
 }
 
 fn compute_equiv_rate(
@@ -1579,11 +1619,36 @@ fn encode_frame_native<'mode>(
             )
             .clamp(5_000, 80_000);
 
+            // Apply surround masking rate offset for SILK bitrate adjustment.
+            if !encoder.energy_masking.is_null() && encoder.use_vbr && !encoder.lfe {
+                // SAFETY: energy_masking is set by the multistream encoder and points to
+                // a valid array of 21 * channels f32 values for the duration of the encode call.
+                let mask = unsafe {
+                    core::slice::from_raw_parts(
+                        encoder.energy_masking,
+                        21 * encoder.stream_channels as usize,
+                    )
+                };
+                let rate_offset =
+                    compute_surround_masking_rate_offset(mask, bandwidth_int, encoder.stream_channels);
+                let rate_offset = rate_offset.max(-2 * encoder.silk_mode.bit_rate / 3);
+                if bandwidth_int == OPUS_BANDWIDTH_SUPERWIDEBAND
+                    || bandwidth_int == OPUS_BANDWIDTH_FULLBAND
+                {
+                    encoder.silk_mode.bit_rate += 3 * rate_offset / 5;
+                } else {
+                    encoder.silk_mode.bit_rate += rate_offset;
+                }
+            }
+
             // Compute HB gain: increasingly attenuate high band when CELT gets fewer bits.
-            // Note: When energy_masking is implemented (for surround), this should check
-            // for energy_masking and skip the attenuation if present.
-            let celt_rate = total_bitrate - encoder.silk_mode.bit_rate;
-            let hb_gain = 1.0 - 0.5 * celt_exp2(-celt_rate as f32 / 1024.0);
+            // Skip attenuation when energy_masking is present (surround mode).
+            let hb_gain = if encoder.energy_masking.is_null() {
+                let celt_rate = total_bitrate - encoder.silk_mode.bit_rate;
+                1.0 - 0.5 * celt_exp2(-celt_rate as f32 / 1024.0)
+            } else {
+                1.0
+            };
 
             if encoder.silk_mode.use_cbr != 0 {
                 let other_bits = (encoder.silk_mode.max_bits
@@ -1788,9 +1853,8 @@ fn encode_frame_native<'mode>(
 
             // Apply stereo width reduction at low bitrates.
             // This must happen after buffer copying to avoid affecting the SILK part.
-            // Note: When energy_masking is implemented (for surround), this should
-            // also check for energy_masking and skip the attenuation if present.
-            if encoder.channels == 2 {
+            // Skip when energy_masking is present (surround mode handles stereo differently).
+            if encoder.energy_masking.is_null() && encoder.channels == 2 {
                 let prev_width = encoder.hybrid_stereo_width_q14;
                 let curr_width = encoder.silk_mode.stereo_width_q14 as i16;
 
@@ -2102,6 +2166,8 @@ pub fn opus_encoder_create<'mode>(
         nonfinal_frame: false,
         range_final: 0,
         dred_duration: 0,
+        energy_masking: core::ptr::null(),
+        lfe: false,
     };
 
     encoder.init(fs, channels, application)?;
@@ -2317,6 +2383,18 @@ pub fn opus_encoder_ctl<'req>(
         }
         OpusEncoderCtlRequest::ResetState => {
             encoder.reset_state()?;
+        }
+        OpusEncoderCtlRequest::SetLfe(value) => {
+            encoder.lfe = value;
+            opus_custom_encoder_ctl(encoder.celt.encoder(), CeltEncoderCtlRequest::SetLfe(value))?;
+        }
+        OpusEncoderCtlRequest::GetLfe(out) => {
+            *out = encoder.lfe;
+        }
+        OpusEncoderCtlRequest::SetEnergyMask(mask) => {
+            encoder.energy_masking = mask;
+            // Note: CELT encoder's energy_mask is set separately by the multistream encoder
+            // using its own CTL request with the appropriate slice type.
         }
     }
     Ok(())
@@ -3755,5 +3833,80 @@ mod tests {
             "Last overlap R should be near 0, got {}",
             pcm[last * 2 + 1]
         );
+    }
+
+    #[test]
+    fn surround_masking_rate_offset_zero_masks() {
+        // With all zeros, masking_depth = 0.0 + 0.2 = 0.2
+        // rate_offset = 16000 * 0.2 = 3200
+        let mask = [0.0f32; 42]; // 21 bands * 2 channels
+        let offset = super::compute_surround_masking_rate_offset(&mask, OPUS_BANDWIDTH_WIDEBAND, 2);
+        assert_eq!(offset, 3200);
+    }
+
+    #[test]
+    fn surround_masking_rate_offset_clamps_negative_masks() {
+        // All masks at -10.0 should be clamped to -2.0
+        // masking_depth = -2.0 + 0.2 = -1.8
+        // rate_offset = 16000 * -1.8 = -28800
+        let mask = [-10.0f32; 42];
+        let offset = super::compute_surround_masking_rate_offset(&mask, OPUS_BANDWIDTH_WIDEBAND, 2);
+        assert_eq!(offset, -28800);
+    }
+
+    #[test]
+    fn surround_masking_rate_offset_halves_positive_masks() {
+        // All masks at 0.4, halved to 0.2
+        // masking_depth = 0.2 + 0.2 = 0.4
+        // rate_offset = 16000 * 0.4 = 6400
+        let mask = [0.4f32; 42];
+        let offset = super::compute_surround_masking_rate_offset(&mask, OPUS_BANDWIDTH_WIDEBAND, 2);
+        // Allow small floating-point tolerance
+        assert!((offset - 6400).abs() <= 1, "expected ~6400, got {}", offset);
+    }
+
+    #[test]
+    fn surround_masking_rate_offset_narrowband_uses_fewer_bands() {
+        // NB uses 13 bands, srate=8000
+        // With all zeros: masking_depth = 0.2, rate_offset = 8000 * 0.2 = 1600
+        let mask = [0.0f32; 42];
+        let offset = super::compute_surround_masking_rate_offset(&mask, OPUS_BANDWIDTH_NARROWBAND, 2);
+        assert_eq!(offset, 1600);
+    }
+
+    #[test]
+    fn ctl_lfe_round_trip() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        assert!(!enc.lfe);
+
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetLfe(true)).unwrap();
+        assert!(enc.lfe);
+
+        let mut lfe_out = false;
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::GetLfe(&mut lfe_out)).unwrap();
+        assert!(lfe_out);
+
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetLfe(false)).unwrap();
+        assert!(!enc.lfe);
+    }
+
+    #[test]
+    fn ctl_energy_mask_round_trip() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        assert!(enc.energy_masking.is_null());
+
+        let mask = [0.1f32; 21];
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetEnergyMask(mask.as_ptr())).unwrap();
+        assert!(!enc.energy_masking.is_null());
+
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetEnergyMask(core::ptr::null())).unwrap();
+        assert!(enc.energy_masking.is_null());
+    }
+
+    #[test]
+    fn init_sets_energy_masking_defaults() {
+        let enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        assert!(enc.energy_masking.is_null());
+        assert!(!enc.lfe);
     }
 }

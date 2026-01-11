@@ -32,9 +32,11 @@ processing path beyond framing/packetization.
      `hybrid_stereo_width_q14` for frame-to-frame continuity.
    - Target: `src/opus_encoder.rs`.
 
-5. Port `energy_masking` influence on SILK/Hybrid bit allocation.
+5. ✅ Port `energy_masking` influence on SILK/Hybrid bit allocation.
    - C applies surround masking to adjust `silk_mode.bitRate` and HB gain.
-   - Rust exposes `energy_masking` but does not use it.
+   - Rust now stores `energy_masking` pointer and `lfe` flag, computes surround
+     masking rate offset to adjust SILK bitrate, skips HB gain attenuation when
+     energy_masking is present, and skips stereo width reduction in surround mode.
    - Target: `src/opus_encoder.rs`.
 
 6. Port the prefill ramp and `tmp_prefill` logic for mode switches.
