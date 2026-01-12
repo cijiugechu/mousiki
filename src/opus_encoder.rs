@@ -64,6 +64,17 @@ pub(crate) const OPUS_FRAMESIZE_100_MS: i32 = 5008;
 pub(crate) const OPUS_FRAMESIZE_120_MS: i32 = 5009;
 
 const DRED_MAX_FRAMES: i32 = 104;
+#[cfg(feature = "dred")]
+const DRED_ACTIVITY_MEM_LEN: usize = DRED_MAX_FRAMES as usize * 4;
+#[cfg(feature = "dred")]
+const DRED_NUM_REDUNDANCY_FRAMES: i32 = DRED_MAX_FRAMES / 2;
+#[cfg(feature = "dred")]
+const DRED_EXPERIMENTAL_BYTES: i32 = 2;
+#[cfg(feature = "dred")]
+const DRED_BITS_TABLE: [f32; 16] = [
+    73.2, 68.1, 62.5, 57.0, 51.5, 45.7, 39.9, 32.4, 26.4, 20.4, 16.3, 13.0, 9.3, 8.2, 7.2,
+    6.4,
+];
 const FEC_THRESHOLDS: [i32; 10] = [
     12_000, 1_000, 14_000, 1_000, 16_000, 1_000, 20_000, 1_000, 22_000, 1_000,
 ];
@@ -337,6 +348,18 @@ struct OpusEncoderLayout {
     nb_no_activity_ms_q1: i32,
     #[cfg(not(feature = "fixed_point"))]
     peak_signal_energy: f32,
+    #[cfg(feature = "dred")]
+    dred_duration: i32,
+    #[cfg(feature = "dred")]
+    dred_q0: i32,
+    #[cfg(feature = "dred")]
+    dred_dq: i32,
+    #[cfg(feature = "dred")]
+    dred_qmax: i32,
+    #[cfg(feature = "dred")]
+    dred_target_chunks: i32,
+    #[cfg(feature = "dred")]
+    activity_mem: [u8; DRED_ACTIVITY_MEM_LEN],
     nonfinal_frame: i32,
     range_final: u32,
 }
@@ -439,6 +462,20 @@ pub struct OpusEncoder<'mode> {
     nonfinal_frame: bool,
     range_final: u32,
     dred_duration: i32,
+    #[cfg(feature = "dred")]
+    dred_loaded: bool,
+    #[cfg(feature = "dred")]
+    dred_latents_buffer_fill: i32,
+    #[cfg(feature = "dred")]
+    dred_q0: i32,
+    #[cfg(feature = "dred")]
+    dred_dq: i32,
+    #[cfg(feature = "dred")]
+    dred_qmax: i32,
+    #[cfg(feature = "dred")]
+    dred_target_chunks: i32,
+    #[cfg(feature = "dred")]
+    dred_activity_mem: [u8; DRED_ACTIVITY_MEM_LEN],
     energy_masking: *const f32,
     lfe: bool,
 }
@@ -482,6 +519,17 @@ impl<'mode> OpusEncoder<'mode> {
         self.silk_mode.use_dtx = 0;
         self.silk_mode.use_cbr = 0;
         self.silk_mode.reduced_dependency = false;
+        self.dred_duration = 0;
+        #[cfg(feature = "dred")]
+        {
+            self.dred_loaded = false;
+            self.dred_latents_buffer_fill = 0;
+            self.dred_q0 = 0;
+            self.dred_dq = 0;
+            self.dred_qmax = 0;
+            self.dred_target_chunks = 0;
+            self.dred_activity_mem = [0; DRED_ACTIVITY_MEM_LEN];
+        }
 
         // Keep CELT's signalling disabled for later frame packing.
         opus_custom_encoder_ctl(self.celt.encoder(), CeltEncoderCtlRequest::SetSignalling(0))
@@ -556,6 +604,15 @@ impl<'mode> OpusEncoder<'mode> {
         self.analysis_info = AnalysisInfo::default();
         self.dred_duration = 0;
         self.silk_mode.use_dred = 0;
+        #[cfg(feature = "dred")]
+        {
+            self.dred_latents_buffer_fill = 0;
+            self.dred_q0 = 0;
+            self.dred_dq = 0;
+            self.dred_qmax = 0;
+            self.dred_target_chunks = 0;
+            self.dred_activity_mem = [0; DRED_ACTIVITY_MEM_LEN];
+        }
         self.stream_channels = self.channels;
         self.hybrid_stereo_width_q14 = 1_i16 << 14;
         self.prev_hb_gain = 1.0;
@@ -939,6 +996,134 @@ fn compute_equiv_rate(
         equiv -= equiv * i64::from(loss) / i64::from(12 * loss + 20);
     }
     equiv.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+#[cfg(feature = "dred")]
+fn ec_ilog(value: i32) -> i32 {
+    if value <= 0 {
+        0
+    } else {
+        32 - (value as u32).leading_zeros() as i32
+    }
+}
+
+#[cfg(feature = "dred")]
+fn compute_quantizer(q0: i32, d_q: i32, qmax: i32, index: i32) -> i32 {
+    const DQ_TABLE: [i32; 8] = [0, 2, 3, 4, 6, 8, 12, 16];
+    let d_q = d_q as usize;
+    debug_assert!(d_q < DQ_TABLE.len());
+    let step = DQ_TABLE[d_q];
+    let quant = q0 + (step * index + 8) / 16;
+    quant.min(qmax)
+}
+
+#[cfg(feature = "dred")]
+fn estimate_dred_bitrate(
+    q0: i32,
+    d_q: i32,
+    qmax: i32,
+    duration: i32,
+    target_bits: i32,
+    target_chunks: &mut i32,
+) -> i32 {
+    let mut bits = 8.0 * (3 + DRED_EXPERIMENTAL_BYTES) as f32;
+    bits += 50.0 + DRED_BITS_TABLE[q0 as usize];
+
+    let dred_chunks = ((duration + 5) / 4).min(DRED_NUM_REDUNDANCY_FRAMES / 2);
+    *target_chunks = 0;
+    for i in 0..dred_chunks {
+        let q = compute_quantizer(q0, d_q, qmax, i);
+        bits += DRED_BITS_TABLE[q as usize];
+        if bits < target_bits as f32 {
+            *target_chunks = i + 1;
+        }
+    }
+
+    libm::floorf(bits + 0.5) as i32
+}
+
+#[cfg(feature = "dred")]
+fn compute_dred_bitrate(encoder: &mut OpusEncoder<'_>, bitrate_bps: i32, frame_size: i32) -> i32 {
+    let (mut dred_frac, bitrate_offset) = if encoder.inband_fec {
+        (3.0 * encoder.packet_loss_perc as f32 / 100.0, 20_000)
+    } else if encoder.packet_loss_perc > 5 {
+        (0.55 + encoder.packet_loss_perc as f32 / 100.0, 12_000)
+    } else {
+        (12.0 * encoder.packet_loss_perc as f32 / 100.0, 12_000)
+    };
+    dred_frac = dred_frac.min(if encoder.inband_fec { 0.7 } else { 0.8 });
+
+    let frame_factor = frame_size as f32 * 50.0 / encoder.fs as f32;
+    dred_frac = dred_frac / (dred_frac + (1.0 - dred_frac) * frame_factor);
+
+    let rate_delta = bitrate_bps - bitrate_offset;
+    let q0 = (51 - 3 * ec_ilog(rate_delta.max(1))).clamp(4, 15);
+    let d_q = if rate_delta > 36_000 { 3 } else { 5 };
+    let qmax = 15;
+
+    let target_dred_bitrate = (dred_frac * rate_delta as f32) as i32;
+    let target_dred_bitrate = target_dred_bitrate.max(0);
+    let mut target_chunks = 0;
+    let max_dred_bits = if encoder.dred_duration > 0 {
+        let target_bits = target_dred_bitrate * frame_size / encoder.fs;
+        estimate_dred_bitrate(q0, d_q, qmax, encoder.dred_duration, target_bits, &mut target_chunks)
+    } else {
+        target_chunks = 0;
+        0
+    };
+
+    let mut dred_bitrate =
+        target_dred_bitrate.min(max_dred_bits * encoder.fs / frame_size.max(1));
+    if target_chunks < 2 {
+        dred_bitrate = 0;
+    }
+
+    encoder.dred_q0 = q0;
+    encoder.dred_dq = d_q;
+    encoder.dred_qmax = qmax;
+    encoder.dred_target_chunks = target_chunks;
+
+    dred_bitrate
+}
+
+#[cfg(feature = "dred")]
+fn adjust_nb_compr_bytes_for_dred(
+    nb_compr_bytes: usize,
+    range_tell_bits: i32,
+    frame_rate: i32,
+    dred_bitrate_bps: i32,
+) -> usize {
+    if dred_bitrate_bps <= 0 || frame_rate <= 0 {
+        return nb_compr_bytes;
+    }
+    let dred_bytes = dred_bitrate_bps / (frame_rate * 8);
+    let min_celt_bytes = ((range_tell_bits + 7) / 8) + 5;
+    let max_celt_bytes = (nb_compr_bytes as i32 - dred_bytes * 3 / 4).max(min_celt_bytes);
+    nb_compr_bytes.min(max_celt_bytes.max(0) as usize)
+}
+
+#[cfg(feature = "dred")]
+fn update_dred_activity_history(
+    encoder: &mut OpusEncoder<'_>,
+    activity: i32,
+    frame_size: usize,
+) {
+    if encoder.dred_duration > 0 && encoder.dred_loaded {
+        let frame_size_400hz =
+            ((frame_size as i32 * 400) / encoder.fs).clamp(0, DRED_ACTIVITY_MEM_LEN as i32) as usize;
+        let mem_len = encoder.dred_activity_mem.len();
+        if frame_size_400hz < mem_len {
+            encoder
+                .dred_activity_mem
+                .copy_within(0..(mem_len - frame_size_400hz), frame_size_400hz);
+        }
+        for value in encoder.dred_activity_mem[..frame_size_400hz.min(mem_len)].iter_mut() {
+            *value = activity as u8;
+        }
+    } else {
+        encoder.dred_latents_buffer_fill = 0;
+        encoder.dred_activity_mem.fill(0);
+    }
 }
 
 #[cfg(not(feature = "fixed_point"))]
@@ -1495,6 +1680,7 @@ fn encode_frame_native<'mode>(
     mode: i32,
     to_celt: bool,
     equiv_rate: i32,
+    dred_bitrate_bps: i32,
 ) -> Result<usize, OpusEncodeError> {
     if data.len() < 2 {
         return Err(OpusEncodeError::BufferTooSmall);
@@ -1561,6 +1747,25 @@ fn encode_frame_native<'mode>(
         usize::try_from(max_frame_bytes_i32).map_err(|_| OpusEncodeError::BadArgument)?;
     let max_payload_bytes = max_frame_bytes.saturating_sub(1);
 
+    #[cfg(not(feature = "dred"))]
+    let _ = dred_bitrate_bps;
+
+    #[cfg(feature = "fixed_point")]
+    let activity = 1i32;
+    #[cfg(not(feature = "fixed_point"))]
+    let activity = {
+        if is_silence {
+            0
+        } else if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
+            0
+        } else {
+            1
+        }
+    };
+
+    #[cfg(feature = "dred")]
+    update_dred_activity_history(encoder, activity, frame_size);
+
     match mode {
         MODE_SILK_ONLY => {
             encoder.configure_silk_control(frame_size_i32, max_payload_bytes);
@@ -1571,19 +1776,6 @@ fn encode_frame_native<'mode>(
                 _ => 16_000,
             };
             encoder.silk_mode.min_internal_sample_rate = 8_000;
-
-            #[cfg(feature = "fixed_point")]
-            let activity = 1i32;
-            #[cfg(not(feature = "fixed_point"))]
-            let activity = {
-                if is_silence {
-                    0
-                } else if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
-                    0
-                } else {
-                    1
-                }
-            };
 
             if encoder.silk.state_fxx[0].resampler_state.fs_in_khz() == 0
                 || encoder.silk.state_fxx[0].resampler_state.fs_out_khz() == 0
@@ -1847,19 +2039,6 @@ fn encode_frame_native<'mode>(
                 encoder.silk_mode.max_bits = max_bit_rate * frame_size_i32 / encoder.fs;
             }
 
-            #[cfg(feature = "fixed_point")]
-            let activity = 1i32;
-            #[cfg(not(feature = "fixed_point"))]
-            let activity = {
-                if is_silence {
-                    0
-                } else if encoder.analysis_info.valid && encoder.analysis_info.activity < 0.02 {
-                    0
-                } else {
-                    1
-                }
-            };
-
             if !matches!(prefill, PrefillMode::None) {
                 let mut prefill_buf = [0i16; DELAY_BUFFER_SAMPLES];
                 let prefill_len = prepare_silk_prefill(encoder, channels, &mut prefill_buf)?;
@@ -1938,10 +2117,19 @@ fn encode_frame_native<'mode>(
                 redundancy_bytes = 0;
             }
 
-            let nb_compr_bytes = usize::try_from(
+            let mut nb_compr_bytes = usize::try_from(
                 (max_frame_bytes_i32 - 1 - redundancy_bytes).max(0),
             )
             .map_err(|_| OpusEncodeError::BadArgument)?;
+            #[cfg(feature = "dred")]
+            if encoder.dred_duration > 0 {
+                nb_compr_bytes = adjust_nb_compr_bytes_for_dred(
+                    nb_compr_bytes,
+                    range_encoder.tell(),
+                    frame_rate,
+                    dred_bitrate_bps,
+                );
+            }
             if nb_compr_bytes < 2 {
                 return Err(OpusEncodeError::BufferTooSmall);
             }
@@ -2132,6 +2320,28 @@ fn encode_frame_native<'mode>(
                 opus_custom_encoder_ctl(
                     encoder.celt.encoder(),
                     CeltEncoderCtlRequest::SetVbrConstraint(false),
+                )
+                .map_err(|_| OpusEncodeError::InternalError)?;
+            }
+            #[cfg(feature = "dred")]
+            if !encoder.use_vbr && encoder.dred_duration > 0 {
+                let mut celt_bitrate = encoder.bitrate_bps;
+                if mode == MODE_HYBRID {
+                    celt_bitrate = celt_bitrate.saturating_sub(encoder.silk_mode.bit_rate);
+                }
+                opus_custom_encoder_ctl(
+                    encoder.celt.encoder(),
+                    CeltEncoderCtlRequest::SetVbr(true),
+                )
+                .map_err(|_| OpusEncodeError::InternalError)?;
+                opus_custom_encoder_ctl(
+                    encoder.celt.encoder(),
+                    CeltEncoderCtlRequest::SetVbrConstraint(false),
+                )
+                .map_err(|_| OpusEncodeError::InternalError)?;
+                opus_custom_encoder_ctl(
+                    encoder.celt.encoder(),
+                    CeltEncoderCtlRequest::SetBitrate(celt_bitrate),
                 )
                 .map_err(|_| OpusEncodeError::InternalError)?;
             }
@@ -2355,6 +2565,20 @@ pub fn opus_encoder_create<'mode>(
         nonfinal_frame: false,
         range_final: 0,
         dred_duration: 0,
+        #[cfg(feature = "dred")]
+        dred_loaded: false,
+        #[cfg(feature = "dred")]
+        dred_latents_buffer_fill: 0,
+        #[cfg(feature = "dred")]
+        dred_q0: 0,
+        #[cfg(feature = "dred")]
+        dred_dq: 0,
+        #[cfg(feature = "dred")]
+        dred_qmax: 0,
+        #[cfg(feature = "dred")]
+        dred_target_chunks: 0,
+        #[cfg(feature = "dred")]
+        dred_activity_mem: [0; DRED_ACTIVITY_MEM_LEN],
         energy_masking: core::ptr::null(),
         lfe: false,
     };
@@ -2705,6 +2929,15 @@ pub fn opus_encode(
     {
         encoder.voice_ratio = -1;
     }
+
+    #[cfg(feature = "dred")]
+    let dred_bitrate_bps = {
+        let dred_bitrate = compute_dred_bitrate(encoder, encoder.bitrate_bps, frame_size_i32);
+        encoder.bitrate_bps = encoder.bitrate_bps.saturating_sub(dred_bitrate);
+        dred_bitrate
+    };
+    #[cfg(not(feature = "dred"))]
+    let dred_bitrate_bps = 0;
 
     let mut equiv_rate = compute_equiv_rate(
         encoder.bitrate_bps,
@@ -3125,6 +3358,7 @@ pub fn opus_encode(
                 mode,
                 frame_to_celt,
                 equiv_rate,
+                dred_bitrate_bps,
             ) {
                 Ok(len) => len,
                 Err(OpusEncodeError::BufferTooSmall) if curr_max < max_len_per_frame => {
@@ -3143,6 +3377,7 @@ pub fn opus_encode(
                         mode,
                         frame_to_celt,
                         equiv_rate,
+                        dred_bitrate_bps,
                     )?
                 }
                 Err(err) => return Err(err),
@@ -3198,6 +3433,7 @@ pub fn opus_encode(
         mode,
         to_celt,
         equiv_rate,
+        dred_bitrate_bps,
     )
 }
 
@@ -3269,6 +3505,10 @@ mod tests {
         prepare_silk_prefill, update_high_pass_state, user_bitrate_to_bitrate,
         VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2_Q16, VERY_SMALL,
     };
+    #[cfg(feature = "dred")]
+    use super::{
+        adjust_nb_compr_bytes_for_dred, compute_dred_bitrate, update_dred_activity_history,
+    };
     use crate::packet::{
         Bandwidth, opus_packet_get_bandwidth, opus_packet_get_mode, opus_packet_get_nb_frames,
         opus_packet_get_samples_per_frame,
@@ -3328,6 +3568,13 @@ mod tests {
         assert!(!enc.nonfinal_frame);
         #[cfg(not(feature = "fixed_point"))]
         assert_eq!(enc.detected_bandwidth, 0);
+        #[cfg(feature = "dred")]
+        {
+            assert_eq!(enc.dred_duration, 0);
+            assert!(!enc.dred_loaded);
+            assert_eq!(enc.dred_latents_buffer_fill, 0);
+            assert!(enc.dred_activity_mem.iter().all(|&value| value == 0));
+        }
     }
 
     #[test]
@@ -3752,6 +3999,65 @@ mod tests {
             .unwrap_err(),
             OpusEncoderCtlError::BadArgument
         );
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn dred_activity_history_updates_when_loaded() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        enc.dred_duration = 10;
+        enc.dred_loaded = true;
+        for (idx, value) in enc.dred_activity_mem.iter_mut().enumerate() {
+            *value = idx as u8;
+        }
+
+        let frame_size = 480usize;
+        update_dred_activity_history(&mut enc, 1, frame_size);
+
+        let frame_size_400hz = frame_size * 400 / enc.fs as usize;
+        assert!(enc.dred_activity_mem[..frame_size_400hz]
+            .iter()
+            .all(|&value| value == 1));
+        assert_eq!(enc.dred_activity_mem[frame_size_400hz], 0);
+        assert_eq!(enc.dred_activity_mem[frame_size_400hz + 1], 1);
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn dred_activity_history_clears_when_unloaded() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        enc.dred_duration = 10;
+        enc.dred_loaded = false;
+        enc.dred_latents_buffer_fill = 5;
+        enc.dred_activity_mem.fill(7);
+
+        update_dred_activity_history(&mut enc, 1, 480);
+
+        assert_eq!(enc.dred_latents_buffer_fill, 0);
+        assert!(enc.dred_activity_mem.iter().all(|&value| value == 0));
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn dred_celt_bytes_adjustment_caps_budget() {
+        let adjusted = adjust_nb_compr_bytes_for_dred(100, 80, 50, 8_000);
+        assert_eq!(adjusted, 85);
+
+        let adjusted = adjust_nb_compr_bytes_for_dred(40, 320, 50, 8_000);
+        assert_eq!(adjusted, 40);
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn dred_bitrate_zero_when_duration_unset() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        enc.dred_duration = 0;
+        enc.inband_fec = true;
+        enc.packet_loss_perc = 20;
+
+        let dred_bitrate = compute_dred_bitrate(&mut enc, 64_000, 960);
+        assert_eq!(dred_bitrate, 0);
+        assert_eq!(enc.dred_target_chunks, 0);
     }
 
     #[test]

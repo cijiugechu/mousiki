@@ -52,9 +52,9 @@ processing path beyond framing/packetization.
      the copy ahead of gain/stereo fades.
    - Target: `src/opus_encoder.rs` (with focused unit tests).
 
-8. (Optional) DRED-specific hybrid adjustments.
-   - C adjusts `nb_compr_bytes` and activity history in DRED paths.
-   - Rust has the control surface but no equivalent per-frame handling.
+8. ✅ (Optional) DRED-specific hybrid adjustments.
+   - C adjusts `nb_compr_bytes` and activity history in DRED paths, with DRED bitrate budgeting and CELT CBR overrides.
+   - Rust now mirrors the per-frame DRED handling (bitrate budgeting, activity history update, CELT budget cap, CBR->VBR override) under the `dred` feature flag with unit coverage.
    - Target: `src/opus_encoder.rs` (feature-gated).
 
 9. Add tests to cover the newly ported behaviors.
