@@ -1057,6 +1057,78 @@ fn prepare_pcm_buffer(
     Ok(needed)
 }
 
+fn update_delay_buffer(
+    encoder: &mut OpusEncoder<'_>,
+    pcm_buf: &[OpusRes],
+    frame_size: usize,
+    total_buffer: usize,
+    channels: usize,
+) -> Result<(), OpusEncodeError> {
+    debug_assert!(channels == 1 || channels == 2);
+
+    let encoder_buffer =
+        usize::try_from(encoder.encoder_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let encoder_samples = encoder_buffer
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if encoder_samples > encoder.delay_buffer.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    let frame_total = frame_size
+        .checked_add(total_buffer)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let frame_total_samples = frame_total
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if frame_total_samples > pcm_buf.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    if encoder_buffer > frame_total {
+        let move_len = (encoder_buffer - frame_total)
+            .checked_mul(channels)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        let src_start = frame_size
+            .checked_mul(channels)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        let src_end = src_start
+            .checked_add(move_len)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        if src_end > encoder_samples {
+            return Err(OpusEncodeError::BadArgument);
+        }
+
+        encoder.delay_buffer.copy_within(src_start..src_end, 0);
+
+        let dst_end = move_len
+            .checked_add(frame_total_samples)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        if dst_end > encoder_samples {
+            return Err(OpusEncodeError::BadArgument);
+        }
+        encoder.delay_buffer[move_len..dst_end]
+            .copy_from_slice(&pcm_buf[..frame_total_samples]);
+    } else {
+        let offset = frame_total
+            .checked_sub(encoder_buffer)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        let src_start = offset
+            .checked_mul(channels)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        let src_end = src_start
+            .checked_add(encoder_samples)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        if src_end > pcm_buf.len() {
+            return Err(OpusEncodeError::BadArgument);
+        }
+
+        encoder.delay_buffer[..encoder_samples].copy_from_slice(&pcm_buf[src_start..src_end]);
+    }
+
+    Ok(())
+}
+
 fn smulww(a: i32, b: i32) -> i32 {
     ((i64::from(a) * i64::from(b)) >> 16) as i32
 }
@@ -1559,6 +1631,8 @@ fn encode_frame_native<'mode>(
                 return Ok(1);
             }
 
+            update_delay_buffer(encoder, pcm_buf, frame_size, total_buffer, channels)?;
+
             let payload = range_encoder.finish();
             let payload_len = payload.len();
             if payload_len > max_payload_bytes {
@@ -1605,6 +1679,8 @@ fn encode_frame_native<'mode>(
                 CeltEncoderCtlRequest::SetBitrate(encoder.bitrate_bps),
             )
             .map_err(|_| OpusEncodeError::InternalError)?;
+
+            update_delay_buffer(encoder, pcm_buf, frame_size, total_buffer, channels)?;
 
             let celt_frame_size = frame_size;
             let celt_pcm = &pcm_buf[..required];
@@ -1920,6 +1996,17 @@ fn encode_frame_native<'mode>(
                 offset: encoder.silk_mode.offset,
             };
 
+            let need_tmp_prefill =
+                mode != MODE_SILK_ONLY && encoder.prev_mode != mode && encoder.prev_mode > 0;
+            let mut tmp_prefill = [OpusRes::default(); MAX_TMP_PREFILL_SAMPLES];
+            let mut tmp_prefill_len = 0usize;
+            if need_tmp_prefill {
+                tmp_prefill_len =
+                    prepare_celt_prefill_from_delay(encoder, channels, total_buffer, &mut tmp_prefill)?;
+            }
+
+            update_delay_buffer(encoder, pcm_buf, frame_size, total_buffer, channels)?;
+
             // Apply HB gain fade after all SILK processing is done.
             // This smoothly transitions gain between frames to avoid discontinuities.
             if encoder.prev_hb_gain < 1.0 || hb_gain < 1.0 {
@@ -1978,14 +2065,6 @@ fn encode_frame_native<'mode>(
             }
 
             let celt_pcm = &pcm_buf[..required];
-            let need_tmp_prefill =
-                mode != MODE_SILK_ONLY && encoder.prev_mode != mode && encoder.prev_mode > 0;
-            let mut tmp_prefill = [OpusRes::default(); MAX_TMP_PREFILL_SAMPLES];
-            let mut tmp_prefill_len = 0usize;
-            if need_tmp_prefill {
-                tmp_prefill_len =
-                    prepare_celt_prefill_from_delay(encoder, channels, total_buffer, &mut tmp_prefill)?;
-            }
 
             let mut redundancy_buf = [0u8; 257];
             let mut redundancy_len = 0usize;
@@ -3326,6 +3405,73 @@ mod tests {
         assert_eq!(
             &tmp_prefill[..prefill_len],
             &enc.delay_buffer[expected_start..expected_start + prefill_len]
+        );
+    }
+
+    #[test]
+    fn update_delay_buffer_shifts_when_frame_smaller_than_encoder_buffer() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        let channels = 1usize;
+        let frame_size = 240usize;
+        let total_buffer = enc.delay_compensation as usize;
+        let encoder_buffer = enc.encoder_buffer as usize;
+        assert!(encoder_buffer > frame_size + total_buffer);
+
+        for (idx, sample) in enc.delay_buffer.iter_mut().enumerate() {
+            *sample = idx as f32;
+        }
+        let original = enc.delay_buffer;
+
+        let frame_total = frame_size + total_buffer;
+        let mut pcm_buf = vec![0.0f32; frame_total * channels];
+        for (idx, sample) in pcm_buf.iter_mut().enumerate() {
+            *sample = 1000.0 + idx as f32;
+        }
+
+        super::update_delay_buffer(&mut enc, &pcm_buf, frame_size, total_buffer, channels)
+            .expect("update delay buffer");
+
+        let move_len = (encoder_buffer - frame_total) * channels;
+        let src_start = frame_size * channels;
+        let src_end = src_start + move_len;
+        assert_eq!(&enc.delay_buffer[..move_len], &original[src_start..src_end]);
+
+        let dst_end = move_len + frame_total * channels;
+        assert_eq!(
+            &enc.delay_buffer[move_len..dst_end],
+            &pcm_buf[..frame_total * channels]
+        );
+
+        let encoder_samples = encoder_buffer * channels;
+        assert_eq!(
+            &enc.delay_buffer[encoder_samples..],
+            &original[encoder_samples..]
+        );
+    }
+
+    #[test]
+    fn update_delay_buffer_copies_tail_when_frame_exceeds_encoder_buffer() {
+        let mut enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        let channels = 2usize;
+        let frame_size = 480usize;
+        let total_buffer = enc.delay_compensation as usize;
+        let encoder_buffer = enc.encoder_buffer as usize;
+        assert!(encoder_buffer <= frame_size + total_buffer);
+
+        let frame_total = frame_size + total_buffer;
+        let mut pcm_buf = vec![0.0f32; frame_total * channels];
+        for (idx, sample) in pcm_buf.iter_mut().enumerate() {
+            *sample = -500.0 + idx as f32;
+        }
+
+        super::update_delay_buffer(&mut enc, &pcm_buf, frame_size, total_buffer, channels)
+            .expect("update delay buffer");
+
+        let encoder_samples = encoder_buffer * channels;
+        let expected_start = (frame_total - encoder_buffer) * channels;
+        assert_eq!(
+            &enc.delay_buffer[..encoder_samples],
+            &pcm_buf[expected_start..expected_start + encoder_samples]
         );
     }
 

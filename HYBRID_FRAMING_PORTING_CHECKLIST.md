@@ -46,10 +46,11 @@ processing path beyond framing/packetization.
      PCM for the prefill call, and uses delay-buffer slices for CELT prefill.
    - Target: `src/opus_encoder.rs` (with focused unit tests).
 
-7. Port the delay buffer shift/copy after encoding.
-   - C updates `delay_buffer` after encoding, after gain/stereo fades.
-   - Rust currently does not move/copy `delay_buffer`.
-   - Target: `src/opus_encoder.rs`.
+7. ✅ Port the delay buffer shift/copy after encoding.
+   - C updates `delay_buffer` after encoding, before gain/stereo fades.
+   - Rust now updates `delay_buffer` in SILK-only, CELT-only, and hybrid paths, and keeps
+     the copy ahead of gain/stereo fades.
+   - Target: `src/opus_encoder.rs` (with focused unit tests).
 
 8. (Optional) DRED-specific hybrid adjustments.
    - C adjusts `nb_compr_bytes` and activity history in DRED paths.
