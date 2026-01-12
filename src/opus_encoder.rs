@@ -39,6 +39,7 @@ const MAX_FRAME_SAMPLES: usize = 5760;
 const MAX_DELAY_COMPENSATION_SAMPLES: usize = 192;
 const MAX_PCM_BUF_SAMPLES: usize =
     (MAX_FRAME_SAMPLES + MAX_DELAY_COMPENSATION_SAMPLES) * MAX_CHANNELS;
+const MAX_TMP_PREFILL_SAMPLES: usize = (MAX_ENCODER_BUFFER / 4) * MAX_CHANNELS;
 
 pub(crate) const MODE_SILK_ONLY: i32 = 1000;
 #[allow(dead_code)]
@@ -1306,6 +1307,107 @@ fn stereo_fade(
     }
 }
 
+fn prepare_silk_prefill(
+    encoder: &mut OpusEncoder<'_>,
+    channels: usize,
+    prefill_buf: &mut [i16],
+) -> Result<usize, OpusEncodeError> {
+    let encoder_buffer =
+        usize::try_from(encoder.encoder_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let prefill_len = encoder_buffer
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if prefill_len > encoder.delay_buffer.len() || prefill_len > prefill_buf.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    let ramp_samples =
+        usize::try_from(encoder.fs / 400).map_err(|_| OpusEncodeError::BadArgument)?;
+    let ramp_len = ramp_samples
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let delay_comp =
+        usize::try_from(encoder.delay_compensation).map_err(|_| OpusEncodeError::BadArgument)?;
+
+    let prefill_offset_samples = encoder_buffer
+        .checked_sub(delay_comp)
+        .and_then(|value| value.checked_sub(ramp_samples))
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let prefill_offset = prefill_offset_samples
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let ramp_end = prefill_offset
+        .checked_add(ramp_len)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if ramp_end > encoder.delay_buffer.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    if ramp_len > 0 {
+        let overlap48 = encoder.celt.mode.overlap;
+        let window = encoder.celt.mode.window;
+        gain_fade(
+            &mut encoder.delay_buffer[prefill_offset..ramp_end],
+            0.0,
+            1.0,
+            overlap48,
+            ramp_samples,
+            channels,
+            window,
+            encoder.fs,
+        );
+    }
+    if prefill_offset > 0 {
+        encoder.delay_buffer[..prefill_offset].fill(0.0);
+    }
+
+    for (dst, &src) in prefill_buf[..prefill_len]
+        .iter_mut()
+        .zip(encoder.delay_buffer[..prefill_len].iter())
+    {
+        let scaled = libm::roundf(src * CELT_SIG_SCALE);
+        let clamped = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX));
+        *dst = clamped as i16;
+    }
+
+    Ok(prefill_len)
+}
+
+fn prepare_celt_prefill_from_delay(
+    encoder: &OpusEncoder<'_>,
+    channels: usize,
+    total_buffer: usize,
+    prefill_buf: &mut [OpusRes],
+) -> Result<usize, OpusEncodeError> {
+    let encoder_buffer =
+        usize::try_from(encoder.encoder_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let prefill_samples =
+        usize::try_from(encoder.fs / 400).map_err(|_| OpusEncodeError::BadArgument)?;
+    let prefill_len = prefill_samples
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if prefill_len > prefill_buf.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    let delay_start_samples = encoder_buffer
+        .checked_sub(total_buffer)
+        .and_then(|value| value.checked_sub(prefill_samples))
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let delay_start = delay_start_samples
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let delay_end = delay_start
+        .checked_add(prefill_len)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if delay_end > encoder.delay_buffer.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    prefill_buf[..prefill_len].copy_from_slice(&encoder.delay_buffer[delay_start..delay_end]);
+    Ok(prefill_len)
+}
+
 fn encode_frame_native<'mode>(
     encoder: &mut OpusEncoder<'mode>,
     pcm: &[i16],
@@ -1683,18 +1785,15 @@ fn encode_frame_native<'mode>(
             };
 
             if !matches!(prefill, PrefillMode::None) {
-                let prefill_samples =
-                    usize::try_from(encoder.fs / 100).map_err(|_| OpusEncodeError::BadArgument)?;
-                let prefill_len = prefill_samples
-                    .checked_mul(channels)
-                    .ok_or(OpusEncodeError::BadArgument)?;
-                if prefill_len <= required {
+                let mut prefill_buf = [0i16; DELAY_BUFFER_SAMPLES];
+                let prefill_len = prepare_silk_prefill(encoder, channels, &mut prefill_buf)?;
+                if prefill_len > 0 {
                     let mut prefill_encoder = RangeEncoder::new();
                     let mut prefill_bytes = 0i32;
                     silk_encode(
                         &mut encoder.silk,
                         &mut encoder.silk_mode,
-                        &pcm[..prefill_len],
+                        &prefill_buf[..prefill_len],
                         &mut prefill_encoder,
                         &mut prefill_bytes,
                         prefill,
@@ -1879,6 +1978,14 @@ fn encode_frame_native<'mode>(
             }
 
             let celt_pcm = &pcm_buf[..required];
+            let need_tmp_prefill =
+                mode != MODE_SILK_ONLY && encoder.prev_mode != mode && encoder.prev_mode > 0;
+            let mut tmp_prefill = [OpusRes::default(); MAX_TMP_PREFILL_SAMPLES];
+            let mut tmp_prefill_len = 0usize;
+            if need_tmp_prefill {
+                tmp_prefill_len =
+                    prepare_celt_prefill_from_delay(encoder, channels, total_buffer, &mut tmp_prefill)?;
+            }
 
             let mut redundancy_buf = [0u8; 257];
             let mut redundancy_len = 0usize;
@@ -1950,7 +2057,7 @@ fn encode_frame_native<'mode>(
                 .map_err(|_| OpusEncodeError::InternalError)?;
             }
 
-            if encoder.prev_mode != mode && encoder.prev_mode > 0 {
+            if need_tmp_prefill {
                 opus_custom_encoder_ctl(
                     encoder.celt.encoder(),
                     CeltEncoderCtlRequest::ResetState,
@@ -1958,11 +2065,14 @@ fn encode_frame_native<'mode>(
                 .map_err(|_| OpusEncodeError::InternalError)?;
                 let n4 = usize::try_from(encoder.fs / 400)
                     .map_err(|_| OpusEncodeError::BadArgument)?;
-                if n4 > 0 && celt_pcm.len() >= n4 * channels {
+                let prefill_len = n4
+                    .checked_mul(channels)
+                    .ok_or(OpusEncodeError::BadArgument)?;
+                if n4 > 0 && tmp_prefill_len >= prefill_len {
                     let mut dummy = [0u8; 2];
                     let _ = celt_encode_with_ec(
                         encoder.celt.encoder(),
-                        Some(&celt_pcm[..n4 * channels]),
+                        Some(&tmp_prefill[..prefill_len]),
                         n4,
                         Some(&mut dummy),
                         None,
@@ -3068,15 +3178,16 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use super::{
-        DELAY_BUFFER_SAMPLES, DRED_MAX_FRAMES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY,
-        OPUS_AUTO, OPUS_BITRATE_MAX, OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND,
-        OPUS_BANDWIDTH_WIDEBAND, OPUS_FRAMESIZE_20_MS, OPUS_FRAMESIZE_40_MS, OPUS_SIGNAL_MUSIC,
-        CELT_SIG_SCALE, MAX_PCM_BUF_SAMPLES, OpusEncodeError, OpusRes,
-        OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, StereoWidthState,
-        compute_equiv_rate, compute_redundancy_bytes, compute_silk_rate_for_hybrid,
-        compute_stereo_width, dc_reject, decide_fec, hp_cutoff, lin2log, log2lin,
-        opus_encode, opus_encode24, opus_encoder_create, opus_encoder_ctl,
-        opus_encoder_get_size, update_high_pass_state, user_bitrate_to_bitrate,
+        DELAY_BUFFER_SAMPLES, DRED_MAX_FRAMES, MAX_TMP_PREFILL_SAMPLES, MODE_CELT_ONLY,
+        MODE_HYBRID, MODE_SILK_ONLY, OPUS_AUTO, OPUS_BITRATE_MAX, OPUS_BANDWIDTH_NARROWBAND,
+        OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_BANDWIDTH_WIDEBAND, OPUS_FRAMESIZE_20_MS,
+        OPUS_FRAMESIZE_40_MS, OPUS_SIGNAL_MUSIC, CELT_SIG_SCALE, MAX_PCM_BUF_SAMPLES,
+        OpusEncodeError, OpusRes, OpusEncoderCtlError, OpusEncoderCtlRequest,
+        OpusEncoderInitError, StereoWidthState, compute_equiv_rate, compute_redundancy_bytes,
+        compute_silk_rate_for_hybrid, compute_stereo_width, dc_reject, decide_fec,
+        hp_cutoff, lin2log, log2lin, opus_encode, opus_encode24, opus_encoder_create,
+        opus_encoder_ctl, opus_encoder_get_size, prepare_celt_prefill_from_delay,
+        prepare_silk_prefill, update_high_pass_state, user_bitrate_to_bitrate,
         VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2_Q16, VERY_SMALL,
     };
     use crate::packet::{
@@ -3164,6 +3275,58 @@ mod tests {
         );
         let expected = f32::from(pcm[0]) * (1.0 / CELT_SIG_SCALE);
         assert_eq!(scratch[delay_len], expected);
+    }
+
+    #[test]
+    fn silk_prefill_ramps_delay_buffer_and_converts() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        for sample in enc.delay_buffer.iter_mut() {
+            *sample = 0.5;
+        }
+        let channels = 1usize;
+        let mut prefill_buf = [0i16; DELAY_BUFFER_SAMPLES];
+        let prefill_len =
+            prepare_silk_prefill(&mut enc, channels, &mut prefill_buf).expect("prefill");
+        let encoder_buffer = enc.encoder_buffer as usize;
+        assert_eq!(prefill_len, encoder_buffer * channels);
+
+        let ramp_samples = (enc.fs / 400) as usize;
+        let delay_comp = enc.delay_compensation as usize;
+        let prefill_offset = (encoder_buffer - delay_comp - ramp_samples) * channels;
+        assert!(enc.delay_buffer[..prefill_offset]
+            .iter()
+            .all(|&value| value == 0.0));
+
+        if delay_comp > 0 {
+            let tail_index = prefill_len - 1;
+            assert!((enc.delay_buffer[tail_index] - 0.5).abs() < 1e-6);
+            let expected = libm::roundf(0.5 * CELT_SIG_SCALE) as i16;
+            assert_eq!(prefill_buf[tail_index], expected);
+        }
+        assert_eq!(prefill_buf[0], 0);
+    }
+
+    #[test]
+    fn celt_prefill_copies_delay_buffer_tail() {
+        let mut enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        for (idx, sample) in enc.delay_buffer.iter_mut().enumerate() {
+            *sample = idx as f32;
+        }
+        let channels = 2usize;
+        let total_buffer = enc.delay_compensation as usize;
+        let mut tmp_prefill = [OpusRes::default(); MAX_TMP_PREFILL_SAMPLES];
+        let prefill_len =
+            prepare_celt_prefill_from_delay(&enc, channels, total_buffer, &mut tmp_prefill)
+                .expect("prefill");
+        let encoder_buffer = enc.encoder_buffer as usize;
+        let prefill_samples = (enc.fs / 400) as usize;
+        let expected_start = (encoder_buffer - total_buffer - prefill_samples) * channels;
+
+        assert_eq!(prefill_len, prefill_samples * channels);
+        assert_eq!(
+            &tmp_prefill[..prefill_len],
+            &enc.delay_buffer[expected_start..expected_start + prefill_len]
+        );
     }
 
     #[test]

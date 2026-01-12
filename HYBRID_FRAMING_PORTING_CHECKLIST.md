@@ -39,12 +39,12 @@ processing path beyond framing/packetization.
      energy_masking is present, and skips stereo width reduction in surround mode.
    - Target: `src/opus_encoder.rs`.
 
-6. Port the prefill ramp and `tmp_prefill` logic for mode switches.
+6. ✅ Port the prefill ramp and `tmp_prefill` logic for mode switches.
    - C fades the delay buffer for a smooth onset and uses `tmp_prefill` for
      CELT prefill when switching modes.
-   - Rust currently uses current-frame PCM for prefill instead of delay-buffer
-     ramps.
-   - Target: `src/opus_encoder.rs`.
+   - Rust now ramps the delay buffer for SILK prefill, converts it back to
+     PCM for the prefill call, and uses delay-buffer slices for CELT prefill.
+   - Target: `src/opus_encoder.rs` (with focused unit tests).
 
 7. Port the delay buffer shift/copy after encoding.
    - C updates `delay_buffer` after encoding, after gain/stereo fades.
