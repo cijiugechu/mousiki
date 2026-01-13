@@ -57,7 +57,6 @@ processing path beyond framing/packetization.
    - Rust now mirrors the per-frame DRED handling (bitrate budgeting, activity history update, CELT budget cap, CBR->VBR override) under the `dred` feature flag with unit coverage.
    - Target: `src/opus_encoder.rs` (feature-gated).
 
-9. Add tests to cover the newly ported behaviors.
-   - Add regression or vector tests for HP filtering, delay-buffer behavior,
-     stereo width, and final-range changes in hybrid paths.
-   - Target: `tests/test_opus_encode.rs` and/or new fixtures under `tests/`.
+9. ✅ Add tests to cover the newly ported behaviors.
+   - Added hybrid encode vector tests for HP filtering + delay-buffer effects and stereo width/final-range.
+   - Target: `tests/hybrid_encode.rs` with fixtures in `tests/fixtures/hybrid_encode_vectors.rs`.
