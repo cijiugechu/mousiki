@@ -4,7 +4,14 @@
 //! while returning `Unimplemented` until the model and coding paths land.
 
 use crate::celt::opus_select_arch;
+use crate::extensions::{ExtensionError, OpusExtensionIterator};
 use crate::opus_decoder::OpusDecoder;
+use crate::packet::{opus_packet_get_samples_per_frame, opus_packet_parse_impl, PacketError};
+
+const DRED_EXTENSION_ID: u8 = 126;
+const DRED_EXPERIMENTAL_VERSION: u8 = 10;
+const DRED_EXPERIMENTAL_BYTES: usize = 2;
+const DRED_FRAME_OFFSET_DIVISOR: i32 = 120;
 
 /// Errors surfaced by the DRED helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +36,27 @@ impl OpusDredError {
     }
 }
 
+impl From<PacketError> for OpusDredError {
+    #[inline]
+    fn from(value: PacketError) -> Self {
+        match value {
+            PacketError::BadArgument => Self::BadArgument,
+            PacketError::InvalidPacket => Self::InvalidPacket,
+        }
+    }
+}
+
+impl From<ExtensionError> for OpusDredError {
+    #[inline]
+    fn from(value: ExtensionError) -> Self {
+        match value {
+            ExtensionError::BadArgument => Self::BadArgument,
+            ExtensionError::BufferTooSmall => Self::BufferTooSmall,
+            ExtensionError::InvalidPacket => Self::InvalidPacket,
+        }
+    }
+}
+
 /// Opaque DRED decoder state.
 #[derive(Debug, Default)]
 pub struct OpusDredDecoder {
@@ -39,7 +67,50 @@ pub struct OpusDredDecoder {
 /// Opaque DRED packet state.
 #[derive(Debug, Default)]
 pub struct OpusDred {
-    _process_stage: i32,
+    process_stage: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DredPayload<'a> {
+    payload: &'a [u8],
+    dred_frame_offset: i32,
+}
+
+fn dred_find_payload<'a>(data: &'a [u8]) -> Result<Option<DredPayload<'a>>, OpusDredError> {
+    let parsed = opus_packet_parse_impl(data, data.len(), false)?;
+    let frame_size = opus_packet_get_samples_per_frame(data, 48_000)?;
+    let frame_size =
+        i32::try_from(frame_size).map_err(|_| OpusDredError::InvalidPacket)?;
+    let mut iter = OpusExtensionIterator::new(parsed.padding, parsed.frame_count);
+
+    loop {
+        let Some(ext) = iter.find(DRED_EXTENSION_ID)? else {
+            return Ok(None);
+        };
+
+        let ext_len = usize::try_from(ext.len).map_err(|_| OpusDredError::InvalidPacket)?;
+        if ext_len > ext.data.len() {
+            return Err(OpusDredError::InvalidPacket);
+        }
+
+        let dred_frame_offset = ext
+            .frame
+            .checked_mul(frame_size)
+            .and_then(|value| value.checked_div(DRED_FRAME_OFFSET_DIVISOR))
+            .ok_or(OpusDredError::InvalidPacket)?;
+
+        if ext_len > DRED_EXPERIMENTAL_BYTES
+            && ext.data.len() >= DRED_EXPERIMENTAL_BYTES
+            && ext.data[0] == b'D'
+            && ext.data[1] == DRED_EXPERIMENTAL_VERSION
+        {
+            let payload = &ext.data[DRED_EXPERIMENTAL_BYTES..ext_len];
+            return Ok(Some(DredPayload {
+                payload,
+                dred_frame_offset,
+            }));
+        }
+    }
 }
 
 /// Mirrors `opus_dred_decoder_get_size`.
@@ -116,21 +187,31 @@ pub fn opus_dred_parse(
         return Err(OpusDredError::Unimplemented);
     }
 
-    let _ = dred;
-    let _ = data;
-    let _ = max_dred_samples;
-    let _ = sampling_rate;
-    let _ = defer_processing;
-
     if !decoder.loaded {
+        return Err(OpusDredError::Unimplemented);
+    }
+
+    dred.process_stage = -1;
+
+    if let Some(payload) = dred_find_payload(data)? {
+        let DredPayload {
+            payload: dred_payload,
+            dred_frame_offset,
+        } = payload;
+        let _ = (
+            max_dred_samples,
+            sampling_rate,
+            defer_processing,
+            dred_payload,
+            dred_frame_offset,
+        );
         return Err(OpusDredError::Unimplemented);
     }
 
     if let Some(out) = dred_end {
         *out = 0;
     }
-
-    Err(OpusDredError::Unimplemented)
+    Ok(0)
 }
 
 /// Mirrors `opus_dred_process`.
@@ -178,6 +259,52 @@ pub fn opus_decoder_dred_decode_float(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::{opus_packet_extensions_generate, OpusExtensionData};
+    use alloc::vec::Vec;
+
+    fn build_packet_with_padding(frame_count: usize, frame_len: usize, padding: &[u8]) -> Vec<u8> {
+        assert!(frame_count > 0 && frame_count < 64);
+        assert!(padding.len() > 0 && padding.len() < 255);
+
+        let mut packet =
+            Vec::with_capacity(3 + frame_count * frame_len + padding.len());
+        packet.push(0x03);
+        packet.push(0x40 | frame_count as u8);
+        packet.push(padding.len() as u8);
+        packet.resize(packet.len() + frame_count * frame_len, 0);
+        packet.extend_from_slice(padding);
+        packet
+    }
+
+    fn build_dred_padding(frame_count: usize, frame: i32, payload: &[u8]) -> Vec<u8> {
+        let mut ext_bytes = Vec::with_capacity(DRED_EXPERIMENTAL_BYTES + payload.len());
+        ext_bytes.push(b'D');
+        ext_bytes.push(DRED_EXPERIMENTAL_VERSION);
+        ext_bytes.extend_from_slice(payload);
+
+        let ext = OpusExtensionData {
+            id: DRED_EXTENSION_ID,
+            frame,
+            data: &ext_bytes,
+            len: i32::try_from(ext_bytes.len()).expect("ext len fits i32"),
+        };
+
+        let max_len = 255usize;
+        let required = opus_packet_extensions_generate(None, max_len, &[ext], frame_count, false)
+            .expect("generate ext len");
+        let mut padding = Vec::with_capacity(required);
+        padding.resize(required, 0);
+        let written = opus_packet_extensions_generate(
+            Some(&mut padding),
+            required,
+            &[ext],
+            frame_count,
+            false,
+        )
+        .expect("generate ext bytes");
+        assert_eq!(written, required);
+        padding
+    }
 
     #[test]
     fn dred_size_and_alloc_match_feature_state() {
@@ -206,5 +333,28 @@ mod tests {
         assert_eq!(err, OpusDredError::Unimplemented);
         opus_dred_free(dred);
         opus_dred_decoder_destroy(decoder);
+    }
+
+    #[test]
+    fn dred_find_payload_returns_none_without_extension() {
+        let packet = [0x00u8];
+        let payload = dred_find_payload(&packet).expect("parse");
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn dred_find_payload_extracts_payload_and_offset() {
+        let payload_bytes = [0xAA, 0xBB];
+        let padding = build_dred_padding(2, 1, &payload_bytes);
+        let packet = build_packet_with_padding(2, 1, &padding);
+
+        let payload = dred_find_payload(&packet)
+            .expect("parse")
+            .expect("payload");
+        assert_eq!(payload.payload, payload_bytes);
+        let frame_size = opus_packet_get_samples_per_frame(&packet, 48_000)
+            .expect("frame size") as i32;
+        let expected_offset = frame_size / DRED_FRAME_OFFSET_DIVISOR;
+        assert_eq!(payload.dred_frame_offset, expected_offset);
     }
 }

@@ -7,9 +7,10 @@ implementation under `opus-c` with the Rust port in this repository.
 
 - The core DRED model and coding pipeline (encoder/decoder, RDO-VAE, and
   associated constants/data) are not implemented on the Rust side.
-- The Rust DRED API surface exists as stubs and always reports
-  `Unimplemented` for functional calls.
-- DRED packet extension parsing and payload insertion are missing in Rust.
+- The Rust DRED API surface is largely stubbed; only payload discovery returns
+  success (no payload) while decode/process still report `Unimplemented`.
+- DRED packet extension parsing is implemented for the experimental header, but
+  encoder-side payload insertion is still missing.
 - Integration with the PLC/FEC feature path is absent in Rust.
 - DRED-specific tests and vector tooling are not ported.
 
@@ -41,17 +42,18 @@ C implements full DRED decode behavior in:
 - `opus-c/src/opus_decoder.c` (`opus_dred_decoder_ctl`,
   `opus_dred_parse`, `opus_dred_process`, `opus_decoder_dred_decode*`)
 
-Rust counterparts in `src/dred.rs` are stubbed and always return
-`OpusDredError::Unimplemented`.
+Rust counterparts in `src/dred.rs` are stubbed and mostly return
+`OpusDredError::Unimplemented` once a payload is found.
 
-## Missing extension parsing and payload wiring
+## Extension parsing and payload wiring
 
 C locates DRED payloads via the packet padding extension:
 - `dred_find_payload` in `opus-c/src/opus_decoder.c`
 - DRED extension constants in `opus-c/dnn/dred_config.h`
 
-Rust does not implement DRED-specific extension IDs or parsing, and the
-generic extension helpers are not connected to DRED.
+Rust now implements DRED-specific extension IDs and payload parsing via
+`OpusExtensionIterator` in `src/dred.rs` (experimental header only). Encoder
+payload insertion and non-experimental formats are still missing.
 
 ## Missing encoder integration
 
@@ -79,4 +81,5 @@ C includes DRED-specific tests and vector tooling:
 - `opus-c/tests/test_opus_dred.c`
 - `opus-c/tests/dred_vectors.sh`
 
-Rust has no equivalent DRED test coverage.
+Rust now includes basic unit tests for DRED payload discovery in `src/dred.rs`,
+but the randomized parse/process test and vector tooling are still missing.
