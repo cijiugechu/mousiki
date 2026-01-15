@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "examples/playback"]
+members = [".", "examples/playback", "mousiki-dred-weights"]
 resolver = "3"
 
 [package]
@@ -21,7 +21,8 @@ default = []
 fixed_point = []
 enable_res24 = ["fixed_point"]
 deep_plc = []
-dred = []
+dred = ["mousiki-dred-weights"]
+dred-fetch = ["dred", "mousiki-dred-weights/fetch"]
 custom_modes = []
 silk_strict_asserts = []
 silk_debug = []
@@ -31,6 +32,7 @@ silk_tic_toc = []
 libm = "0.2"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
+mousiki-dred-weights = { path = "mousiki-dred-weights", optional = true }
 
 
 [lints.clippy]

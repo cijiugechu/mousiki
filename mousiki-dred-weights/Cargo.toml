@@ -1,0 +1,16 @@
+[package]
+name = "mousiki-dred-weights"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Build-time downloader and generator for DRED weights."
+repository = "https://github.com/cijiugechu/mousiki"
+
+[features]
+fetch = []
+
+[build-dependencies]
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+ureq = { version = "3", features = ["socks-proxy"] }

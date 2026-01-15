@@ -1,4 +1,5 @@
 /target
+/target-codex
 Cargo.lock
 *.pcm
 *.opus
