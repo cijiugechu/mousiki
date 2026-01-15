@@ -3,3 +3,4 @@ Cargo.lock
 *.pcm
 *.opus
 .DS_Store
+ctests/build/
