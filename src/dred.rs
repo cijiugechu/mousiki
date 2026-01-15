@@ -3,8 +3,13 @@
 //! The DRED feature is not fully ported yet. The APIs mirror the C surface
 //! while returning `Unimplemented` until the model and coding paths land.
 
-use crate::celt::{ec_laplace_decode_p0, ec_tell, EcDec};
+use alloc::vec;
+use alloc::vec::Vec;
+use crate::celt::{ec_laplace_decode_p0, ec_tell, EcDec, OpusRes};
 use crate::celt::opus_select_arch;
+use crate::celt::select_celt_float2int16_impl;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::{CELT_SIG_SCALE, float2int};
 use crate::dred_constants::{
     DRED_LATENT_DIM, DRED_MAX_DATA_SIZE, DRED_NUM_FEATURES, DRED_NUM_REDUNDANCY_FRAMES,
     DRED_STATE_DIM,
@@ -16,7 +21,7 @@ use crate::dred_stats_data::{
 #[cfg(feature = "dred")]
 use crate::dred_rdovae_dec::{rdovae_decode_all, RdovaeDec};
 use crate::extensions::{ExtensionError, OpusExtensionIterator};
-use crate::opus_decoder::OpusDecoder;
+use crate::opus_decoder::{OpusDecodeError, OpusDecoder, opus_decode_native};
 use crate::packet::{opus_packet_get_samples_per_frame, opus_packet_parse_impl, PacketError};
 
 const DRED_EXTENSION_ID: u8 = 126;
@@ -67,6 +72,19 @@ impl From<ExtensionError> for OpusDredError {
             ExtensionError::BadArgument => Self::BadArgument,
             ExtensionError::BufferTooSmall => Self::BufferTooSmall,
             ExtensionError::InvalidPacket => Self::InvalidPacket,
+        }
+    }
+}
+
+impl From<OpusDecodeError> for OpusDredError {
+    #[inline]
+    fn from(value: OpusDecodeError) -> Self {
+        match value {
+            OpusDecodeError::BadArgument => Self::BadArgument,
+            OpusDecodeError::BufferTooSmall => Self::BufferTooSmall,
+            OpusDecodeError::InvalidPacket => Self::InvalidPacket,
+            OpusDecodeError::InternalError => Self::InternalError,
+            OpusDecodeError::Unimplemented => Self::Unimplemented,
         }
     }
 }
@@ -410,44 +428,157 @@ pub fn opus_dred_process(
     Ok(())
 }
 
+fn res_to_int24(sample: OpusRes) -> i32 {
+    #[cfg(feature = "fixed_point")]
+    {
+        crate::celt::res2int24(crate::celt::float2res(sample))
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        let scale = CELT_SIG_SCALE * 256.0;
+        let scaled = (sample * scale).clamp(-8_388_608.0, 8_388_607.0);
+        float2int(scaled)
+    }
+}
+
 /// Mirrors `opus_decoder_dred_decode`.
 pub fn opus_decoder_dred_decode(
-    _decoder: &mut OpusDecoder<'_>,
+    decoder: &mut OpusDecoder<'_>,
     _dred: &OpusDred,
     _dred_offset: i32,
-    _pcm: &mut [i16],
-    _frame_size: usize,
+    pcm: &mut [i16],
+    frame_size: usize,
 ) -> Result<usize, OpusDredError> {
-    Err(OpusDredError::Unimplemented)
+    if !cfg!(feature = "dred") {
+        return Err(OpusDredError::Unimplemented);
+    }
+
+    if frame_size == 0 {
+        return Err(OpusDredError::BadArgument);
+    }
+
+    let channels = usize::try_from(decoder.channels).map_err(|_| OpusDredError::BadArgument)?;
+    if channels == 0 || channels > 2 {
+        return Err(OpusDredError::BadArgument);
+    }
+
+    let total_samples = frame_size
+        .checked_mul(channels)
+        .ok_or(OpusDredError::BadArgument)?;
+    if pcm.len() < total_samples {
+        return Err(OpusDredError::BufferTooSmall);
+    }
+
+    let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
+    let decoded = opus_decode_native(
+        decoder,
+        None,
+        0,
+        &mut out,
+        frame_size,
+        false,
+        false,
+        None,
+        true,
+    )?;
+
+    let decoded_samples = decoded
+        .checked_mul(channels)
+        .ok_or(OpusDredError::BadArgument)?;
+    if pcm.len() < decoded_samples {
+        return Err(OpusDredError::BufferTooSmall);
+    }
+
+    select_celt_float2int16_impl(decoder.arch())(
+        &out[..decoded_samples],
+        &mut pcm[..decoded_samples],
+    );
+
+    Ok(decoded)
 }
 
 /// Mirrors `opus_decoder_dred_decode24`.
 pub fn opus_decoder_dred_decode24(
-    _decoder: &mut OpusDecoder<'_>,
+    decoder: &mut OpusDecoder<'_>,
     _dred: &OpusDred,
     _dred_offset: i32,
-    _pcm: &mut [i32],
-    _frame_size: usize,
+    pcm: &mut [i32],
+    frame_size: usize,
 ) -> Result<usize, OpusDredError> {
-    Err(OpusDredError::Unimplemented)
+    if !cfg!(feature = "dred") {
+        return Err(OpusDredError::Unimplemented);
+    }
+
+    if frame_size == 0 {
+        return Err(OpusDredError::BadArgument);
+    }
+
+    let channels = usize::try_from(decoder.channels).map_err(|_| OpusDredError::BadArgument)?;
+    if channels == 0 || channels > 2 {
+        return Err(OpusDredError::BadArgument);
+    }
+
+    let total_samples = frame_size
+        .checked_mul(channels)
+        .ok_or(OpusDredError::BadArgument)?;
+    if pcm.len() < total_samples {
+        return Err(OpusDredError::BufferTooSmall);
+    }
+
+    let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
+    let decoded = opus_decode_native(
+        decoder,
+        None,
+        0,
+        &mut out,
+        frame_size,
+        false,
+        false,
+        None,
+        true,
+    )?;
+
+    let decoded_samples = decoded
+        .checked_mul(channels)
+        .ok_or(OpusDredError::BadArgument)?;
+    if pcm.len() < decoded_samples {
+        return Err(OpusDredError::BufferTooSmall);
+    }
+
+    for (dst, &src) in pcm.iter_mut().take(decoded_samples).zip(out.iter()) {
+        *dst = res_to_int24(src);
+    }
+
+    Ok(decoded)
 }
 
 /// Mirrors `opus_decoder_dred_decode_float`.
 pub fn opus_decoder_dred_decode_float(
-    _decoder: &mut OpusDecoder<'_>,
+    decoder: &mut OpusDecoder<'_>,
     _dred: &OpusDred,
     _dred_offset: i32,
-    _pcm: &mut [f32],
-    _frame_size: usize,
+    pcm: &mut [f32],
+    frame_size: usize,
 ) -> Result<usize, OpusDredError> {
-    Err(OpusDredError::Unimplemented)
+    if !cfg!(feature = "dred") {
+        return Err(OpusDredError::Unimplemented);
+    }
+
+    if frame_size == 0 {
+        return Err(OpusDredError::BadArgument);
+    }
+
+    opus_decode_native(decoder, None, 0, pcm, frame_size, false, false, None, false)
+        .map_err(OpusDredError::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::extensions::{opus_packet_extensions_generate, OpusExtensionData};
+    use crate::opus_decoder::opus_decoder_create;
     use alloc::vec::Vec;
+    use alloc::vec;
 
     fn build_packet_with_padding(frame_count: usize, frame_len: usize, padding: &[u8]) -> Vec<u8> {
         assert!(frame_count > 0 && frame_count < 64);
@@ -619,5 +750,59 @@ mod tests {
 
         opus_dred_free(dred);
         opus_dred_decoder_destroy(decoder);
+    }
+
+    #[test]
+    fn dred_decode_int16_runs_on_plc() {
+        if !cfg!(feature = "dred") {
+            return;
+        }
+
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder");
+        let dred = OpusDred::default();
+        let frame_size = 480;
+        let mut pcm = vec![1i16; frame_size];
+
+        let decoded =
+            opus_decoder_dred_decode(&mut decoder, &dred, 0, &mut pcm, frame_size)
+                .expect("dred decode");
+        assert_eq!(decoded, frame_size);
+        assert!(pcm.iter().all(|&value| value == 0));
+    }
+
+    #[test]
+    fn dred_decode_int24_runs_on_plc() {
+        if !cfg!(feature = "dred") {
+            return;
+        }
+
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder");
+        let dred = OpusDred::default();
+        let frame_size = 480;
+        let mut pcm = vec![1i32; frame_size];
+
+        let decoded =
+            opus_decoder_dred_decode24(&mut decoder, &dred, 0, &mut pcm, frame_size)
+                .expect("dred decode");
+        assert_eq!(decoded, frame_size);
+        assert!(pcm.iter().all(|&value| value == 0));
+    }
+
+    #[test]
+    fn dred_decode_float_runs_on_plc() {
+        if !cfg!(feature = "dred") {
+            return;
+        }
+
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder");
+        let dred = OpusDred::default();
+        let frame_size = 480;
+        let mut pcm = vec![1.0f32; frame_size];
+
+        let decoded =
+            opus_decoder_dred_decode_float(&mut decoder, &dred, 0, &mut pcm, frame_size)
+                .expect("dred decode");
+        assert_eq!(decoded, frame_size);
+        assert!(pcm.iter().all(|&value| value == 0.0));
     }
 }

@@ -1366,6 +1366,11 @@ impl<'mode> OpusDecoder<'mode> {
         }
     }
 
+    #[inline]
+    pub(crate) fn arch(&self) -> i32 {
+        self.arch
+    }
+
     /// Resets the SILK control block to the defaults applied by `opus_decoder_init`.
     fn reset_dec_control(&mut self) {
         self.dec_control = DecControl {

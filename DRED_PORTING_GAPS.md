@@ -5,14 +5,16 @@ implementation under `opus-c` with the Rust port in this repository.
 
 ## High-level gaps
 
-- The core DRED model and coding pipeline (encoder/decoder, RDO-VAE, and
-  associated constants/data) are not implemented on the Rust side.
-- The Rust DRED API surface is largely stubbed; only payload discovery returns
-  success (no payload) while decode/process still report `Unimplemented`.
-- DRED packet extension parsing is implemented for the experimental header, but
-  encoder-side payload insertion is still missing.
-- Integration with the PLC/FEC feature path is absent in Rust.
-- DRED-specific tests and vector tooling are not ported.
+- The encoder-side DRED pipeline is still missing (latent generation, entropy
+  coding, and packet extension insertion).
+- The Rust DRED decoder now includes entropy decoding plus the RDOVAE decoder,
+  but the PLC/FEC integration that consumes DRED features is still absent.
+- DRED packet extension parsing is implemented for the experimental header
+  (matching the current C build), but encoder-side payload insertion remains
+  missing.
+- The `opus_dred_decoder_ctl` path for loading external weights remains
+  unimplemented.
+- DRED vector tests and tooling are not ported.
 
 ## Missing modules and data
 
@@ -24,16 +26,22 @@ C provides the full DRED pipeline in:
   `opus-c/dnn/dred_rdovae_enc_data.h`, `opus-c/dnn/dred_rdovae_dec_data.h`,
   `opus-c/dnn/dred_rdovae_constants.h`, `opus-c/dnn/dred_rdovae_stats_data.h`
 
-Rust has no corresponding implementations or data modules; only stubs exist in:
-- `src/dred.rs`
+Rust currently includes the decoder-side model and data:
+- RDOVAE decoder implementation in `src/dred_rdovae_dec.rs`
+- Generated decoder weights and stats data via `mousiki-dred-weights`
+  (`src/dred_rdovae_dec_data.rs`, `src/dred_stats_data.rs`)
 
-## Missing data structures
+Missing Rust modules/data:
+- DRED encoder model and coding helpers
+- RDOVAE encoder weights and tables
+
+## Data structures
 
 C structures hold DRED state and model data:
 - `struct OpusDRED` and `struct OpusDREDDecoder` in
   `opus-c/dnn/dred_decoder.h`
 
-Rust types are skeletal and do not mirror the C state:
+Rust mirrors these fields for decoder-side state in:
 - `OpusDred`, `OpusDredDecoder` in `src/dred.rs`
 
 ## Missing decoder API behavior
@@ -42,8 +50,17 @@ C implements full DRED decode behavior in:
 - `opus-c/src/opus_decoder.c` (`opus_dred_decoder_ctl`,
   `opus_dred_parse`, `opus_dred_process`, `opus_decoder_dred_decode*`)
 
-Rust counterparts in `src/dred.rs` are stubbed and mostly return
-`OpusDredError::Unimplemented` once a payload is found.
+Rust currently implements:
+- `opus_dred_parse`/`opus_dred_process` (entropy decode + RDOVAE decode)
+- Experimental DRED payload discovery in `dred_find_payload`
+- `opus_decoder_dred_decode*` entrypoints, currently routing through standard
+  PLC without consuming DRED features
+
+Still missing:
+- `opus_dred_decoder_ctl` support for external weight blobs
+- PLC/FEC integration that consumes DRED features during decode
+- `opus_decode_native`-level DRED hooks (the DRED decode entrypoints currently
+  fall back to standard PLC without using the feature vectors)
 
 ## Extension parsing and payload wiring
 
@@ -51,9 +68,9 @@ C locates DRED payloads via the packet padding extension:
 - `dred_find_payload` in `opus-c/src/opus_decoder.c`
 - DRED extension constants in `opus-c/dnn/dred_config.h`
 
-Rust now implements DRED-specific extension IDs and payload parsing via
-`OpusExtensionIterator` in `src/dred.rs` (experimental header only). Encoder
-payload insertion and non-experimental formats are still missing.
+Rust implements DRED-specific extension IDs and payload parsing via
+`OpusExtensionIterator` in `src/dred.rs` (experimental header only, matching the
+current C configuration). Encoder payload insertion remains missing.
 
 ## Missing encoder integration
 
@@ -81,5 +98,6 @@ C includes DRED-specific tests and vector tooling:
 - `opus-c/tests/test_opus_dred.c`
 - `opus-c/tests/dred_vectors.sh`
 
-Rust now includes basic unit tests for DRED payload discovery in `src/dred.rs`,
-but the randomized parse/process test and vector tooling are still missing.
+Rust includes basic payload discovery and randomized parse/process tests in
+`src/dred.rs`, but the DRED vector tooling and reference test suite are still
+missing.
