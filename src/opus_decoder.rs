@@ -16,6 +16,8 @@ use crate::celt::{
     EcDec, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     opus_custom_decoder_ctl, opus_select_arch, resampling_factor,
 };
+#[cfg(feature = "deep_plc")]
+use crate::celt::LpcNetPlcState;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::float2int;
 use crate::celt::select_celt_float2int16_impl;
@@ -135,6 +137,8 @@ struct OpusDecoderLayout {
     decode_gain: i32,
     complexity: i32,
     arch: i32,
+    #[cfg(feature = "deep_plc")]
+    lpcnet: LpcNetPlcState,
     stream_channels: i32,
     bandwidth: i32,
     mode: i32,
@@ -202,6 +206,9 @@ pub struct OpusDecoder<'mode> {
     complexity: i32,
     /// Architecture selection hint propagated to CELT helpers.
     arch: i32,
+    /// Neural PLC state used by DRED/PLC integration.
+    #[cfg(feature = "deep_plc")]
+    lpcnet: LpcNetPlcState,
     /// Number of coded channels in the current stream.
     stream_channels: i32,
     /// Decoder bandwidth advertised by the most recent packet.
@@ -344,6 +351,10 @@ impl<'mode> OpusDecoder<'mode> {
             self.softclip_mem = [0.0; 2];
         }
         self.range_final = 0;
+        #[cfg(feature = "deep_plc")]
+        {
+            self.lpcnet.reset();
+        }
 
         // Reset SILK decoder.
         for (idx, state) in self
@@ -1371,6 +1382,17 @@ impl<'mode> OpusDecoder<'mode> {
         self.arch
     }
 
+    #[inline]
+    pub(crate) fn sample_rate(&self) -> i32 {
+        self.fs
+    }
+
+    #[cfg(feature = "deep_plc")]
+    #[inline]
+    pub(crate) fn lpcnet_mut(&mut self) -> &mut LpcNetPlcState {
+        &mut self.lpcnet
+    }
+
     /// Resets the SILK control block to the defaults applied by `opus_decoder_init`.
     fn reset_dec_control(&mut self) {
         self.dec_control = DecControl {
@@ -1404,6 +1426,10 @@ impl<'mode> OpusDecoder<'mode> {
     fn reset_state(&mut self) -> Result<(), OpusDecoderCtlError> {
         opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::ResetState)?;
         silk_reset_decoder(&mut self.silk)?;
+        #[cfg(feature = "deep_plc")]
+        {
+            self.lpcnet.reset();
+        }
         self.reset_runtime_fields();
         Ok(())
     }
@@ -1499,6 +1525,8 @@ pub fn opus_decoder_create(
         decode_gain: 0,
         complexity: 0,
         arch: 0,
+        #[cfg(feature = "deep_plc")]
+        lpcnet: LpcNetPlcState::default(),
         stream_channels: 0,
         bandwidth: 0,
         mode: 0,
@@ -1862,6 +1890,8 @@ mod tests {
             decode_gain: 0,
             complexity: 0,
             arch: 0,
+            #[cfg(feature = "deep_plc")]
+            lpcnet: crate::celt::LpcNetPlcState::default(),
             stream_channels: 0,
             bandwidth: 0,
             mode: 0,

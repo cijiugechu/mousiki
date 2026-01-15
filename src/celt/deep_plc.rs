@@ -12,6 +12,7 @@
 use crate::celt::celt_decoder::DECODE_BUFFER_SIZE;
 use crate::celt::float_cast::float2int;
 use crate::celt::types::CeltSig;
+use crate::dred_constants::DRED_NUM_FEATURES;
 
 /// Number of 16 kHz samples produced per neural PLC update.
 pub(crate) const PLC_FRAME_SIZE: usize = 160;
@@ -27,6 +28,9 @@ const CONT_VECTORS: usize = 5;
 
 /// Size of the floating-point history buffer maintained by the neural PLC.
 pub(crate) const PLC_BUF_SIZE: usize = (CONT_VECTORS + 10) * PLC_FRAME_SIZE;
+
+/// Maximum number of queued FEC feature frames.
+const PLC_MAX_FEC: usize = 100;
 
 /// Pre-emphasis constant shared with the LPCNet helpers.
 pub(crate) const PREEMPHASIS: f32 = 0.85;
@@ -97,14 +101,19 @@ const PCM_NORMALISATION: f32 = 1.0 / 32_768.0;
 /// The complete C structure stores the neural network weights, feature queues,
 /// and other caches.  Only a handful of fields are touched by the state update
 /// helper, so the Rust port tracks the subset that is relevant for the
-/// downsampling and history maintenance performed here.  Additional fields will
-/// be introduced alongside future ports of the neural PLC logic.
+/// downsampling, history maintenance, and queued FEC features performed here.
+/// Additional fields will be introduced alongside future ports of the neural
+/// PLC logic.
 #[derive(Debug, Clone)]
 pub(crate) struct LpcNetPlcState {
     /// Whether the neural PLC model has been loaded successfully.
     pub loaded: bool,
+    /// Queue of FEC feature vectors supplied by DRED.
+    pub fec: [[f32; DRED_NUM_FEATURES]; PLC_MAX_FEC],
     /// Index of the next FEC feature vector to consume.
     pub fec_read_pos: i32,
+    /// Index of the next FEC feature slot to fill.
+    pub fec_fill_pos: i32,
     /// Number of FEC frames that should be skipped.
     pub fec_skip: i32,
     /// Tracks gaps in the analysis history.
@@ -125,7 +134,9 @@ impl Default for LpcNetPlcState {
     fn default() -> Self {
         Self {
             loaded: false,
+            fec: [[0.0; DRED_NUM_FEATURES]; PLC_MAX_FEC],
             fec_read_pos: 0,
+            fec_fill_pos: 0,
             fec_skip: 0,
             analysis_gap: 1,
             analysis_pos: PLC_BUF_SIZE as i32,
@@ -138,6 +149,53 @@ impl Default for LpcNetPlcState {
 }
 
 impl LpcNetPlcState {
+    /// Resets the PLC state while keeping the model loaded flag intact.
+    pub fn reset(&mut self) {
+        let loaded = self.loaded;
+        *self = Self::default();
+        self.loaded = loaded;
+    }
+
+    /// Mirrors `lpcnet_plc_fec_clear()` by resetting the FEC queue cursors.
+    pub fn fec_clear(&mut self) {
+        self.fec_read_pos = 0;
+        self.fec_fill_pos = 0;
+        self.fec_skip = 0;
+    }
+
+    /// Mirrors `lpcnet_plc_fec_add()` by queueing a DRED feature vector.
+    pub fn fec_add(&mut self, features: Option<&[f32]>) {
+        let Some(features) = features else {
+            self.fec_skip = self.fec_skip.saturating_add(1);
+            return;
+        };
+
+        debug_assert!(
+            features.len() >= DRED_NUM_FEATURES,
+            "FEC features must contain DRED_NUM_FEATURES entries"
+        );
+
+        if self.fec_fill_pos as usize == PLC_MAX_FEC {
+            let read_pos = self.fec_read_pos.clamp(0, self.fec_fill_pos);
+            let remaining = self.fec_fill_pos.saturating_sub(read_pos);
+            let remaining_usize = remaining as usize;
+            if remaining_usize > 0 {
+                let src_start = read_pos as usize;
+                for idx in 0..remaining_usize {
+                    self.fec[idx] = self.fec[src_start + idx];
+                }
+            }
+            self.fec_fill_pos = remaining;
+            self.fec_read_pos = 0;
+        }
+
+        let fill_pos = self.fec_fill_pos as usize;
+        if fill_pos < PLC_MAX_FEC {
+            self.fec[fill_pos].copy_from_slice(&features[..DRED_NUM_FEATURES]);
+            self.fec_fill_pos += 1;
+        }
+    }
+
     /// Mirrors `lpcnet_plc_update()` from `dnn/lpcnet_plc.c`.
     pub fn lpcnet_plc_update(&mut self, pcm: &mut [i16]) -> i32 {
         assert_eq!(
@@ -355,5 +413,26 @@ mod tests {
         for (sample, expected) in tail.iter().zip(expected_pcm[start..].iter()) {
             assert!((sample - (*expected as f32) * PCM_NORMALISATION).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn fec_queue_tracks_fill_and_skip() {
+        let mut state = LpcNetPlcState::default();
+        let features = [1.0f32; DRED_NUM_FEATURES];
+
+        state.fec_add(None);
+        assert_eq!(state.fec_skip, 1);
+        assert_eq!(state.fec_fill_pos, 0);
+
+        state.fec_add(Some(&features));
+        assert_eq!(state.fec_read_pos, 0);
+        assert_eq!(state.fec_fill_pos, 1);
+        assert_eq!(state.fec_skip, 1);
+        assert_eq!(state.fec[0], features);
+
+        state.fec_clear();
+        assert_eq!(state.fec_read_pos, 0);
+        assert_eq!(state.fec_fill_pos, 0);
+        assert_eq!(state.fec_skip, 0);
     }
 }
