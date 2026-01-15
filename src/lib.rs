@@ -7,11 +7,19 @@ pub mod bitdepth;
 mod celt;
 pub mod decoder;
 pub mod dred;
+mod dred_constants;
+#[cfg(feature = "dred")]
+mod dred_rdovae_dec;
+#[cfg(feature = "dred")]
+mod dred_rdovae_dec_data;
+mod dred_stats_data;
 pub mod extensions;
 pub mod mapping_matrix;
 mod math;
 mod mlp;
 mod mlp_data;
+#[cfg(feature = "dred")]
+mod nnet;
 pub mod oggreader;
 pub mod opus;
 pub mod opus_decoder;
