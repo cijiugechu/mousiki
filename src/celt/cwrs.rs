@@ -504,6 +504,7 @@ mod tests {
     /// 2. icwrs converts the pulse vector back to the original index
     /// 3. The total combination count matches the expected value
     #[test]
+    #[cfg_attr(miri, ignore = "comprehensive CWRS roundtrip is too slow under Miri")]
     fn cwrs_roundtrip_comprehensive() {
         use super::{cwrsi, icwrs, ncwrs_urow};
 

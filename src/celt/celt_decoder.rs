@@ -564,18 +564,16 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
     let end_band = min(raw_end as usize, nb_ebands);
     let eff_end = max(start_band, min(end_band, mode.effective_ebands));
 
-    let decode_mem_ptr = decoder.decode_mem.as_mut_ptr();
     let loss_duration = decoder.loss_duration;
     let noise_based = loss_duration >= 40 || start_band != 0 || decoder.skip_plc;
+    let arch = decoder.arch;
 
     if noise_based {
         let move_len = DECODE_BUFFER_SIZE
             .checked_sub(n)
             .expect("frame size larger than decode buffer")
             + overlap;
-        for ch in 0..channels {
-            let channel_slice =
-                unsafe { core::slice::from_raw_parts_mut(decode_mem_ptr.add(ch * stride), stride) };
+        for channel_slice in decoder.decode_mem.chunks_mut(stride).take(channels) {
             channel_slice.copy_within(n..n + move_len, 0);
         }
 
@@ -611,19 +609,12 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
                     seed = celt_lcg_rand(seed);
                     *sample = ((seed as i32) >> 20) as f32;
                 }
-                renormalise_vector(slice, band_width, 1.0, decoder.arch);
+                renormalise_vector(slice, band_width, 1.0, arch);
             }
         }
         decoder.rng = seed;
 
-        let mut outputs = Vec::with_capacity(channels);
         let start = DECODE_BUFFER_SIZE - n;
-        for ch in 0..channels {
-            let channel_slice =
-                unsafe { core::slice::from_raw_parts_mut(decode_mem_ptr.add(ch * stride), stride) };
-            outputs.push(&mut channel_slice[start..]);
-        }
-
         let downsample = max(decoder.downsample, 1) as usize;
         #[cfg(feature = "fixed_point")]
         let fixed_ctx = (
@@ -633,33 +624,39 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
         );
         #[cfg(not(feature = "fixed_point"))]
         let fixed_ctx = ();
-        celt_synthesis(
-            mode,
-            &spectrum,
-            &mut outputs,
-            decoder.old_ebands,
-            start_band,
-            eff_end,
-            channels,
-            channels,
-            false,
-            lm,
-            downsample,
-            false,
-            fixed_ctx,
-        );
+        {
+            let (decode_mem, old_ebands) = (&mut decoder.decode_mem, &decoder.old_ebands);
+            let mut outputs = Vec::with_capacity(channels);
+            for channel_slice in decode_mem.chunks_mut(stride).take(channels) {
+                outputs.push(&mut channel_slice[start..]);
+            }
+            // Keep borrow tracking intact by using disjoint slices instead of raw pointers.
+            celt_synthesis(
+                mode,
+                &spectrum,
+                &mut outputs,
+                old_ebands,
+                start_band,
+                eff_end,
+                channels,
+                channels,
+                false,
+                lm,
+                downsample,
+                false,
+                fixed_ctx,
+            );
+        }
 
         decoder.prefilter_and_fold = false;
         decoder.skip_plc = true;
     } else {
         let pitch_index = if loss_duration == 0 {
             let mut views = Vec::with_capacity(channels);
-            for ch in 0..channels {
-                let channel_slice =
-                    unsafe { core::slice::from_raw_parts(decode_mem_ptr.add(ch * stride), stride) };
+            for channel_slice in decoder.decode_mem.chunks(stride).take(channels) {
                 views.push(channel_slice);
             }
-            let search = celt_plc_pitch_search(&views, channels, decoder.arch);
+            let search = celt_plc_pitch_search(&views, channels, arch);
             decoder.last_pitch_index = search;
             search
         } else {
@@ -677,9 +674,8 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
         let mut exc = vec![0.0f32; max_period + LPC_ORDER];
         let mut fir_tmp = vec![0.0f32; exc_length];
 
-        for ch in 0..channels {
-            let channel_slice =
-                unsafe { core::slice::from_raw_parts_mut(decode_mem_ptr.add(ch * stride), stride) };
+        let (decode_mem, lpc) = (&mut decoder.decode_mem, &mut decoder.lpc);
+        for (ch, channel_slice) in decode_mem.chunks_mut(stride).take(channels).enumerate() {
 
             for (i, slot) in exc.iter_mut().enumerate() {
                 let src = DECODE_BUFFER_SIZE + overlap - max_period - LPC_ORDER + i;
@@ -694,7 +690,7 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
                 } else {
                     Some(&mode.window[..overlap])
                 };
-                celt_autocorr(input, &mut ac, window, overlap, LPC_ORDER, decoder.arch);
+                celt_autocorr(input, &mut ac, window, overlap, LPC_ORDER, arch);
                 ac[0] *= 1.0001;
                 for (i, entry) in ac.iter_mut().enumerate().skip(1) {
                     let factor = 0.008_f32 * 0.008_f32 * (i * i) as f32;
@@ -702,13 +698,13 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
                 }
                 let base_idx = ch * LPC_ORDER;
                 {
-                    let lpc_slice = &mut decoder.lpc[base_idx..base_idx + LPC_ORDER];
+                    let lpc_slice = &mut lpc[base_idx..base_idx + LPC_ORDER];
                     celt_lpc(lpc_slice, &ac);
                 }
             }
 
             let base_idx = ch * LPC_ORDER;
-            let lpc_coeffs = &decoder.lpc[base_idx..base_idx + LPC_ORDER];
+            let lpc_coeffs = &lpc[base_idx..base_idx + LPC_ORDER];
             let start = max_period - exc_length;
             for (idx, value) in fir_tmp.iter_mut().enumerate() {
                 let mut acc = exc[LPC_ORDER + start + idx];
