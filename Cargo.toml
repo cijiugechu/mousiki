@@ -14,7 +14,7 @@ license = "MIT"
 readme = "README.md"
 categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 keywords = ["audio", "codec", "decoder", "opus"]
-exclude = ["opus-go", "testdata"]
+exclude = ["opus-go", "testdata", "opus-c"]
 
 [features]
 default = []
