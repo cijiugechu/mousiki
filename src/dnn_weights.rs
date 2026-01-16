@@ -4,7 +4,7 @@ const WEIGHT_BLOCK_SIZE: usize = 64;
 const WEIGHT_NAME_LEN: usize = 44;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WeightError {
+pub enum WeightError {
     InvalidBlob,
     MissingArray(&'static str),
     SizeMismatch(&'static str),

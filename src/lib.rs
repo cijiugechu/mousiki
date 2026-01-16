@@ -35,7 +35,7 @@ mod pitchdnn_data;
 #[cfg(feature = "dred")]
 mod lpcnet_enc;
 #[cfg(feature = "deep_plc")]
-mod fargan;
+pub mod fargan;
 #[cfg(feature = "deep_plc")]
 mod plc_model;
 #[cfg(feature = "dred")]

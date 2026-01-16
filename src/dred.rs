@@ -19,7 +19,10 @@ use crate::dred_stats_data::{
     DRED_STATE_QUANT_SCALES_Q8, DRED_STATE_R_Q8,
 };
 #[cfg(feature = "dred")]
-use crate::dred_rdovae_dec::{rdovae_decode_all, RdovaeDec};
+use crate::dred_rdovae_dec::{
+    rdovae_dec_init_states, rdovae_decode_all, rdovae_decode_qframe, RdovaeDec, RdovaeDecState,
+    DEC_OUTPUT_OUT_SIZE,
+};
 use crate::extensions::{ExtensionError, OpusExtensionIterator};
 use crate::opus_decoder::{OpusDecodeError, OpusDecoder, opus_decode_native};
 use crate::packet::{opus_packet_get_samples_per_frame, opus_packet_parse_impl, PacketError};
@@ -119,6 +122,106 @@ impl Default for OpusDred {
             process_stage: 0,
             dred_offset: 0,
         }
+    }
+}
+
+/// Decoder for the DRED vector bitstream format used by the C test tools.
+#[cfg(feature = "dred")]
+#[derive(Debug, Clone)]
+pub struct DredVectorDecoder {
+    model: RdovaeDec,
+    arch: i32,
+}
+
+#[cfg(feature = "dred")]
+impl DredVectorDecoder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            model: RdovaeDec::new(),
+            arch: opus_select_arch(),
+        }
+    }
+
+    pub fn decode_packet(
+        &self,
+        q0: u32,
+        nb_chunks: usize,
+        payload: &[u8],
+        features: &mut [f32],
+    ) -> Result<usize, OpusDredError> {
+        if nb_chunks == 0 {
+            return Ok(0);
+        }
+        if nb_chunks % 2 != 0 {
+            return Err(OpusDredError::BadArgument);
+        }
+        let frames = nb_chunks
+            .checked_mul(2)
+            .ok_or(OpusDredError::BadArgument)?;
+        let required = frames
+            .checked_mul(DRED_NUM_FEATURES)
+            .ok_or(OpusDredError::BadArgument)?;
+        if features.len() < required {
+            return Err(OpusDredError::BufferTooSmall);
+        }
+
+        let q0 = usize::try_from(q0).map_err(|_| OpusDredError::BadArgument)?;
+        let state_offset = q0
+            .checked_mul(DRED_STATE_DIM)
+            .ok_or(OpusDredError::BadArgument)?;
+        if state_offset + DRED_STATE_DIM > DRED_STATE_QUANT_SCALES_Q8.len() {
+            return Err(OpusDredError::BadArgument);
+        }
+        let latent_offset = q0
+            .checked_mul(DRED_LATENT_DIM)
+            .ok_or(OpusDredError::BadArgument)?;
+        if latent_offset + DRED_LATENT_DIM > DRED_LATENT_QUANT_SCALES_Q8.len() {
+            return Err(OpusDredError::BadArgument);
+        }
+
+        let mut buffer = payload.to_vec();
+        let mut ec = EcDec::new(&mut buffer);
+        let mut initial_state = [0.0f32; DRED_STATE_DIM];
+        dred_decode_latents(
+            &mut ec,
+            &mut initial_state,
+            &DRED_STATE_QUANT_SCALES_Q8[state_offset..state_offset + DRED_STATE_DIM],
+            &DRED_STATE_R_Q8[state_offset..state_offset + DRED_STATE_DIM],
+            &DRED_STATE_P0_Q8[state_offset..state_offset + DRED_STATE_DIM],
+        );
+
+        let mut dec_state = RdovaeDecState::default();
+        rdovae_dec_init_states(&mut dec_state, &self.model, &initial_state, self.arch);
+
+        let mut latent = [0.0f32; DRED_LATENT_DIM];
+        let mut dec_tmp = [0.0f32; DEC_OUTPUT_OUT_SIZE];
+        let mut i = nb_chunks as i32 - 1;
+        while i >= 0 {
+            dred_decode_latents(
+                &mut ec,
+                &mut latent,
+                &DRED_LATENT_QUANT_SCALES_Q8[latent_offset..latent_offset + DRED_LATENT_DIM],
+                &DRED_LATENT_R_Q8[latent_offset..latent_offset + DRED_LATENT_DIM],
+                &DRED_LATENT_P0_Q8[latent_offset..latent_offset + DRED_LATENT_DIM],
+            );
+            rdovae_decode_qframe(&mut dec_state, &self.model, &mut dec_tmp, &latent, self.arch);
+
+            let base = 2 * i - 2;
+            if base < 0 {
+                return Err(OpusDredError::BadArgument);
+            }
+            let base = base as usize;
+            for k in 0..4 {
+                let dst = (base + k) * DRED_NUM_FEATURES;
+                let src = (3 - k) * DRED_NUM_FEATURES;
+                features[dst..dst + DRED_NUM_FEATURES]
+                    .copy_from_slice(&dec_tmp[src..src + DRED_NUM_FEATURES]);
+            }
+            i -= 2;
+        }
+
+        Ok(frames)
     }
 }
 
@@ -653,11 +756,14 @@ pub fn opus_decoder_dred_decode_float(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use crate::extensions::{opus_packet_extensions_generate, OpusExtensionData};
     use crate::opus_decoder::opus_decoder_create;
     use alloc::vec::Vec;
     use alloc::vec;
+    use std::env;
 
     fn build_packet_with_padding(frame_count: usize, frame_len: usize, padding: &[u8]) -> Vec<u8> {
         assert!(frame_count > 0 && frame_count < 64);
@@ -701,6 +807,20 @@ mod tests {
         .expect("generate ext bytes");
         assert_eq!(written, required);
         padding
+    }
+
+    fn seed_from_env() -> u32 {
+        env::var("SEED")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0xDEAD_BEEF)
+    }
+
+    fn iterations_from_env() -> usize {
+        env::var("DRED_RANDOM_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1_000)
     }
 
     #[test]
@@ -786,7 +906,6 @@ mod tests {
         }
 
         const MAX_EXTENSION_SIZE: usize = 200;
-        const ITERATIONS: usize = 1_000;
 
         #[derive(Clone)]
         struct FastRand {
@@ -812,10 +931,12 @@ mod tests {
 
         let decoder = opus_dred_decoder_create().expect("decoder");
         let mut dred = opus_dred_alloc().expect("dred alloc");
-        let mut rng = FastRand::new(0xDEAD_BEEF);
+        let seed = seed_from_env();
+        let iterations = iterations_from_env();
+        let mut rng = FastRand::new(seed);
         let mut payload = [0u8; MAX_EXTENSION_SIZE];
 
-        for _ in 0..ITERATIONS {
+        for _ in 0..iterations {
             let len = (rng.next() as usize) % (MAX_EXTENSION_SIZE + 1);
             for byte in payload.iter_mut().take(len) {
                 *byte = (rng.next() & 0xFF) as u8;

@@ -9,7 +9,9 @@ implementation under `opus-c` with the Rust port in this repository.
   queues DRED FEC features into the deep PLC state, and the neural PLC output
   path is implemented (PLC model + FARGAN synthesis). The Rust port still
   requires an external DNN blob to load PLC weights (no built-in defaults).
-- DRED vector tests and tooling are not ported.
+- DRED vector tooling is ported (`dred_vectors`), but the reference vector
+  files are not stored in this repository. Vector validation requires external
+  test data plus a DNN blob.
 
 ## Missing modules and data
 
@@ -95,6 +97,7 @@ C includes DRED-specific tests and vector tooling:
 - `opus-c/tests/test_opus_dred.c`
 - `opus-c/tests/dred_vectors.sh`
 
-Rust includes basic payload discovery and randomized parse/process tests in
-`src/dred.rs`, but the DRED vector tooling and reference test suite are still
-missing.
+Rust now mirrors the randomized DRED parse/process test (ported from
+`test_opus_dred.c` in `src/dred.rs`) and includes a `dred_vectors` binary that
+replays the vector workflow in-process. Vector validation still depends on
+external test data and a DNN blob for the FARGAN synthesis stage.

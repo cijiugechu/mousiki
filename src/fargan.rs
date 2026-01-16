@@ -13,15 +13,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use libm::{expf, floorf, powf};
 
-pub(crate) const FARGAN_CONT_SAMPLES: usize = 320;
-pub(crate) const FARGAN_NB_SUBFRAMES: usize = 4;
-pub(crate) const FARGAN_SUBFRAME_SIZE: usize = 40;
-pub(crate) const FARGAN_FRAME_SIZE: usize = FARGAN_NB_SUBFRAMES * FARGAN_SUBFRAME_SIZE;
+pub const FARGAN_CONT_SAMPLES: usize = 320;
+const FARGAN_NB_SUBFRAMES: usize = 4;
+const FARGAN_SUBFRAME_SIZE: usize = 40;
+pub const FARGAN_FRAME_SIZE: usize = FARGAN_NB_SUBFRAMES * FARGAN_SUBFRAME_SIZE;
 const FARGAN_DEEMPHASIS: f32 = 0.85;
 const NB_BANDS: usize = 18;
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FarganModel {
+struct FarganModel {
     pub cond_net_pembed: LinearLayer,
     pub cond_net_fdense1: LinearLayer,
     pub cond_net_fconv1: LinearLayer,
@@ -45,18 +45,18 @@ pub(crate) struct FarganModel {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FarganState {
-    pub model: FarganModel,
-    pub arch: i32,
-    pub cont_initialized: bool,
-    pub deemph_mem: f32,
-    pub pitch_buf: Vec<f32>,
-    pub cond_conv1_state: Vec<f32>,
-    pub fwc0_mem: Vec<f32>,
-    pub gru1_state: Vec<f32>,
-    pub gru2_state: Vec<f32>,
-    pub gru3_state: Vec<f32>,
-    pub last_period: i32,
+pub struct FarganState {
+    model: FarganModel,
+    arch: i32,
+    cont_initialized: bool,
+    deemph_mem: f32,
+    pitch_buf: Vec<f32>,
+    cond_conv1_state: Vec<f32>,
+    fwc0_mem: Vec<f32>,
+    gru1_state: Vec<f32>,
+    gru2_state: Vec<f32>,
+    gru3_state: Vec<f32>,
+    last_period: i32,
     dense_in: Vec<f32>,
     conv1_in: Vec<f32>,
     fdense2_in: Vec<f32>,

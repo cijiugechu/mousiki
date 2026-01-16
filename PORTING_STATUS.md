@@ -129,6 +129,7 @@ The following `opus-c/celt/tests/` and `opus-c/tests/` unit tests are ported:
 | `test_unit_LPC_inv_pred_gain.c` | `tests/lpc_inv_pred_gain.rs`  | SILK LPC inverse prediction gain         |
 | `test_opus_decode.c`       | `tests/test_opus_decode.rs`         | Decoder fuzzing, soft-clip               |
 | `test_opus_encode.c`       | `tests/test_opus_encode.rs`         | Encoder settings fuzzing                 |
+| `test_opus_dred.c`         | `src/dred.rs` (inline)              | DRED randomized parse/process fuzzing    |
 | `test_opus_custom.c`       | `src/celt/celt_encoder.rs` (inline) | Custom mode create/CTL/fuzz encode/decode |
 | `test_opus_padding.c`      | `tests/opus_padding.rs`             | Padding overflow vulnerability test      |
 | `test_opus_extensions.c`   | `tests/extensions.rs`               | Packet extension parse/generate          |
@@ -136,7 +137,6 @@ The following `opus-c/celt/tests/` and `opus-c/tests/` unit tests are ported:
 
 Tests not yet ported:
 - `test_opus_api.c` — comprehensive API surface tests (encoder/decoder/multistream/repacketizer CTLs)
-- `test_opus_dred.c` — DRED decoder fuzzing (requires `dred` feature)
 
 Partially ported tests:
 - None currently tracked.
