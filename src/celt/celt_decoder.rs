@@ -32,6 +32,11 @@ use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::float_cast::float2int;
 use crate::celt::float_cast::float2int16;
+#[cfg(feature = "deep_plc")]
+use crate::celt::{
+    LpcNetPlcState, PLC_FRAME_SIZE, PLC_UPDATE_SAMPLES, PREEMPHASIS, SINC_FILTER, SINC_ORDER,
+    update_plc_state,
+};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::SIG_SHIFT;
 #[cfg(feature = "fixed_point")]
@@ -48,8 +53,8 @@ use crate::celt::quant_bands::unquant_energy_finalise;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
-    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32,
-    OpusVal16, OpusVal32,
+    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
+    OpusUint32, OpusVal16, OpusVal32,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{FixedCeltCoef, FixedCeltSig};
@@ -58,6 +63,11 @@ use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
 use core::cmp::Ordering;
 use core::cmp::{max, min};
+
+#[cfg(feature = "deep_plc")]
+type PlcHandle<'a> = Option<&'a mut LpcNetPlcState>;
+#[cfg(not(feature = "deep_plc"))]
+type PlcHandle<'a> = ();
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
@@ -536,7 +546,16 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
     }
 }
 
-pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm: usize) {
+pub(crate) fn celt_decode_lost(
+    decoder: &mut OpusCustomDecoder<'_>,
+    n: usize,
+    lm: usize,
+    lpcnet: PlcHandle<'_>,
+) {
+    #[cfg(feature = "deep_plc")]
+    let mut lpcnet = lpcnet;
+    #[cfg(not(feature = "deep_plc"))]
+    let _ = lpcnet;
     let channels = decoder.channels;
     if channels == 0 || n == 0 {
         let increment = ((1usize) << lm) as i32;
@@ -565,6 +584,14 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
     let eff_end = max(start_band, min(end_band, mode.effective_ebands));
 
     let loss_duration = decoder.loss_duration;
+    #[cfg(feature = "deep_plc")]
+    let noise_based = if let Some(lpcnet) = lpcnet.as_ref() {
+        start_band != 0
+            || (lpcnet.fec_fill_pos == 0 && (decoder.skip_plc || loss_duration >= 80))
+    } else {
+        loss_duration >= 40 || start_band != 0 || decoder.skip_plc
+    };
+    #[cfg(not(feature = "deep_plc"))]
     let noise_based = loss_duration >= 40 || start_band != 0 || decoder.skip_plc;
     let arch = decoder.arch;
 
@@ -655,6 +682,12 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
             let mut views = Vec::with_capacity(channels);
             for channel_slice in decoder.decode_mem.chunks(stride).take(channels) {
                 views.push(channel_slice);
+            }
+            #[cfg(feature = "deep_plc")]
+            if let Some(lpcnet) = lpcnet.as_deref_mut() {
+                if lpcnet.loaded {
+                    update_plc_state(lpcnet, &views, &mut decoder.plc_preemphasis_mem);
+                }
             }
             let search = celt_plc_pitch_search(&views, channels, arch);
             decoder.last_pitch_index = search;
@@ -787,6 +820,97 @@ pub(crate) fn celt_decode_lost(decoder: &mut OpusCustomDecoder<'_>, n: usize, lm
             } else {
                 for value in &mut channel_slice[start_index..start_index + extrapolation_len] {
                     *value = 0.0;
+                }
+            }
+        }
+
+        #[cfg(feature = "deep_plc")]
+        if let Some(lpcnet) = lpcnet.as_deref_mut() {
+            if lpcnet.loaded && (decoder.complexity >= 5 || lpcnet.fec_fill_pos > 0) {
+                let start_index = DECODE_BUFFER_SIZE - n;
+                let mut buf_copy = vec![0.0f32; channels * overlap];
+                for (ch, channel_slice) in decoder.decode_mem.chunks(stride).take(channels).enumerate()
+                {
+                    let src = &channel_slice[start_index..start_index + overlap];
+                    let base = ch * overlap;
+                    buf_copy[base..base + overlap].copy_from_slice(src);
+                }
+
+                let samples_needed16k = (n + SINC_ORDER + overlap) / 3;
+                if loss_duration == 0 {
+                    decoder.plc_fill = 0;
+                }
+                debug_assert!(decoder.plc_fill >= 0);
+                while (decoder.plc_fill as usize) < samples_needed16k {
+                    let fill = decoder.plc_fill as usize;
+                    let end = fill + PLC_FRAME_SIZE;
+                    debug_assert!(end <= decoder.plc_pcm.len());
+                    lpcnet.lpcnet_plc_conceal(&mut decoder.plc_pcm[fill..end]);
+                    decoder.plc_fill += PLC_FRAME_SIZE as i32;
+                }
+
+                let plc_pcm = &mut decoder.plc_pcm;
+                let plc_fill = &mut decoder.plc_fill;
+                let plc_preemphasis_mem = &mut decoder.plc_preemphasis_mem;
+                let decode_mem = &mut decoder.decode_mem;
+
+                let (first, rest) = decode_mem.split_at_mut(stride);
+                for i in 0..(n + overlap) / 3 {
+                    let mut sum = 0.0f32;
+                    for j in 0..17 {
+                        sum += 3.0 * f32::from(plc_pcm[i + j]) * SINC_FILTER[3 * j];
+                    }
+                    first[start_index + 3 * i] = sum;
+                    let mut sum = 0.0f32;
+                    for j in 0..16 {
+                        sum += 3.0 * f32::from(plc_pcm[i + j + 1]) * SINC_FILTER[3 * j + 2];
+                    }
+                    first[start_index + 3 * i + 1] = sum;
+                    let mut sum = 0.0f32;
+                    for j in 0..16 {
+                        sum += 3.0 * f32::from(plc_pcm[i + j + 1]) * SINC_FILTER[3 * j + 1];
+                    }
+                    first[start_index + 3 * i + 2] = sum;
+                }
+
+                let shift = n / 3;
+                let fill = (*plc_fill).max(0) as usize;
+                debug_assert!(fill >= shift);
+                if fill > shift {
+                    plc_pcm.copy_within(shift..fill, 0);
+                }
+                *plc_fill -= shift as i32;
+
+                for i in 0..n {
+                    let tmp = first[start_index + i];
+                    first[start_index + i] -= PREEMPHASIS * *plc_preemphasis_mem;
+                    *plc_preemphasis_mem = tmp;
+                }
+                let mut overlap_mem = *plc_preemphasis_mem;
+                for i in 0..overlap {
+                    let tmp = first[DECODE_BUFFER_SIZE + i];
+                    first[DECODE_BUFFER_SIZE + i] -= PREEMPHASIS * overlap_mem;
+                    overlap_mem = tmp;
+                }
+
+                if channels == 2 {
+                    let second = &mut rest[..stride];
+                    second.copy_from_slice(first);
+                }
+
+                if loss_duration == 0 {
+                    for (ch, channel_slice) in decode_mem
+                        .chunks_mut(stride)
+                        .take(channels)
+                        .enumerate()
+                    {
+                        let base = ch * overlap;
+                        for i in 0..overlap {
+                            channel_slice[start_index + i] =
+                                (1.0 - mode.window[i]) * buf_copy[base + i]
+                                    + mode.window[i] * channel_slice[start_index + i];
+                        }
+                    }
                 }
             }
         }
@@ -1093,6 +1217,12 @@ struct DecoderLayoutStub {
     postfilter_tapset_old: i32,
     prefilter_and_fold: i32,
     preemph_mem_decoder: [CeltSig; 2],
+    #[cfg(feature = "deep_plc")]
+    plc_pcm: [OpusInt16; PLC_UPDATE_SAMPLES],
+    #[cfg(feature = "deep_plc")]
+    plc_fill: OpusInt32,
+    #[cfg(feature = "deep_plc")]
+    plc_preemphasis_mem: f32,
     decode_mem_head: [CeltSig; 1],
 }
 
@@ -1901,6 +2031,7 @@ pub(crate) fn celt_decode_with_ec_dred<'mode, 'dec>(
     frame_size: usize,
     range_decoder: Option<&'dec mut EcDec<'dec>>,
     accum: bool,
+    plc: PlcHandle<'_>,
 ) -> Result<usize, CeltDecodeError>
 where
     'mode: 'dec,
@@ -1930,7 +2061,7 @@ where
     }
 
     if frame.packet_loss {
-        celt_decode_lost(decoder, n, frame.lm);
+        celt_decode_lost(decoder, n, frame.lm, plc);
 
         let mut inputs: Vec<&[CeltSig]> = Vec::with_capacity(cc);
         for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
@@ -2284,7 +2415,19 @@ pub(crate) fn celt_decode_with_ec<'mode, 'dec>(
 where
     'mode: 'dec,
 {
-    celt_decode_with_ec_dred(decoder, packet, pcm, frame_size, range_decoder, accum)
+    #[cfg(feature = "deep_plc")]
+    let plc = None;
+    #[cfg(not(feature = "deep_plc"))]
+    let plc = ();
+    celt_decode_with_ec_dred(
+        decoder,
+        packet,
+        pcm,
+        frame_size,
+        range_decoder,
+        accum,
+        plc,
+    )
 }
 
 pub(crate) fn opus_custom_decode(
@@ -3483,7 +3626,11 @@ mod tests {
         decoder.old_ebands.fill(-4.0);
 
         let n = mode.short_mdct_size;
-        celt_decode_lost(&mut decoder, n, 0);
+        #[cfg(feature = "deep_plc")]
+        let plc = None;
+        #[cfg(not(feature = "deep_plc"))]
+        let plc = ();
+        celt_decode_lost(&mut decoder, n, 0, plc);
 
         assert!(decoder.skip_plc);
         assert!(!decoder.prefilter_and_fold);
@@ -3511,7 +3658,11 @@ mod tests {
         }
 
         let n = mode.short_mdct_size;
-        celt_decode_lost(&mut decoder, n, 0);
+        #[cfg(feature = "deep_plc")]
+        let plc = None;
+        #[cfg(not(feature = "deep_plc"))]
+        let plc = ();
+        celt_decode_lost(&mut decoder, n, 0, plc);
 
         assert!(decoder.prefilter_and_fold);
         assert!(!decoder.skip_plc);

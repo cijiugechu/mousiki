@@ -36,12 +36,12 @@ const PLC_MAX_FEC: usize = 100;
 pub(crate) const PREEMPHASIS: f32 = 0.85;
 
 /// Order of the sinc-based resampler used when converting from 48 kHz to 16 kHz.
-const SINC_ORDER: usize = 48;
+pub(crate) const SINC_ORDER: usize = 48;
 
 /// Low-pass filter used to resample the decoder history to 16 kHz.
 ///
 /// Mirrors the coefficients embedded in `celt_decoder.c`.
-const SINC_FILTER: [f32; SINC_ORDER + 1] = [
+pub(crate) const SINC_FILTER: [f32; SINC_ORDER + 1] = [
     4.2931e-05,
     -0.000190293,
     -0.000816132,
@@ -130,6 +130,11 @@ pub(crate) struct LpcNetPlcState {
     pub blend: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlcModelError {
+    BadArgument,
+}
+
 impl Default for LpcNetPlcState {
     fn default() -> Self {
         Self {
@@ -196,6 +201,16 @@ impl LpcNetPlcState {
         }
     }
 
+    /// Mirrors `lpcnet_plc_load_model()` by accepting an external model blob.
+    pub fn load_model(&mut self, data: &[u8]) -> Result<(), PlcModelError> {
+        if data.is_empty() {
+            return Err(PlcModelError::BadArgument);
+        }
+        self.loaded = true;
+        self.reset();
+        Ok(())
+    }
+
     /// Mirrors `lpcnet_plc_update()` from `dnn/lpcnet_plc.c`.
     pub fn lpcnet_plc_update(&mut self, pcm: &mut [i16]) -> i32 {
         assert_eq!(
@@ -226,6 +241,52 @@ impl LpcNetPlcState {
         self.blend = 0;
 
         0
+    }
+
+    /// Mirrors `lpcnet_plc_conceal()` by generating a placeholder PLC frame.
+    pub fn lpcnet_plc_conceal(&mut self, pcm: &mut [i16]) -> i32 {
+        assert_eq!(
+            pcm.len(),
+            PLC_FRAME_SIZE,
+            "PCM frame must contain 10 ms of audio"
+        );
+        debug_assert!(self.loaded, "PLC conceal requested without a model");
+
+        pcm.fill(0);
+
+        if self.consume_fec() {
+            self.loss_count = 0;
+        } else {
+            self.loss_count = self.loss_count.saturating_add(1);
+        }
+
+        if self.analysis_pos - PLC_FRAME_SIZE as i32 >= 0 {
+            self.analysis_pos -= PLC_FRAME_SIZE as i32;
+        } else {
+            self.analysis_gap = 1;
+        }
+        self.predict_pos = PLC_BUF_SIZE as i32;
+
+        self.pcm.copy_within(PLC_FRAME_SIZE.., 0);
+        let start = PLC_BUF_SIZE - PLC_FRAME_SIZE;
+        for (index, sample) in pcm.iter().enumerate() {
+            self.pcm[start + index] = f32::from(*sample) * PCM_NORMALISATION;
+        }
+
+        self.blend = 1;
+
+        0
+    }
+
+    fn consume_fec(&mut self) -> bool {
+        if self.fec_read_pos != self.fec_fill_pos && self.fec_skip == 0 {
+            self.fec_read_pos = self.fec_read_pos.saturating_add(1);
+            return true;
+        }
+        if self.fec_skip > 0 {
+            self.fec_skip = self.fec_skip.saturating_sub(1);
+        }
+        false
     }
 }
 
@@ -434,5 +495,29 @@ mod tests {
         assert_eq!(state.fec_read_pos, 0);
         assert_eq!(state.fec_fill_pos, 0);
         assert_eq!(state.fec_skip, 0);
+    }
+
+    #[test]
+    fn load_model_rejects_empty_blob() {
+        let mut state = LpcNetPlcState::default();
+        assert_eq!(state.load_model(&[]), Err(PlcModelError::BadArgument));
+    }
+
+    #[test]
+    fn conceal_consumes_fec_and_updates_state() {
+        let mut state = LpcNetPlcState::default();
+        state.load_model(&[1_u8]).expect("load model");
+        state.fec_add(None);
+        state.fec_add(Some(&[1.0f32; DRED_NUM_FEATURES]));
+        let mut pcm = [1_i16; PLC_FRAME_SIZE];
+
+        state.lpcnet_plc_conceal(&mut pcm);
+        assert!(pcm.iter().all(|&sample| sample == 0));
+        assert_eq!(state.blend, 1);
+        assert_eq!(state.fec_read_pos, 0);
+        assert_eq!(state.fec_skip, 0);
+
+        state.lpcnet_plc_conceal(&mut pcm);
+        assert_eq!(state.fec_read_pos, 1);
     }
 }

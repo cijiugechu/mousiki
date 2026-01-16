@@ -233,6 +233,7 @@ pub enum OpusEncoderCtlRequest<'req> {
     GetPhaseInversionDisabled(&'req mut bool),
     SetDredDuration(i32),
     GetDredDuration(&'req mut i32),
+    SetDnnBlob(&'req [u8]),
     SetForceMode(i32),
     GetFinalRange(&'req mut u32),
     ResetState,
@@ -2785,6 +2786,20 @@ pub fn opus_encoder_ctl<'req>(
             }
             *out = encoder.dred_duration;
         }
+        OpusEncoderCtlRequest::SetDnnBlob(data) => {
+            if data.is_empty() {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            #[cfg(feature = "dred")]
+            {
+                encoder.dred_loaded = true;
+            }
+            #[cfg(not(feature = "dred"))]
+            {
+                let _ = data;
+                return Err(OpusEncoderCtlError::Unimplemented);
+            }
+        }
         OpusEncoderCtlRequest::SetForceMode(value) => {
             if value != OPUS_AUTO && !(MODE_SILK_ONLY..=MODE_CELT_ONLY).contains(&value) {
                 return Err(OpusEncoderCtlError::BadArgument);
@@ -3999,6 +4014,15 @@ mod tests {
             .unwrap_err(),
             OpusEncoderCtlError::BadArgument
         );
+    }
+
+    #[cfg(feature = "dred")]
+    #[test]
+    fn ctl_accepts_dnn_blob() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        assert!(!enc.dred_loaded);
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetDnnBlob(&[1, 2, 3])).unwrap();
+        assert!(enc.dred_loaded);
     }
 
     #[cfg(feature = "dred")]

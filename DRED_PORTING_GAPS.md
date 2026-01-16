@@ -9,12 +9,13 @@ implementation under `opus-c` with the Rust port in this repository.
   coding, and packet extension insertion).
 - The Rust DRED decoder now includes entropy decoding plus the RDOVAE decoder,
   and DRED FEC features are queued into the deep PLC state, but the PLC/FEC
-  integration that consumes those features is still absent.
+  integration that consumes those features is still a stub (neural PLC output
+  generation is not implemented).
 - DRED packet extension parsing is implemented for the experimental header
   (matching the current C build), but encoder-side payload insertion remains
   missing.
-- The `opus_dred_decoder_ctl` path for loading external weights remains
-  unimplemented.
+- Decoder-side DNN blob loading is now wired up, but the PLC model output is
+  still placeholder data.
 - DRED vector tests and tooling are not ported.
 
 ## Missing modules and data
@@ -58,8 +59,7 @@ Rust currently implements:
   PLC without consuming DRED features
 
 Still missing:
-- `opus_dred_decoder_ctl` support for external weight blobs
-- PLC/FEC integration that consumes DRED features during decode
+- Neural PLC output that consumes queued DRED/FEC features during decode
 
 ## Extension parsing and payload wiring
 
@@ -90,7 +90,8 @@ C injects DRED features into the PLC/FEC path in:
 
 Rust has a limited PLC helper in `src/celt/deep_plc.rs` and does not
 consume DRED features or offsets. DRED decode entrypoints now queue FEC features
-into the deep PLC state, but there is no neural PLC path to apply them yet.
+into the deep PLC state, and a deep PLC callsite is wired into CELT PLC, but the
+neural PLC output is still a stub (silence).
 
 ## Missing tests and tools
 

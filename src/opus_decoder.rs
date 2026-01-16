@@ -37,7 +37,13 @@ use crate::silk::decoder_state::DecoderState;
 use crate::silk::errors::SilkError;
 use crate::silk::get_decoder_size::get_decoder_size;
 use crate::silk::init_decoder::init_decoder as silk_init_channel;
+use crate::silk::load_osce_models::load_osce_models;
 use crate::silk::SilkRangeDecoder;
+
+#[cfg(feature = "deep_plc")]
+type PlcHandle<'a> = Option<&'a mut LpcNetPlcState>;
+#[cfg(not(feature = "deep_plc"))]
+type PlcHandle<'a> = ();
 
 /// Maximum supported channel count for the canonical decoder.
 const MAX_CHANNELS: usize = 2;
@@ -314,6 +320,7 @@ pub enum OpusDecoderCtlRequest<'req> {
     GetLastPacketDuration(&'req mut i32),
     SetPhaseInversionDisabled(bool),
     GetPhaseInversionDisabled(&'req mut bool),
+    SetDnnBlob(&'req [u8]),
 }
 
 /// Packet metadata extracted from the top-level decoder front-end.
@@ -874,7 +881,15 @@ impl<'mode> OpusDecoder<'mode> {
             opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::SetStartBand(0))
                 .map_err(|_| OpusDecodeError::BadArgument)?;
             if let Some(data) = redundant_packet {
-                let ret = decode_celt_frame(&mut self.celt, Some(data), &mut buffer, f5, false)?;
+                #[cfg(feature = "deep_plc")]
+                let (celt, plc) = {
+                    let celt = &mut self.celt;
+                    let plc = Some(&mut self.lpcnet);
+                    (celt, plc)
+                };
+                #[cfg(not(feature = "deep_plc"))]
+                let (celt, plc) = (&mut self.celt, ());
+                let ret = decode_celt_frame(celt, Some(data), &mut buffer, f5, false, plc)?;
                 if ret != f5 {
                     return Err(OpusDecodeError::InternalError);
                 }
@@ -914,7 +929,15 @@ impl<'mode> OpusDecoder<'mode> {
                 )
                 .map_err(|_| OpusDecodeError::BadArgument)?;
                 let silence = [0xFFu8, 0xFF];
-                let ret = decode_celt_frame(&mut self.celt, Some(&silence), pcm, f2_5, celt_accum)?;
+                #[cfg(feature = "deep_plc")]
+                let (celt, plc) = {
+                    let celt = &mut self.celt;
+                    let plc = Some(&mut self.lpcnet);
+                    (celt, plc)
+                };
+                #[cfg(not(feature = "deep_plc"))]
+                let (celt, plc) = (&mut self.celt, ());
+                let ret = decode_celt_frame(celt, Some(&silence), pcm, f2_5, celt_accum, plc)?;
                 if ret != f2_5 {
                     return Err(OpusDecodeError::InternalError);
                 }
@@ -927,16 +950,33 @@ impl<'mode> OpusDecoder<'mode> {
             let celt_frame = audiosize.min(f20);
             let celt_packet = if decode_fec { None } else { packet };
             let celt_ret = if celt_packet.is_some() && range_decoder.is_some() {
+                #[cfg(feature = "deep_plc")]
+                let (celt, plc) = {
+                    let celt = &mut self.celt;
+                    let plc = Some(&mut self.lpcnet);
+                    (celt, plc)
+                };
+                #[cfg(not(feature = "deep_plc"))]
+                let (celt, plc) = (&mut self.celt, ());
                 decode_celt_frame_with_ec(
-                    &mut self.celt,
+                    celt,
                     celt_packet,
                     pcm,
                     celt_frame,
                     range_decoder.as_mut(),
                     celt_accum,
+                    plc,
                 )?
             } else {
-                decode_celt_frame(&mut self.celt, celt_packet, pcm, celt_frame, celt_accum)?
+                #[cfg(feature = "deep_plc")]
+                let (celt, plc) = {
+                    let celt = &mut self.celt;
+                    let plc = Some(&mut self.lpcnet);
+                    (celt, plc)
+                };
+                #[cfg(not(feature = "deep_plc"))]
+                let (celt, plc) = (&mut self.celt, ());
+                decode_celt_frame(celt, celt_packet, pcm, celt_frame, celt_accum, plc)?
             };
 
             if celt_ret != celt_frame {
@@ -978,7 +1018,15 @@ impl<'mode> OpusDecoder<'mode> {
             opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::SetStartBand(0))
                 .map_err(|_| OpusDecodeError::BadArgument)?;
             if let Some(data) = redundant_packet {
-                let ret = decode_celt_frame(&mut self.celt, Some(data), &mut buffer, f5, false)?;
+                #[cfg(feature = "deep_plc")]
+                let (celt, plc) = {
+                    let celt = &mut self.celt;
+                    let plc = Some(&mut self.lpcnet);
+                    (celt, plc)
+                };
+                #[cfg(not(feature = "deep_plc"))]
+                let (celt, plc) = (&mut self.celt, ());
+                let ret = decode_celt_frame(celt, Some(data), &mut buffer, f5, false, plc)?;
                 if ret != f5 {
                     return Err(OpusDecodeError::InternalError);
                 }
@@ -1451,6 +1499,7 @@ fn decode_celt_frame_with_ec<'mode, 'dec>(
     frame_size: usize,
     range_decoder: Option<&'dec mut EcDec<'dec>>,
     accum: bool,
+    plc: PlcHandle<'_>,
 ) -> Result<usize, OpusDecodeError>
 where
     'mode: 'dec,
@@ -1462,6 +1511,7 @@ where
         frame_size,
         range_decoder,
         accum,
+        plc,
     )
     .map_err(map_celt_error)
 }
@@ -1472,8 +1522,9 @@ fn decode_celt_frame(
     pcm: &mut [OpusRes],
     frame_size: usize,
     accum: bool,
+    plc: PlcHandle<'_>,
 ) -> Result<usize, OpusDecodeError> {
-    decode_celt_frame_with_ec(decoder, packet, pcm, frame_size, None, accum)
+    decode_celt_frame_with_ec(decoder, packet, pcm, frame_size, None, accum, plc)
 }
 
 #[inline]
@@ -1812,6 +1863,19 @@ pub fn opus_decoder_ctl<'req>(
                 CeltDecoderCtlRequest::GetPhaseInversionDisabled(slot),
             )?;
         }
+        OpusDecoderCtlRequest::SetDnnBlob(data) => {
+            if data.is_empty() {
+                return Err(OpusDecoderCtlError::BadArgument);
+            }
+            #[cfg(feature = "deep_plc")]
+            {
+                decoder
+                    .lpcnet
+                    .load_model(data)
+                    .map_err(|_| OpusDecoderCtlError::BadArgument)?;
+            }
+            load_osce_models(&mut decoder.silk, Some(data))?;
+        }
     }
 
     Ok(())
@@ -2106,6 +2170,24 @@ mod tests {
         )
         .unwrap();
         assert!(disabled);
+    }
+
+    #[test]
+    fn dnn_blob_ctl_rejects_empty_payload() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        assert_eq!(
+            opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetDnnBlob(&[])).unwrap_err(),
+            OpusDecoderCtlError::BadArgument
+        );
+    }
+
+    #[cfg(feature = "deep_plc")]
+    #[test]
+    fn dnn_blob_ctl_marks_plc_loaded() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        assert!(!decoder.lpcnet.loaded);
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetDnnBlob(&[1, 2, 3])).unwrap();
+        assert!(decoder.lpcnet.loaded);
     }
 
     #[test]

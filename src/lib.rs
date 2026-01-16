@@ -7,6 +7,8 @@ pub mod bitdepth;
 mod celt;
 pub mod decoder;
 pub mod dred;
+#[cfg(feature = "dred")]
+mod dnn_weights;
 mod dred_constants;
 #[cfg(feature = "dred")]
 mod dred_rdovae_dec;

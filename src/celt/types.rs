@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 
 use super::mini_kfft::MiniKissFft;
 use super::vq::SPREAD_NORMAL;
+#[cfg(feature = "deep_plc")]
+use super::deep_plc::PLC_UPDATE_SAMPLES;
 #[cfg(feature = "fixed_point")]
 use super::fixed_ops::qconst16;
 #[cfg(feature = "fixed_point")]
@@ -514,6 +516,12 @@ pub struct OpusCustomDecoder<'a> {
     pub postfilter_tapset_old: i32,
     pub prefilter_and_fold: bool,
     pub preemph_mem_decoder: [CeltSig; 2],
+    #[cfg(feature = "deep_plc")]
+    pub plc_pcm: [OpusInt16; PLC_UPDATE_SAMPLES],
+    #[cfg(feature = "deep_plc")]
+    pub plc_fill: OpusInt32,
+    #[cfg(feature = "deep_plc")]
+    pub plc_preemphasis_mem: f32,
     pub decode_mem: &'a mut [CeltSig],
     pub lpc: &'a mut [OpusVal16],
     pub old_ebands: &'a mut [CeltGlog],
@@ -585,6 +593,12 @@ impl<'a> OpusCustomDecoder<'a> {
             postfilter_tapset_old: 0,
             prefilter_and_fold: false,
             preemph_mem_decoder: [0.0; 2],
+            #[cfg(feature = "deep_plc")]
+            plc_pcm: [0; PLC_UPDATE_SAMPLES],
+            #[cfg(feature = "deep_plc")]
+            plc_fill: 0,
+            #[cfg(feature = "deep_plc")]
+            plc_preemphasis_mem: 0.0,
             decode_mem,
             lpc,
             old_ebands,
@@ -622,6 +636,12 @@ impl<'a> OpusCustomDecoder<'a> {
         self.postfilter_tapset_old = 0;
         self.prefilter_and_fold = false;
         self.preemph_mem_decoder = [0.0; 2];
+        #[cfg(feature = "deep_plc")]
+        {
+            self.plc_pcm.fill(0);
+            self.plc_fill = 0;
+            self.plc_preemphasis_mem = 0.0;
+        }
 
         self.decode_mem.fill(0.0);
         self.lpc.fill(0.0);

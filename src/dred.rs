@@ -311,10 +311,27 @@ pub enum OpusDredDecoderCtlRequest<'req> {
 
 /// Mirrors `opus_dred_decoder_ctl`.
 pub fn opus_dred_decoder_ctl(
-    _decoder: &mut OpusDredDecoder,
-    _request: OpusDredDecoderCtlRequest<'_>,
+    decoder: &mut OpusDredDecoder,
+    request: OpusDredDecoderCtlRequest<'_>,
 ) -> Result<(), OpusDredError> {
-    Err(OpusDredError::Unimplemented)
+    if !cfg!(feature = "dred") {
+        return Err(OpusDredError::Unimplemented);
+    }
+
+    match request {
+        OpusDredDecoderCtlRequest::SetDnnBlob(data) => {
+            if data.is_empty() {
+                return Err(OpusDredError::BadArgument);
+            }
+            #[cfg(feature = "dred")]
+            {
+                let model = RdovaeDec::from_weights(data).map_err(|_| OpusDredError::BadArgument)?;
+                decoder.model = model;
+                decoder.loaded = true;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Mirrors `opus_dred_get_size`.
@@ -697,6 +714,20 @@ mod tests {
             assert_eq!(size, 0);
             assert_eq!(opus_dred_alloc().unwrap_err(), OpusDredError::Unimplemented);
         }
+    }
+
+    #[test]
+    fn dred_decoder_ctl_rejects_empty_blob() {
+        if !cfg!(feature = "dred") {
+            return;
+        }
+
+        let mut decoder = opus_dred_decoder_create().expect("decoder");
+        assert_eq!(
+            opus_dred_decoder_ctl(&mut decoder, OpusDredDecoderCtlRequest::SetDnnBlob(&[]))
+                .unwrap_err(),
+            OpusDredError::BadArgument
+        );
     }
 
     #[test]

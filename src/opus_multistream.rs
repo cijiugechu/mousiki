@@ -605,6 +605,7 @@ pub enum OpusMultistreamDecoderCtlRequest<'req> {
     GetLastPacketDuration(&'req mut i32),
     SetPhaseInversionDisabled(bool),
     GetPhaseInversionDisabled(&'req mut bool),
+    SetDnnBlob(&'req [u8]),
 }
 
 /// Applies a control request across the embedded decoders.
@@ -699,6 +700,11 @@ pub fn opus_multistream_decoder_ctl<'req>(
                     .ok_or(OpusMultistreamDecoderError::InternalError)?,
                 OpusDecoderCtlRequest::GetPhaseInversionDisabled(slot),
             )?;
+        }
+        OpusMultistreamDecoderCtlRequest::SetDnnBlob(data) => {
+            for dec in &mut decoder.decoders {
+                opus_decoder_ctl(dec, OpusDecoderCtlRequest::SetDnnBlob(data))?;
+            }
         }
     }
 
@@ -1280,6 +1286,7 @@ pub enum OpusMultistreamEncoderCtlRequest<'req> {
     GetPhaseInversionDisabled(&'req mut bool),
     SetDredDuration(i32),
     GetDredDuration(&'req mut i32),
+    SetDnnBlob(&'req [u8]),
     SetForceMode(i32),
     GetFinalRange(&'req mut u32),
     ResetState,
@@ -1523,6 +1530,11 @@ pub fn opus_multistream_encoder_ctl<'req>(
                     .ok_or(OpusMultistreamEncoderError::InternalError)?,
                 OpusEncoderCtlRequest::GetDredDuration(out),
             )?;
+        }
+        OpusMultistreamEncoderCtlRequest::SetDnnBlob(data) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetDnnBlob(data))?;
+            }
         }
         OpusMultistreamEncoderCtlRequest::SetForceMode(value) => {
             for enc in &mut encoder.encoders {

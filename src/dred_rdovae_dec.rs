@@ -2,10 +2,13 @@
 
 use crate::dred_constants::{DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_STATE_DIM};
 use crate::dred_rdovae_dec_data::*;
+use crate::dnn_weights::{optional_bytes, require_bytes, WeightBlob, WeightError};
 use crate::nnet::{
     compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu,
     LinearLayer, ACTIVATION_LINEAR, ACTIVATION_TANH,
 };
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 pub(crate) const DEC_DENSE1_OUT_SIZE: usize = 96;
 pub(crate) const DEC_GLU1_OUT_SIZE: usize = 96;
@@ -96,6 +99,13 @@ impl RdovaeDec {
         let mut model = Self::default();
         init_rdovaedec(&mut model);
         model
+    }
+
+    pub(crate) fn from_weights(data: &[u8]) -> Result<Self, WeightError> {
+        let blob = WeightBlob::parse(data)?;
+        let mut model = Self::default();
+        init_rdovaedec_from_weights(&mut model, &blob)?;
+        Ok(model)
     }
 }
 
@@ -210,6 +220,487 @@ fn linear_layer(
         nb_outputs,
     }
 }
+
+fn linear_layer_from_weights(
+    blob: &WeightBlob<'_>,
+    bias: Option<&'static str>,
+    subias: Option<&'static str>,
+    weights: Option<&'static str>,
+    float_weights: Option<&'static str>,
+    weights_idx: Option<&'static str>,
+    diag: Option<&'static str>,
+    scale: Option<&'static str>,
+    nb_inputs: usize,
+    nb_outputs: usize,
+) -> Result<LinearLayer, WeightError> {
+    let bias = match bias {
+        Some(name) => Some(leak_f32(require_bytes(
+            blob,
+            name,
+            nb_outputs * core::mem::size_of::<f32>(),
+        )?)?),
+        None => None,
+    };
+    let subias = match subias {
+        Some(name) => Some(leak_f32(require_bytes(
+            blob,
+            name,
+            nb_outputs * core::mem::size_of::<f32>(),
+        )?)?),
+        None => None,
+    };
+    let diag = match diag {
+        Some(name) => Some(leak_f32(require_bytes(
+            blob,
+            name,
+            nb_outputs * core::mem::size_of::<f32>(),
+        )?)?),
+        None => None,
+    };
+
+    let mut total_blocks = None;
+    let weights_idx = match weights_idx {
+        Some(name) => {
+            let data = require_bytes(blob, name, bytes_len(blob, name)?)?;
+            let idx = leak_i32(data)?;
+            let blocks = validate_sparse_idx(idx, nb_inputs, nb_outputs, name)?;
+            total_blocks = Some(blocks);
+            Some(idx)
+        }
+        None => None,
+    };
+
+    let (weights, float_weights) = if let Some(blocks) = total_blocks {
+        let expected_i8 = SPARSE_BLOCK_SIZE
+            .checked_mul(blocks)
+            .ok_or(WeightError::InvalidBlob)?;
+        let weights = match weights {
+            Some(name) => Some(leak_i8(require_bytes(blob, name, expected_i8)?)?),
+            None => None,
+        };
+        let expected_f32 = expected_i8
+            .checked_mul(core::mem::size_of::<f32>())
+            .ok_or(WeightError::InvalidBlob)?;
+        let float_weights = match float_weights {
+            Some(name) => match optional_bytes(blob, name, expected_f32)? {
+                Some(data) => Some(leak_f32(data)?),
+                None => None,
+            },
+            None => None,
+        };
+        (weights, float_weights)
+    } else {
+        let expected_i8 = nb_inputs
+            .checked_mul(nb_outputs)
+            .ok_or(WeightError::InvalidBlob)?;
+        let weights = match weights {
+            Some(name) => Some(leak_i8(require_bytes(blob, name, expected_i8)?)?),
+            None => None,
+        };
+        let expected_f32 = expected_i8
+            .checked_mul(core::mem::size_of::<f32>())
+            .ok_or(WeightError::InvalidBlob)?;
+        let float_weights = match float_weights {
+            Some(name) => match optional_bytes(blob, name, expected_f32)? {
+                Some(data) => Some(leak_f32(data)?),
+                None => None,
+            },
+            None => None,
+        };
+        (weights, float_weights)
+    };
+
+    let scale = match scale {
+        Some(name) => match weights {
+            Some(_) => Some(leak_f32(require_bytes(
+                blob,
+                name,
+                nb_outputs * core::mem::size_of::<f32>(),
+            )?)?),
+            None => None,
+        },
+        None => None,
+    };
+
+    Ok(LinearLayer {
+        bias,
+        subias,
+        weights,
+        float_weights,
+        weights_idx,
+        diag,
+        scale,
+        nb_inputs,
+        nb_outputs,
+    })
+}
+
+fn init_rdovaedec_from_weights(
+    model: &mut RdovaeDec,
+    blob: &WeightBlob<'_>,
+) -> Result<(), WeightError> {
+    model.dec_dense1 = linear_layer_from_weights(
+        blob,
+        Some("dec_dense1_bias"),
+        None,
+        None,
+        Some("dec_dense1_weights_float"),
+        None,
+        None,
+        None,
+        DRED_LATENT_DIM,
+        DEC_DENSE1_OUT_SIZE,
+    )?;
+    model.dec_glu1 = linear_layer_from_weights(
+        blob,
+        Some("dec_glu1_bias"),
+        Some("dec_glu1_subias"),
+        Some("dec_glu1_weights_int8"),
+        Some("dec_glu1_weights_float"),
+        None,
+        None,
+        Some("dec_glu1_scale"),
+        DEC_GLU1_OUT_SIZE,
+        DEC_GLU1_OUT_SIZE,
+    )?;
+    model.dec_glu2 = linear_layer_from_weights(
+        blob,
+        Some("dec_glu2_bias"),
+        Some("dec_glu2_subias"),
+        Some("dec_glu2_weights_int8"),
+        Some("dec_glu2_weights_float"),
+        None,
+        None,
+        Some("dec_glu2_scale"),
+        DEC_GLU2_OUT_SIZE,
+        DEC_GLU2_OUT_SIZE,
+    )?;
+    model.dec_glu3 = linear_layer_from_weights(
+        blob,
+        Some("dec_glu3_bias"),
+        Some("dec_glu3_subias"),
+        Some("dec_glu3_weights_int8"),
+        Some("dec_glu3_weights_float"),
+        None,
+        None,
+        Some("dec_glu3_scale"),
+        DEC_GLU3_OUT_SIZE,
+        DEC_GLU3_OUT_SIZE,
+    )?;
+    model.dec_glu4 = linear_layer_from_weights(
+        blob,
+        Some("dec_glu4_bias"),
+        Some("dec_glu4_subias"),
+        Some("dec_glu4_weights_int8"),
+        Some("dec_glu4_weights_float"),
+        None,
+        None,
+        Some("dec_glu4_scale"),
+        DEC_GLU4_OUT_SIZE,
+        DEC_GLU4_OUT_SIZE,
+    )?;
+    model.dec_glu5 = linear_layer_from_weights(
+        blob,
+        Some("dec_glu5_bias"),
+        Some("dec_glu5_subias"),
+        Some("dec_glu5_weights_int8"),
+        Some("dec_glu5_weights_float"),
+        None,
+        None,
+        Some("dec_glu5_scale"),
+        DEC_GLU5_OUT_SIZE,
+        DEC_GLU5_OUT_SIZE,
+    )?;
+    model.dec_output = linear_layer_from_weights(
+        blob,
+        Some("dec_output_bias"),
+        Some("dec_output_subias"),
+        Some("dec_output_weights_int8"),
+        Some("dec_output_weights_float"),
+        None,
+        None,
+        Some("dec_output_scale"),
+        DEC_BUFFER_SIZE,
+        DEC_OUTPUT_OUT_SIZE,
+    )?;
+    model.dec_hidden_init = linear_layer_from_weights(
+        blob,
+        Some("dec_hidden_init_bias"),
+        None,
+        None,
+        Some("dec_hidden_init_weights_float"),
+        None,
+        None,
+        None,
+        DRED_STATE_DIM,
+        DEC_HIDDEN_INIT_OUT_SIZE,
+    )?;
+    model.dec_gru_init = linear_layer_from_weights(
+        blob,
+        Some("dec_gru_init_bias"),
+        Some("dec_gru_init_subias"),
+        Some("dec_gru_init_weights_int8"),
+        Some("dec_gru_init_weights_float"),
+        None,
+        None,
+        Some("dec_gru_init_scale"),
+        DEC_HIDDEN_INIT_OUT_SIZE,
+        DEC_GRU_INIT_OUT_SIZE,
+    )?;
+    model.dec_gru1_input = linear_layer_from_weights(
+        blob,
+        Some("dec_gru1_input_bias"),
+        Some("dec_gru1_input_subias"),
+        Some("dec_gru1_input_weights_int8"),
+        Some("dec_gru1_input_weights_float"),
+        Some("dec_gru1_input_weights_idx"),
+        None,
+        Some("dec_gru1_input_scale"),
+        DEC_GRU1_OUT_SIZE,
+        DEC_GRU1_STATE_SIZE * 3,
+    )?;
+    model.dec_gru1_recurrent = linear_layer_from_weights(
+        blob,
+        Some("dec_gru1_recurrent_bias"),
+        Some("dec_gru1_recurrent_subias"),
+        Some("dec_gru1_recurrent_weights_int8"),
+        Some("dec_gru1_recurrent_weights_float"),
+        None,
+        None,
+        Some("dec_gru1_recurrent_scale"),
+        DEC_GRU1_OUT_SIZE,
+        DEC_GRU1_STATE_SIZE * 3,
+    )?;
+    model.dec_gru2_input = linear_layer_from_weights(
+        blob,
+        Some("dec_gru2_input_bias"),
+        Some("dec_gru2_input_subias"),
+        Some("dec_gru2_input_weights_int8"),
+        Some("dec_gru2_input_weights_float"),
+        Some("dec_gru2_input_weights_idx"),
+        None,
+        Some("dec_gru2_input_scale"),
+        DEC_GRU2_IN_SIZE,
+        DEC_GRU2_STATE_SIZE * 3,
+    )?;
+    model.dec_gru2_recurrent = linear_layer_from_weights(
+        blob,
+        Some("dec_gru2_recurrent_bias"),
+        Some("dec_gru2_recurrent_subias"),
+        Some("dec_gru2_recurrent_weights_int8"),
+        Some("dec_gru2_recurrent_weights_float"),
+        None,
+        None,
+        Some("dec_gru2_recurrent_scale"),
+        DEC_GRU2_OUT_SIZE,
+        DEC_GRU2_STATE_SIZE * 3,
+    )?;
+    model.dec_gru3_input = linear_layer_from_weights(
+        blob,
+        Some("dec_gru3_input_bias"),
+        Some("dec_gru3_input_subias"),
+        Some("dec_gru3_input_weights_int8"),
+        Some("dec_gru3_input_weights_float"),
+        Some("dec_gru3_input_weights_idx"),
+        None,
+        Some("dec_gru3_input_scale"),
+        DEC_GRU3_IN_SIZE,
+        DEC_GRU3_STATE_SIZE * 3,
+    )?;
+    model.dec_gru3_recurrent = linear_layer_from_weights(
+        blob,
+        Some("dec_gru3_recurrent_bias"),
+        Some("dec_gru3_recurrent_subias"),
+        Some("dec_gru3_recurrent_weights_int8"),
+        Some("dec_gru3_recurrent_weights_float"),
+        None,
+        None,
+        Some("dec_gru3_recurrent_scale"),
+        DEC_GRU3_OUT_SIZE,
+        DEC_GRU3_STATE_SIZE * 3,
+    )?;
+    model.dec_gru4_input = linear_layer_from_weights(
+        blob,
+        Some("dec_gru4_input_bias"),
+        Some("dec_gru4_input_subias"),
+        Some("dec_gru4_input_weights_int8"),
+        Some("dec_gru4_input_weights_float"),
+        Some("dec_gru4_input_weights_idx"),
+        None,
+        Some("dec_gru4_input_scale"),
+        DEC_GRU4_IN_SIZE,
+        DEC_GRU4_STATE_SIZE * 3,
+    )?;
+    model.dec_gru4_recurrent = linear_layer_from_weights(
+        blob,
+        Some("dec_gru4_recurrent_bias"),
+        Some("dec_gru4_recurrent_subias"),
+        Some("dec_gru4_recurrent_weights_int8"),
+        Some("dec_gru4_recurrent_weights_float"),
+        None,
+        None,
+        Some("dec_gru4_recurrent_scale"),
+        DEC_GRU4_OUT_SIZE,
+        DEC_GRU4_STATE_SIZE * 3,
+    )?;
+    model.dec_gru5_input = linear_layer_from_weights(
+        blob,
+        Some("dec_gru5_input_bias"),
+        Some("dec_gru5_input_subias"),
+        Some("dec_gru5_input_weights_int8"),
+        Some("dec_gru5_input_weights_float"),
+        Some("dec_gru5_input_weights_idx"),
+        None,
+        Some("dec_gru5_input_scale"),
+        DEC_GRU5_IN_SIZE,
+        DEC_GRU5_STATE_SIZE * 3,
+    )?;
+    model.dec_gru5_recurrent = linear_layer_from_weights(
+        blob,
+        Some("dec_gru5_recurrent_bias"),
+        Some("dec_gru5_recurrent_subias"),
+        Some("dec_gru5_recurrent_weights_int8"),
+        Some("dec_gru5_recurrent_weights_float"),
+        None,
+        None,
+        Some("dec_gru5_recurrent_scale"),
+        DEC_GRU5_OUT_SIZE,
+        DEC_GRU5_STATE_SIZE * 3,
+    )?;
+    model.dec_conv1 = linear_layer_from_weights(
+        blob,
+        Some("dec_conv1_bias"),
+        Some("dec_conv1_subias"),
+        Some("dec_conv1_weights_int8"),
+        Some("dec_conv1_weights_float"),
+        None,
+        None,
+        Some("dec_conv1_scale"),
+        DEC_CONV1_IN_SIZE * 2,
+        DEC_CONV1_OUT_SIZE,
+    )?;
+    model.dec_conv2 = linear_layer_from_weights(
+        blob,
+        Some("dec_conv2_bias"),
+        Some("dec_conv2_subias"),
+        Some("dec_conv2_weights_int8"),
+        Some("dec_conv2_weights_float"),
+        None,
+        None,
+        Some("dec_conv2_scale"),
+        DEC_CONV2_IN_SIZE * 2,
+        DEC_CONV2_OUT_SIZE,
+    )?;
+    model.dec_conv3 = linear_layer_from_weights(
+        blob,
+        Some("dec_conv3_bias"),
+        Some("dec_conv3_subias"),
+        Some("dec_conv3_weights_int8"),
+        Some("dec_conv3_weights_float"),
+        None,
+        None,
+        Some("dec_conv3_scale"),
+        DEC_CONV3_IN_SIZE * 2,
+        DEC_CONV3_OUT_SIZE,
+    )?;
+    model.dec_conv4 = linear_layer_from_weights(
+        blob,
+        Some("dec_conv4_bias"),
+        Some("dec_conv4_subias"),
+        Some("dec_conv4_weights_int8"),
+        Some("dec_conv4_weights_float"),
+        None,
+        None,
+        Some("dec_conv4_scale"),
+        DEC_CONV4_IN_SIZE * 2,
+        DEC_CONV4_OUT_SIZE,
+    )?;
+    model.dec_conv5 = linear_layer_from_weights(
+        blob,
+        Some("dec_conv5_bias"),
+        Some("dec_conv5_subias"),
+        Some("dec_conv5_weights_int8"),
+        Some("dec_conv5_weights_float"),
+        None,
+        None,
+        Some("dec_conv5_scale"),
+        DEC_CONV5_IN_SIZE * 2,
+        DEC_CONV5_OUT_SIZE,
+    )?;
+    Ok(())
+}
+
+fn leak_f32(data: &[u8]) -> Result<&'static [f32], WeightError> {
+    if data.len() % 4 != 0 {
+        return Err(WeightError::InvalidBlob);
+    }
+    let mut values = Vec::with_capacity(data.len() / 4);
+    for chunk in data.chunks_exact(4) {
+        let bytes: [u8; 4] = chunk.try_into().map_err(|_| WeightError::InvalidBlob)?;
+        values.push(f32::from_le_bytes(bytes));
+    }
+    Ok(Box::leak(values.into_boxed_slice()))
+}
+
+fn leak_i8(data: &[u8]) -> Result<&'static [i8], WeightError> {
+    let mut values = Vec::with_capacity(data.len());
+    values.extend(data.iter().map(|&byte| byte as i8));
+    Ok(Box::leak(values.into_boxed_slice()))
+}
+
+fn leak_i32(data: &[u8]) -> Result<&'static [i32], WeightError> {
+    if data.len() % 4 != 0 {
+        return Err(WeightError::InvalidBlob);
+    }
+    let mut values = Vec::with_capacity(data.len() / 4);
+    for chunk in data.chunks_exact(4) {
+        let bytes: [u8; 4] = chunk.try_into().map_err(|_| WeightError::InvalidBlob)?;
+        values.push(i32::from_le_bytes(bytes));
+    }
+    Ok(Box::leak(values.into_boxed_slice()))
+}
+
+fn bytes_len(blob: &WeightBlob<'_>, name: &'static str) -> Result<usize, WeightError> {
+    blob.find(name)
+        .map(|array| array.size)
+        .ok_or(WeightError::MissingArray(name))
+}
+
+fn validate_sparse_idx(
+    idx: &[i32],
+    nb_inputs: usize,
+    nb_outputs: usize,
+    name: &'static str,
+) -> Result<usize, WeightError> {
+    let mut remain = idx.len() as i32;
+    let mut out = nb_outputs as i32;
+    let mut pos = 0usize;
+    let mut total_blocks = 0i32;
+    while remain > 0 {
+        let nb_blocks = idx[pos];
+        pos += 1;
+        remain -= 1;
+        if nb_blocks < 0 || remain < nb_blocks {
+            return Err(WeightError::InvalidIndex(name));
+        }
+        for _ in 0..nb_blocks {
+            let offset = idx[pos];
+            pos += 1;
+            remain -= 1;
+            if offset < 0 || offset + 3 >= nb_inputs as i32 || (offset & 0x3) != 0 {
+                return Err(WeightError::InvalidIndex(name));
+            }
+        }
+        out -= 8;
+        total_blocks += nb_blocks;
+    }
+    if out != 0 {
+        return Err(WeightError::InvalidIndex(name));
+    }
+    Ok(total_blocks as usize)
+}
+
+const SPARSE_BLOCK_SIZE: usize = 32;
 
 fn init_rdovaedec(model: &mut RdovaeDec) {
     model.dec_dense1 = linear_layer(
