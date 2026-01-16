@@ -475,6 +475,38 @@ pub fn opus_packet_pad(
     opus_packet_pad_impl(data, len, new_len, true)
 }
 
+pub(crate) fn opus_packet_pad_with_extensions(
+    data: &mut [u8],
+    len: usize,
+    new_len: usize,
+    pad: bool,
+    extensions: &[OpusExtensionData<'_>],
+) -> Result<usize, RepacketizerError> {
+    if len < 1 {
+        return Err(RepacketizerError::BadArgument);
+    }
+    if len == new_len {
+        return Ok(len);
+    }
+    if len > new_len || new_len > data.len() {
+        return Err(RepacketizerError::BadArgument);
+    }
+
+    let mut copy = Vec::with_capacity(len);
+    copy.extend_from_slice(&data[..len]);
+
+    let mut rp = OpusRepacketizer::new();
+    rp.opus_repacketizer_cat(&copy, len)?;
+    let written =
+        rp.opus_repacketizer_out_range_impl(0, rp.nb_frames, data, new_len, false, pad, extensions)?;
+
+    if written > 0 {
+        Ok(written)
+    } else {
+        Err(RepacketizerError::InternalError)
+    }
+}
+
 fn opus_packet_pad_impl(
     data: &mut [u8],
     len: usize,

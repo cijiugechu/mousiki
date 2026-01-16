@@ -33,8 +33,9 @@ fn main() -> io::Result<()> {
                     io::ErrorKind::NotFound,
                     "DRED_WEIGHTS_PATH not set and fetch feature disabled. \
 Set DRED_WEIGHTS_PATH to a directory or tarball containing \
-dred_rdovae_dec_data.c and dred_rdovae_stats_data.c, or enable the \
-mousiki-dred-weights `fetch` feature (use `dred-fetch` in the main crate).",
+dred_rdovae_dec_data.c, dred_rdovae_stats_data.c, dred_rdovae_enc_data.c, \
+and pitchdnn_data.c, or enable the mousiki-dred-weights `fetch` feature \
+(use `dred-fetch` in the main crate).",
                 ));
             }
             download_and_extract(&work_dir)?
@@ -43,12 +44,18 @@ mousiki-dred-weights `fetch` feature (use `dred-fetch` in the main crate).",
 
     let dec_path = resolve_source_file(&source_root, "dred_rdovae_dec_data.c")?;
     let stats_path = resolve_source_file(&source_root, "dred_rdovae_stats_data.c")?;
+    let enc_path = resolve_source_file(&source_root, "dred_rdovae_enc_data.c")?;
+    let pitch_path = resolve_source_file(&source_root, "pitchdnn_data.c")?;
 
     println!("cargo:rerun-if-changed={}", dec_path.display());
     println!("cargo:rerun-if-changed={}", stats_path.display());
+    println!("cargo:rerun-if-changed={}", enc_path.display());
+    println!("cargo:rerun-if-changed={}", pitch_path.display());
 
     generate_rust(&dec_path, &out_dir.join("dred_rdovae_dec_data.rs"))?;
     generate_rust(&stats_path, &out_dir.join("dred_rdovae_stats_data.rs"))?;
+    generate_rust(&enc_path, &out_dir.join("dred_rdovae_enc_data.rs"))?;
+    generate_rust(&pitch_path, &out_dir.join("pitchdnn_data.rs"))?;
 
     Ok(())
 }
@@ -71,7 +78,8 @@ fn prepare_from_path(work_dir: &Path, path: PathBuf) -> io::Result<PathBuf> {
         io::ErrorKind::NotFound,
         format!(
             "DRED_WEIGHTS_PATH not found: {}. Provide a directory containing \
-dred_rdovae_dec_data.c and dred_rdovae_stats_data.c, or a tarball from Xiph.",
+dred_rdovae_dec_data.c, dred_rdovae_stats_data.c, dred_rdovae_enc_data.c, and \
+pitchdnn_data.c, or a tarball from Xiph.",
             path.display()
         ),
     ))
@@ -165,7 +173,9 @@ fn stamp_matches(stamp_path: &Path, expected_sha: &str) -> bool {
 fn extracted_files_exist(root: &Path) -> bool {
     let dec = root.join("dnn").join("dred_rdovae_dec_data.c");
     let stats = root.join("dnn").join("dred_rdovae_stats_data.c");
-    dec.exists() && stats.exists()
+    let enc = root.join("dnn").join("dred_rdovae_enc_data.c");
+    let pitch = root.join("dnn").join("pitchdnn_data.c");
+    dec.exists() && stats.exists() && enc.exists() && pitch.exists()
 }
 
 fn resolve_source_file(root: &Path, name: &str) -> io::Result<PathBuf> {

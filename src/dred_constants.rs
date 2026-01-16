@@ -1,4 +1,5 @@
 // Auto-generated from `opus-c/dnn/dred_config.h` and `opus-c/dnn/dred_rdovae_constants.h`.
+#![allow(dead_code)]
 
 pub(crate) const DRED_NUM_FEATURES: usize = 20;
 pub(crate) const DRED_LATENT_DIM: usize = 21;

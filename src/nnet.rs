@@ -13,10 +13,12 @@ pub(crate) const ACTIVATION_SWISH: i32 = 5;
 
 const MAX_INPUTS: usize = 2048;
 const SPARSE_BLOCK_SIZE: usize = 32;
+const MAX_CONV2D_INPUTS: usize = 8192;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LinearLayer {
     pub bias: Option<&'static [f32]>,
+    #[allow(dead_code)]
     pub subias: Option<&'static [f32]>,
     pub weights: Option<&'static [i8]>,
     pub float_weights: Option<&'static [f32]>,
@@ -25,6 +27,16 @@ pub(crate) struct LinearLayer {
     pub scale: Option<&'static [f32]>,
     pub nb_inputs: usize,
     pub nb_outputs: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Conv2dLayer {
+    pub bias: Option<&'static [f32]>,
+    pub float_weights: Option<&'static [f32]>,
+    pub in_channels: usize,
+    pub out_channels: usize,
+    pub ktime: usize,
+    pub kheight: usize,
 }
 
 #[inline]
@@ -90,7 +102,7 @@ fn vec_swish_inplace(output: &mut [f32]) {
     }
 }
 
-fn compute_activation(output: &mut [f32], activation: i32) {
+pub(crate) fn compute_activation(output: &mut [f32], activation: i32) {
     match activation {
         ACTIVATION_SIGMOID => vec_sigmoid_inplace(output),
         ACTIVATION_TANH => vec_tanh_inplace(output),
@@ -110,6 +122,151 @@ fn compute_activation(output: &mut [f32], activation: i32) {
         _ => {
             debug_assert_eq!(activation, ACTIVATION_LINEAR);
         }
+    }
+}
+
+fn conv2d_float(
+    output: &mut [f32],
+    weights: &[f32],
+    in_channels: usize,
+    out_channels: usize,
+    ktime: usize,
+    kheight: usize,
+    input: &[f32],
+    height: usize,
+    hstride: usize,
+) {
+    let in_stride = height + kheight - 1;
+    for i in 0..out_channels {
+        let out_row = &mut output[i * hstride..i * hstride + height];
+        out_row.fill(0.0);
+        for m in 0..in_channels {
+            for t in 0..ktime {
+                for h in 0..kheight {
+                    let weight_base = ((i * in_channels + m) * ktime + t) * kheight + h;
+                    let weight = weights[weight_base];
+                    let input_base = (t * in_channels + m) * in_stride + h;
+                    for j in 0..height {
+                        out_row[j] += weight * input[input_base + j];
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn conv2d_3x3_float(
+    output: &mut [f32],
+    weights: &[f32],
+    in_channels: usize,
+    out_channels: usize,
+    input: &[f32],
+    height: usize,
+    hstride: usize,
+) {
+    let kheight = 3;
+    let ktime = 3;
+    let in_stride = height + kheight - 1;
+    for i in 0..out_channels {
+        let out_row = &mut output[i * hstride..i * hstride + height];
+        out_row.fill(0.0);
+        for m in 0..in_channels {
+            for j in 0..height {
+                let weight_base = (i * in_channels + m) * ktime * kheight;
+                let input_base = m * in_stride + j;
+                out_row[j] += weights[weight_base + 0] * input[input_base + 0]
+                    + weights[weight_base + 1] * input[input_base + 1]
+                    + weights[weight_base + 2] * input[input_base + 2]
+                    + weights[weight_base + 3] * input[input_base + in_channels * in_stride + 0]
+                    + weights[weight_base + 4] * input[input_base + in_channels * in_stride + 1]
+                    + weights[weight_base + 5] * input[input_base + in_channels * in_stride + 2]
+                    + weights[weight_base + 6] * input[input_base + 2 * in_channels * in_stride + 0]
+                    + weights[weight_base + 7] * input[input_base + 2 * in_channels * in_stride + 1]
+                    + weights[weight_base + 8] * input[input_base + 2 * in_channels * in_stride + 2];
+            }
+        }
+    }
+}
+
+pub(crate) fn compute_conv2d(
+    layer: &Conv2dLayer,
+    output: &mut [f32],
+    mem: &mut [f32],
+    input: &[f32],
+    height: usize,
+    hstride: usize,
+    activation: i32,
+    _arch: i32,
+) {
+    let Some(weights) = layer.float_weights else {
+        output.fill(0.0);
+        return;
+    };
+
+    let time_stride = layer
+        .in_channels
+        .checked_mul(height + layer.kheight - 1)
+        .expect("conv2d time stride overflow");
+    let total_inputs = layer
+        .ktime
+        .checked_mul(time_stride)
+        .expect("conv2d input length overflow");
+    debug_assert!(
+        total_inputs <= MAX_CONV2D_INPUTS,
+        "conv2d input buffer too large"
+    );
+    let mem_len = (layer.ktime - 1) * time_stride;
+    debug_assert!(mem_len <= mem.len());
+    debug_assert!(time_stride <= input.len());
+    debug_assert!(output.len() >= layer.out_channels * hstride);
+
+    let mut input_buf = [0.0f32; MAX_CONV2D_INPUTS];
+    input_buf[..mem_len].copy_from_slice(&mem[..mem_len]);
+    input_buf[mem_len..mem_len + time_stride].copy_from_slice(&input[..time_stride]);
+    if mem_len > 0 {
+        let start = time_stride;
+        let end = start + mem_len;
+        mem[..mem_len].copy_from_slice(&input_buf[start..end]);
+    }
+
+    if layer.kheight == 3 && layer.ktime == 3 {
+        conv2d_3x3_float(
+            output,
+            weights,
+            layer.in_channels,
+            layer.out_channels,
+            &input_buf[..total_inputs],
+            height,
+            hstride,
+        );
+    } else {
+        conv2d_float(
+            output,
+            weights,
+            layer.in_channels,
+            layer.out_channels,
+            layer.ktime,
+            layer.kheight,
+            &input_buf[..total_inputs],
+            height,
+            hstride,
+        );
+    }
+
+    if let Some(bias) = layer.bias {
+        debug_assert!(bias.len() >= layer.out_channels);
+        for i in 0..layer.out_channels {
+            let out_row = &mut output[i * hstride..i * hstride + height];
+            let value = bias[i];
+            for slot in out_row.iter_mut() {
+                *slot += value;
+            }
+        }
+    }
+
+    for i in 0..layer.out_channels {
+        let out_row = &mut output[i * hstride..i * hstride + height];
+        compute_activation(out_row, activation);
     }
 }
 

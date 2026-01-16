@@ -14,6 +14,10 @@ mod dred_constants;
 mod dred_rdovae_dec;
 #[cfg(feature = "dred")]
 mod dred_rdovae_dec_data;
+#[cfg(feature = "dred")]
+mod dred_rdovae_enc;
+#[cfg(feature = "dred")]
+mod dred_rdovae_enc_data;
 mod dred_stats_data;
 pub mod extensions;
 pub mod mapping_matrix;
@@ -22,6 +26,14 @@ mod mlp;
 mod mlp_data;
 #[cfg(feature = "dred")]
 mod nnet;
+#[cfg(feature = "dred")]
+mod pitchdnn;
+#[cfg(feature = "dred")]
+mod pitchdnn_data;
+#[cfg(feature = "dred")]
+mod lpcnet_enc;
+#[cfg(feature = "dred")]
+mod dred_encoder;
 pub mod oggreader;
 pub mod opus;
 pub mod opus_decoder;

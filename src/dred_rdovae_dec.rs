@@ -36,22 +36,27 @@ pub(crate) const DEC_GRU5_IN_SIZE: usize = 608;
 pub(crate) const DEC_CONV1_OUT_SIZE: usize = 32;
 pub(crate) const DEC_CONV1_IN_SIZE: usize = 192;
 pub(crate) const DEC_CONV1_STATE_SIZE: usize = 192;
+#[allow(dead_code)]
 pub(crate) const DEC_CONV1_DELAY: usize = 0;
 pub(crate) const DEC_CONV2_OUT_SIZE: usize = 32;
 pub(crate) const DEC_CONV2_IN_SIZE: usize = 320;
 pub(crate) const DEC_CONV2_STATE_SIZE: usize = 320;
+#[allow(dead_code)]
 pub(crate) const DEC_CONV2_DELAY: usize = 0;
 pub(crate) const DEC_CONV3_OUT_SIZE: usize = 32;
 pub(crate) const DEC_CONV3_IN_SIZE: usize = 448;
 pub(crate) const DEC_CONV3_STATE_SIZE: usize = 448;
+#[allow(dead_code)]
 pub(crate) const DEC_CONV3_DELAY: usize = 0;
 pub(crate) const DEC_CONV4_OUT_SIZE: usize = 32;
 pub(crate) const DEC_CONV4_IN_SIZE: usize = 576;
 pub(crate) const DEC_CONV4_STATE_SIZE: usize = 576;
+#[allow(dead_code)]
 pub(crate) const DEC_CONV4_DELAY: usize = 0;
 pub(crate) const DEC_CONV5_OUT_SIZE: usize = 32;
 pub(crate) const DEC_CONV5_IN_SIZE: usize = 704;
 pub(crate) const DEC_CONV5_STATE_SIZE: usize = 704;
+#[allow(dead_code)]
 pub(crate) const DEC_CONV5_DELAY: usize = 0;
 
 const DEC_BUFFER_SIZE: usize = DEC_DENSE1_OUT_SIZE

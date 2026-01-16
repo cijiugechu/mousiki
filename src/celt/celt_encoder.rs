@@ -3094,7 +3094,7 @@ fn celt_encode_with_ec_inner<'a>(
 
         if silence {
             nb_available_bytes = 2;
-            target = 2 * 8 << BITRES;
+            target = (2 * 8) << BITRES;
             delta = 0;
         }
 

@@ -5,15 +5,10 @@ implementation under `opus-c` with the Rust port in this repository.
 
 ## High-level gaps
 
-- The encoder-side DRED pipeline is still missing (latent generation, entropy
-  coding, and packet extension insertion).
 - The Rust DRED decoder now includes entropy decoding plus the RDOVAE decoder,
   and DRED FEC features are queued into the deep PLC state, but the PLC/FEC
   integration that consumes those features is still a stub (neural PLC output
   generation is not implemented).
-- DRED packet extension parsing is implemented for the experimental header
-  (matching the current C build), but encoder-side payload insertion remains
-  missing.
 - Decoder-side DNN blob loading is now wired up, but the PLC model output is
   still placeholder data.
 - DRED vector tests and tooling are not ported.
@@ -33,9 +28,12 @@ Rust currently includes the decoder-side model and data:
 - Generated decoder weights and stats data via `mousiki-dred-weights`
   (`src/dred_rdovae_dec_data.rs`, `src/dred_stats_data.rs`)
 
-Missing Rust modules/data:
-- DRED encoder model and coding helpers
-- RDOVAE encoder weights and tables
+Rust now includes the encoder-side model and data:
+- RDOVAE encoder implementation in `src/dred_rdovae_enc.rs`
+- LPCNet encoder feature extraction in `src/lpcnet_enc.rs`
+- PitchDNN model in `src/pitchdnn.rs`
+- Generated encoder weights via `mousiki-dred-weights`
+  (`src/dred_rdovae_enc_data.rs`, `src/pitchdnn_data.rs`)
 
 ## Data structures
 
@@ -69,19 +67,19 @@ C locates DRED payloads via the packet padding extension:
 
 Rust implements DRED-specific extension IDs and payload parsing via
 `OpusExtensionIterator` in `src/dred.rs` (experimental header only, matching the
-current C configuration). Encoder payload insertion remains missing.
+current C configuration). Encoder payload insertion is now wired in
+`src/opus_encoder.rs`.
 
-## Missing encoder integration
+## Encoder integration status
 
-C encoder path includes:
-- DRED model load/reset (`dred_encoder_load_model`,
-  `dred_encoder_reset`) in `opus-c/src/opus_encoder.c`
+The Rust encoder now mirrors the C DRED pipeline:
+- DRED model load/reset (`dred_encoder_load_model`, `dred_encoder_reset`)
 - Latent computation and DRED encoding (`dred_compute_latents`,
   `dred_encode_silk_frame`)
-- Packet extension insertion for DRED payloads
+- Packet extension insertion for DRED payloads (experimental header)
 
-Rust only contains bitrate allocation and activity history logic in
-`src/opus_encoder.rs`, without any model loading or payload generation.
+This path is gated behind the `dred` feature and requires weights provided by
+`mousiki-dred-weights`.
 
 ## Missing PLC/FEC integration
 
