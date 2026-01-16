@@ -1,0 +1,16 @@
+[package]
+name = "mousiki-deep-plc-weights"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Build-time deep PLC weights blob for Mousiki."
+build = "build.rs"
+
+[features]
+fetch = []
+
+[build-dependencies]
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+ureq = "2"
