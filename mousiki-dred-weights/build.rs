@@ -35,7 +35,7 @@ fn main() -> io::Result<()> {
 Set DRED_WEIGHTS_PATH to a directory or tarball containing \
 dred_rdovae_dec_data.c, dred_rdovae_stats_data.c, dred_rdovae_enc_data.c, \
 and pitchdnn_data.c, or enable the mousiki-dred-weights `fetch` feature \
-(use `dred-fetch` in the main crate).",
+(use `dred_fetch` in the main crate).",
                 ));
             }
             download_and_extract(&work_dir)?

@@ -13,4 +13,4 @@ fetch = []
 flate2 = "1"
 sha2 = "0.10"
 tar = "0.4"
-ureq = "2"
+ureq = { version = "3", features = ["socks-proxy"] }

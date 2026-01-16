@@ -315,7 +315,6 @@ impl ArrayType {
 
 #[derive(Debug, Clone)]
 struct ArrayData {
-    array_type: ArrayType,
     bytes: Vec<u8>,
 }
 
@@ -575,13 +574,7 @@ fn parse_arrays(content: &str) -> io::Result<HashMap<String, ArrayData>> {
             )
         })?;
 
-        arrays.insert(
-            name,
-            ArrayData {
-                array_type,
-                bytes,
-            },
-        );
+        arrays.insert(name, ArrayData { bytes });
 
         cursor = start + brace_pos + 1 + end_pos + 2;
     }
@@ -596,25 +589,71 @@ fn parse_arrays(content: &str) -> io::Result<HashMap<String, ArrayData>> {
     Ok(arrays)
 }
 
+fn parse_defines(content: &str) -> HashMap<String, String> {
+    let mut defines = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("#define") {
+            continue;
+        }
+        let rest = line.trim_start_matches("#define").trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let mut name = rest;
+        let mut value = "";
+        for (idx, ch) in rest.char_indices() {
+            if ch.is_whitespace() {
+                name = &rest[..idx];
+                value = rest[idx..].trim();
+                break;
+            }
+        }
+        if name.starts_with("WEIGHTS_") {
+            defines.insert(name.to_string(), value.to_string());
+        }
+    }
+    defines
+}
+
 #[derive(Debug)]
 struct WeightEntry {
     name: String,
-    type_id: i32,
+    type_token: String,
     size_expr: String,
     data_name: String,
 }
 
-fn parse_weight_type(value: &str) -> io::Result<i32> {
+fn parse_weight_type_value(value: &str) -> io::Result<i32> {
     match value.trim() {
-        "WEIGHT_TYPE_float" => Ok(0),
-        "WEIGHT_TYPE_int" => Ok(1),
-        "WEIGHT_TYPE_qweight" => Ok(2),
-        "WEIGHT_TYPE_int8" => Ok(3),
+        "WEIGHT_TYPE_float" | "0" => Ok(0),
+        "WEIGHT_TYPE_int" | "1" => Ok(1),
+        "WEIGHT_TYPE_qweight" | "2" => Ok(2),
+        "WEIGHT_TYPE_int8" | "3" => Ok(3),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Unknown weight type: {other}"),
         )),
     }
+}
+
+fn resolve_weight_type(value: &str, defines: &HashMap<String, String>) -> io::Result<i32> {
+    let mut current = value.trim().trim_matches(|c| c == '(' || c == ')').to_string();
+    for _ in 0..16 {
+        let Some(next) = defines.get(&current) else {
+            break;
+        };
+        let next = next.trim();
+        if next.is_empty() {
+            break;
+        }
+        let next = next.trim_matches(|c| c == '(' || c == ')');
+        if next == current {
+            break;
+        }
+        current = next.to_string();
+    }
+    parse_weight_type_value(&current)
 }
 
 fn parse_weight_list(content: &str, list_name: &str) -> io::Result<Vec<WeightEntry>> {
@@ -670,12 +709,12 @@ fn parse_weight_list(content: &str, list_name: &str) -> io::Result<Vec<WeightEnt
             break;
         }
         let name = parse_c_string(raw_name)?;
-        let type_id = parse_weight_type(fields[1])?;
+        let type_token = fields[1].trim().to_string();
         let size_expr = fields[2].trim().to_string();
         let data_name = normalize_array_ref(fields[3]);
         results.push(WeightEntry {
             name,
-            type_id,
+            type_token,
             size_expr,
             data_name,
         });
@@ -845,16 +884,22 @@ fn parse_size_expr(expr: &str, arrays: &HashMap<String, ArrayData>) -> io::Resul
 fn write_weight_list(out: &mut BufWriter<File>, path: &Path, list_name: &str) -> io::Result<()> {
     let content = fs::read_to_string(path)?;
     let content = strip_comments(&content);
+    let defines = parse_defines(&content);
     let arrays = parse_arrays(&content)?;
     let weights = parse_weight_list(&content, list_name)?;
 
     for entry in weights {
-        let array = arrays.get(&entry.data_name).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Missing data array {}", entry.data_name),
-            )
-        })?;
+        let defined_key = format!("WEIGHTS_{}_DEFINED", entry.name);
+        let is_defined = defines.contains_key(&defined_key);
+        let Some(array) = arrays.get(&entry.data_name) else {
+            if is_defined {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Missing data array {}", entry.data_name),
+                ));
+            }
+            continue;
+        };
 
         let expected_size = parse_size_expr(&entry.size_expr, &arrays)?;
         if expected_size != array.bytes.len() {
@@ -869,13 +914,19 @@ fn write_weight_list(out: &mut BufWriter<File>, path: &Path, list_name: &str) ->
             ));
         }
 
-        write_weight_entry(out, &entry, array)?;
+        let type_id = resolve_weight_type(&entry.type_token, &defines)?;
+        write_weight_entry(out, &entry, array, type_id)?;
     }
 
     Ok(())
 }
 
-fn write_weight_entry(out: &mut BufWriter<File>, entry: &WeightEntry, array: &ArrayData) -> io::Result<()> {
+fn write_weight_entry(
+    out: &mut BufWriter<File>,
+    entry: &WeightEntry,
+    array: &ArrayData,
+    type_id: i32,
+) -> io::Result<()> {
     let size = array.bytes.len();
     if size == 0 {
         return Err(io::Error::new(
@@ -901,7 +952,7 @@ fn write_weight_entry(out: &mut BufWriter<File>, entry: &WeightEntry, array: &Ar
     let mut header = [0u8; WEIGHT_BLOCK_SIZE];
     header[0..4].copy_from_slice(b"DNNw");
     header[4..8].copy_from_slice(&WEIGHT_BLOB_VERSION.to_le_bytes());
-    header[8..12].copy_from_slice(&entry.type_id.to_le_bytes());
+    header[8..12].copy_from_slice(&type_id.to_le_bytes());
     header[12..16].copy_from_slice(&size_i32.to_le_bytes());
     header[16..20].copy_from_slice(&block_i32.to_le_bytes());
 

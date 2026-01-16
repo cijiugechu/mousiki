@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "examples/playback", "mousiki-dred-weights"]
+members = [".", "examples/playback", "mousiki-dred-weights", "mousiki-deep-plc-weights"]
 resolver = "3"
 
 [package]
@@ -21,8 +21,10 @@ default = []
 fixed_point = []
 enable_res24 = ["fixed_point"]
 deep_plc = ["dred"]
+deep_plc_weights = ["deep_plc", "mousiki-deep-plc-weights"]
+deep_plc_weights_fetch = ["deep_plc_weights", "mousiki-deep-plc-weights/fetch"]
 dred = ["mousiki-dred-weights"]
-dred-fetch = ["dred", "mousiki-dred-weights/fetch"]
+dred_fetch = ["dred", "mousiki-dred-weights/fetch"]
 custom_modes = []
 silk_strict_asserts = []
 silk_debug = []
@@ -32,6 +34,7 @@ silk_tic_toc = []
 libm = "0.2"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
+mousiki-deep-plc-weights = { path = "mousiki-deep-plc-weights", optional = true }
 mousiki-dred-weights = { path = "mousiki-dred-weights", optional = true }
 
 

@@ -7,7 +7,7 @@ Build-time generator for DRED weights and stats tables used by mousiki.
 - `fetch`: allow downloading the model tarball from Xiph during build.
   When disabled, you must provide a local path via `DRED_WEIGHTS_PATH`.
 
-The main crate exposes this as `dred-fetch`.
+The main crate exposes this as `dred_fetch`.
 
 ## Build inputs
 
