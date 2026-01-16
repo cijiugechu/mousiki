@@ -9,6 +9,8 @@ pub mod decoder;
 pub mod dred;
 #[cfg(feature = "dred")]
 mod dnn_weights;
+#[cfg(feature = "deep_plc")]
+mod dnn_utils;
 mod dred_constants;
 #[cfg(feature = "dred")]
 mod dred_rdovae_dec;
@@ -32,6 +34,10 @@ mod pitchdnn;
 mod pitchdnn_data;
 #[cfg(feature = "dred")]
 mod lpcnet_enc;
+#[cfg(feature = "deep_plc")]
+mod fargan;
+#[cfg(feature = "deep_plc")]
+mod plc_model;
 #[cfg(feature = "dred")]
 mod dred_encoder;
 pub mod oggreader;

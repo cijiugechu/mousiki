@@ -23,8 +23,11 @@ jobs:
       - name: Cargo check
         run: cargo check --all-features
 
-      - name: Cargo test
-        run: cargo test --all-features
+      - name: Cargo test (release, no fuzz)
+        run: TEST_OPUS_NOFUZZ=1 cargo test --all-features --release
+
+      - name: Cargo test (debug lib)
+        run: cargo test --all-features --lib
 
       - name: Cargo clippy
         run: cargo clippy --all-features

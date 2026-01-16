@@ -2183,11 +2183,15 @@ mod tests {
 
     #[cfg(feature = "deep_plc")]
     #[test]
-    fn dnn_blob_ctl_marks_plc_loaded() {
+    fn dnn_blob_ctl_rejects_invalid_plc_blob() {
         let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
         assert!(!decoder.lpcnet.loaded);
-        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetDnnBlob(&[1, 2, 3])).unwrap();
-        assert!(decoder.lpcnet.loaded);
+        assert_eq!(
+            opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetDnnBlob(&[1, 2, 3]))
+                .unwrap_err(),
+            OpusDecoderCtlError::BadArgument
+        );
+        assert!(!decoder.lpcnet.loaded);
     }
 
     #[test]

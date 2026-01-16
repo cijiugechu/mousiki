@@ -9,10 +9,18 @@
 //! module focuses on the state update helper so that future ports can integrate
 //! the remaining neural components incrementally.
 
+use alloc::vec::Vec;
 use crate::celt::celt_decoder::DECODE_BUFFER_SIZE;
+use crate::celt::opus_select_arch;
 use crate::celt::float_cast::float2int;
 use crate::celt::types::CeltSig;
+use crate::celt::{KissFftCpx, KissFftState};
 use crate::dred_constants::DRED_NUM_FEATURES;
+use crate::fargan::{FarganState, FARGAN_CONT_SAMPLES};
+use crate::lpcnet_enc::{lpcnet_compute_single_frame_features_float, LpcNetEncState};
+use crate::nnet::{compute_generic_dense, compute_generic_gru, ACTIVATION_LINEAR, ACTIVATION_TANH};
+use crate::plc_model::PlcModel;
+use libm::{cosf, log10f, powf, sqrt, sqrtf};
 
 /// Number of 16 kHz samples produced per neural PLC update.
 pub(crate) const PLC_FRAME_SIZE: usize = 160;
@@ -34,6 +42,25 @@ const PLC_MAX_FEC: usize = 100;
 
 /// Pre-emphasis constant shared with the LPCNet helpers.
 pub(crate) const PREEMPHASIS: f32 = 0.85;
+
+const NB_BANDS: usize = 18;
+const NB_FEATURES: usize = DRED_NUM_FEATURES;
+const NB_TOTAL_FEATURES: usize = 36;
+const LPC_ORDER: usize = 16;
+const WINDOW_SIZE_5MS: usize = 4;
+const OVERLAP_SIZE: usize = PLC_FRAME_SIZE;
+const WINDOW_SIZE: usize = PLC_FRAME_SIZE + OVERLAP_SIZE;
+const FREQ_SIZE: usize = WINDOW_SIZE / 2 + 1;
+const PLC_FEATURES_LEN: usize = 2 * NB_BANDS + NB_FEATURES + 1;
+
+const MAX_FRAME_SIZE: usize = 384;
+const FIND_LPC_COND_FAC: f64 = 1.0e-5;
+
+const EBAND_5MS: [i16; NB_BANDS] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 34, 40,
+];
+
+const ATT_TABLE: [f32; 10] = [0.0, 0.0, -0.2, -0.2, -0.4, -0.4, -0.8, -0.8, -1.6, -1.6];
 
 /// Order of the sinc-based resampler used when converting from 48 kHz to 16 kHz.
 pub(crate) const SINC_ORDER: usize = 48;
@@ -96,6 +123,34 @@ pub(crate) const SINC_FILTER: [f32; SINC_ORDER + 1] = [
 /// Scaling factor applied when normalising 16-bit PCM to floating point.
 const PCM_NORMALISATION: f32 = 1.0 / 32_768.0;
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PlcNetState {
+    pub gru1_state: Vec<f32>,
+    pub gru2_state: Vec<f32>,
+}
+
+impl PlcNetState {
+    pub fn resize(&mut self, gru1_len: usize, gru2_len: usize) {
+        self.gru1_state.resize(gru1_len, 0.0);
+        self.gru2_state.resize(gru2_len, 0.0);
+    }
+
+    pub fn reset(&mut self) {
+        self.gru1_state.fill(0.0);
+        self.gru2_state.fill(0.0);
+    }
+
+    pub fn copy_from(&mut self, other: &Self) {
+        if self.gru1_state.len() != other.gru1_state.len()
+            || self.gru2_state.len() != other.gru2_state.len()
+        {
+            self.resize(other.gru1_state.len(), other.gru2_state.len());
+        }
+        self.gru1_state.copy_from_slice(&other.gru1_state);
+        self.gru2_state.copy_from_slice(&other.gru2_state);
+    }
+}
+
 /// Minimal representation of the neural PLC state required by `update_plc_state()`.
 ///
 /// The complete C structure stores the neural network weights, feature queues,
@@ -108,6 +163,14 @@ const PCM_NORMALISATION: f32 = 1.0 / 32_768.0;
 pub(crate) struct LpcNetPlcState {
     /// Whether the neural PLC model has been loaded successfully.
     pub loaded: bool,
+    /// PLC prediction model weights.
+    pub model: PlcModel,
+    /// FARGAN synthesis state.
+    pub fargan: FarganState,
+    /// Feature extraction state.
+    pub enc: LpcNetEncState,
+    /// Architecture selector for neural network helpers.
+    pub arch: i32,
     /// Queue of FEC feature vectors supplied by DRED.
     pub fec: [[f32; DRED_NUM_FEATURES]; PLC_MAX_FEC],
     /// Index of the next FEC feature vector to consume.
@@ -128,6 +191,17 @@ pub(crate) struct LpcNetPlcState {
     pub loss_count: i32,
     /// Blend factor used when merging neural PLC output with waveform PLC.
     pub blend: i32,
+    /// Most recent LPCNet feature vector.
+    pub features: [f32; NB_TOTAL_FEATURES],
+    /// Contiguous history of the most recent feature vectors.
+    pub cont_features: [f32; CONT_VECTORS * NB_FEATURES],
+    /// Current PLC network state.
+    pub plc_net: PlcNetState,
+    /// Backup PLC network states.
+    pub plc_bak: [PlcNetState; 2],
+    plc_tmp: Vec<f32>,
+    burg_fft: KissFftState,
+    burg_dct: [f32; NB_BANDS * NB_BANDS],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,8 +211,14 @@ pub(crate) enum PlcModelError {
 
 impl Default for LpcNetPlcState {
     fn default() -> Self {
+        let mut burg_dct = [0.0f32; NB_BANDS * NB_BANDS];
+        init_burg_dct_table(&mut burg_dct);
         Self {
             loaded: false,
+            model: PlcModel::default(),
+            fargan: FarganState::new(),
+            enc: LpcNetEncState::default(),
+            arch: opus_select_arch(),
             fec: [[0.0; DRED_NUM_FEATURES]; PLC_MAX_FEC],
             fec_read_pos: 0,
             fec_fill_pos: 0,
@@ -149,6 +229,13 @@ impl Default for LpcNetPlcState {
             pcm: [0.0; PLC_BUF_SIZE],
             loss_count: 0,
             blend: 0,
+            features: [0.0; NB_TOTAL_FEATURES],
+            cont_features: [0.0; CONT_VECTORS * NB_FEATURES],
+            plc_net: PlcNetState::default(),
+            plc_bak: [PlcNetState::default(), PlcNetState::default()],
+            plc_tmp: Vec::new(),
+            burg_fft: KissFftState::new(WINDOW_SIZE),
+            burg_dct,
         }
     }
 }
@@ -156,9 +243,25 @@ impl Default for LpcNetPlcState {
 impl LpcNetPlcState {
     /// Resets the PLC state while keeping the model loaded flag intact.
     pub fn reset(&mut self) {
-        let loaded = self.loaded;
-        *self = Self::default();
-        self.loaded = loaded;
+        self.fec.fill([0.0; DRED_NUM_FEATURES]);
+        self.fec_read_pos = 0;
+        self.fec_fill_pos = 0;
+        self.fec_skip = 0;
+        self.analysis_gap = 1;
+        self.analysis_pos = PLC_BUF_SIZE as i32;
+        self.predict_pos = PLC_BUF_SIZE as i32;
+        self.pcm.fill(0.0);
+        self.loss_count = 0;
+        self.blend = 0;
+        self.features.fill(0.0);
+        self.cont_features.fill(0.0);
+        self.plc_net.reset();
+        for backup in &mut self.plc_bak {
+            backup.reset();
+        }
+        self.plc_tmp.fill(0.0);
+        self.fargan.reset();
+        self.enc.reset();
     }
 
     /// Mirrors `lpcnet_plc_fec_clear()` by resetting the FEC queue cursors.
@@ -206,6 +309,22 @@ impl LpcNetPlcState {
         if data.is_empty() {
             return Err(PlcModelError::BadArgument);
         }
+        let model = PlcModel::from_weights(data).map_err(|_| PlcModelError::BadArgument)?;
+        self.enc
+            .load_model(data)
+            .map_err(|_| PlcModelError::BadArgument)?;
+        self.fargan
+            .load_model(data)
+            .map_err(|_| PlcModelError::BadArgument)?;
+
+        let gru1_len = model.plc_gru1_recurrent.nb_inputs;
+        let gru2_len = model.plc_gru2_recurrent.nb_inputs;
+        self.plc_net.resize(gru1_len, gru2_len);
+        for backup in &mut self.plc_bak {
+            backup.resize(gru1_len, gru2_len);
+        }
+        self.plc_tmp.resize(model.plc_dense_in.nb_outputs, 0.0);
+        self.model = model;
         self.loaded = true;
         self.reset();
         Ok(())
@@ -243,7 +362,105 @@ impl LpcNetPlcState {
         0
     }
 
-    /// Mirrors `lpcnet_plc_conceal()` by generating a placeholder PLC frame.
+    fn compute_plc_pred(&mut self, out: &mut [f32], input: &[f32]) {
+        debug_assert!(self.loaded);
+        debug_assert!(input.len() >= self.model.plc_dense_in.nb_inputs);
+        debug_assert!(out.len() >= self.model.plc_dense_out.nb_outputs);
+
+        let tmp_len = self.model.plc_dense_in.nb_outputs;
+        if self.plc_tmp.len() < tmp_len {
+            self.plc_tmp.resize(tmp_len, 0.0);
+        }
+
+        compute_generic_dense(
+            &self.model.plc_dense_in,
+            &mut self.plc_tmp[..tmp_len],
+            &input[..self.model.plc_dense_in.nb_inputs],
+            ACTIVATION_TANH,
+            self.arch,
+        );
+        compute_generic_gru(
+            &self.model.plc_gru1_input,
+            &self.model.plc_gru1_recurrent,
+            &mut self.plc_net.gru1_state,
+            &self.plc_tmp[..tmp_len],
+            self.arch,
+        );
+        compute_generic_gru(
+            &self.model.plc_gru2_input,
+            &self.model.plc_gru2_recurrent,
+            &mut self.plc_net.gru2_state,
+            &self.plc_net.gru1_state,
+            self.arch,
+        );
+        compute_generic_dense(
+            &self.model.plc_dense_out,
+            out,
+            &self.plc_net.gru2_state,
+            ACTIVATION_LINEAR,
+            self.arch,
+        );
+    }
+
+    fn get_fec_or_pred(&mut self, out: &mut [f32]) -> bool {
+        if self.fec_read_pos != self.fec_fill_pos && self.fec_skip == 0 {
+            let read_pos = self.fec_read_pos as usize;
+            out[..NB_FEATURES].copy_from_slice(&self.fec[read_pos]);
+            self.fec_read_pos = self.fec_read_pos.saturating_add(1);
+
+            let mut plc_features = [0.0f32; PLC_FEATURES_LEN];
+            plc_features[2 * NB_BANDS..2 * NB_BANDS + NB_FEATURES]
+                .copy_from_slice(&out[..NB_FEATURES]);
+            plc_features[2 * NB_BANDS + NB_FEATURES] = -1.0;
+            let mut discard = [0.0f32; NB_FEATURES];
+            self.compute_plc_pred(&mut discard, &plc_features);
+            true
+        } else {
+            let zeros = [0.0f32; PLC_FEATURES_LEN];
+            self.compute_plc_pred(out, &zeros);
+            if self.fec_skip > 0 {
+                self.fec_skip = self.fec_skip.saturating_sub(1);
+            }
+            false
+        }
+    }
+
+    fn shift_plc_backup(&mut self) {
+        let backup = self.plc_bak[1].clone();
+        self.plc_bak[0].copy_from(&backup);
+        self.plc_bak[1].copy_from(&self.plc_net);
+    }
+
+    fn queue_features(&mut self, features: &[f32]) {
+        self.cont_features.copy_within(NB_FEATURES.., 0);
+        let start = (CONT_VECTORS - 1) * NB_FEATURES;
+        self.cont_features[start..start + NB_FEATURES].copy_from_slice(&features[..NB_FEATURES]);
+    }
+
+    fn burg_cepstral_analysis(&self, cepstrum: &mut [f32; 2 * NB_BANDS], x: &[f32; PLC_FRAME_SIZE]) {
+        let (first, second) = cepstrum.split_at_mut(NB_BANDS);
+        compute_burg_cepstrum(
+            first,
+            &x[..PLC_FRAME_SIZE / 2],
+            &self.burg_fft,
+            &self.burg_dct,
+        );
+        compute_burg_cepstrum(
+            second,
+            &x[PLC_FRAME_SIZE / 2..],
+            &self.burg_fft,
+            &self.burg_dct,
+        );
+
+        for i in 0..NB_BANDS {
+            let c0 = cepstrum[i];
+            let c1 = cepstrum[NB_BANDS + i];
+            cepstrum[i] = 0.5 * (c0 + c1);
+            cepstrum[NB_BANDS + i] = c0 - c1;
+        }
+    }
+
+    /// Mirrors `lpcnet_plc_conceal()` by generating PLC audio from the neural model.
     pub fn lpcnet_plc_conceal(&mut self, pcm: &mut [i16]) -> i32 {
         assert_eq!(
             pcm.len(),
@@ -252,13 +469,82 @@ impl LpcNetPlcState {
         );
         debug_assert!(self.loaded, "PLC conceal requested without a model");
 
-        pcm.fill(0);
+        if self.blend == 0 {
+            let mut count = 0;
+            self.plc_net.copy_from(&self.plc_bak[0]);
+            while self.analysis_pos + PLC_FRAME_SIZE as i32 <= PLC_BUF_SIZE as i32 {
+                let mut x = [0.0f32; PLC_FRAME_SIZE];
+                let start = self.analysis_pos as usize;
+                for i in 0..PLC_FRAME_SIZE {
+                    x[i] = 32_768.0 * self.pcm[start + i];
+                }
 
-        if self.consume_fec() {
+                let mut plc_features = [0.0f32; PLC_FEATURES_LEN];
+                let mut cepstrum = [0.0f32; 2 * NB_BANDS];
+                self.burg_cepstral_analysis(&mut cepstrum, &x);
+                plc_features[..2 * NB_BANDS].copy_from_slice(&cepstrum);
+                let _ = lpcnet_compute_single_frame_features_float(
+                    &mut self.enc,
+                    &x,
+                    &mut self.features,
+                    self.arch,
+                );
+                let mut current_features = [0.0f32; NB_FEATURES];
+                current_features.copy_from_slice(&self.features[..NB_FEATURES]);
+
+                if (self.analysis_gap == 0 || count > 0) && self.analysis_pos >= self.predict_pos {
+                    self.queue_features(&current_features);
+                    plc_features[2 * NB_BANDS..2 * NB_BANDS + NB_FEATURES]
+                        .copy_from_slice(&current_features);
+                    plc_features[2 * NB_BANDS + NB_FEATURES] = 1.0;
+                    self.shift_plc_backup();
+                    let mut predicted = [0.0f32; NB_FEATURES];
+                    self.compute_plc_pred(&mut predicted, &plc_features);
+                    self.features[..NB_FEATURES].copy_from_slice(&predicted);
+                }
+
+                self.analysis_pos += PLC_FRAME_SIZE as i32;
+                count += 1;
+            }
+
+            self.shift_plc_backup();
+            let mut predicted = [0.0f32; NB_FEATURES];
+            self.get_fec_or_pred(&mut predicted);
+            self.features[..NB_FEATURES].copy_from_slice(&predicted);
+            self.queue_features(&predicted);
+            self.shift_plc_backup();
+            let mut predicted = [0.0f32; NB_FEATURES];
+            self.get_fec_or_pred(&mut predicted);
+            self.features[..NB_FEATURES].copy_from_slice(&predicted);
+            self.queue_features(&predicted);
+            let cont_start = PLC_BUF_SIZE - FARGAN_CONT_SAMPLES;
+            self.fargan
+                .fargan_cont(&self.pcm[cont_start..], &self.cont_features);
+            self.analysis_gap = 0;
+        }
+
+        self.shift_plc_backup();
+        let mut predicted = [0.0f32; NB_FEATURES];
+        if self.get_fec_or_pred(&mut predicted) {
             self.loss_count = 0;
         } else {
             self.loss_count = self.loss_count.saturating_add(1);
         }
+        self.features[..NB_FEATURES].copy_from_slice(&predicted);
+
+        if self.loss_count >= 10 {
+            let attenuation = ATT_TABLE[9] - 2.0 * (self.loss_count - 9) as f32;
+            self.features[0] = (self.features[0] + attenuation).max(-10.0);
+        } else {
+            let idx = self.loss_count as usize;
+            self.features[0] = (self.features[0] + ATT_TABLE[idx]).max(-10.0);
+        }
+
+        self.fargan
+            .fargan_synthesize_int(pcm, &self.features[..NB_FEATURES]);
+        let mut current_features = [0.0f32; NB_FEATURES];
+        current_features.copy_from_slice(&self.features[..NB_FEATURES]);
+        self.queue_features(&current_features);
 
         if self.analysis_pos - PLC_FRAME_SIZE as i32 >= 0 {
             self.analysis_pos -= PLC_FRAME_SIZE as i32;
@@ -276,17 +562,6 @@ impl LpcNetPlcState {
         self.blend = 1;
 
         0
-    }
-
-    fn consume_fec(&mut self) -> bool {
-        if self.fec_read_pos != self.fec_fill_pos && self.fec_skip == 0 {
-            self.fec_read_pos = self.fec_read_pos.saturating_add(1);
-            return true;
-        }
-        if self.fec_skip > 0 {
-            self.fec_skip = self.fec_skip.saturating_sub(1);
-        }
-        false
     }
 }
 
@@ -359,6 +634,274 @@ pub(crate) fn update_plc_state(
 
     lpcnet.fec_read_pos = saved_read_pos;
     lpcnet.fec_skip = saved_skip;
+}
+
+fn init_burg_dct_table(table: &mut [f32; NB_BANDS * NB_BANDS]) {
+    let nb_bands = NB_BANDS as f32;
+    let scale = sqrtf(0.5);
+    for i in 0..NB_BANDS {
+        for j in 0..NB_BANDS {
+            let mut value = cosf((i as f32 + 0.5) * j as f32 * core::f32::consts::PI / nb_bands);
+            if j == 0 {
+                value *= scale;
+            }
+            table[i * NB_BANDS + j] = value;
+        }
+    }
+}
+
+fn forward_transform(
+    fft: &KissFftState,
+    output: &mut [KissFftCpx; FREQ_SIZE],
+    input: &[f32; WINDOW_SIZE],
+) {
+    let mut x = [KissFftCpx::default(); WINDOW_SIZE];
+    let mut y = [KissFftCpx::default(); WINDOW_SIZE];
+    for (dst, &src) in x.iter_mut().zip(input.iter()) {
+        dst.r = src;
+        dst.i = 0.0;
+    }
+    fft.fft(&x, &mut y);
+    output.copy_from_slice(&y[..FREQ_SIZE]);
+}
+
+fn compute_band_energy_inverse(
+    band_energy: &mut [f32; NB_BANDS],
+    freq: &[KissFftCpx; FREQ_SIZE],
+) {
+    let mut sum = [0.0f32; NB_BANDS];
+    for i in 0..NB_BANDS - 1 {
+        let band_size = (EBAND_5MS[i + 1] - EBAND_5MS[i]) as usize * WINDOW_SIZE_5MS;
+        let band_start = EBAND_5MS[i] as usize * WINDOW_SIZE_5MS;
+        for j in 0..band_size {
+            let frac = j as f32 / band_size as f32;
+            let idx = band_start + j;
+            let tmp = freq[idx].r * freq[idx].r + freq[idx].i * freq[idx].i;
+            let tmp = 1.0 / (tmp + 1.0e-9);
+            sum[i] += (1.0 - frac) * tmp;
+            sum[i + 1] += frac * tmp;
+        }
+    }
+    sum[0] *= 2.0;
+    sum[NB_BANDS - 1] *= 2.0;
+    band_energy.copy_from_slice(&sum);
+}
+
+fn dct(out: &mut [f32; NB_BANDS], input: &[f32; NB_BANDS], dct_table: &[f32; NB_BANDS * NB_BANDS]) {
+    let scale = sqrtf(2.0 / NB_BANDS as f32);
+    for i in 0..NB_BANDS {
+        let mut sum = 0.0f32;
+        for j in 0..NB_BANDS {
+            sum += input[j] * dct_table[j * NB_BANDS + i];
+        }
+        out[i] = sum * scale;
+    }
+}
+
+fn compute_burg_cepstrum(
+    out: &mut [f32],
+    pcm: &[f32],
+    fft: &KissFftState,
+    dct_table: &[f32; NB_BANDS * NB_BANDS],
+) {
+    let len = pcm.len();
+    debug_assert!(len <= PLC_FRAME_SIZE);
+
+    let mut burg_in = [0.0f32; PLC_FRAME_SIZE];
+    let mut burg_lpc = [0.0f32; LPC_ORDER];
+    let mut response = [0.0f32; WINDOW_SIZE];
+    let mut e_burg = [0.0f32; NB_BANDS];
+    let mut freq = [KissFftCpx::default(); FREQ_SIZE];
+    let mut ly = [0.0f32; NB_BANDS];
+
+    for i in 0..len.saturating_sub(1) {
+        burg_in[i] = pcm[i + 1] - PREEMPHASIS * pcm[i];
+    }
+
+    let mut energy = silk_burg_analysis(
+        &mut burg_lpc,
+        &burg_in[..len.saturating_sub(1)],
+        1.0e-3,
+        len.saturating_sub(1),
+        1,
+        LPC_ORDER,
+    );
+    let denom = (len as f32) - 2.0 * (LPC_ORDER as f32 - 1.0);
+    if denom > 0.0 {
+        energy /= denom;
+    }
+
+    response.fill(0.0);
+    response[0] = 1.0;
+    for i in 0..LPC_ORDER {
+        response[i + 1] = -burg_lpc[i] * powf(0.995, (i + 1) as f32);
+    }
+    forward_transform(fft, &mut freq, &response);
+    compute_band_energy_inverse(&mut e_burg, &freq);
+    let scale = 0.45 * energy / (WINDOW_SIZE as f32 * WINDOW_SIZE as f32 * WINDOW_SIZE as f32);
+    for i in 0..NB_BANDS {
+        e_burg[i] *= scale;
+    }
+
+    let mut log_max = -2.0f32;
+    let mut follow = -2.0f32;
+    for i in 0..NB_BANDS {
+        let mut value = log10f(1.0e-2 + e_burg[i]);
+        value = value.max(log_max - 8.0).max(follow - 2.5);
+        log_max = log_max.max(value);
+        follow = (follow - 2.5).max(value);
+        ly[i] = value;
+    }
+
+    dct(out.try_into().expect("NB_BANDS mismatch"), &ly, dct_table);
+    out[0] -= 4.0;
+}
+
+fn silk_burg_analysis(
+    a: &mut [f32],
+    x: &[f32],
+    min_inv_gain: f32,
+    subfr_length: usize,
+    nb_subfr: usize,
+    order: usize,
+) -> f32 {
+    debug_assert!(order <= LPC_ORDER);
+    debug_assert!(subfr_length * nb_subfr <= MAX_FRAME_SIZE);
+
+    let mut c_first_row = [0.0f64; LPC_ORDER];
+    let mut c_last_row = [0.0f64; LPC_ORDER];
+    let mut c_af = [0.0f64; LPC_ORDER + 1];
+    let mut c_ab = [0.0f64; LPC_ORDER + 1];
+    let mut a_f = [0.0f64; LPC_ORDER];
+
+    let c0 = silk_energy(x);
+    for s in 0..nb_subfr {
+        let offset = s * subfr_length;
+        let frame = &x[offset..offset + subfr_length];
+        for n in 1..=order {
+            c_first_row[n - 1] += silk_inner_product(frame, &frame[n..], subfr_length - n);
+        }
+    }
+    c_last_row.copy_from_slice(&c_first_row);
+
+    c_af[0] = c0 + FIND_LPC_COND_FAC * c0 + 1.0e-9;
+    c_ab[0] = c_af[0];
+    let mut inv_gain = 1.0f64;
+    let mut reached_max_gain = false;
+
+    for n in 0..order {
+        for s in 0..nb_subfr {
+            let offset = s * subfr_length;
+            let frame = &x[offset..offset + subfr_length];
+            let mut tmp1 = frame[n] as f64;
+            let mut tmp2 = frame[subfr_length - n - 1] as f64;
+
+            for k in 0..n {
+                c_first_row[k] -= frame[n] as f64 * frame[n - k - 1] as f64;
+                c_last_row[k] -= frame[subfr_length - n - 1] as f64
+                    * frame[subfr_length - n + k] as f64;
+                let atmp = a_f[k];
+                tmp1 += frame[n - k - 1] as f64 * atmp;
+                tmp2 += frame[subfr_length - n + k] as f64 * atmp;
+            }
+            for k in 0..=n {
+                c_af[k] -= tmp1 * frame[n - k] as f64;
+                c_ab[k] -= tmp2 * frame[subfr_length - n + k - 1] as f64;
+            }
+        }
+
+        let mut tmp1 = c_first_row[n];
+        let mut tmp2 = c_last_row[n];
+        for k in 0..n {
+            let atmp = a_f[k];
+            tmp1 += c_last_row[n - k - 1] * atmp;
+            tmp2 += c_first_row[n - k - 1] * atmp;
+        }
+        c_af[n + 1] = tmp1;
+        c_ab[n + 1] = tmp2;
+
+        let mut num = c_ab[n + 1];
+        let mut nrg_b = c_ab[0];
+        let mut nrg_f = c_af[0];
+        for k in 0..n {
+            let atmp = a_f[k];
+            num += c_ab[n - k] * atmp;
+            nrg_b += c_ab[k + 1] * atmp;
+            nrg_f += c_af[k + 1] * atmp;
+        }
+
+        let mut rc = -2.0 * num / (nrg_f + nrg_b);
+        let tmp = inv_gain * (1.0 - rc * rc);
+        if tmp <= min_inv_gain as f64 {
+            rc = sqrt(1.0 - min_inv_gain as f64 / inv_gain);
+            if num > 0.0 {
+                rc = -rc;
+            }
+            inv_gain = min_inv_gain as f64;
+            reached_max_gain = true;
+        } else {
+            inv_gain = tmp;
+        }
+
+        for k in 0..(n + 1) / 2 {
+            let tmp1 = a_f[k];
+            let tmp2 = a_f[n - k - 1];
+            a_f[k] = tmp1 + rc * tmp2;
+            a_f[n - k - 1] = tmp2 + rc * tmp1;
+        }
+        a_f[n] = rc;
+
+        if reached_max_gain {
+            for k in n + 1..order {
+                a_f[k] = 0.0;
+            }
+            break;
+        }
+
+        for k in 0..=n + 1 {
+            let idx = n + 1 - k;
+            let tmp1 = c_af[k];
+            c_af[k] += rc * c_ab[idx];
+            c_ab[idx] += rc * tmp1;
+        }
+    }
+
+    let energy = if reached_max_gain {
+        for k in 0..order {
+            a[k] = (-a_f[k]) as f32;
+        }
+        let mut c0 = c0;
+        for s in 0..nb_subfr {
+            let offset = s * subfr_length;
+            c0 -= silk_energy(&x[offset..offset + order]);
+        }
+        c0 * inv_gain
+    } else {
+        let mut nrg_f = c_af[0];
+        let mut tmp1 = 1.0f64;
+        for k in 0..order {
+            let atmp = a_f[k];
+            nrg_f += c_af[k + 1] * atmp;
+            tmp1 += atmp * atmp;
+            a[k] = (-atmp) as f32;
+        }
+        nrg_f - FIND_LPC_COND_FAC * c0 * tmp1
+    };
+
+    energy.max(0.0) as f32
+}
+
+fn silk_energy(data: &[f32]) -> f64 {
+    data.iter().map(|&value| (value as f64) * (value as f64)).sum()
+}
+
+fn silk_inner_product(data1: &[f32], data2: &[f32], len: usize) -> f64 {
+    data1
+        .iter()
+        .take(len)
+        .zip(data2.iter().take(len))
+        .map(|(&a, &b)| (a as f64) * (b as f64))
+        .sum()
 }
 
 #[cfg(test)]
@@ -504,20 +1047,13 @@ mod tests {
     }
 
     #[test]
-    fn conceal_consumes_fec_and_updates_state() {
-        let mut state = LpcNetPlcState::default();
-        state.load_model(&[1_u8]).expect("load model");
-        state.fec_add(None);
-        state.fec_add(Some(&[1.0f32; DRED_NUM_FEATURES]));
-        let mut pcm = [1_i16; PLC_FRAME_SIZE];
+    fn burg_cepstral_analysis_produces_finite_values() {
+        let state = LpcNetPlcState::default();
+        let pcm = [0.0f32; PLC_FRAME_SIZE];
+        let mut cepstrum = [0.0f32; 2 * NB_BANDS];
 
-        state.lpcnet_plc_conceal(&mut pcm);
-        assert!(pcm.iter().all(|&sample| sample == 0));
-        assert_eq!(state.blend, 1);
-        assert_eq!(state.fec_read_pos, 0);
-        assert_eq!(state.fec_skip, 0);
+        state.burg_cepstral_analysis(&mut cepstrum, &pcm);
 
-        state.lpcnet_plc_conceal(&mut pcm);
-        assert_eq!(state.fec_read_pos, 1);
+        assert!(cepstrum.iter().all(|value| value.is_finite()));
     }
 }

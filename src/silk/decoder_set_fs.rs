@@ -216,6 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(debug_assertions)]
     fn set_sample_rates_updates_wideband_state() {
         let mut state = DecoderSampleRateState::default();
 
@@ -247,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     fn narrowband_10_ms_selects_nb_tables() {
         let mut state = DecoderSampleRateState::with_subframes(MAX_NB_SUBFR / 2);
 

@@ -102,6 +102,29 @@ impl Default for LpcNetEncState {
     }
 }
 
+impl LpcNetEncState {
+    pub fn reset(&mut self) {
+        self.pitchdnn.reset();
+        self.analysis_mem.fill(0.0);
+        self.mem_preemph = 0.0;
+        self.prev_if.fill(KissFftCpx::default());
+        self.if_features.fill(0.0);
+        self.xcorr_features.fill(0.0);
+        self.dnn_pitch = 0.0;
+        self.pitch_mem.fill(0.0);
+        self.pitch_filt = 0.0;
+        self.exc_buf.fill(0.0);
+        self.lp_buf.fill(0.0);
+        self.lp_mem.fill(0.0);
+        self.lpc.fill(0.0);
+        self.features.fill(0.0);
+    }
+
+    pub fn load_model(&mut self, data: &[u8]) -> Result<(), WeightError> {
+        lpcnet_encoder_load_model(self, data)
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn lpcnet_encoder_get_size() -> usize {
     core::mem::size_of::<LpcNetEncState>()

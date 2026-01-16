@@ -2,7 +2,9 @@
 //!
 //! This is a scalar-only port of the C helpers in `dnn/nnet.c` and `dnn/vec.h`.
 
-use crate::dred_constants::{DRED_MAX_CONV_INPUTS, DRED_MAX_RNN_NEURONS};
+use crate::dred_constants::DRED_MAX_CONV_INPUTS;
+
+const NNET_MAX_RNN_NEURONS: usize = 512;
 
 pub(crate) const ACTIVATION_LINEAR: i32 = 0;
 pub(crate) const ACTIVATION_SIGMOID: i32 = 1;
@@ -553,11 +555,11 @@ pub(crate) fn compute_generic_gru(
     let n = recurrent_weights.nb_inputs;
     debug_assert_eq!(recurrent_weights.nb_outputs, 3 * n);
     debug_assert_eq!(input_weights.nb_outputs, recurrent_weights.nb_outputs);
-    debug_assert!(n <= DRED_MAX_RNN_NEURONS);
+    debug_assert!(n <= NNET_MAX_RNN_NEURONS);
     debug_assert!(state.len() >= n);
 
-    let mut zrh = [0.0f32; 3 * DRED_MAX_RNN_NEURONS];
-    let mut recur = [0.0f32; 3 * DRED_MAX_RNN_NEURONS];
+    let mut zrh = [0.0f32; 3 * NNET_MAX_RNN_NEURONS];
+    let mut recur = [0.0f32; 3 * NNET_MAX_RNN_NEURONS];
 
     compute_linear(input_weights, &mut zrh[..3 * n], input);
     compute_linear(recurrent_weights, &mut recur[..3 * n], state);
