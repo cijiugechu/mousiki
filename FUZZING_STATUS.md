@@ -41,6 +41,83 @@ rustup run nightly cargo fuzz run decode_fuzzer \
   fuzz/artifacts/decode_fuzzer/crash-213fac479ee66d1483486fd15198b7d1e976ca25
 ```
 
+## C vs Rust comparison (ctests)
+
+### clt_mdct_backward (MDCT inverse)
+- C test: `ctests/mdct_backward_compare.c`
+- Rust test: `src/celt/mdct.rs` (`mdct_backward_compare_output`)
+- Compare run:
+  ```bash
+  cmake -S ctests -B ctests/build
+  cmake --build ctests/build
+  ctests/build/celt_mdct_backward_compare > /tmp/mdct_backward_c.txt
+
+  cargo test -p mousiki --lib mdct_backward_compare_output -- --nocapture \
+    > /tmp/mdct_backward_rs.txt
+
+  python3 - <<'PY'
+  import re
+  def load(path):
+      out = {}
+      with open(path, "r") as f:
+          for line in f:
+              m = re.search(r"mdct_backward_out\\[(\\d+)\\]=([-+0-9.eE]+)", line)
+              if m:
+                  out[int(m.group(1))] = float(m.group(2))
+      return out
+  c = load("/tmp/mdct_backward_c.txt")
+  rs = load("/tmp/mdct_backward_rs.txt")
+  max_diff = 0.0
+  max_idx = None
+  for idx in c:
+      diff = abs(c[idx] - rs[idx])
+      if diff > max_diff:
+          max_diff = diff
+          max_idx = idx
+  print("count", len(c), "max_diff", max_diff, "at", max_idx)
+  PY
+  ```
+- Window: uses `mode->window` / `mode.window` from the 48 kHz / 120 static mode.
+- Result: 1020 samples compared, max abs diff `~4.74e-5` (idx 118).
+
+### celt_synthesis (synthesis path)
+- C test: `ctests/celt_synthesis_compare.c`
+- Rust test: `src/celt/celt_decoder.rs` (`celt_synthesis_compare_output`)
+- Compare run:
+  ```bash
+  cmake -S ctests -B ctests/build
+  cmake --build ctests/build
+  ctests/build/celt_synthesis_compare > /tmp/celt_synthesis_c.txt
+
+  cargo test -p mousiki --lib celt_synthesis_compare_output -- --nocapture \
+    > /tmp/celt_synthesis_rs.txt
+
+  python3 - <<'PY'
+  import re
+  def load(path):
+      out = {}
+      with open(path, "r") as f:
+          for line in f:
+              m = re.search(r"celt_synthesis_out\\[(\\d+)\\]=([-+0-9.eE]+)", line)
+              if m:
+                  out[int(m.group(1))] = float(m.group(2))
+      return out
+  c = load("/tmp/celt_synthesis_c.txt")
+  rs = load("/tmp/celt_synthesis_rs.txt")
+  max_diff = 0.0
+  max_idx = None
+  for idx in c:
+      diff = abs(c[idx] - rs[idx])
+      if diff > max_diff:
+          max_diff = diff
+          max_idx = idx
+  print("count", len(c), "max_diff", max_diff, "at", max_idx)
+  PY
+  ```
+- Inputs: static 48 kHz / 120 mode window, `LM=0`, `C=1`, `CC=1`, `start=0`,
+  `eff_end=mode.effEBands`, `downsample=1`, `silence=false`, linear `X`/`oldBandE`.
+- Result: 180 samples compared, max abs diff `~1.24e-4` (idx 61).
+
 ## C fuzzing in Docker (linux/amd64)
 
 The C fuzzer was built and run in an `ubuntu:22.04` container with LLVM 17.

@@ -2837,6 +2837,8 @@ pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::celt_decode_lost;
     use super::celt_plc_pitch_search;
     use super::deemphasis;
@@ -2849,9 +2851,9 @@ mod tests {
         validate_channel_layout,
     };
     use crate::celt::float_cast::CELT_SIG_SCALE;
-    use crate::celt::modes::opus_custom_mode_create;
+    use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
     use crate::celt::opus_select_arch;
-    use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
+    use crate::celt::types::{CeltGlog, CeltNorm, CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     use alloc::vec;
     use alloc::vec::Vec;
     use core::f32::consts::PI;
@@ -3737,5 +3739,80 @@ mod tests {
         }
 
         assert!((mem[0] - m).abs() < 1e-6);
+    }
+
+    #[test]
+    fn celt_synthesis_compare_output() {
+        let mode = opus_custom_mode_find_static(48_000, 120)
+            .expect("static 48k/120 mode should be available");
+        let lm = 0usize;
+        let is_transient = false;
+        let coded_channels = 1usize;
+        let output_channels = 1usize;
+        let start = 0usize;
+        let eff_end = mode.effective_ebands;
+        let downsample = 1usize;
+        let silence = false;
+
+        let n = mode.short_mdct_size << lm;
+        let nb_ebands = mode.num_ebands;
+        let shift = if is_transient {
+            mode.max_lm
+        } else {
+            mode.max_lm - lm
+        };
+        let mdct_len = mode.mdct.effective_len(shift);
+        let n2 = mdct_len >> 1;
+        let output_len = (mode.overlap >> 1) + n2;
+
+        let mut x = vec![0.0f32; coded_channels * n];
+        for (i, sample) in x.iter_mut().enumerate() {
+            *sample = i as CeltNorm * 0.01 - 0.5;
+        }
+
+        let mut old_band_e = vec![0.0f32; coded_channels * nb_ebands];
+        for (i, value) in old_band_e.iter_mut().enumerate() {
+            *value = 0.5 + i as CeltGlog * 0.01;
+        }
+
+        #[cfg(feature = "fixed_point")]
+        let fixed_mdct = crate::celt::mdct_fixed::FixedMdctLookup::new(
+            mode.mdct.len(),
+            mode.mdct.max_shift(),
+        );
+        #[cfg(feature = "fixed_point")]
+        let fixed_window: Vec<crate::celt::types::FixedCeltCoef> = mode
+            .window
+            .iter()
+            .map(|&value| crate::celt::fixed_ops::qconst16(f64::from(value), 15))
+            .collect();
+        #[cfg(feature = "fixed_point")]
+        let fixed_ctx = (&fixed_mdct, fixed_window.as_slice(), mode.overlap);
+        #[cfg(not(feature = "fixed_point"))]
+        let fixed_ctx = ();
+
+        let mut output = vec![0.0f32; output_len];
+        {
+            let mut outputs: Vec<&mut [CeltSig]> = vec![output.as_mut_slice()];
+            super::celt_synthesis(
+                &mode,
+                &x,
+                &mut outputs,
+                &old_band_e,
+                start,
+                eff_end,
+                coded_channels,
+                output_channels,
+                is_transient,
+                lm,
+                downsample,
+                silence,
+                fixed_ctx,
+            );
+        }
+
+        for (i, sample) in output.iter().enumerate() {
+            std::println!("celt_synthesis_out[{}]={:.9e}", i, sample);
+        }
     }
 }

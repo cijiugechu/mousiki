@@ -252,9 +252,12 @@ pub fn clt_mdct_backward(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use alloc::vec::Vec;
     use core::f32::consts::PI;
+    use crate::celt::modes::opus_custom_mode_find_static;
 
     fn naive_fft(input: &[KissFftCpx], inverse: bool) -> Vec<KissFftCpx> {
         let n = input.len();
@@ -414,6 +417,30 @@ mod tests {
                     rhs
                 );
             }
+        }
+    }
+
+    #[test]
+    fn mdct_backward_compare_output() {
+        let mode = opus_custom_mode_find_static(48_000, 120)
+            .expect("static 48k/120 mode should be available");
+        let mdct = &mode.mdct;
+        let overlap = mode.overlap;
+        let n = mdct.len();
+        let n2 = n / 2;
+        let window = mode.window;
+
+        let mut input = vec![0.0f32; n2];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = (i as f32 * 0.19).cos();
+        }
+
+        let output_len = overlap.max((overlap >> 1) + n2);
+        let mut output = vec![0.0f32; output_len];
+        clt_mdct_backward(mdct, &input, &mut output, window, overlap, 0, 1);
+
+        for (i, sample) in output.iter().enumerate() {
+            std::println!("mdct_backward_out[{}]={:.9e}", i, sample);
         }
     }
 }
