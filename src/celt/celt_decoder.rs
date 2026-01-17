@@ -2239,9 +2239,7 @@ where
         let start_idx = DECODE_BUFFER_SIZE
             .checked_sub(n)
             .ok_or(CeltDecodeError::BadArgument)?;
-        let (_, rest) = channel_slice.split_at_mut(start_idx);
-        let (output, _) = rest.split_at_mut(n);
-        out_slices.push(output);
+        out_slices.push(&mut channel_slice[start_idx..]);
     }
 
     celt_synthesis(

@@ -22,9 +22,14 @@ Uncommitted files created during C fuzzing:
 - `opus-c/build-linux/` (CMake build dir in the `opus-c` submodule).
 - `fuzz/artifacts/opus_decode_fuzzer/` (libFuzzer artifacts dir; ignored).
 
+Uncommitted local changes:
+- `src/celt/celt_decoder.rs` now passes the full decode buffer tail (`n + overlap`)
+  into `celt_synthesis` to match the C output span.
+- `src/opus_decoder.rs` adds `decode_fuzz_crash_input_does_not_panic` regression test.
+
 ## Rust fuzzing (cargo-fuzz)
 
-Rust fuzzing hit a crash in the ported decoder.
+Rust fuzzing previously hit a crash in the ported decoder.
 
 - Crash location: `src/celt/mdct.rs:242`  
   Assertion: `output.len() >= half_overlap + n2`.
@@ -35,10 +40,25 @@ Rust fuzzing hit a crash in the ported decoder.
 - Input bytes (base64):  
   `AAAADwAIAAC4fDUhdeVn1RysolT6/78=`
 
-Reproduce (Rust):
+Current status:
+- Fixed by ensuring the output slices passed to `celt_synthesis` include the
+  overlap tail, matching the C `out_syn` span.
+- Regression test added: `decode_fuzz_crash_input_does_not_panic`
+  in `src/opus_decoder.rs`.
+- Crash input no longer reproduces.
+
+Reproduce (Rust, crash input):
 ```bash
+RUSTC=$(rustup which rustc --toolchain nightly) \
 rustup run nightly cargo fuzz run decode_fuzzer \
   fuzz/artifacts/decode_fuzzer/crash-213fac479ee66d1483486fd15198b7d1e976ca25
+```
+
+Fuzz run (Rust, 120s smoke):
+```bash
+RUSTC=$(rustup which rustc --toolchain nightly) \
+rustup run nightly cargo fuzz run decode_fuzzer fuzz/corpus/decode_fuzzer -- \
+  -max_total_time=120
 ```
 
 ## C vs Rust comparison (ctests)

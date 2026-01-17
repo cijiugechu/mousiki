@@ -1894,7 +1894,9 @@ mod tests {
     use crate::celt::{
         OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     };
-    use crate::packet::{Bandwidth, Mode, PacketError};
+    use crate::packet::{
+        Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_nb_channels,
+    };
     use crate::silk::dec_api::Decoder as SilkDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
     use alloc::vec;
@@ -1905,6 +1907,13 @@ mod tests {
         packet.push(toc);
         packet.extend(core::iter::repeat(0u8).take(payload_len));
         packet
+    }
+
+    fn read_be_u32(bytes: &[u8]) -> Option<u32> {
+        let chunk = bytes.get(..4)?;
+        Some(u32::from_be_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3],
+        ]))
     }
 
     #[test]
@@ -2544,5 +2553,40 @@ mod tests {
         let err = opus_decode(&mut decoder, None, 0, &mut pcm, 480, false).unwrap_err();
 
         assert_eq!(err, OpusDecodeError::BufferTooSmall);
+    }
+
+    #[test]
+    fn decode_fuzz_crash_input_does_not_panic() {
+        const SETUP_BYTE_COUNT: usize = 8;
+        const MAX_FRAME_SAMP: usize = 5760;
+        const MAX_PACKET: usize = 1500;
+        const FUZZ_CRASH_INPUT: [u8; 23] = [
+            0x00, 0x00, 0x00, 0x0f, 0x00, 0x08, 0x00, 0x00, 0xb8, 0x7c, 0x35, 0x21, 0x75,
+            0xe5, 0x67, 0xd5, 0x1c, 0xac, 0xa2, 0x54, 0xfa, 0xff, 0xbf,
+        ];
+
+        let data = &FUZZ_CRASH_INPUT[..];
+        assert!(data.len() > SETUP_BYTE_COUNT);
+
+        let toc = &data[SETUP_BYTE_COUNT..];
+        let bandwidth = opus_packet_get_bandwidth(toc).expect("bandwidth");
+        let channels = opus_packet_get_nb_channels(toc).expect("channels");
+        let sample_rate = bandwidth.sample_rate() as i32;
+
+        let mut decoder =
+            opus_decoder_create(sample_rate, channels as i32).expect("decoder should initialise");
+
+        let len = read_be_u32(data).expect("packet length") as usize;
+        assert!(len <= MAX_PACKET);
+
+        let packet_offset = SETUP_BYTE_COUNT;
+        let end = packet_offset + len;
+        assert!(end <= data.len());
+        assert!(len > 0);
+
+        let packet = &data[packet_offset..end];
+        let mut pcm = vec![0i16; MAX_FRAME_SAMP.saturating_mul(channels)];
+
+        let _ = opus_decode(&mut decoder, Some(packet), len, &mut pcm, MAX_FRAME_SAMP, false);
     }
 }
