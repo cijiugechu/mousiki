@@ -49,9 +49,9 @@ Step-by-step
    - Extract packets from `testdata/tiny.ogg` (single audio packet).
    - Seed files: `single_packet.bin`, `two_packets_fec.bin`, `packet_then_loss.bin`.
 
-5. Document usage and CI policy:
-   - Add short instructions in `README.md` or `docs/README.md`.
-   - Decide whether fuzzing runs manually, nightly, or on-demand in CI.
+5. [done] Document usage and CI policy:
+   - Added instructions in `README.md`.
+   - Fuzzing runs manually/on-demand (not part of CI by default).
 
 Notes
 -----

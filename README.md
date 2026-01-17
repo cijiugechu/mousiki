@@ -67,6 +67,17 @@ TEST_OPUS_STRICT_FINAL_RANGE=1 cargo test --all-features --test test_opus_decode
 DRED_VECTORS_PATH=testdata/dred_vectors cargo test --all-features --test dred_vectors
 ```
 
+### Fuzzing (manual/on-demand)
+Fuzzing uses `cargo-fuzz` and is not part of CI by default.
+
+```bash
+cargo install cargo-fuzz
+rustup toolchain install nightly
+rustup run nightly cargo fuzz run decode_fuzzer
+```
+
+Seed corpus lives in `fuzz/corpus/decode_fuzzer/`.
+
 ### Use in your code
 The snippet below uses the lightweight `decoder::Decoder` (SILK-only, single-frame)
 to decode a single Opus packet into `i16` PCM (mono, 48 kHz):

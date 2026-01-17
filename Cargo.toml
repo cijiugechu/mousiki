@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "examples/playback", "mousiki-dred-weights", "mousiki-deep-plc-weights"]
+exclude = ["fuzz"]
 resolver = "3"
 
 [package]

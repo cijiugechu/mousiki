@@ -1,6 +1,9 @@
 target
 corpus/*
 !corpus/decode_fuzzer/
-!corpus/decode_fuzzer/**
+corpus/decode_fuzzer/*
+!corpus/decode_fuzzer/single_packet.bin
+!corpus/decode_fuzzer/two_packets_fec.bin
+!corpus/decode_fuzzer/packet_then_loss.bin
 artifacts
 coverage
