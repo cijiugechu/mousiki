@@ -5,3 +5,4 @@ Cargo.lock
 *.opus
 .DS_Store
 ctests/build/
+testdata/dred_vectors/

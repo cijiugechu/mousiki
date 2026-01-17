@@ -31,3 +31,11 @@ jobs:
 
       - name: Cargo clippy
         run: cargo clippy --all-features
+
+      - name: Fetch DRED vectors
+        if: env.DRED_VECTORS_URL != ''
+        run: ./scripts/fetch_dred_vectors.sh --url "$DRED_VECTORS_URL"
+
+      - name: DRED vector validation
+        if: env.DRED_VECTORS_URL != ''
+        run: DRED_VECTORS_PATH=testdata/dred_vectors cargo test --all-features --test dred_vectors

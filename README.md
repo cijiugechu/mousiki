@@ -56,6 +56,17 @@ TEST_OPUS_FUZZ=1 cargo test --all-features --test test_opus_decode
 TEST_OPUS_STRICT_FINAL_RANGE=1 cargo test --all-features --test test_opus_decode
 ```
 
+- DRED vector validation (optional; vectors are distributed separately):
+
+```bash
+# Fetch vectors into testdata/dred_vectors (requires DRED_VECTORS_URL).
+./scripts/fetch_dred_vectors.sh --url <vector-archive-url>
+
+# Run the vector checks (uses DRED_VECTORS_PATH or testdata/dred_vectors).
+# If deep_plc_weights is disabled, set DNN_BLOB or pass --dnn-blob.
+DRED_VECTORS_PATH=testdata/dred_vectors cargo test --all-features --test dred_vectors
+```
+
 ### Use in your code
 The snippet below uses the lightweight `decoder::Decoder` (SILK-only, single-frame)
 to decode a single Opus packet into `i16` PCM (mono, 48 kHz):

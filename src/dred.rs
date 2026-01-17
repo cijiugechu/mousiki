@@ -1,7 +1,8 @@
-//! Deep REDundancy (DRED) stubs and helpers.
+//! Deep REDundancy (DRED) helpers and integration.
 //!
-//! The DRED feature is not fully ported yet. The APIs mirror the C surface
-//! while returning `Unimplemented` until the model and coding paths land.
+//! The DRED pipeline is now ported, including entropy decoding, RDOVAE decode,
+//! and PLC/FEC integration. Remaining gaps are primarily external test vectors
+//! and automated validation coverage.
 
 use alloc::vec;
 use alloc::vec::Vec;

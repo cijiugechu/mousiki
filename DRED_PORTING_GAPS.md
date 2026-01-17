@@ -10,9 +10,9 @@ implementation under `opus-c` with the Rust port in this repository.
   path is implemented (PLC model + FARGAN synthesis). The Rust port can now
   auto-load an embedded DNN blob when `deep_plc_weights` is enabled; without
   that feature, callers must still provide a DNN blob via `SetDnnBlob`.
-- DRED vector tooling is ported (`dred_vectors`), but the reference vector
-  files are not stored in this repository. Vector validation requires external
-  test data plus a DNN blob.
+- DRED vector tooling is ported (`dred_vectors`) and a fetch helper exists,
+  but the reference vector files are not stored in this repository. Vector
+  validation still requires external test data plus a DNN blob.
 
 ## Missing modules and data
 
@@ -45,7 +45,7 @@ C structures hold DRED state and model data:
 Rust mirrors these fields for decoder-side state in:
 - `OpusDred`, `OpusDredDecoder` in `src/dred.rs`
 
-## Missing decoder API behavior
+## Decoder API behavior
 
 C implements full DRED decode behavior in:
 - `opus-c/src/opus_decoder.c` (`opus_dred_decoder_ctl`,
@@ -58,7 +58,7 @@ Rust currently implements:
   PLC when the model is loaded and the feature is enabled
 
 Still missing:
-- DRED vector tooling and reference test coverage
+- Reference vector data (validation remains opt-in and requires external vectors)
 
 ## Extension parsing and payload wiring
 
@@ -93,15 +93,17 @@ pipeline (`src/celt/deep_plc.rs`). When `deep_plc_weights` is enabled, the PLC
 model is preloaded from the embedded blob (matching the C default); otherwise
 the DNN blob must be provided explicitly.
 
-## Missing tests and tools
+## Tests and tooling gaps
 
 C includes DRED-specific tests and vector tooling:
 - `opus-c/tests/test_opus_dred.c`
 - `opus-c/tests/dred_vectors.sh`
 
 Rust now mirrors the randomized DRED parse/process test (ported from
-`test_opus_dred.c` in `src/dred.rs`) and includes a `dred_vectors` binary that
-replays the vector workflow in-process. Vector validation still depends on
-external test data, but `dred_vectors` can now default to the embedded DNN blob
-when `deep_plc_weights` is enabled (matching the C default); otherwise callers
-must supply a blob via `--dnn-blob` or `DNN_BLOB`.
+`test_opus_dred.c` in `src/dred.rs`), includes a `dred_vectors` binary that
+replays the vector workflow in-process, and adds `tests/dred_vectors.rs` as an
+opt-in integration test plus a fetch helper in `scripts/fetch_dred_vectors.sh`.
+Vector validation still depends on external test data, but `dred_vectors` can
+default to the embedded DNN blob when `deep_plc_weights` is enabled (matching
+the C default); otherwise callers must supply a blob via `--dnn-blob` or
+`DNN_BLOB`.
