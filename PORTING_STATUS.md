@@ -136,7 +136,9 @@ The following `opus-c/celt/tests/` and `opus-c/tests/` unit tests are ported:
 | `test_opus_projection.c`   | `tests/test_opus_projection.rs`, `src/mapping_matrix.rs` | Projection encoder/decoder, matrix ops |
 
 Tests not yet ported:
-- `test_opus_api.c` — comprehensive API surface tests (encoder/decoder/multistream/repacketizer CTLs)
+- `test_opus_api.c` — comprehensive API surface tests (encoder/decoder/multistream/repacketizer CTLs);
+  not planned to port because the Rust API surface is already exercised by targeted unit tests and
+  the higher-level bindings do not expose the same C-only ABI edge cases.
 
 Partially ported tests:
 - None currently tracked.
