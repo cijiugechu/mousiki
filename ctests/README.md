@@ -22,3 +22,15 @@ Common options:
 ```
 
 Run `./ctests/run.sh --help` to see all available options.
+
+## Packet stream tools
+
+The following utilities help cross-check Rust encoder/decoder behavior using
+a simple OPUSPKT1 packet stream format:
+
+```sh
+ctests/build/opus_packet_encode input.pcm output.opuspkt
+ctests/build/opus_packet_decode input.opuspkt output.pcm
+```
+
+Rust-side helpers live in `examples/opus_packet_tool.rs`.

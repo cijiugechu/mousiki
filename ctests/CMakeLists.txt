@@ -19,6 +19,8 @@ target_compile_definitions(opus PRIVATE RESYNTH)
 add_executable(celt_compute_band_energies_test compute_band_energies_test.c)
 add_executable(celt_mdct_backward_compare mdct_backward_compare.c)
 add_executable(celt_synthesis_compare celt_synthesis_compare.c)
+add_executable(opus_packet_encode opus_packet_encode.c)
+add_executable(opus_packet_decode opus_packet_decode.c)
 
 target_include_directories(celt_compute_band_energies_test
   PRIVATE
@@ -38,13 +40,27 @@ target_include_directories(celt_synthesis_compare
     "${OPUS_ROOT}/include"
 )
 
+target_include_directories(opus_packet_encode
+  PRIVATE
+    "${OPUS_ROOT}/include"
+)
+
+target_include_directories(opus_packet_decode
+  PRIVATE
+    "${OPUS_ROOT}/include"
+)
+
 target_link_libraries(celt_compute_band_energies_test PRIVATE opus)
 target_link_libraries(celt_mdct_backward_compare PRIVATE opus)
 target_link_libraries(celt_synthesis_compare PRIVATE opus)
+target_link_libraries(opus_packet_encode PRIVATE opus)
+target_link_libraries(opus_packet_decode PRIVATE opus)
 
 target_compile_definitions(celt_compute_band_energies_test PRIVATE OPUS_BUILD)
 target_compile_definitions(celt_mdct_backward_compare PRIVATE OPUS_BUILD)
 target_compile_definitions(celt_synthesis_compare PRIVATE OPUS_BUILD RESYNTH)
+target_compile_definitions(opus_packet_encode PRIVATE OPUS_BUILD)
+target_compile_definitions(opus_packet_decode PRIVATE OPUS_BUILD)
 
 if (OPUS_VAR_ARRAYS)
   target_compile_definitions(celt_compute_band_energies_test PRIVATE VAR_ARRAYS)
