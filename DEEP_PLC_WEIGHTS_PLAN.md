@@ -143,3 +143,5 @@ Run required checks after implementation:
 4. (Done) Add `load_default_model()` in `src/celt/deep_plc.rs` and wire auto-load.
 5. (Done) Add the feature-gated tests.
 6. (Done) Update repository docs if needed (`README.md`, `DRED_PORTING_GAPS.md`).
+7. (Done) Allow `dred_vectors` to default to embedded weights when
+   `deep_plc_weights` is enabled; keep external blob override available.

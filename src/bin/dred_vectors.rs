@@ -5,11 +5,14 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::borrow::Cow;
 
 use libm::{cosf, powf, sqrtf};
 use mousiki::dred::DredVectorDecoder;
 use mousiki::fargan::{FarganState, FARGAN_CONT_SAMPLES, FARGAN_FRAME_SIZE};
 use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
+#[cfg(feature = "deep_plc_weights")]
+use mousiki_deep_plc_weights::DNN_BLOB;
 
 #[path = "../celt/mini_kfft.rs"]
 mod mini_kfft;
@@ -33,8 +36,14 @@ const DRED_DECODE_THRESHOLDS: (f32, f32, f32) = (0.5, 0.15, 0.02);
 const FARGAN_THRESHOLDS: (f32, f32, f32) = (0.25, 1.0, 0.15);
 const OPUS_THRESHOLDS: (f32, f32, f32) = (0.5, 1.5, 0.25);
 
+#[cfg(feature = "deep_plc_weights")]
 const USAGE: &str = "usage: dred_vectors [--dnn-blob <path>] <vector path>\n\
-       dred_vectors [--dnn-blob <path>] <exec path> <vector path>";
+       dred_vectors [--dnn-blob <path>] <exec path> <vector path>\n\
+       (defaults to embedded weights; or set DRED_VECTORS_PATH)";
+#[cfg(not(feature = "deep_plc_weights"))]
+const USAGE: &str = "usage: dred_vectors --dnn-blob <path> <vector path>\n\
+       dred_vectors --dnn-blob <path> <exec path> <vector path>\n\
+       (set DRED_VECTORS_PATH to skip positional args)";
 
 #[cfg(not(feature = "deep_plc"))]
 fn main() {
@@ -60,8 +69,24 @@ fn run() -> Result<(), String> {
 
     println!("Test vectors found in {}", args.vector_path.display());
 
-    let blob = fs::read(&args.dnn_blob)
-        .map_err(|err| format!("Error opening DNN blob {}: {err}", args.dnn_blob.display()))?;
+    #[cfg(feature = "deep_plc_weights")]
+    let blob = match args.dnn_blob {
+        Some(ref path) => Cow::Owned(fs::read(path).map_err(|err| {
+            format!("Error opening DNN blob {}: {err}", path.display())
+        })?),
+        None => Cow::Borrowed(DNN_BLOB),
+    };
+    #[cfg(not(feature = "deep_plc_weights"))]
+    let blob = {
+        let path = args
+            .dnn_blob
+            .as_ref()
+            .expect("dnn_blob required when deep_plc_weights is disabled");
+        Cow::Owned(
+            fs::read(path)
+                .map_err(|err| format!("Error opening DNN blob {}: {err}", path.display()))?,
+        )
+    };
 
     let mut fargan = FarganState::new();
     fargan
@@ -94,7 +119,7 @@ fn run() -> Result<(), String> {
 #[cfg(feature = "deep_plc")]
 struct Args {
     vector_path: PathBuf,
-    dnn_blob: PathBuf,
+    dnn_blob: Option<PathBuf>,
 }
 
 #[cfg(feature = "deep_plc")]
@@ -116,14 +141,17 @@ fn parse_args() -> Result<Args, String> {
     }
 
     let vector_path = match positional.len() {
-        1 => PathBuf::from(&positional[0]),
-        2 => PathBuf::from(&positional[1]),
+        0 => env::var_os("DRED_VECTORS_PATH").map(PathBuf::from),
+        1 => Some(PathBuf::from(&positional[0])),
+        2 => Some(PathBuf::from(&positional[1])),
         _ => return Err(USAGE.to_string()),
-    };
+    }
+    .ok_or_else(|| USAGE.to_string())?;
 
-    let dnn_blob = dnn_blob
-        .or_else(|| env::var_os("DNN_BLOB").map(PathBuf::from))
-        .ok_or_else(|| "Missing DNN blob (set --dnn-blob or DNN_BLOB).".to_string())?;
+    let dnn_blob = dnn_blob.or_else(|| env::var_os("DNN_BLOB").map(PathBuf::from));
+    if !cfg!(feature = "deep_plc_weights") && dnn_blob.is_none() {
+        return Err("Missing DNN blob (set --dnn-blob or DNN_BLOB).".to_string());
+    }
 
     Ok(Args {
         vector_path,

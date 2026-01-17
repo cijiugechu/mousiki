@@ -102,5 +102,6 @@ C includes DRED-specific tests and vector tooling:
 Rust now mirrors the randomized DRED parse/process test (ported from
 `test_opus_dred.c` in `src/dred.rs`) and includes a `dred_vectors` binary that
 replays the vector workflow in-process. Vector validation still depends on
-external test data and a DNN blob (either embedded via `deep_plc_weights` or
-supplied externally) for the FARGAN synthesis stage.
+external test data, but `dred_vectors` can now default to the embedded DNN blob
+when `deep_plc_weights` is enabled (matching the C default); otherwise callers
+must supply a blob via `--dnn-blob` or `DNN_BLOB`.
