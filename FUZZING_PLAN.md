@@ -9,12 +9,26 @@ and decoder exercise pattern.
 
 Step-by-step
 ------------
-1. Audit the C fuzzer (`opus-c/tests/opus_decode_fuzzer.c`) to capture:
+1. [done] Audit the C fuzzer (`opus-c/tests/opus_decode_fuzzer.c`) to capture:
    - Input framing (4-byte length + 4-byte range + packet bytes).
    - ToC-based decoder init (sample rate + channels).
    - FEC bit semantics (byte 4, bit 0).
    - Loss handling when length is zero.
    - Decode loop cap (`MAX_DECODES`) and size limits.
+   Findings:
+   - Guard: require `size >= SETUP_BYTE_COUNT + 1` to read the first ToC.
+   - Frame format: big-endian 4-byte length, then 4-byte range; ToC is at
+     `data[SETUP_BYTE_COUNT]`.
+   - ToC init: `opus_packet_get_bandwidth(toc)` selects `samp_freqs = [8000,
+     12000, 16000, 24000, 48000]` via `bandwidth - OPUS_BANDWIDTH_NARROWBAND`;
+     channels from `opus_packet_get_nb_channels(toc)`.
+   - FEC: `fec = data[i + 4] & 1` (byte 4 in the 8-byte header at each packet).
+   - Loss handling: if `len == 0`, call `OPUS_GET_LAST_PACKET_DURATION` and then
+     `opus_decode(dec, NULL, len, pcm, frame_size, fec)`.
+   - Limits: `MAX_FRAME_SAMP = 5760`, `MAX_PACKET = 1500`, `MAX_DECODES = 12`.
+   - Loop: `while i + 8 < size && num_decodes++ < MAX_DECODES`, break on
+     `len > MAX_PACKET`, `len < 0`, or `i + 8 + len > size`; increment `i` by
+     `8 + len`.
 
 2. Initialize `cargo-fuzz`:
    - Run `cargo fuzz init`.
