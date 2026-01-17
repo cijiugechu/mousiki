@@ -56,3 +56,5 @@ Notes
 -----
 - The fuzz target should not change public APIs.
 - Keep sizes/constants aligned with the C fuzzer for parity.
+- Cargo-fuzz documentation: https://rust-fuzz.github.io/book/cargo-fuzz.html
+- When you need details about cargo-fuzz behavior or options, consult the docs above or run `cargo fuzz --help` / `cargo fuzz <subcommand> --help`.
