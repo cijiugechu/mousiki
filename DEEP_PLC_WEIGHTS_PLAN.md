@@ -140,6 +140,6 @@ Run required checks after implementation:
    and `src/lib.rs`.
 2. (Done) Implement C-array + `WeightArray` parsing and blob emission.
 3. (Done) Add workspace dependency and features in root `Cargo.toml`.
-4. Add `load_default_model()` in `src/celt/deep_plc.rs` and wire auto-load.
-5. Add the feature-gated tests.
-6. Update repository docs if needed (`README.md`, `DRED_PORTING_GAPS.md`).
+4. (Done) Add `load_default_model()` in `src/celt/deep_plc.rs` and wire auto-load.
+5. (Done) Add the feature-gated tests.
+6. (Done) Update repository docs if needed (`README.md`, `DRED_PORTING_GAPS.md`).

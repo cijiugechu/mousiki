@@ -7,8 +7,9 @@ implementation under `opus-c` with the Rust port in this repository.
 
 - The Rust DRED decoder now includes entropy decoding plus the RDOVAE decoder,
   queues DRED FEC features into the deep PLC state, and the neural PLC output
-  path is implemented (PLC model + FARGAN synthesis). The Rust port still
-  requires an external DNN blob to load PLC weights (no built-in defaults).
+  path is implemented (PLC model + FARGAN synthesis). The Rust port can now
+  auto-load an embedded DNN blob when `deep_plc_weights` is enabled; without
+  that feature, callers must still provide a DNN blob via `SetDnnBlob`.
 - DRED vector tooling is ported (`dred_vectors`), but the reference vector
   files are not stored in this repository. Vector validation requires external
   test data plus a DNN blob.
@@ -88,8 +89,9 @@ C injects DRED features into the PLC/FEC path in:
 
 Rust now mirrors this path: DRED decode entrypoints queue FEC features into the
 deep PLC state and the CELT PLC callsite consumes them via the neural PLC
-pipeline (`src/celt/deep_plc.rs`). Unlike the C build with embedded weights,
-the Rust implementation requires loading the DNN blob to enable neural PLC.
+pipeline (`src/celt/deep_plc.rs`). When `deep_plc_weights` is enabled, the PLC
+model is preloaded from the embedded blob (matching the C default); otherwise
+the DNN blob must be provided explicitly.
 
 ## Missing tests and tools
 
@@ -100,4 +102,5 @@ C includes DRED-specific tests and vector tooling:
 Rust now mirrors the randomized DRED parse/process test (ported from
 `test_opus_dred.c` in `src/dred.rs`) and includes a `dred_vectors` binary that
 replays the vector workflow in-process. Vector validation still depends on
-external test data and a DNN blob for the FARGAN synthesis stage.
+external test data and a DNN blob (either embedded via `deep_plc_weights` or
+supplied externally) for the FARGAN synthesis stage.

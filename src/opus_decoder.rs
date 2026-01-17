@@ -1889,6 +1889,8 @@ mod tests {
         OpusDecoderCtlRequest, opus_decode, opus_decode_float, opus_decode_native, opus_decode24,
         opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size, smooth_fade,
     };
+    #[cfg(feature = "deep_plc_weights")]
+    use mousiki_deep_plc_weights::DNN_BLOB;
     use crate::celt::{
         OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     };
@@ -2185,13 +2187,22 @@ mod tests {
     #[test]
     fn dnn_blob_ctl_rejects_invalid_plc_blob() {
         let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
-        assert!(!decoder.lpcnet.loaded);
+        let loaded_before = decoder.lpcnet.loaded;
         assert_eq!(
             opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetDnnBlob(&[1, 2, 3]))
                 .unwrap_err(),
             OpusDecoderCtlError::BadArgument
         );
-        assert!(!decoder.lpcnet.loaded);
+        assert_eq!(decoder.lpcnet.loaded, loaded_before);
+    }
+
+    #[cfg(feature = "deep_plc_weights")]
+    #[test]
+    fn dnn_blob_ctl_accepts_embedded_plc_blob() {
+        let mut decoder = opus_decoder_create(48_000, 1).expect("decoder should initialise");
+        opus_decoder_ctl(&mut decoder, OpusDecoderCtlRequest::SetDnnBlob(DNN_BLOB))
+            .expect("embedded PLC blob should load");
+        assert!(decoder.lpcnet.loaded);
     }
 
     #[test]

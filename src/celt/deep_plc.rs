@@ -10,6 +10,8 @@
 //! the remaining neural components incrementally.
 
 use alloc::vec::Vec;
+#[cfg(feature = "deep_plc_weights")]
+use mousiki_deep_plc_weights::DNN_BLOB;
 use crate::celt::celt_decoder::DECODE_BUFFER_SIZE;
 use crate::celt::opus_select_arch;
 use crate::celt::float_cast::float2int;
@@ -213,7 +215,7 @@ impl Default for LpcNetPlcState {
     fn default() -> Self {
         let mut burg_dct = [0.0f32; NB_BANDS * NB_BANDS];
         init_burg_dct_table(&mut burg_dct);
-        Self {
+        let mut state = Self {
             loaded: false,
             model: PlcModel::default(),
             fargan: FarganState::new(),
@@ -236,11 +238,23 @@ impl Default for LpcNetPlcState {
             plc_tmp: Vec::new(),
             burg_fft: KissFftState::new(WINDOW_SIZE),
             burg_dct,
+        };
+        #[cfg(feature = "deep_plc_weights")]
+        {
+            state.load_default_model();
         }
+        state
     }
 }
 
 impl LpcNetPlcState {
+    /// Mirrors the `#ifndef USE_WEIGHTS_FILE` init path from the C reference.
+    #[cfg(feature = "deep_plc_weights")]
+    pub fn load_default_model(&mut self) {
+        self.load_model(DNN_BLOB)
+            .expect("deep PLC model blob should load");
+    }
+
     /// Resets the PLC state while keeping the model loaded flag intact.
     pub fn reset(&mut self) {
         self.fec.fill([0.0; DRED_NUM_FEATURES]);
@@ -909,6 +923,13 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    #[cfg(feature = "deep_plc_weights")]
+    #[test]
+    fn default_state_auto_loads_model() {
+        let state = LpcNetPlcState::default();
+        assert!(state.loaded);
+    }
 
     fn reference_downsample(history: &[&[CeltSig]], prev_mem: f32) -> (Vec<i16>, f32) {
         let mut buf48k = [0.0f32; DECODE_BUFFER_SIZE];
