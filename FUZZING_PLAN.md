@@ -30,17 +30,17 @@ Step-by-step
      `len > MAX_PACKET`, `len < 0`, or `i + 8 + len > size`; increment `i` by
      `8 + len`.
 
-2. Initialize `cargo-fuzz`:
+2. [done] Initialize `cargo-fuzz`:
    - Run `cargo fuzz init`.
-   - Choose a target name (e.g. `decode_fuzzer`).
+   - Choose a target name (`decode_fuzzer`).
    - Keep `fuzz/` outside default test runs.
 
-3. Implement the harness (`fuzz/fuzz_targets/decode_fuzzer.rs`):
+3. [done] Implement the harness (`fuzz/fuzz_targets/decode_fuzzer.rs`):
    - Parse the same framing as the C fuzzer.
    - Use the first ToC to create the decoder.
    - Allocate a PCM buffer sized for `MAX_FRAME_SAMP * channels`.
-   - Iterate over framed packets up to `MAX_DECODES`, calling
-     `opus_decode` (or `opus_decode_float` if needed) with optional FEC.
+   - Iterate over framed packets up to `MAX_DECODES`, calling `opus_decode`
+     with optional FEC.
    - Mirror the C behavior for zero-length (PLC) packets.
 
 4. Seed corpus:
