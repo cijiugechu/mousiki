@@ -1,4 +1,6 @@
 target
-corpus
+corpus/*
+!corpus/decode_fuzzer/
+!corpus/decode_fuzzer/**
 artifacts
 coverage

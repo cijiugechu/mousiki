@@ -43,10 +43,11 @@ Step-by-step
      with optional FEC.
    - Mirror the C behavior for zero-length (PLC) packets.
 
-4. Seed corpus:
+4. [done] Seed corpus:
    - Create `fuzz/corpus/decode_fuzzer/`.
    - Add small valid Opus packets and boundary cases.
-   - Optionally extract packets from `testdata/tiny.ogg`.
+   - Extract packets from `testdata/tiny.ogg` (single audio packet).
+   - Seed files: `single_packet.bin`, `two_packets_fec.bin`, `packet_then_loss.bin`.
 
 5. Document usage and CI policy:
    - Add short instructions in `README.md` or `docs/README.md`.
