@@ -22,11 +22,11 @@ use crate::celt::pitch::celt_inner_prod;
 use crate::celt::types::{OpusInt32, OpusVal16, OpusVal32};
 use libm::floorf;
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_ops::{extract16, mult16_16, mult32_32_q31, pshr32, vshr32};
+use crate::celt::fixed_ops::{extract16, mult16_16, mult16_16_q15, mult32_32_q31, pshr32, shr16, vshr32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 #[cfg(feature = "fixed_point")]
-use crate::celt::math_fixed::celt_rsqrt_norm as celt_rsqrt_norm_fixed;
+use crate::celt::math_fixed::{celt_atan2p, celt_rsqrt_norm as celt_rsqrt_norm_fixed, celt_sqrt as celt_sqrt_fixed};
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
 
@@ -382,6 +382,31 @@ pub(crate) fn renormalise_vector(x: &mut [OpusVal16], n: usize, gain: OpusVal32,
     }
 }
 
+/// Fixed-point version of `renormalise_vector()`.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn renormalise_vector_fixed(
+    x: &mut [FixedOpusVal16],
+    n: usize,
+    gain: FixedOpusVal32,
+    _arch: i32,
+) {
+    use crate::celt::pitch::celt_inner_prod_fixed;
+    
+    assert!(x.len() >= n, "input vector shorter than band size");
+    let len = n.min(x.len());
+    
+    // Compute energy with EPSILON offset (matches C code: E = EPSILON + celt_inner_prod(X, X, N, arch))
+    let e = 1i32 + celt_inner_prod_fixed(&x[..len], &x[..len]);
+    
+    let k = celt_ilog2(e) >> 1;
+    let t = vshr32(e, 2 * (k - 7));
+    let g = mult32_32_q31(i32::from(celt_rsqrt_norm_fixed(t)), gain) as i16;
+    
+    for sample in x.iter_mut().take(len) {
+        *sample = extract16(pshr32(mult16_16(g, *sample), (k + 1) as u32));
+    }
+}
+
 /// Computes the stereo intensity angle mirroring `stereo_itheta()`.
 pub(crate) fn stereo_itheta(
     x: &[OpusVal16],
@@ -420,6 +445,50 @@ pub(crate) fn stereo_itheta(
     let angle = fast_atan2f(side, mid);
 
     floorf(0.5 + 16_384.0 * FRAC_2_PI * angle) as i32
+}
+
+/// Fixed-point version of `stereo_itheta()`.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn stereo_itheta_fixed(
+    x: &[FixedOpusVal16],
+    y: &[FixedOpusVal16],
+    stereo: bool,
+    n: usize,
+    _arch: i32,
+) -> i32 {
+    assert!(x.len() >= n, "mid channel shorter than requested length");
+    assert!(y.len() >= n, "side channel shorter than requested length");
+
+    let len = n.min(x.len()).min(y.len());
+    let mut emid: FixedOpusVal32 = 1; // EPSILON in fixed-point
+    let mut eside: FixedOpusVal32 = 1;
+
+    if stereo {
+        for i in 0..len {
+            // m = (x[i] + y[i]) / 2 => SHR16(x[i] + y[i], 1)
+            // s = (x[i] - y[i]) / 2 => SHR16(x[i] - y[i], 1)
+            let m = shr16(x[i].wrapping_add(y[i]), 1);
+            let s = shr16(x[i].wrapping_sub(y[i]), 1);
+            emid = emid.wrapping_add((i32::from(m) * i32::from(m)) >> 15);
+            eside = eside.wrapping_add((i32::from(s) * i32::from(s)) >> 15);
+        }
+    } else {
+        for i in 0..len {
+            let xval = i32::from(x[i]);
+            let yval = i32::from(y[i]);
+            emid = emid.wrapping_add((xval * xval) >> 15);
+            eside = eside.wrapping_add((yval * yval) >> 15);
+        }
+    }
+
+    let mid = celt_sqrt_fixed(emid) as i16;
+    let side = celt_sqrt_fixed(eside) as i16;
+    
+    // 0.63662 = 2/pi in Q15 format
+    const TWO_OVER_PI_Q15: i16 = 20_861; // floor(0.63662 * 32768 + 0.5)
+    let itheta = mult16_16_q15(TWO_OVER_PI_Q15, celt_atan2p(side, mid));
+    
+    i32::from(itheta)
 }
 
 /// Mirrors `extract_collapse_mask()` from `celt/vq.c`.
@@ -469,7 +538,7 @@ mod tests {
         normalise_residual, renormalise_vector, stereo_itheta,
     };
     #[cfg(feature = "fixed_point")]
-    use super::normalise_residual_fixed;
+    use super::{normalise_residual_fixed, renormalise_vector_fixed, stereo_itheta_fixed};
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
 
@@ -632,5 +701,31 @@ mod tests {
                 assert!(sign == 0 || sign == pulse.signum());
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "fixed_point")]
+    fn renormalise_vector_fixed_runs_without_panic() {
+        let mut x = vec![1000i16, 2000, 1500, -1000];
+        let n = x.len();
+        let gain = 16384i32; // 0.5 gain in Q15
+        
+        // Just ensure the function runs without panic
+        renormalise_vector_fixed(&mut x, n, gain, 0);
+        
+        // The function should complete successfully
+        assert!(true);
+    }
+
+    #[test]
+    #[cfg(feature = "fixed_point")]
+    fn stereo_itheta_fixed_returns_valid_angle() {
+        let x = vec![100i16, 200, 150, 100];
+        let y = vec![50i16, 100, 75, 50];
+        
+        let angle = stereo_itheta_fixed(&x, &y, false, x.len(), 0);
+        
+        // Angle should be in valid range [0, 16384] representing [0, pi/2]
+        assert!(angle >= 0 && angle <= 16384, "angle {} out of range", angle);
     }
 }
