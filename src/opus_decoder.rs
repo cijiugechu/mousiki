@@ -1431,6 +1431,7 @@ impl<'mode> OpusDecoder<'mode> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn sample_rate(&self) -> i32 {
         self.fs
     }

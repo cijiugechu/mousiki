@@ -475,6 +475,7 @@ pub fn opus_packet_pad(
     opus_packet_pad_impl(data, len, new_len, true)
 }
 
+#[allow(dead_code)]
 pub(crate) fn opus_packet_pad_with_extensions(
     data: &mut [u8],
     len: usize,
