@@ -1642,6 +1642,25 @@ Conclusion:
   floating-point contraction/rounding differences in that term rather than
   earlier stages or twiddle inputs.
 
+## 2026-01-24 — radix-5 sum78_ya_yb FMA alignment (frame 12)
+
+Change (Rust):
+- In `kf_bfly5` and trace `trace_bfly5`, compute `sum78_ya_yb` using FMA:
+  `fused_mul_add(scratch7.{r,i}, ya.r, scratch8.{r,i} * yb.r)`, matching the
+  C-side contraction behavior for the sum.
+
+Trace re-run (same knobs as above, full stage dump):
+- `CELT_TRACE_KFFT_STAGE=1 CELT_TRACE_KFFT_FRAME=12 CELT_TRACE_KFFT_BITS=1
+   CELT_TRACE_KFFT_START=0 CELT_TRACE_KFFT_COUNT=480`
+
+Result:
+- **All mdct2 KFFT stage outputs now match** between C/Rust for frame 12
+  (no `idx_bits` mismatches across stage 0..4).
+
+Interpretation:
+- The stage-4 radix‑5 mismatch was due to `sum78_ya_yb` rounding. With FMA,
+  the mdct2 FFT path is now bit-aligned at the stage outputs for frame 12.
+
 ## 2026-01-24 — mdct2 post-rotate recheck after scale fix (frame 12, idx 4)
 
 Trace commands (opus encoder path, not analysis_compare):

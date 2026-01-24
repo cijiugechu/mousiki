@@ -349,8 +349,8 @@ impl MiniKissFft {
             let term7_ya_i = scratch7.i * ya.r;
             let term8_yb_r = scratch8.r * yb.r;
             let term8_yb_i = scratch8.i * yb.r;
-            let sum78_ya_yb_r = term7_ya_r + term8_yb_r;
-            let sum78_ya_yb_i = term7_ya_i + term8_yb_i;
+            let sum78_ya_yb_r = fused_mul_add(scratch7.r, ya.r, term8_yb_r);
+            let sum78_ya_yb_i = fused_mul_add(scratch7.i, ya.r, term8_yb_i);
             let scratch5 = KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
 
             let term10_yai_r = scratch10.i * ya.i;
@@ -977,8 +977,8 @@ pub(crate) mod kfft_trace {
                 let term7_ya_i = scratch7.i * ya.r;
                 let term8_yb_r = scratch8.r * yb.r;
                 let term8_yb_i = scratch8.i * yb.r;
-                let sum78_ya_yb_r = term7_ya_r + term8_yb_r;
-                let sum78_ya_yb_i = term7_ya_i + term8_yb_i;
+                let sum78_ya_yb_r = super::fused_mul_add(scratch7.r, ya.r, term8_yb_r);
+                let sum78_ya_yb_i = super::fused_mul_add(scratch7.i, ya.r, term8_yb_i);
                 let scratch5 = KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
                 let scratch6 = KissFftCpx::new(
                     super::fused_mul_add(scratch10.i, ya.i, scratch9.i * yb.i),
