@@ -2110,3 +2110,38 @@ Next step:
 - Trace `stereo_itheta` inputs for band 9 (X/Y vectors or mid/side energies)
   to see whether the mismatch comes from input normalization/folding or the
   stereo angle computation itself.
+
+## 2026-01-24 — RC band_alloc + theta alignment (frame 12)
+
+New traces:
+- Added `celt_trace_band_alloc_dump` in C (`opus-c/celt/bands.c`) and
+  `dump_band_alloc_if_match` in Rust (`src/celt/bands.rs`) to log per‑band
+  allocation state (balance/tell/remaining/curr_balance/pulses/b) under
+  `CELT_TRACE_RC*`.
+- Reordered Rust `celt_stereo_itheta` trace fields and added `fmt_exp` helper
+  so the floating-point dump format matches the C print ordering/format.
+
+Fixes:
+- `compute_theta` bias path: removed the extra `+ 8191` in Rust for
+  `theta_round != 0` (C does not add it). This corrected band‑9 stereo
+  `itheta` (C/Rust both `itheta=0` for the `theta_round=-1` call).
+- Reset `ctx.theta_round = 0` after RDO selection in `quant_all_bands` to match
+  C’s behavior.
+
+RC trace status (frame 12):
+- With the above fixes, `celt_rc_band` and `celt_pvq` traces now match C/Rust
+  for all bands when **excluding** `celt_stereo_itheta` float lines.
+- Remaining differences are tiny float deltas in `celt_stereo_itheta`
+  (`emid/eside/side`), while `itheta_raw` matches. This suggests RC state
+  alignment is complete aside from benign float print noise.
+
+Packet compare re-run:
+- The first payload mismatch **still** occurs at frame 12 (0‑based).
+- After skipping the 16‑byte OPUSPKT1 header, the first differing payload byte
+  is at offset 84; packet lengths: C 161 vs Rust 159.
+
+Conclusion:
+- RC/quantization appears aligned for frame 12; payload mismatch persists.
+- Next step: investigate the small `celt_stereo_itheta` float drift or any
+  upstream/non‑RC bitstream path that could alter packet length despite RC
+  trace alignment.

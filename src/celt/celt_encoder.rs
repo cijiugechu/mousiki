@@ -4767,7 +4767,7 @@ fn celt_encode_with_ec_inner<'a>(
     }
     #[cfg(test)]
     if let Some(frame_idx) = trace_rc_frame_idx {
-        celt_rc_trace::dump_if_match(frame_idx, "post_quant_all_bands", enc.ctx());
+        celt_rc_trace::dump_if_match(frame_idx, "post_quant", enc.ctx());
     }
 
     if anti_collapse_rsv > 0 {

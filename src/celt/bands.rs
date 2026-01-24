@@ -389,6 +389,38 @@ pub(crate) fn compute_theta(
     } else {
         0
     };
+    #[cfg(test)]
+    if encode {
+        if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+            let len = n.min(x.len()).min(y.len());
+            let mut emid = EPSILON;
+            let mut eside = EPSILON;
+            if stereo {
+                for i in 0..len {
+                    let m = 0.5 * (x[i] + y[i]);
+                    let s = 0.5 * (x[i] - y[i]);
+                    emid += m * m;
+                    eside += s * s;
+                }
+            } else {
+                emid += celt_inner_prod(&x[..len], &x[..len]);
+                eside += celt_inner_prod(&y[..len], &y[..len]);
+            }
+            let mid = celt_sqrt(emid);
+            let side = celt_sqrt(eside);
+            rc_band_trace::dump_stereo_itheta_if_match(
+                frame_idx,
+                band,
+                n,
+                stereo,
+                itheta,
+                emid,
+                eside,
+                mid,
+                side,
+            );
+        }
+    }
 
     let tell_before = coder.tell_frac() as i32;
     let mut inv = false;
@@ -419,7 +451,7 @@ pub(crate) fn compute_theta(
                 } else {
                     -32_767 / qn
                 };
-                let mut down = ((itheta * qn) + bias + 8_191) >> 14;
+                let mut down = ((itheta * qn) + bias) >> 14;
                 down = down.clamp(0, qn - 1);
                 itheta = if ctx.theta_round < 0 { down } else { down + 1 };
             }
@@ -1591,6 +1623,7 @@ pub(crate) fn quant_all_bands(
         }
 
         let tell = coder.tell_frac() as i32;
+        let balance_before = balance;
         if band != start {
             balance -= tell;
         }
@@ -1598,12 +1631,29 @@ pub(crate) fn quant_all_bands(
         ctx.remaining_bits = remaining_bits;
 
         let mut b_allocation = 0i32;
+        let mut remaining_coded = 0i32;
+        let mut curr_balance = 0i32;
         if band < coded_bands {
-            let remaining_coded = (coded_bands - band).min(3) as i32;
-            let curr_balance = celt_sudiv(balance, remaining_coded);
+            remaining_coded = (coded_bands - band).min(3) as i32;
+            curr_balance = celt_sudiv(balance, remaining_coded);
             let pulse_target = pulses.get(band).copied().unwrap_or(0) + curr_balance;
             let max_target = (remaining_bits + 1).min(pulse_target);
             b_allocation = max_target.clamp(0, 16_383);
+        }
+        #[cfg(test)]
+        if let Some(frame_idx) = rc_trace_frame_idx {
+            rc_band_trace::dump_band_alloc_if_match(
+                frame_idx,
+                band,
+                balance_before,
+                balance,
+                tell,
+                remaining_bits,
+                remaining_coded,
+                curr_balance,
+                pulses.get(band).copied().unwrap_or(0),
+                b_allocation,
+            );
         }
 
         if resynth
@@ -2023,6 +2073,7 @@ pub(crate) fn quant_all_bands(
                         rc_band_trace::dump_if_match(frame_idx, band, "rdo_post_select", ctx_rc);
                     }
                 }
+                ctx.theta_round = 0;
             } else {
                 let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
                     if offset + n <= norm.len() {
@@ -2166,11 +2217,14 @@ pub(crate) fn quant_all_bands(
 mod rc_band_trace {
     extern crate std;
 
+    use alloc::format;
+    use alloc::string::String;
     use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
     use std::env;
     use std::sync::OnceLock;
 
     use crate::celt::entcode::{ec_tell, ec_tell_frac, EcCtx};
+    use crate::celt::OpusVal32;
 
     pub(crate) struct TraceConfig {
         frame: Option<usize>,
@@ -2324,6 +2378,42 @@ mod rc_band_trace {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dump_band_alloc_if_match(
+        frame_idx: usize,
+        band: usize,
+        balance_before: i32,
+        balance_after: i32,
+        tell: i32,
+        remaining_bits: i32,
+        remaining_coded: i32,
+        curr_balance: i32,
+        pulses: i32,
+        b_allocation: i32,
+    ) {
+        if !should_dump(frame_idx, band) {
+            return;
+        }
+        std::println!(
+            "celt_band_alloc[{frame_idx}].band[{band}].balance_before={balance_before}"
+        );
+        std::println!(
+            "celt_band_alloc[{frame_idx}].band[{band}].balance_after={balance_after}"
+        );
+        std::println!("celt_band_alloc[{frame_idx}].band[{band}].tell={tell}");
+        std::println!(
+            "celt_band_alloc[{frame_idx}].band[{band}].remaining_bits={remaining_bits}"
+        );
+        std::println!(
+            "celt_band_alloc[{frame_idx}].band[{band}].remaining_coded={remaining_coded}"
+        );
+        std::println!(
+            "celt_band_alloc[{frame_idx}].band[{band}].curr_balance={curr_balance}"
+        );
+        std::println!("celt_band_alloc[{frame_idx}].band[{band}].pulses={pulses}");
+        std::println!("celt_band_alloc[{frame_idx}].band[{band}].b={b_allocation}");
+    }
+
     pub(crate) fn dump_pvq_entry_if_match(
         frame_idx: usize,
         band: usize,
@@ -2390,6 +2480,74 @@ mod rc_band_trace {
         if let Some(k_value) = k {
             std::println!("celt_pvq[{frame_idx}].band[{band}].k={k_value}");
         }
+    }
+
+    pub(crate) fn dump_stereo_itheta_if_match(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        stereo: bool,
+        itheta_raw: i32,
+        emid: OpusVal32,
+        eside: OpusVal32,
+        mid: OpusVal32,
+        side: OpusVal32,
+    ) {
+        if !should_dump(frame_idx, band) {
+            return;
+        }
+        fn fmt_exp(value: OpusVal32) -> String {
+            let formatted = format!("{:.9e}", value as f64);
+            if let Some(idx) = formatted.find('e') {
+                let mantissa = &formatted[..idx];
+                let exp = formatted[idx + 1..].parse::<i32>().unwrap_or(0);
+                format!("{mantissa}e{exp:+03}")
+            } else {
+                formatted
+            }
+        }
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].n={n}"
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].stereo={}",
+            i32::from(stereo)
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].itheta_raw={itheta_raw}"
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].emid={}",
+            fmt_exp(emid)
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].emid_bits=0x{:08x}",
+            emid.to_bits()
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].eside={}",
+            fmt_exp(eside)
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].eside_bits=0x{:08x}",
+            eside.to_bits()
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].mid={}",
+            fmt_exp(mid)
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].mid_bits=0x{:08x}",
+            mid.to_bits()
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].side={}",
+            fmt_exp(side)
+        );
+        std::println!(
+            "celt_stereo_itheta[{frame_idx}].band[{band}].side_bits=0x{:08x}",
+            side.to_bits()
+        );
     }
 
     pub(crate) fn dump_if_match(frame_idx: usize, band: usize, stage: &str, ctx: &EcCtx<'_>) {
