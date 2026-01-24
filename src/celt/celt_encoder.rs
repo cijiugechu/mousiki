@@ -626,6 +626,126 @@ mod celt_band_energy_trace {
 }
 
 #[cfg(test)]
+mod celt_loge_adjust_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+        band: Option<usize>,
+        want_bits: bool,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
+        } else {
+            None
+        }
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("CELT_TRACE_LOGE_ADJUST") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("CELT_TRACE_LOGE_ADJUST_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                let band = env::var("CELT_TRACE_LOGE_ADJUST_BAND")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                let want_bits = match env::var("CELT_TRACE_LOGE_ADJUST_BITS") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                Some(TraceConfig {
+                    frame,
+                    band,
+                    want_bits,
+                })
+            })
+            .as_ref()
+    }
+
+    fn should_dump(frame_idx: usize, band: usize) -> bool {
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+                && cfg.band.map_or(true, |target_band| target_band == band)
+        })
+    }
+
+    pub(crate) fn dump_if_match(
+        frame_idx: usize,
+        band: usize,
+        channel: usize,
+        log_before: f32,
+        old: f32,
+        err: f32,
+        diff: f32,
+        apply: bool,
+        log_after: f32,
+    ) {
+        if !should_dump(frame_idx, band) {
+            return;
+        }
+        std::println!(
+            "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_before={log_before:.9e}"
+        );
+        std::println!(
+            "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].old={old:.9e}"
+        );
+        std::println!(
+            "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].err={err:.9e}"
+        );
+        std::println!(
+            "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].diff={diff:.9e}"
+        );
+        std::println!(
+            "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].apply={}",
+            apply as u8
+        );
+        std::println!(
+            "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_after={log_after:.9e}"
+        );
+        let want_bits = config().map_or(false, |cfg| cfg.want_bits);
+        if want_bits {
+            std::println!(
+                "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_before_bits=0x{:08x}",
+                log_before.to_bits()
+            );
+            std::println!(
+                "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].old_bits=0x{:08x}",
+                old.to_bits()
+            );
+            std::println!(
+                "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].err_bits=0x{:08x}",
+                err.to_bits()
+            );
+            std::println!(
+                "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].diff_bits=0x{:08x}",
+                diff.to_bits()
+            );
+            std::println!(
+                "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_after_bits=0x{:08x}",
+                log_after.to_bits()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod celt_prefilter_trace {
     extern crate std;
 
@@ -4150,11 +4270,33 @@ fn celt_encode_with_ec_inner<'a>(
     };
 
     let mut error = vec![0.0f32; c * nb_ebands];
+    #[cfg(test)]
+    let trace_loge_frame_idx = celt_loge_adjust_trace::begin_frame();
     for channel in 0..c {
         let base = channel * nb_ebands;
         for band in start..end as usize {
-            if (band_log_e[base + band] - encoder.old_band_e[base + band]).abs() < 2.0 {
-                band_log_e[base + band] -= 0.25 * encoder.energy_error[base + band];
+            let idx = base + band;
+            let log_before = band_log_e[idx];
+            let old = encoder.old_band_e[idx];
+            let err = encoder.energy_error[idx];
+            let diff = (log_before - old).abs();
+            let apply = diff < 2.0;
+            if apply {
+                band_log_e[idx] = log_before - 0.25 * err;
+            }
+            #[cfg(test)]
+            if let Some(frame_idx) = trace_loge_frame_idx {
+                celt_loge_adjust_trace::dump_if_match(
+                    frame_idx,
+                    band,
+                    channel,
+                    log_before,
+                    old,
+                    err,
+                    diff,
+                    apply,
+                    band_log_e[idx],
+                );
             }
         }
     }

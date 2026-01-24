@@ -144,6 +144,32 @@ active mode or range-coder state differs. In C, `tell` reflects earlier SILK
 bits (HYBRID path); in Rust, `tell` staying at 1 suggests CELT-only or a trace
 frame misalignment (prefill/redundancy calls).
 
+### CELT Allocation: Pulse Caps + Skipped Bands (Progress)
+
+While tracing the first payload mismatch (frame 12), band 20 diverged in
+allocation:
+- C: `pulses=0`, `fine_quant=1`
+- Rust: `pulses=16`, `fine_quant=0`
+
+Trace (`CELT_TRACE_ALLOC_INTERP`) showed `bits1/bits2/thresh` were identical,
+but the cap differed (C=9152 vs Rust=7832), which pointed to the cached caps
+table.
+
+Fixes applied:
+- Rewrote `compute_pulse_cache` caps generation in Rust to match
+  `opus-c/celt/rate.c` (qtheta/fine-bit estimation + final `(4*max_bits/(C*N))-64`
+  scaling).
+- Added the missing skipped-band handling in `interp_bits2pulses` so bands
+  beyond `coded_bands` move their bits into `ebits` and zero the PVQ bits
+  (mirrors the C loop after fine allocation).
+
+After these changes, Rust now matches C for band 20:
+- `celt_alloc_interp[12].band[20].cap=9152`
+- `celt_alloc[12].band[20].pulses=0`, `fine_quant=1`, `fine_priority=0`
+
+Next: re-run packet compare / CELT RC traces to see if the frame-12 payload
+mismatch is resolved.
+
 ## Analysis Module Comparison (Confirmed)
 
 New tools were added to dump analysis output per frame for C and Rust.

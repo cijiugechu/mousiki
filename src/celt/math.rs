@@ -7,15 +7,14 @@
 //! portions of the codec and map closely to the routines defined in
 //! `celt/mathops.h` in the reference implementation.
 
-use core::f32::consts::LN_2;
-use core::f32::consts::{LOG2_E, PI};
+use core::f32::consts::PI;
 
 use crate::celt::entcode::ec_ilog;
 use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
 #[cfg(not(miri))]
 use libm::sqrtf;
-use libm::{cosf, expf, fmaf, logf};
+use libm::{cosf, exp, fmaf, log};
 
 #[cfg(test)]
 mod fast_atan2_trace {
@@ -280,19 +279,20 @@ mod fast_atan2f_regression {
 
 /// Base-2 logarithm used by CELT's float build.
 ///
-/// The reference implementation exposes this through a macro.  The Rust port
-/// provides a function wrapper to keep call sites ergonomic while preserving
-/// the behaviour.
+/// Matches the `log()`-based macro used when `FLOAT_APPROX` is disabled in
+/// `celt/mathops.h`.
 #[inline]
 pub(crate) fn celt_log2(x: f32) -> f32 {
-    // 1 / ln(2)
-    LOG2_E * logf(x)
+    (core::f64::consts::LOG2_E * log(x as f64)) as f32
 }
 
 /// Base-2 exponential used by CELT's float build.
+///
+/// Matches the `exp()`-based macro used when `FLOAT_APPROX` is disabled in
+/// `celt/mathops.h`.
 #[inline]
 pub(crate) fn celt_exp2(x: f32) -> f32 {
-    expf(LN_2 * x)
+    exp(core::f64::consts::LN_2 * (x as f64)) as f32
 }
 
 /// Division helper matching the semantics of `celt_div()` in the C codebase.

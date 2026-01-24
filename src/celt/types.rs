@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use super::mini_kfft::MiniKissFft;
+use super::KissFftState;
 use super::vq::SPREAD_NORMAL;
 #[cfg(feature = "deep_plc")]
 use super::deep_plc::PLC_UPDATE_SAMPLES;
@@ -79,8 +79,8 @@ pub type KissTwiddleScalar = f32;
 pub struct MdctLookup {
     pub len: usize,
     pub max_shift: usize,
-    pub forward: Vec<MiniKissFft>,
-    pub inverse: Vec<MiniKissFft>,
+    pub forward: Vec<KissFftState>,
+    pub inverse: Vec<KissFftState>,
     pub twiddle: Vec<KissTwiddleScalar>,
     pub twiddle_offsets: Vec<usize>,
 }
@@ -118,16 +118,20 @@ impl MdctLookup {
         );
 
         let mut forward = Vec::with_capacity(max_shift + 1);
-        let mut inverse = Vec::with_capacity(max_shift + 1);
         for shift in 0..=max_shift {
             let n = len >> shift;
             assert!(
                 n.is_multiple_of(4),
                 "MDCT length must be a multiple of four"
             );
-            forward.push(MiniKissFft::new(n >> 2, false));
-            inverse.push(MiniKissFft::new(n >> 2, true));
+            if shift == 0 {
+                forward.push(KissFftState::new(n >> 2));
+            } else {
+                let base = &forward[0];
+                forward.push(KissFftState::with_base(n >> 2, Some(base)));
+            }
         }
+        let inverse = forward.clone();
 
         let mut offsets = Vec::with_capacity(max_shift + 2);
         offsets.push(0);
@@ -187,14 +191,14 @@ impl MdctLookup {
 
     #[inline]
     #[must_use]
-    pub fn forward_plan(&self, shift: usize) -> &MiniKissFft {
+    pub fn forward_plan(&self, shift: usize) -> &KissFftState {
         assert!(shift < self.forward.len());
         &self.forward[shift]
     }
 
     #[inline]
     #[must_use]
-    pub fn inverse_plan(&self, shift: usize) -> &MiniKissFft {
+    pub fn inverse_plan(&self, shift: usize) -> &KissFftState {
         assert!(shift < self.inverse.len());
         &self.inverse[shift]
     }

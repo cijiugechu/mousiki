@@ -335,27 +335,20 @@ pub fn clt_mdct_forward(
     let mut spectrum = pre_rotate_forward(&folded, twiddles, n4, trace_ctx.as_ref());
     #[cfg(not(test))]
     let mut spectrum = pre_rotate_forward(&folded, twiddles, n4, None);
-    // Match the C path: opus_fft scales by 1/nfft (nfft = n4), yielding 4/N overall.
+    // Match the C path: kiss_fft applies the 1/nfft scale before the butterfly stages.
     let scale = mdct_fft_scale(n4);
     #[cfg(test)]
     if let Some(ctx) = trace_ctx.as_ref() {
         mdct_trace::dump_stage_scale(ctx, scale);
-    }
-    for entry in spectrum.iter_mut() {
-        entry.r *= scale;
-        entry.i *= scale;
-    }
-    #[cfg(test)]
-    if let Some(ctx) = trace_ctx.as_ref() {
-        mdct_trace::dump_stage_pre_rotate(ctx, &spectrum);
-    }
-    #[cfg(test)]
-    if let Some(ctx) = trace_ctx.as_ref() {
-        let (frame, call, channel, block, tag) = mdct_trace::context_indices(ctx);
-        super::mini_kfft::kfft_trace::set_mdct_context(frame, call, channel, block, tag);
+        let mut scaled = spectrum.clone();
+        for entry in scaled.iter_mut() {
+            entry.r *= scale;
+            entry.i *= scale;
+        }
+        mdct_trace::dump_stage_pre_rotate(ctx, &scaled);
     }
     let mut fft_out = vec![KissFftCpx::default(); n4];
-    lookup.forward_plan(shift).process(&spectrum, &mut fft_out);
+    lookup.forward_plan(shift).fft(&spectrum, &mut fft_out);
     #[cfg(test)]
     if let Some(ctx) = trace_ctx.as_ref() {
         mdct_trace::dump_stage_fft(ctx, &fft_out);
@@ -390,7 +383,7 @@ pub fn clt_mdct_backward(
     output.fill(0.0);
     let pre = pre_rotate_backward(input, twiddles, stride);
     let mut fft_out = vec![KissFftCpx::default(); n4];
-    lookup.inverse_plan(shift).process(&pre, &mut fft_out);
+    lookup.inverse_plan(shift).ifft(&pre, &mut fft_out);
     post_rotate_backward(&fft_out, twiddles, output, window, overlap);
 }
 

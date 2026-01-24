@@ -594,10 +594,11 @@ pub(crate) fn amp2_log2(
     let stride = mode.num_ebands;
     #[cfg(test)]
     let trace_frame_idx = amp2log2_trace::begin_frame();
-    for (band_e_chunk, band_log_chunk) in band_e
+    for (channel, (band_e_chunk, band_log_chunk)) in band_e
         .chunks(stride)
         .zip(band_log_e.chunks_mut(stride))
         .take(channels)
+        .enumerate()
     {
         for ((band_idx, (energy, log_slot)), &mean) in band_e_chunk[..eff_end]
             .iter()
@@ -611,6 +612,7 @@ pub(crate) fn amp2_log2(
                 amp2log2_trace::dump_if_match(
                     frame_idx,
                     band_idx,
+                    channel,
                     *energy,
                     mean,
                     *log_slot,
@@ -740,6 +742,7 @@ mod amp2log2_trace {
     pub(crate) fn dump_if_match(
         frame_idx: usize,
         band: usize,
+        channel: usize,
         energy: f32,
         mean: f32,
         log_val: f32,
@@ -747,21 +750,27 @@ mod amp2log2_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        std::println!("celt_amp2log2[{frame_idx}].band[{band}].energy={energy:.9e}");
-        std::println!("celt_amp2log2[{frame_idx}].band[{band}].mean={mean:.9e}");
-        std::println!("celt_amp2log2[{frame_idx}].band[{band}].log={log_val:.9e}");
+        std::println!(
+            "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].energy={energy:.9e}"
+        );
+        std::println!(
+            "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].mean={mean:.9e}"
+        );
+        std::println!(
+            "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].log={log_val:.9e}"
+        );
         let want_bits = config().map_or(false, |cfg| cfg.want_bits);
         if want_bits {
             std::println!(
-                "celt_amp2log2[{frame_idx}].band[{band}].energy_bits=0x{:08x}",
+                "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].energy_bits=0x{:08x}",
                 energy.to_bits()
             );
             std::println!(
-                "celt_amp2log2[{frame_idx}].band[{band}].mean_bits=0x{:08x}",
+                "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].mean_bits=0x{:08x}",
                 mean.to_bits()
             );
             std::println!(
-                "celt_amp2log2[{frame_idx}].band[{band}].log_bits=0x{:08x}",
+                "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].log_bits=0x{:08x}",
                 log_val.to_bits()
             );
         }
