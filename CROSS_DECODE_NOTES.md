@@ -1592,6 +1592,56 @@ Next step:
 - Either force **FMA** in Rust pre‑rotate (match C if it contracts), or
   rebuild C with `-ffp-contract=off` to see if C matches the non‑FMA Rust path.
 
+## 2026-01-24 — mdct2 N/4 FFT stage trace (frame 12)
+
+Goal: find the first FFT stage/butterfly that diverges for mdct2.
+
+Changes (Rust trace harness):
+- `src/celt/mini_kfft.rs` trace path now supports **any nfft**, not just 480.
+  - Uses `plan.factors` to build the stage schedule.
+  - Added a `compute_bitrev_table` helper (matching C's recursive table
+    builder) to generate bitrev indices for non-480 sizes.
+- `trace_bfly5` output order fixed to match C: `out0 = scratch0 + (scratch7 +
+  scratch8)` to prevent trace-only skew.
+
+Trace knobs used (C/Rust):
+```
+CELT_TRACE_MDCT=1
+CELT_TRACE_KFFT_STAGE=1
+CELT_TRACE_KFFT_FRAME=12
+CELT_TRACE_KFFT_BITS=1
+CELT_TRACE_KFFT_START=0
+CELT_TRACE_KFFT_COUNT=480
+```
+Plus detail for a single u:
+```
+CELT_TRACE_KFFT_STAGE_INDEX=4
+CELT_TRACE_KFFT_DETAIL=1
+CELT_TRACE_KFFT_START=11
+CELT_TRACE_KFFT_COUNT=1
+```
+
+Findings (frame 12, mdct2, ch0/block0):
+- **Stages 0..3 match exactly** (bit-level).
+- **First mismatch appears in stage 4** (radix-5, m=96, fstride=1):
+  - First differing output: `stage[4].idx[107].i`
+    - C: `0xba9b072f`
+    - Rust: `0xba9b0730`
+  - `idx 107 = u + 96` => **u=11**.
+
+Detail (stage 4, u=11):
+- First mismatching term is `sum78_ya_yb` (i.e., `scratch7*ya + scratch8*yb`):
+  - C: `sum78_ya_yb_bits.r=0x36865b4d`, `.i=0xb969d8db`
+  - Rust: `sum78_ya_yb_bits.r=0x36865b50`, `.i=0xb969d8dc`
+- This 1-ULP drift propagates to `scratch5`, then `out1.i` / `out4.r`, which
+  matches the first differing stage output above.
+
+Conclusion:
+- The earliest mdct2 FFT divergence is inside the **stage-4 radix-5** add/mul
+  chain, specifically the `sum78_ya_yb` accumulation. This points to
+  floating-point contraction/rounding differences in that term rather than
+  earlier stages or twiddle inputs.
+
 ## 2026-01-24 — mdct2 post-rotate recheck after scale fix (frame 12, idx 4)
 
 Trace commands (opus encoder path, not analysis_compare):

@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 use crate::celt::fft_bitrev_480::FFT_BITREV_480;
 use crate::celt::fft_twiddles_48000_960::FFT_TWIDDLES_48000_960;
 use alloc::vec;
@@ -33,11 +36,34 @@ fn c_sub(a: KissFftCpx, b: KissFftCpx) -> KissFftCpx {
 }
 
 #[inline]
+fn fft_use_fma() -> bool {
+    #[cfg(test)]
+    {
+        let val = std::env::var("CELT_TRACE_KFFT_NO_FMA")
+            .ok()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        !(val == "1" || val == "true" || val == "yes" || val == "on")
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+#[inline]
 fn c_mul(a: KissFftCpx, b: KissFftCpx) -> KissFftCpx {
-    // Keep fused multiply-add to match C's contraction behavior (bit-level parity).
-    let r = fused_mul_add(a.r, b.r, -a.i * b.i);
-    let i = fused_mul_add(a.r, b.i, a.i * b.r);
-    KissFftCpx::new(r, i)
+    if fft_use_fma() {
+        // Keep fused multiply-add to match C's contraction behavior (bit-level parity).
+        let r = fused_mul_add(a.r, b.r, -a.i * b.i);
+        let i = fused_mul_add(a.r, b.i, a.i * b.r);
+        KissFftCpx::new(r, i)
+    } else {
+        // Match strict mul/add order when FMA is disabled.
+        let r = a.r * b.r - a.i * b.i;
+        let i = a.r * b.i + a.i * b.r;
+        KissFftCpx::new(r, i)
+    }
 }
 
 #[inline]
@@ -370,6 +396,7 @@ pub(crate) mod kfft_trace {
     extern crate std;
 
     use alloc::vec;
+    use alloc::vec::Vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::env;
     use std::sync::OnceLock;
@@ -500,7 +527,7 @@ pub(crate) mod kfft_trace {
         if config().is_none() {
             return;
         }
-        if plan.inverse || plan.nfft != 480 || fin.len() != plan.nfft {
+        if plan.inverse || fin.len() != plan.nfft {
             return;
         }
         if FRAME_INDEX.load(Ordering::Relaxed) == usize::MAX {
@@ -508,28 +535,28 @@ pub(crate) mod kfft_trace {
         }
 
         let mut fout = vec![KissFftCpx::default(); plan.nfft];
-        for (i, &bitrev) in FFT_BITREV_480.iter().enumerate() {
-            let dst = bitrev as usize;
-            fout[dst] = fin[i];
+        let bitrev = bitrev_for_trace(plan);
+        for (src, &dst) in bitrev.iter().enumerate() {
+            fout[dst] = fin[src];
         }
 
-        let factors = &C_FACTORS_480;
+        let factors = factors_for_trace(plan);
         let stages = factors.len() / 2;
         let mut fstride = vec![0usize; stages + 1];
         fstride[0] = 1;
         let mut m = 0usize;
         for stage in 0..stages {
-            let p = factors[2 * stage] as usize;
-            m = factors[2 * stage + 1] as usize;
+            let p = factors[2 * stage];
+            m = factors[2 * stage + 1];
             fstride[stage + 1] = fstride[stage] * p;
         }
 
         let mut stage_index = 0usize;
-        let mut m_cur = factors[2 * stages - 1] as usize;
+        let mut m_cur = factors[2 * stages - 1];
         for stage in (0..stages).rev() {
-            let p = factors[2 * stage] as usize;
+            let p = factors[2 * stage];
             let m2 = if stage != 0 {
-                factors[2 * stage - 1] as usize
+                factors[2 * stage - 1]
             } else {
                 1
             };
@@ -548,6 +575,62 @@ pub(crate) mod kfft_trace {
 
             m_cur = m2;
             stage_index += 1;
+        }
+    }
+
+    fn factors_for_trace(plan: &MiniKissFft) -> Vec<usize> {
+        if plan.nfft == 480 {
+            C_FACTORS_480.iter().map(|&value| value as usize).collect()
+        } else {
+            plan.factors.iter().map(|&value| value as usize).collect()
+        }
+    }
+
+    fn bitrev_for_trace(plan: &MiniKissFft) -> Vec<usize> {
+        if plan.nfft == 480 {
+            return FFT_BITREV_480.iter().map(|&value| value as usize).collect();
+        }
+        let mut bitrev = vec![0usize; plan.nfft];
+        compute_bitrev_table(0, &mut bitrev, 0, 1, 1, &plan.factors);
+        bitrev
+    }
+
+    fn compute_bitrev_table(
+        fout: usize,
+        bitrev: &mut [usize],
+        start: usize,
+        fstride: usize,
+        in_stride: usize,
+        factors: &[i32],
+    ) {
+        if factors.len() < 2 {
+            return;
+        }
+        let p = factors[0] as usize;
+        let m = factors[1] as usize;
+        if m == 1 {
+            let mut idx = start;
+            for j in 0..p {
+                if idx < bitrev.len() {
+                    bitrev[idx] = fout + j;
+                }
+                idx += fstride * in_stride;
+            }
+        } else {
+            let mut idx = start;
+            let mut fout_base = fout;
+            for _ in 0..p {
+                compute_bitrev_table(
+                    fout_base,
+                    bitrev,
+                    idx,
+                    fstride * p,
+                    in_stride,
+                    &factors[2..],
+                );
+                idx += fstride * in_stride;
+                fout_base += m;
+            }
         }
     }
 
@@ -885,12 +968,18 @@ pub(crate) mod kfft_trace {
                 let scratch8 = c_add(scratch2, scratch3);
                 let scratch9 = c_sub(scratch2, scratch3);
 
-                let fout0 = c_add(c_add(scratch0, scratch7), scratch8);
+                // Match C order: scratch0 + (scratch7 + scratch8).
+                let scratch78 = c_add(scratch7, scratch8);
+                let fout0 = c_add(scratch0, scratch78);
 
-                let scratch5 = KissFftCpx::new(
-                    scratch0.r + scratch7.r * ya.r + scratch8.r * yb.r,
-                    scratch0.i + scratch7.i * ya.r + scratch8.i * yb.r,
-                );
+                // Preserve C's sum order with explicit temporaries.
+                let term7_ya_r = scratch7.r * ya.r;
+                let term7_ya_i = scratch7.i * ya.r;
+                let term8_yb_r = scratch8.r * yb.r;
+                let term8_yb_i = scratch8.i * yb.r;
+                let sum78_ya_yb_r = term7_ya_r + term8_yb_r;
+                let sum78_ya_yb_i = term7_ya_i + term8_yb_i;
+                let scratch5 = KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
                 let scratch6 = KissFftCpx::new(
                     super::fused_mul_add(scratch10.i, ya.i, scratch9.i * yb.i),
                     -super::fused_mul_add(scratch10.r, ya.i, scratch9.r * yb.i),
@@ -899,10 +988,13 @@ pub(crate) mod kfft_trace {
                 let out1 = c_sub(scratch5, scratch6);
                 let out4 = c_add(scratch5, scratch6);
 
-                let scratch11 = KissFftCpx::new(
-                    scratch0.r + scratch7.r * yb.r + scratch8.r * ya.r,
-                    scratch0.i + scratch7.i * yb.r + scratch8.i * ya.r,
-                );
+                let term7_yb_r = scratch7.r * yb.r;
+                let term7_yb_i = scratch7.i * yb.r;
+                let term8_ya_r = scratch8.r * ya.r;
+                let term8_ya_i = scratch8.i * ya.r;
+                let sum78_yb_ya_r = super::fused_mul_add(scratch7.r, yb.r, term8_ya_r);
+                let sum78_yb_ya_i = super::fused_mul_add(scratch7.i, yb.r, term8_ya_i);
+                let scratch11 = KissFftCpx::new(scratch0.r + sum78_yb_ya_r, scratch0.i + sum78_yb_ya_i);
                 let scratch12 = KissFftCpx::new(
                     super::fused_mul_add(scratch9.i, ya.i, -(scratch10.i * yb.i)),
                     super::fused_mul_add(scratch10.r, yb.i, -(scratch9.r * ya.i)),
