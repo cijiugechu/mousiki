@@ -2026,3 +2026,87 @@ Conclusion:
 - Next step: force Rust to compute these sums **exactly in C order** using
   explicit temporaries (e.g., `sum = termA + termB` then `sum += termC`), and
   avoid fusing or reordering, to see if the 1‑ULP disappears.
+
+## 2026-01-24 — radix-5 sum78 FMA + mdct2 FFT stage alignment
+
+Change:
+- In `kf_bfly5`, compute `sum78_ya_yb` with `mul_add` to mirror C’s possible
+  contraction (`sum78_ya_yb = term7_ya.mul_add(1.0, term8_yb)` / `mul_add` on
+  i), keeping other sums explicit.
+
+Result (frame 12, mdct2, ch0, stage 4, u=4):
+- The prior 1‑ULP deltas in `sum78_yb_ya.i` disappear.
+- **All mdct2 KFFT stage outputs now match** between C/Rust for frame 12.
+
+Conclusion:
+- The remaining drift in the mdct2 FFT path was due to **FMA contraction** in
+  this sum path. With `sum78_ya_yb` fused, stage outputs align.
+
+Follow‑up:
+- Re‑run packet compare to confirm whether the frame‑12 payload mismatch remains
+  (it does; see next section).
+
+## 2026-01-24 — RC/quantization re‑trace after mdct2 alignment (frame 12)
+
+Packet compare:
+- **First payload mismatch remains at frame 12** (lengths C=161 vs Rust=159).
+
+RC band trace:
+- Added per‑band RC dumps in `quant_all_bands` and RDO sub‑steps.
+- With `CELT_TRACE_RC_BAND=8`, the first mismatch appears at:
+  - `celt_rc_band[12].band[8].stage=rdo_post_round_down`
+  - `nbits_total` C=510 vs Rust=511.
+- Band 1 trace matches fully, so the first RC drift is within **band 8**.
+
+Theta trace (band 8):
+- Added `compute_theta` dumps in C/Rust.
+- All three `compute_theta` calls in band 8 (round_down/round_up + the nested
+  split) **match exactly** (`b_in/b_out/qn/itheta/qalloc/delta`, `tell` values).
+
+Conclusion:
+- RC divergence in frame 12 is **not** from `compute_theta` in band 8.
+- Next target: trace inside **PVQ / quant_partition / quant_band** for band 8
+  (rdo round_down) to find the first differing `q`, `K`, `curr_bits`, or
+  pulse allocation path.
+
+## 2026-01-24 — PVQ/lowband folding fixes (frame 12)
+
+New trace:
+- Added `celt_pvq` traces in C/Rust `quant_partition` (entry + bits) with a
+  recursion depth counter to pinpoint `b/q/curr_bits` mismatches.
+
+Findings (frame 12, band 8):
+- First PVQ mismatch at depth=1: `b` C=133 vs Rust=137 (and `q/curr_bits`)
+  even though `compute_theta` matched.
+- Root cause: missing “Give more bits to low‑energy MDCTs…” delta adjustment in
+  Rust `quant_partition`.
+
+Fix:
+- Ported the `B0>1 && (itheta&0x3fff)` delta adjustment in Rust before
+  `mbits/sbits` split (including the `(N<<BITRES>>(5-LM))` clamp).
+
+Result:
+- `celt_pvq` trace for band 8 now matches (q/curr_bits align), and
+  `celt_rc_band` for band 8 matches through RDO.
+
+Follow‑up mismatch (frame 12, band 1):
+- `compute_theta`/PVQ `fill` mismatch (C `0x80`, Rust `0x00`).
+- Cause: lowband folding selection differed. Rust used `band_start >=
+  first_band_start`, which incorrectly treated band 0 as having a lowband.
+- Fix:
+  - Match C condition `band_start - N >= first_band_start` (i.e.
+    `band_start >= first_band_start + N`).
+  - Match C’s `fold_start` decrement loop and threshold (`effective + norm_offset + N`).
+
+Result:
+- Band 1 `fill` now matches; RC trace advances further.
+
+Current earliest mismatch (frame 12):
+- Band 9 `compute_theta` (stereo): `itheta` C=0 vs Rust=2730.
+- RC state still matches up to band 8; the divergence now begins at band 9
+  stereo angle quantization.
+
+Next step:
+- Trace `stereo_itheta` inputs for band 9 (X/Y vectors or mid/side energies)
+  to see whether the mismatch comes from input normalization/folding or the
+  stereo angle computation itself.
