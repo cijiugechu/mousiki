@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
+#[cfg(test)]
+use crate::celt::fft_bitrev_480::FFT_BITREV_480;
+use crate::celt::fft_twiddles_48000_960::FFT_TWIDDLES_48000_960;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::f32::consts::PI;
 use core::f64::consts::PI as PI64;
-use crate::celt::fft_twiddles_48000_960::FFT_TWIDDLES_48000_960;
-#[cfg(test)]
-use crate::celt::fft_bitrev_480::FFT_BITREV_480;
 use libm::{cos, cosf, sin, sinf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -44,14 +44,24 @@ fn c_mul(a: KissFftCpx, b: KissFftCpx) -> KissFftCpx {
 fn fused_mul_add(a: f32, b: f32, c: f32) -> f32 {
     // Keep this helper (do not replace with a*b + c); C relies on fused rounding.
     // Regression coverage lives in `fused_mul_add_matches_fma_bits`.
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android", target_os = "ios"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android",
+        target_os = "ios"
+    ))]
     unsafe {
         unsafe extern "C" {
             fn fmaf(x: f32, y: f32, z: f32) -> f32;
         }
         fmaf(a, b, c)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android", target_os = "ios")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android",
+        target_os = "ios"
+    )))]
     {
         libm::fmaf(a, b, c)
     }
@@ -315,10 +325,7 @@ impl MiniKissFft {
             let term8_yb_i = scratch8.i * yb.r;
             let sum78_ya_yb_r = term7_ya_r + term8_yb_r;
             let sum78_ya_yb_i = term7_ya_i + term8_yb_i;
-            let scratch5 = KissFftCpx::new(
-                scratch0.r + sum78_ya_yb_r,
-                scratch0.i + sum78_ya_yb_i,
-            );
+            let scratch5 = KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
 
             let term10_yai_r = scratch10.i * ya.i;
             let term10_yai_i = scratch10.r * ya.i;
@@ -327,10 +334,7 @@ impl MiniKissFft {
             // Match C's fused order: fma(scratch10.*, ya.i, term9_ybi).
             let sum10ya_9yb_r = fused_mul_add(scratch10.i, ya.i, term9_ybi_r);
             let sum10ya_9yb_i = fused_mul_add(scratch10.r, ya.i, term9_ybi_i);
-            let scratch6 = KissFftCpx::new(
-                sum10ya_9yb_r,
-                -sum10ya_9yb_i,
-            );
+            let scratch6 = KissFftCpx::new(sum10ya_9yb_r, -sum10ya_9yb_i);
 
             fout[m + u] = c_sub(scratch5, scratch6);
             fout[4 * m + u] = c_add(scratch5, scratch6);
@@ -344,10 +348,7 @@ impl MiniKissFft {
             // Use libm::fmaf for consistent fused rounding with the C build.
             let sum78_yb_ya_r = fused_mul_add(scratch7.r, yb.r, term8_ya_r);
             let sum78_yb_ya_i = fused_mul_add(scratch7.i, yb.r, term8_ya_i);
-            let scratch11 = KissFftCpx::new(
-                scratch0.r + sum78_yb_ya_r,
-                scratch0.i + sum78_yb_ya_i,
-            );
+            let scratch11 = KissFftCpx::new(scratch0.r + sum78_yb_ya_r, scratch0.i + sum78_yb_ya_i);
 
             let term10_ybi_r = scratch10.i * yb.i;
             let term10_ybi_i = scratch10.r * yb.i;
@@ -373,8 +374,8 @@ pub(crate) mod kfft_trace {
     use std::env;
     use std::sync::OnceLock;
 
-    use crate::celt::fft_bitrev_480::FFT_BITREV_480;
     use super::{c_add, c_mul, c_mul_by_scalar, c_sub, KissFftCpx, MiniKissFft};
+    use crate::celt::fft_bitrev_480::FFT_BITREV_480;
 
     const C_FACTORS_480: [i16; 10] = [5, 96, 3, 32, 4, 8, 2, 4, 4, 1];
 
@@ -451,7 +452,11 @@ pub(crate) mod kfft_trace {
     }
 
     fn tag_name(tag: usize) -> &'static str {
-        if tag == 1 { "mdct2" } else { "main" }
+        if tag == 1 {
+            "mdct2"
+        } else {
+            "main"
+        }
     }
 
     fn should_dump_stage(stage: usize) -> Option<&'static TraceConfig> {
@@ -603,13 +608,7 @@ pub(crate) mod kfft_trace {
         }
     }
 
-    fn trace_bfly2(
-        fout: &mut [KissFftCpx],
-        plan: &MiniKissFft,
-        n: usize,
-        m: usize,
-        mm: usize,
-    ) {
+    fn trace_bfly2(fout: &mut [KissFftCpx], plan: &MiniKissFft, n: usize, m: usize, mm: usize) {
         if m == 4 {
             let tw = 0.7071067812f32;
             for group in 0..n {
@@ -693,21 +692,15 @@ pub(crate) mod kfft_trace {
                 tw1 += n;
                 tw2 += n * 2;
 
-                let mut fout_m = KissFftCpx::new(
-                    in0.r - 0.5 * scratch3.r,
-                    in0.i - 0.5 * scratch3.i,
-                );
+                let mut fout_m =
+                    KissFftCpx::new(in0.r - 0.5 * scratch3.r, in0.i - 0.5 * scratch3.i);
                 let scratch0_scaled = c_mul_by_scalar(scratch0, epi3.i);
                 let fout0 = c_add(in0, scratch3);
 
-                let fout_m2 = KissFftCpx::new(
-                    fout_m.r + scratch0_scaled.i,
-                    fout_m.i - scratch0_scaled.r,
-                );
-                fout_m = KissFftCpx::new(
-                    fout_m.r - scratch0_scaled.i,
-                    fout_m.i + scratch0_scaled.r,
-                );
+                let fout_m2 =
+                    KissFftCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
+                fout_m =
+                    KissFftCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
 
                 if want_detail {
                     dump_detail_cpx("tw1", stage, idx0, tw1_val);
@@ -899,8 +892,8 @@ pub(crate) mod kfft_trace {
                     scratch0.i + scratch7.i * ya.r + scratch8.i * yb.r,
                 );
                 let scratch6 = KissFftCpx::new(
-                    scratch10.i * ya.i + scratch9.i * yb.i,
-                    -scratch10.r * ya.i - scratch9.r * yb.i,
+                    super::fused_mul_add(scratch10.i, ya.i, scratch9.i * yb.i),
+                    -super::fused_mul_add(scratch10.r, ya.i, scratch9.r * yb.i),
                 );
 
                 let out1 = c_sub(scratch5, scratch6);
@@ -911,8 +904,8 @@ pub(crate) mod kfft_trace {
                     scratch0.i + scratch7.i * yb.r + scratch8.i * ya.r,
                 );
                 let scratch12 = KissFftCpx::new(
-                    -scratch10.i * yb.i + scratch9.i * ya.i,
-                    scratch10.r * yb.i - scratch9.r * ya.i,
+                    super::fused_mul_add(scratch9.i, ya.i, -(scratch10.i * yb.i)),
+                    super::fused_mul_add(scratch10.r, yb.i, -(scratch9.r * ya.i)),
                 );
 
                 let out2 = c_add(scratch11, scratch12);
@@ -1005,8 +998,8 @@ pub(crate) mod kfft_trace {
                         stage,
                         u,
                         KissFftCpx::new(
-                            scratch0.r + scratch8.r * yb.r,
-                            scratch0.i + scratch8.i * yb.r,
+                            super::fused_mul_add(scratch8.r, yb.r, scratch0.r),
+                            super::fused_mul_add(scratch8.i, yb.r, scratch0.i),
                         ),
                     );
                     let trace_sum78_yb_ya = KissFftCpx::new(
@@ -1019,8 +1012,8 @@ pub(crate) mod kfft_trace {
                         stage,
                         u,
                         KissFftCpx::new(
-                            scratch0.r + scratch7.r * yb.r,
-                            scratch0.i + scratch7.i * yb.r,
+                            super::fused_mul_add(scratch7.r, yb.r, scratch0.r),
+                            super::fused_mul_add(scratch7.i, yb.r, scratch0.i),
                         ),
                     );
                     dump_detail_cpx(
@@ -1304,7 +1297,10 @@ mod tests {
         let expected = 0x3f80000f;
         let naive = (a * b + c).to_bits();
         let fused = fused_mul_add(a, b, c).to_bits();
-        assert_ne!(naive, expected, "naive path unexpectedly matches fused result");
+        assert_ne!(
+            naive, expected,
+            "naive path unexpectedly matches fused result"
+        );
         assert_eq!(fused, expected, "fused_mul_add must keep fma rounding");
     }
 }
@@ -1333,14 +1329,8 @@ mod twiddle_trace {
             return;
         }
         for (i, tw) in twiddles.iter().enumerate() {
-            std::println!(
-                "celt_twiddle[{nfft}].idx[{i}].r={:.9e}",
-                tw.r as f64
-            );
-            std::println!(
-                "celt_twiddle[{nfft}].idx[{i}].i={:.9e}",
-                tw.i as f64
-            );
+            std::println!("celt_twiddle[{nfft}].idx[{i}].r={:.9e}", tw.r as f64);
+            std::println!("celt_twiddle[{nfft}].idx[{i}].i={:.9e}", tw.i as f64);
             std::println!(
                 "celt_twiddle[{nfft}].idx[{i}].r_bits=0x{:08x}",
                 tw.r.to_bits()
