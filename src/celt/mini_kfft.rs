@@ -12,6 +12,8 @@ use core::f32::consts::PI;
 use core::f64::consts::PI as PI64;
 use libm::{cos, cosf, sin, sinf};
 
+const C_FACTORS_480: [i32; 10] = [5, 96, 3, 32, 4, 8, 2, 4, 4, 1];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct KissFftCpx {
     pub r: f32,
@@ -136,7 +138,11 @@ impl MiniKissFft {
                 })
                 .collect()
         };
-        let factors = kf_factor(nfft);
+        let factors = if nfft == 480 {
+            C_FACTORS_480.to_vec()
+        } else {
+            kf_factor(nfft)
+        };
         assert!(
             factors.len() <= 2 * MAXFACTORS,
             "factor buffer overflow: {} entries",

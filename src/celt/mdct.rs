@@ -149,9 +149,9 @@ fn post_rotate_forward(freq: &[KissFftCpx], twiddles: &[f32], out: &mut [f32], s
     for i in 0..n4 {
         let t0 = cos_part[i];
         let t1 = sin_part[i];
-        // Match C float path: explicit mul/add order (avoid FMA).
-        let yr = freq[i].i * t1 - freq[i].r * t0;
-        let yi = freq[i].r * t1 + freq[i].i * t0;
+        // Match C float path: allow contraction in the (a*b + c) sums.
+        let yr = fmaf(freq[i].i, t1, -(freq[i].r * t0));
+        let yi = fmaf(freq[i].r, t1, freq[i].i * t0);
         out[left] = yr;
         out[right] = yi;
         left += 2 * stride;
@@ -179,9 +179,9 @@ fn post_rotate_forward(
     for i in 0..n4 {
         let t0 = cos_part[i];
         let t1 = sin_part[i];
-        // Match C float path: explicit mul/add order (avoid FMA).
-        let yr = freq[i].i * t1 - freq[i].r * t0;
-        let yi = freq[i].r * t1 + freq[i].i * t0;
+        // Match C float path: allow contraction in the (a*b + c) sums.
+        let yr = fmaf(freq[i].i, t1, -(freq[i].r * t0));
+        let yi = fmaf(freq[i].r, t1, freq[i].i * t0);
         #[cfg(test)]
         if let Some(ctx) = ctx {
             mdct_trace::dump_stage_post_rotate(ctx, i, t0, t1, freq[i].r, freq[i].i, yr, yi);

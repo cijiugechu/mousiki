@@ -478,6 +478,139 @@ Findings:
   (Rust), the early `mul0` bit mismatch disappears; the first mismatch now
   shifts to `bfly[4].tw2.bits.r` (very small twiddle real value, C
   `0x248d3132` vs Rust `0x25a34c4c`). This suggests FP contraction/FMA was
+
+## CELT RC / Quantization Trace (Frame 12, Updated)
+
+After aligning the mdct2 FFT **stage trace**, re-ran tracing from the CELT
+RC/quantization path for frame 12 to find the first post-MDCT mismatch.
+
+### Range coder entry (pre/post quant_all_bands)
+Trace knobs:
+- C: `CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12`
+- Rust: same env vars (run via `opus_mode_trace_output`)
+
+Findings (frame 12):
+- `pre_quant_fine_energy` **matches**.
+- First mismatch at `pre_quant_all_bands`:
+  - C: `nbits_total=263`
+  - Rust: `nbits_total=261`
+
+Notes:
+- C stage labels: `pre_quant_fine_energy`, `pre_quant_all_bands`, `post_quant`.
+- Rust currently logs: `pre_quant_fine_energy`, `pre_quant_all_bands`,
+  `post_quant_all_bands` (naming mismatch only).
+
+### Fine energy encode bits
+Trace knobs:
+- C: `CELT_TRACE_FINE_ENERGY=1 CELT_TRACE_FINE_ENERGY_FRAME=12 CELT_TRACE_FINE_ENERGY_BITS=1`
+- Rust: same env vars
+
+First mismatch:
+- band 1, ch 1
+  - C: `error_before_bits=0x3eac0900`
+  - Rust: `error_before_bits=0x3eac0920`
+  - `error_after_bits` also differs accordingly.
+
+### Coarse energy encode bits
+Trace knobs:
+- C: `CELT_TRACE_COARSE_ENERGY=1 CELT_TRACE_COARSE_ENERGY_FRAME=12 CELT_TRACE_COARSE_ENERGY_BITS=1`
+- Rust: same env vars
+
+First mismatch:
+- pass `inter`, band 1, ch 1
+  - `x_bits`: C `0xc15b6cd8` vs Rust `0xc15b6cd7`
+  - `f_bits` and `error_before_bits` differ by the same 1-ULP.
+
+### Band energy detail (bin-level)
+Trace knobs:
+- C: `CELT_TRACE_BAND_ENERGY_DETAIL=1 CELT_TRACE_BAND_ENERGY_DETAIL_FRAME=12 \
+       CELT_TRACE_BAND_ENERGY_DETAIL_BAND=1 CELT_TRACE_BAND_ENERGY_DETAIL_BITS=1`
+- Rust: same env vars
+
+Findings:
+- First overall mismatch (band 1, ch 0, bin 0):
+  - `x2_bits`: C `0x35b63335` vs Rust `0x35b6333f`
+- For band 1, ch 1, bin 0:
+  - `x_bits`: C `0x3a7f111c` vs Rust `0x3a7f111f`
+- Multiple later bins are also off by 1–3 ULPs; `sum` bits differ.
+
+### MDCT idx 8 (band 1) output trace
+Trace knobs:
+- C: `CELT_TRACE_MDCT=1 CELT_TRACE_MDCT_FRAME=12 CELT_TRACE_MDCT_BITS=1 \
+       CELT_TRACE_MDCT_START=8 CELT_TRACE_MDCT_COUNT=1`
+- Rust: same env vars
+
+Findings (mdct2 output):
+- ch 0 idx 8: C `0x3a98b6d1` vs Rust `0x3a98b6d5`
+- ch 1 idx 8: C `0x3a7f111c` vs Rust `0x3a7f111f`
+
+### MDCT stage trace (idx 8 path)
+Trace knobs:
+- C: `CELT_TRACE_MDCT_STAGE=1` plus idx targeting
+- Rust: same env vars
+
+Findings:
+- Post-rotate `t0/t1` match.
+- **FFT output (`fp.r/fp.i`) differs** by 1–2 ULP at idx 8:
+  - C `fp.r=0xb9c3fead`, `fp.i=0xbab66878`
+  - Rust `fp.r=0xb9c3feab`, `fp.i=0xbab6687a`
+
+Interpretation:
+- Even though the *stage-by-stage* mdct2 KFFT trace aligns, the **actual
+  mdct2 FFT output still differs** at idx 8 in the real MDCT path.
+- This explains the band energy drift (band 1), coarse energy drift, and the
+  `pre_quant_all_bands` `nbits_total` mismatch.
+
+### amp2log2 trace note
+Rust `CELT_TRACE_AMP2LOG2` currently prints one line per band (no channel),
+while C prints per-band per-channel. Diffing needs to account for this
+format difference.
+
+## MDCT2 FFT / Post-Rotate Alignment (Frame 12, Updated)
+
+Target: the remaining band-1 energy mismatch (bin 2) traced to `mdct2` output
+idx 10 (band start 8 + bin 2). `mdct2` idx 8 is now aligned.
+
+### Change 1: Force C factor order for nfft=480 (MiniKissFft)
+Rust `MiniKissFft::new` now uses the C factor list for `nfft=480`:
+`[5, 96, 3, 32, 4, 8, 2, 4, 4, 1]` instead of `kf_factor`’s default
+`[4, 120, 4, 30, 2, 15, 3, 5, 5, 1]`.
+
+Result:
+- `mdct2` FFT output at idx 8 now matches C exactly.
+
+### Change 2: Use FMA in MDCT post-rotate
+`post_rotate_forward` now uses `fmaf(a, b, c)` for:
+- `yr = fmaf(fp.i, t1, -(fp.r * t0))`
+- `yi = fmaf(fp.r, t1, fp.i * t0)`
+
+Result (frame 12):
+- `mdct2` post-rotate `yr` at idx 4 now matches C (`0x3a98b6d1`).
+- `mdct2` output idx 8 now matches C for both channels:
+  - ch0 `0x3a98b6d1`, ch1 `0x3a7f111c`.
+
+### Downstream re-trace (frame 12)
+Coarse energy (`CELT_TRACE_COARSE_ENERGY_BITS=1`):
+- First mismatch persists at band 1, ch 1:
+  - `x_bits`: C `0xc15b6cd8` vs Rust `0xc15b6cd7` (unchanged).
+
+Band energy detail (band 1):
+- First mismatch moved:
+  - now `bin[2].x_bits`: C `0x3a831ec4` vs Rust `0x3a831ec5`.
+
+MDCT output for idx 10 (band 1 bin 2):
+- C: `celt_mdct[12].mdct2.ch[0].idx_bits[10]=0x3a831ec4`
+- Rust: `0x3a831ec5` (ch1 also +1 ULP).
+
+MDCT stage (idx 5 ⇒ output idx 10):
+- `fp.r` mismatch at `mdct2` idx 5:
+  - C `0xba80f737` vs Rust `0xba80f738` (FMA path).
+  - Disabling FMA in `c_mul` shifts to `0xba80f736` (still off).
+
+Conclusion:
+- `mdct2` idx 8 alignment is fixed (factor order + post-rotate FMA).
+- The next mismatch is **FFT output at mdct2 idx 5** (band 1 bin 2),
+  causing `mdct2` output idx 10 and coarse energy drift to persist.
   responsible for the earlier `mul*` divergence; remaining differences are
   dominated by twiddle generation for near-zero values (pi constant / sin/cos
   rounding).
@@ -1660,6 +1793,25 @@ Result:
 Interpretation:
 - The stage-4 radix‑5 mismatch was due to `sum78_ya_yb` rounding. With FMA,
   the mdct2 FFT path is now bit-aligned at the stage outputs for frame 12.
+
+### Packet compare re-run (after radix-5 FMA fix)
+
+Commands:
+```
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_new.opuspkt
+cargo run --example opus_packet_tool -- encode ehren-paper_lights-96.pcm /tmp/rust_packets_new.opuspkt
+```
+
+Result:
+- Frames: C 11405, Rust 11405.
+- **First payload mismatch remains at frame 12** (0-based).
+- TOC still matches at that frame (no TOC mismatch at the first payload mismatch).
+- Packet lengths: C 161 vs Rust 159.
+- First byte offset: 37.
+
+Conclusion:
+- mdct2 FFT stage alignment alone is **not sufficient** to eliminate the frame‑12
+  payload mismatch. Continue tracing from the CELT quantization / RC path.
 
 ## 2026-01-24 — mdct2 post-rotate recheck after scale fix (frame 12, idx 4)
 
