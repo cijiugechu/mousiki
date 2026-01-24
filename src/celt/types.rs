@@ -10,6 +10,7 @@ use super::deep_plc::PLC_UPDATE_SAMPLES;
 use super::fixed_ops::qconst16;
 #[cfg(feature = "fixed_point")]
 use super::mdct_fixed::FixedMdctLookup;
+use crate::celt::mdct_twiddles_48000_960::MDCT_TWIDDLES_960;
 use libm::cosf;
 
 /// Corresponds to `opus_int16` in the C implementation.
@@ -128,18 +129,32 @@ impl MdctLookup {
             inverse.push(MiniKissFft::new(n >> 2, true));
         }
 
-        let mut twiddle = Vec::new();
         let mut offsets = Vec::with_capacity(max_shift + 2);
         offsets.push(0);
-        for shift in 0..=max_shift {
-            let n = len >> shift;
-            let n2 = n >> 1;
-            for i in 0..n2 {
-                let angle = 2.0 * core::f32::consts::PI * (i as f32 + 0.125) / n as f32;
-                twiddle.push(cosf(angle));
-            }
-            offsets.push(twiddle.len());
+        let mut n2 = len >> 1;
+        let mut total = 0usize;
+        for _ in 0..=max_shift {
+            total += n2;
+            offsets.push(total);
+            n2 >>= 1;
         }
+
+        let twiddle = if len == 1920 && max_shift == 3 {
+            // Use the reference static table to preserve C's bit-exact MDCT twiddles.
+            MDCT_TWIDDLES_960.to_vec()
+        } else {
+            let mut values = Vec::with_capacity(total);
+            for shift in 0..=max_shift {
+                let n = len >> shift;
+                let n2 = n >> 1;
+                for i in 0..n2 {
+                    let angle = 2.0 * core::f32::consts::PI * (i as f32 + 0.125) / n as f32;
+                    values.push(cosf(angle));
+                }
+            }
+            values
+        };
+        debug_assert_eq!(twiddle.len(), total);
 
         Self {
             len,

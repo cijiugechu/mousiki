@@ -4,6 +4,7 @@ use crate::mlp_data::{
     LAYER0_BIAS, LAYER0_WEIGHTS, LAYER1_BIAS, LAYER1_RECUR_WEIGHTS, LAYER1_WEIGHTS, LAYER2_BIAS,
     LAYER2_WEIGHTS,
 };
+use libm::fmaf;
 
 /// Scaling factor applied to all dense and GRU outputs.
 pub(crate) const WEIGHTS_SCALE: f32 = 1.0 / 128.0;
@@ -31,7 +32,8 @@ pub(crate) struct AnalysisGRULayer {
 
 #[inline]
 fn fmadd(a: f32, b: f32, c: f32) -> f32 {
-    a * b + c
+    // Keep fused semantics to match the reference C build's contraction.
+    fmaf(a, b, c)
 }
 
 #[allow(clippy::excessive_precision)]
@@ -72,7 +74,9 @@ fn gemm_accum(
     for i in 0..rows {
         let mut acc = out[i];
         for j in 0..cols {
-            acc += f32::from(weights[j * col_stride + i]) * x[j];
+            let weight = f32::from(weights[j * col_stride + i]);
+            // Mirror C's multiply-accumulate contraction.
+            acc = fmaf(weight, x[j], acc);
         }
         out[i] = acc;
     }
@@ -245,5 +249,31 @@ mod tests {
         assert!(state[0] > 0.0);
         assert!(state[1] > 0.0);
         assert!(state[0] > state[1]);
+    }
+
+    #[test]
+    fn fmadd_uses_fma_semantics() {
+        let mut seed: u32 = 0x9e37_79b9;
+        let mut found = false;
+        for _ in 0..200_000 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let a_bits = (seed & 0x007f_ffff) | 0x3f00_0000;
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let b_bits = (seed & 0x007f_ffff) | 0x3f80_0000;
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let c_bits = (seed & 0x007f_ffff) | 0x3f00_0000;
+
+            let a = f32::from_bits(a_bits);
+            let b = f32::from_bits(b_bits);
+            let c = f32::from_bits(c_bits);
+            let fused = fmaf(a, b, c);
+            let unfused = a * b + c;
+            if fused.to_bits() != unfused.to_bits() {
+                assert_eq!(fmadd(a, b, c).to_bits(), fused.to_bits());
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected to find FMA-sensitive inputs");
     }
 }

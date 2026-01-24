@@ -15,7 +15,118 @@ use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
 #[cfg(not(miri))]
 use libm::sqrtf;
-use libm::{cosf, expf, logf};
+use libm::{cosf, expf, fmaf, logf};
+
+#[cfg(test)]
+mod fast_atan2_trace {
+    extern crate std;
+
+    use std::env;
+    use std::sync::OnceLock;
+
+    #[derive(Clone, Copy)]
+    struct TraceConfig {
+        enabled: bool,
+        has_target: bool,
+        target_x: f32,
+        target_y: f32,
+        eps: f32,
+    }
+
+    fn env_truthy(key: &str) -> bool {
+        env::var(key).map_or(false, |value| !value.is_empty() && value != "0")
+    }
+
+    fn config() -> &'static TraceConfig {
+        static TRACE_CONFIG: OnceLock<TraceConfig> = OnceLock::new();
+        TRACE_CONFIG.get_or_init(|| {
+            let enabled = env_truthy("ANALYSIS_TRACE_FAST_ATAN2");
+            if !enabled {
+                return TraceConfig {
+                    enabled: false,
+                    has_target: false,
+                    target_x: 0.0,
+                    target_y: 0.0,
+                    eps: 0.0,
+                };
+            }
+            let target_x = env::var("ANALYSIS_TRACE_FAST_ATAN2_X")
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok());
+            let target_y = env::var("ANALYSIS_TRACE_FAST_ATAN2_Y")
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok());
+            let has_target = target_x.is_some() && target_y.is_some();
+            let eps = env::var("ANALYSIS_TRACE_FAST_ATAN2_EPS")
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+                .unwrap_or(if has_target { 1e-9 } else { 0.0 });
+            TraceConfig {
+                enabled,
+                has_target,
+                target_x: target_x.unwrap_or(0.0),
+                target_y: target_y.unwrap_or(0.0),
+                eps,
+            }
+        })
+    }
+
+    pub(crate) fn maybe_dump(
+        y: f32,
+        x: f32,
+        x2: f32,
+        y2: f32,
+        branch_x2_lt_y2: bool,
+        cb: f32,
+        cc: f32,
+        t1: f32,
+        t2: f32,
+        den: f32,
+        xy: f32,
+        num_term: f32,
+        num: f32,
+    ) {
+        let cfg = config();
+        if !cfg.enabled {
+            return;
+        }
+        if cfg.has_target {
+            let dx = (x - cfg.target_x).abs();
+            let dy = (y - cfg.target_y).abs();
+            if dx > cfg.eps || dy > cfg.eps {
+                return;
+            }
+        }
+        std::println!("analysis_fast_atan2.x2={:.9e}", x2 as f64);
+        std::println!("analysis_fast_atan2.x2_bits=0x{:08x}", x2.to_bits());
+        std::println!("analysis_fast_atan2.y2={:.9e}", y2 as f64);
+        std::println!("analysis_fast_atan2.y2_bits=0x{:08x}", y2.to_bits());
+        if branch_x2_lt_y2 {
+            std::println!("analysis_fast_atan2.branch=x2<y2");
+        } else {
+            std::println!("analysis_fast_atan2.branch=x2>=y2");
+        }
+        std::println!("analysis_fast_atan2.cb={:.9e}", cb as f64);
+        std::println!("analysis_fast_atan2.cb_bits=0x{:08x}", cb.to_bits());
+        std::println!("analysis_fast_atan2.cc={:.9e}", cc as f64);
+        std::println!("analysis_fast_atan2.cc_bits=0x{:08x}", cc.to_bits());
+        std::println!("analysis_fast_atan2.t1={:.9e}", t1 as f64);
+        std::println!("analysis_fast_atan2.t1_bits=0x{:08x}", t1.to_bits());
+        std::println!("analysis_fast_atan2.t2={:.9e}", t2 as f64);
+        std::println!("analysis_fast_atan2.t2_bits=0x{:08x}", t2.to_bits());
+        std::println!("analysis_fast_atan2.den={:.9e}", den as f64);
+        std::println!("analysis_fast_atan2.den_bits=0x{:08x}", den.to_bits());
+        std::println!("analysis_fast_atan2.xy={:.9e}", xy as f64);
+        std::println!("analysis_fast_atan2.xy_bits=0x{:08x}", xy.to_bits());
+        std::println!("analysis_fast_atan2.num_term={:.9e}", num_term as f64);
+        std::println!(
+            "analysis_fast_atan2.num_term_bits=0x{:08x}",
+            num_term.to_bits()
+        );
+        std::println!("analysis_fast_atan2.num={:.9e}", num as f64);
+        std::println!("analysis_fast_atan2.num_bits=0x{:08x}", num.to_bits());
+    }
+}
 
 /// Integer square root mirroring `isqrt32()` from `celt/mathops.c`.
 ///
@@ -81,6 +192,12 @@ pub(crate) fn fast_atan2f(y: f32, x: f32) -> f32 {
     const CC: f32 = 0.085_955_42_f32;
     const CE: f32 = PI / 2.0;
 
+    #[inline]
+    fn mul_add_c_order(a: f32, b: f32, c: f32) -> f32 {
+        // Keep the C evaluation order; FMA matches the reference build on this target.
+        mul_add_f32(a, b, c)
+    }
+
     let x2 = x * x;
     let y2 = y * y;
 
@@ -89,12 +206,75 @@ pub(crate) fn fast_atan2f(y: f32, x: f32) -> f32 {
     }
 
     if x2 < y2 {
-        let den = (y2 + CB * x2) * (y2 + CC * x2);
-        -x * y * (y2 + CA * x2) / den + if y < 0.0 { -CE } else { CE }
+        let t1 = mul_add_c_order(CB, x2, y2);
+        let t2 = mul_add_c_order(CC, x2, y2);
+        let den = t1 * t2;
+        let xy = x * y;
+        let num_term = mul_add_c_order(CA, x2, y2);
+        let num = -xy * num_term;
+        let result = num / den + if y < 0.0 { -CE } else { CE };
+        #[cfg(test)]
+        fast_atan2_trace::maybe_dump(
+            y,
+            x,
+            x2,
+            y2,
+            true,
+            CB,
+            CC,
+            t1,
+            t2,
+            den,
+            xy,
+            num_term,
+            num,
+        );
+        result
     } else {
-        let den = (x2 + CB * y2) * (x2 + CC * y2);
-        x * y * (x2 + CA * y2) / den + if y < 0.0 { -CE } else { CE }
-            - if x * y < 0.0 { -CE } else { CE }
+        let t1 = mul_add_c_order(CB, y2, x2);
+        let t2 = mul_add_c_order(CC, y2, x2);
+        let den = t1 * t2;
+        let xy = x * y;
+        let num_term = mul_add_c_order(CA, y2, x2);
+        let num = xy * num_term;
+        let result = num / den + if y < 0.0 { -CE } else { CE }
+            - if x * y < 0.0 { -CE } else { CE };
+        #[cfg(test)]
+        fast_atan2_trace::maybe_dump(
+            y,
+            x,
+            x2,
+            y2,
+            false,
+            CB,
+            CC,
+            t1,
+            t2,
+            den,
+            xy,
+            num_term,
+            num,
+        );
+        result
+    }
+}
+
+#[inline]
+pub(crate) fn mul_add_f32(a: f32, b: f32, c: f32) -> f32 {
+    fmaf(a, b, c)
+}
+
+#[cfg(test)]
+mod fast_atan2f_regression {
+    use super::fast_atan2f;
+
+    #[test]
+    fn fast_atan2f_bin28_parity() {
+        // Bin 28 x2r/x2i from frame 12 analysis trace; matches opus-c fast_atan2f bits.
+        let x = f32::from_bits(0x3b2f_ef98);
+        let y = f32::from_bits(0x3b6e_b557);
+        let atan = fast_atan2f(y, x);
+        assert_eq!(atan.to_bits(), 0x3f6f_86d4);
     }
 }
 

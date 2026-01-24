@@ -34,3 +34,24 @@ ctests/build/opus_packet_decode input.opuspkt output.pcm
 ```
 
 Rust-side helpers live in `examples/opus_packet_tool.rs`.
+
+## Analysis comparison
+
+To dump the C analysis output for a PCM file:
+
+```sh
+ctests/build/analysis_compare input.pcm 64
+```
+
+To dump FFT/angle/fast_atan2/float2int intermediates from the C analysis path:
+
+```sh
+ANALYSIS_TRACE_BINS=1,61 ctests/build/analysis_fft_trace input.pcm 64
+```
+
+To dump per-stage FFT outputs (bit-reverse + each radix stage):
+
+```sh
+ANALYSIS_TRACE_BINS=1,61 ANALYSIS_TRACE_FRAME=12 \
+  ctests/build/analysis_fft_stage_trace input.pcm 64
+```

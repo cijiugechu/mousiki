@@ -16,9 +16,29 @@ add_subdirectory("${OPUS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/opus-c-build" EXCLU
 
 target_compile_definitions(opus PRIVATE RESYNTH)
 
+option(OPUS_ANALYSIS_STRICT_FP "Enable strict FP flags for analysis.c only" OFF)
+if (OPUS_ANALYSIS_STRICT_FP)
+  set(OPUS_ANALYSIS_STRICT_FP_FLAGS
+    -ffp-model=strict
+    -frounding-math
+    -ftrapping-math
+    -fno-vectorize
+    -fno-slp-vectorize
+    -fno-associative-math
+    -fno-reciprocal-math
+  )
+  set_source_files_properties(
+    "${OPUS_ROOT}/src/analysis.c"
+    PROPERTIES COMPILE_OPTIONS "${OPUS_ANALYSIS_STRICT_FP_FLAGS}"
+  )
+endif()
+
 add_executable(celt_compute_band_energies_test compute_band_energies_test.c)
 add_executable(celt_mdct_backward_compare mdct_backward_compare.c)
 add_executable(celt_synthesis_compare celt_synthesis_compare.c)
+add_executable(analysis_compare analysis_compare.c)
+add_executable(analysis_fft_trace analysis_fft_trace.c)
+add_executable(analysis_fft_stage_trace analysis_fft_stage_trace.c)
 add_executable(opus_packet_encode opus_packet_encode.c)
 add_executable(opus_packet_decode opus_packet_decode.c)
 
@@ -40,6 +60,25 @@ target_include_directories(celt_synthesis_compare
     "${OPUS_ROOT}/include"
 )
 
+target_include_directories(analysis_compare
+  PRIVATE
+    "${OPUS_ROOT}/celt"
+    "${OPUS_ROOT}/include"
+    "${OPUS_ROOT}/src"
+)
+target_include_directories(analysis_fft_trace
+  PRIVATE
+    "${OPUS_ROOT}/celt"
+    "${OPUS_ROOT}/include"
+    "${OPUS_ROOT}/src"
+)
+target_include_directories(analysis_fft_stage_trace
+  PRIVATE
+    "${OPUS_ROOT}/celt"
+    "${OPUS_ROOT}/include"
+    "${OPUS_ROOT}/src"
+)
+
 target_include_directories(opus_packet_encode
   PRIVATE
     "${OPUS_ROOT}/include"
@@ -53,12 +92,18 @@ target_include_directories(opus_packet_decode
 target_link_libraries(celt_compute_band_energies_test PRIVATE opus)
 target_link_libraries(celt_mdct_backward_compare PRIVATE opus)
 target_link_libraries(celt_synthesis_compare PRIVATE opus)
+target_link_libraries(analysis_compare PRIVATE opus)
+target_link_libraries(analysis_fft_trace PRIVATE opus)
+target_link_libraries(analysis_fft_stage_trace PRIVATE opus)
 target_link_libraries(opus_packet_encode PRIVATE opus)
 target_link_libraries(opus_packet_decode PRIVATE opus)
 
 target_compile_definitions(celt_compute_band_energies_test PRIVATE OPUS_BUILD)
 target_compile_definitions(celt_mdct_backward_compare PRIVATE OPUS_BUILD)
 target_compile_definitions(celt_synthesis_compare PRIVATE OPUS_BUILD RESYNTH)
+target_compile_definitions(analysis_compare PRIVATE OPUS_BUILD)
+target_compile_definitions(analysis_fft_trace PRIVATE OPUS_BUILD)
+target_compile_definitions(analysis_fft_stage_trace PRIVATE OPUS_BUILD)
 target_compile_definitions(opus_packet_encode PRIVATE OPUS_BUILD)
 target_compile_definitions(opus_packet_decode PRIVATE OPUS_BUILD)
 

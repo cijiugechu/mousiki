@@ -18,6 +18,10 @@ mod deep_plc;
 mod entcode;
 mod entdec;
 mod entenc;
+mod fft_bitrev_480;
+mod fft_twiddles_48000_960;
+mod mdct_twiddles_48000_960;
+mod window_48000_960;
 #[cfg(feature = "fixed_point")]
 mod fixed_arch;
 #[cfg(feature = "fixed_point")]

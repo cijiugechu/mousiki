@@ -15,9 +15,23 @@ use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
 use mousiki_deep_plc_weights::DNN_BLOB;
 
 #[path = "../celt/mini_kfft.rs"]
-mod mini_kfft;
+pub mod celt_mini_kfft;
+#[path = "../celt/fft_twiddles_48000_960.rs"]
+pub mod celt_fft_twiddles_48000_960;
+#[path = "../celt/fft_bitrev_480.rs"]
+pub mod celt_fft_bitrev_480;
+pub mod celt_types {
+    pub type OpusInt16 = i16;
+}
 
-use mini_kfft::{KissFftCpx, MiniKissFftr};
+mod celt {
+    pub use crate::celt_mini_kfft as mini_kfft;
+    pub use crate::celt_fft_twiddles_48000_960 as fft_twiddles_48000_960;
+    pub use crate::celt_fft_bitrev_480 as fft_bitrev_480;
+    pub use crate::celt_types as types;
+}
+
+use celt::mini_kfft::{KissFftCpx, MiniKissFftr};
 
 const NB_FEATURES: usize = 20;
 const NBANDS: usize = 17;

@@ -40,7 +40,6 @@ mousiki-dred-weights = { path = "mousiki-dred-weights", optional = true }
 
 
 [lints.clippy]
-cast_lossless = "warn"
 comparison_chain = "warn"
 default_trait_access = "warn"
 explicit_deref_methods = "warn"
