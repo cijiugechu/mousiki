@@ -9,15 +9,17 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(test)]
+use alloc::format;
 
-use core::f32::consts::{FRAC_1_SQRT_2, SQRT_2};
+use core::f32::consts::SQRT_2;
 
 use crate::celt::entcode::ec_tell_frac;
 use crate::celt::{
     BITRES, EcDec, EcEnc, EcEncSnapshot, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE,
     SPREAD_NORMAL, celt_exp2, celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv,
     celt_udiv, dual_inner_prod, ec_ilog,
-    math::isqrt32,
+    math::{isqrt32, mul_add_f32},
     quant_bands::E_MEANS,
     rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, bits2pulses, get_pulses, pulses2bits},
     renormalise_vector,
@@ -1203,7 +1205,29 @@ fn quant_band(
     for k in 0..recombine {
         const BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
         if encode {
+            #[cfg(test)]
+            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+                let stage = format!("pre_haar_recombine_{k}");
+                rc_band_trace::dump_band_prepartition_if_match(
+                    frame_idx,
+                    ctx.band,
+                    n,
+                    &stage,
+                    &x[..n],
+                );
+            }
             haar1(x, n >> k, 1usize << k);
+            #[cfg(test)]
+            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+                let stage = format!("haar_recombine_{k}");
+                rc_band_trace::dump_band_prepartition_if_match(
+                    frame_idx,
+                    ctx.band,
+                    n,
+                    &stage,
+                    &x[..n],
+                );
+            }
         }
         if let Some(ref mut lowband_slice) = lowband_view {
             haar1(lowband_slice, n >> k, 1usize << k);
@@ -1219,7 +1243,29 @@ fn quant_band(
 
     while (n_b & 1) == 0 && tf_change < 0 {
         if encode {
+            #[cfg(test)]
+            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+                let stage = format!("pre_haar_time_divide_{time_divide}");
+                rc_band_trace::dump_band_prepartition_if_match(
+                    frame_idx,
+                    ctx.band,
+                    n,
+                    &stage,
+                    &x[..n],
+                );
+            }
             haar1(x, n_b, b_blocks.max(1) as usize);
+            #[cfg(test)]
+            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+                let stage = format!("haar_time_divide_{time_divide}");
+                rc_band_trace::dump_band_prepartition_if_match(
+                    frame_idx,
+                    ctx.band,
+                    n,
+                    &stage,
+                    &x[..n],
+                );
+            }
         }
         if let Some(ref mut lowband_slice) = lowband_view {
             haar1(lowband_slice, n_b, b_blocks.max(1) as usize);
@@ -1235,6 +1281,17 @@ fn quant_band(
     b0 = b_blocks;
     let n_b0 = n_b;
 
+    #[cfg(test)]
+    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+        rc_band_trace::dump_band_prepartition_if_match(
+            frame_idx,
+            ctx.band,
+            n,
+            "post_haar",
+            &x[..n],
+        );
+    }
+
     if b0 > 1 {
         if encode {
             deinterleave_hadamard(x, n_b >> recombine, (b0 << recombine) as usize, long_blocks);
@@ -1247,6 +1304,17 @@ fn quant_band(
                 long_blocks,
             );
         }
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+        rc_band_trace::dump_band_prepartition_if_match(
+            frame_idx,
+            ctx.band,
+            n,
+            "post_deinterleave",
+            &x[..n],
+        );
     }
 
     let mut cm = quant_partition(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
@@ -2283,6 +2351,7 @@ mod rc_band_trace {
     static NORM_IN_ENABLED: OnceLock<bool> = OnceLock::new();
     static STEREO_SPLIT_ENABLED: OnceLock<bool> = OnceLock::new();
     static STEREO_SPLIT_DETAIL_ENABLED: OnceLock<bool> = OnceLock::new();
+    static BAND_PREPART_ENABLED: OnceLock<bool> = OnceLock::new();
     static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
     static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
     static STEREO_SPLIT_DETAIL_BAND: AtomicIsize = AtomicIsize::new(-1);
@@ -2399,6 +2468,13 @@ mod rc_band_trace {
                 Ok(value) => !value.is_empty() && value != "0",
                 Err(_) => false,
             }
+        })
+    }
+
+    fn band_prepartition_enabled() -> bool {
+        *BAND_PREPART_ENABLED.get_or_init(|| match env::var("CELT_TRACE_BAND_PREPART") {
+            Ok(value) => !value.is_empty() && value != "0",
+            Err(_) => false,
         })
     }
 
@@ -2980,6 +3056,32 @@ mod rc_band_trace {
         );
     }
 
+    pub(crate) fn dump_band_prepartition_if_match(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        stage: &str,
+        x: &[OpusVal16],
+    ) {
+        if !should_dump(frame_idx, band) || !band_prepartition_enabled() {
+            return;
+        }
+        let len = n.min(x.len());
+        std::println!("celt_band_prepartition[{frame_idx}].band[{band}].stage={stage}");
+        std::println!("celt_band_prepartition[{frame_idx}].band[{band}].n={n}");
+        for i in 0..len {
+            let xv = x[i];
+            std::println!(
+                "celt_band_prepartition[{frame_idx}].band[{band}].x[{i}]={}",
+                fmt_exp(xv as OpusVal32)
+            );
+            std::println!(
+                "celt_band_prepartition[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
+                xv.to_bits()
+            );
+        }
+    }
+
     pub(crate) fn dump_if_match(frame_idx: usize, band: usize, stage: &str, ctx: &EcCtx<'_>) {
         if !should_dump(frame_idx, band) {
             return;
@@ -3113,6 +3215,7 @@ pub(crate) fn intensity_stereo(
         let mul1 = a1 * l;
         let mul2 = a2 * r;
         let sum = mul1 + mul2;
+        let out = mul_add_f32(a1, l, mul2);
         #[cfg(test)]
         if let Some(frame_idx) = trace_detail {
             rc_band_trace::dump_stereo_split_detail_intensity_sample(
@@ -3126,7 +3229,7 @@ pub(crate) fn intensity_stereo(
                 sum,
             );
         }
-        x[idx] = sum;
+        x[idx] = out;
     }
 }
 
@@ -3657,7 +3760,8 @@ pub(crate) fn haar1(x: &mut [OpusVal16], n0: usize, stride: usize) {
         "haar1 expects at least stride * n0 coefficients"
     );
 
-    let scale = FRAC_1_SQRT_2 as OpusVal16;
+    #[allow(clippy::approx_constant)]
+    let scale = 0.70710678_f32 as OpusVal16;
 
     for i in 0..stride {
         for j in 0..half {

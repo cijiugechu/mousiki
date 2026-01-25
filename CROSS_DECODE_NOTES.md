@@ -2227,3 +2227,113 @@ Conclusion:
   split‑band (`stereo=0`) `stereo_itheta_in` inputs. Next step: trace the band
   coefficients just before `quant_partition`’s split `compute_theta` to locate
   the first divergence (likely in `haar1`/`deinterleave_hadamard`).
+
+## 2026-01-25 — band prepartition trace + intensity FMA alignment (frame 12)
+
+New trace (pre‑partition):
+- Added `CELT_TRACE_BAND_PREPART=1` in both C and Rust to dump band coefficients
+  around the Haar/deinterleave steps. New stages: `pre_haar_recombine_*`,
+  `haar_recombine_*`, `pre_haar_time_divide_*`, `haar_time_divide_*`,
+  `post_haar`, `post_deinterleave`.
+
+Initial finding:
+- With `CELT_TRACE_BAND_PREPART=1`, the **first mismatch** shows up at
+  `pre_haar_time_divide_0` for frame 12 band 10, so the drift happens *before*
+  `haar1`. This pointed back to the stereo pre‑processing (`compute_theta`).
+
+Stereo split vs detail:
+- `celt_stereo_split_detail` (intensity stage) **matched** C/Rust, but the
+  final `celt_stereo_split` output differed by 1 ULP. In the C log, the
+  printed `sum_bits` inside the detail block did **not** match the final
+  `x_bits`, implying FMA contraction in the `MAC16_16(a1*l, a2, r)` path.
+
+Fix:
+- In Rust `intensity_stereo`, compute the output with fused multiply‑add:
+  `x[idx] = a1.mul_add(l, mul2)` (where `mul2 = a2 * r`). This aligns with the
+  C output that appears to be FMA‑contracted.
+- Also aligned `haar1`’s scale constant to `0.70710678_f32` (C uses
+  `QCONST16(.70710678f, 15)` in float builds).
+
+Results after the change:
+- `celt_stereo_split` now matches between C/Rust (frame 12 band 10).
+- `celt_band_prepartition` stages now match (no diff at pre/post Haar or
+  deinterleave).
+- `celt_stereo_itheta_in` now matches (previous 1‑ULP drift gone).
+
+Trace commands:
+```
+CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12 CELT_TRACE_RC_BAND=10 \
+CELT_TRACE_BAND_PREPART=1 CELT_TRACE_NORM_IN=1 \
+CELT_TRACE_STEREO_SPLIT=1 CELT_TRACE_STEREO_SPLIT_DETAIL=1 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_prepart.opuspkt
+
+CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12 CELT_TRACE_RC_BAND=10 \
+CELT_TRACE_BAND_PREPART=1 CELT_TRACE_NORM_IN=1 \
+CELT_TRACE_STEREO_SPLIT=1 CELT_TRACE_STEREO_SPLIT_DETAIL=1 \
+RUSTFLAGS="--cfg test" cargo run --example opus_packet_tool -- encode \
+ehren-paper_lights-96.pcm /tmp/rust_packets_prepart.opuspkt
+
+CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12 CELT_TRACE_RC_BAND=10 \
+CELT_TRACE_STEREO_ITHETA_IN=1 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_itheta.opuspkt
+
+CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12 CELT_TRACE_RC_BAND=10 \
+CELT_TRACE_STEREO_ITHETA_IN=1 \
+RUSTFLAGS="--cfg test" cargo run --example opus_packet_tool -- encode \
+ehren-paper_lights-96.pcm /tmp/rust_packets_itheta.opuspkt
+```
+
+Next step:
+- Re-run the packet compare to see whether the frame‑12 payload mismatch is
+  resolved now that stereo split + pre‑partition stages align.
+
+## 2026-01-25 — frame 12 tonality bin 237 + music_prob min/max alignment
+
+Re-ran `analysis_compare` (64 frames) and isolated the new first drift:
+- First diff moved to `analysis_info[12].tonality_slope` (1 ULP), so traced
+  tonality slope internals for frame 12.
+
+Tonality slope trace (frame 12, band 17):
+- `analysis_tonality` showed the only mismatch was **band 17** (`tE`,
+  `energy_ratio_num`, `band_tonality`, `slope_term/slope_acc`).
+- `analysis_tonality_bin` showed the first bin mismatch at **bin 237**
+  (`tonality` / `tonality2` 1‑ULP); all upstream raw terms matched.
+
+Fix (tonality formula):
+- In Rust, compute the tonality denominator via FMA to mirror C contraction:
+  `denom = mul_add_f32(scale, avg_mod, 1.0)` and
+  `denom2 = mul_add_f32(scale, mod2, 1.0)` (with `scale = 40*16*pi4`).
+- After this change, band‑17 bin traces match and frame‑12 tonality slope
+  aligns.
+
+Follow-up (music_prob min/max drift):
+- With tonality aligned, the remaining diffs were `music_prob_min/max`
+  (frame 12). The loop uses a multiply‑add to accumulate `prob_avg` and
+  a multiply‑add in the transition penalty term. Rust now mirrors C with
+  `mul_add_f32` for these expressions (and uses raw `pos_vad` like C).
+- After this change, **frame 12** is clean; the first mismatch now shifts to
+  **frame 13** (`analysis_info[13].music_prob` 1‑ULP).
+
+Commands:
+```
+ctests/build/analysis_compare ehren-paper_lights-96.pcm 64 > /tmp/analysis_compare_c.txt
+ANALYSIS_PCM=ehren-paper_lights-96.pcm ANALYSIS_FRAMES=64 \
+cargo test -p mousiki --lib analysis_compare_output -- --nocapture \
+  > /tmp/analysis_compare_r.txt
+
+ANALYSIS_TRACE_TONALITY_SLOPE=1 ANALYSIS_TRACE_TONALITY_SLOPE_FRAME=12 \
+ANALYSIS_TRACE_TONALITY_SLOPE_BANDS=17 ANALYSIS_TRACE_TONALITY_SLOPE_BITS=1 \
+ctests/build/analysis_compare ehren-paper_lights-96.pcm 64 \
+  > /tmp/analysis_tonality_band17_c.txt
+
+ANALYSIS_TRACE_TONALITY_SLOPE=1 ANALYSIS_TRACE_TONALITY_SLOPE_FRAME=12 \
+ANALYSIS_TRACE_TONALITY_SLOPE_BANDS=17 ANALYSIS_TRACE_TONALITY_SLOPE_BITS=1 \
+ANALYSIS_PCM=ehren-paper_lights-96.pcm ANALYSIS_FRAMES=64 \
+cargo test -p mousiki --lib analysis_compare_output -- --nocapture \
+  > /tmp/analysis_tonality_band17_r.txt
+```
+
+Next step:
+- Trace frame 13 `music_prob` drift using the same tonality/activity traces
+  (or add a targeted trace inside `tonality_get_info` around `prob_avg` /
+  `prob_min` / `prob_max`).

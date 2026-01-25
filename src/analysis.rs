@@ -2112,13 +2112,14 @@ pub(crate) fn tonality_get_info(
         if vpos == tonal.write_pos {
             break;
         }
-        let pos_vad = tonal.info[vpos].activity_probability.max(0.0);
-        prob_min =
-            prob_min.min((prob_avg - TRANSITION_PENALTY * (vad_prob - pos_vad)) / prob_count);
-        prob_max =
-            prob_max.max((prob_avg + TRANSITION_PENALTY * (vad_prob - pos_vad)) / prob_count);
+        let pos_vad = tonal.info[vpos].activity_probability;
+        let delta = vad_prob - pos_vad;
+        let min_term = mul_add_f32(-TRANSITION_PENALTY, delta, prob_avg) / prob_count;
+        let max_term = mul_add_f32(TRANSITION_PENALTY, delta, prob_avg) / prob_count;
+        prob_min = prob_min.min(min_term);
+        prob_max = prob_max.max(max_term);
         prob_count += pos_vad.max(0.1);
-        prob_avg += pos_vad.max(0.1) * tonal.info[mpos].music_prob;
+        prob_avg = mul_add_f32(pos_vad.max(0.1), tonal.info[mpos].music_prob, prob_avg);
     }
 
     info_out.music_prob = prob_avg / prob_count;
@@ -2145,8 +2146,9 @@ pub(crate) fn tonality_get_info(
         }
         pmin = (pmin - 0.1 * vad_prob).max(0.0);
         pmax = (pmax + 0.1 * vad_prob).min(1.0);
-        prob_min += (1.0 - 0.1 * curr_lookahead as f32) * (pmin - prob_min);
-        prob_max += (1.0 - 0.1 * curr_lookahead as f32) * (pmax - prob_max);
+        let weight = 1.0 - 0.1 * curr_lookahead as f32;
+        prob_min = mul_add_f32(weight, pmin - prob_min, prob_min);
+        prob_max = mul_add_f32(weight, pmax - prob_max, prob_max);
     }
 
     info_out.music_prob_min = prob_min;
@@ -2350,8 +2352,11 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         mod2 *= mod2;
 
         let avg_mod = 0.25 * (tonal.d2_angle[i] + mod1 + 2.0 * mod2);
-        tonality[i] = 1.0 / (1.0 + 40.0 * 16.0 * pi4 * avg_mod) - 0.015;
-        tonality2[i] = 1.0 / (1.0 + 40.0 * 16.0 * pi4 * mod2) - 0.015;
+        let scale = (40.0_f32 * 16.0_f32) * pi4;
+        let denom = mul_add_f32(scale, avg_mod, 1.0);
+        let denom2 = mul_add_f32(scale, mod2, 1.0);
+        tonality[i] = 1.0 / denom - 0.015;
+        tonality2[i] = 1.0 / denom2 - 0.015;
 
         #[cfg(test)]
         if let Some(cfg) = tonality_trace::config() {
