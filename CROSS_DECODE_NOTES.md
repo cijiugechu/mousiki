@@ -2145,3 +2145,85 @@ Conclusion:
 - Next step: investigate the small `celt_stereo_itheta` float drift or any
   upstream/non‑RC bitstream path that could alter packet length despite RC
   trace alignment.
+
+## 2026-01-25 — stereo split / itheta input tracing (frame 12)
+
+New traces:
+- Added `celt_trace_stereo_itheta_input_dump` (C) and
+  `dump_stereo_itheta_input_if_match` (Rust) under
+  `CELT_TRACE_STEREO_ITHETA_IN`, called before `stereo_itheta` in
+  `compute_theta`.
+- Added `celt_trace_norm_in_dump` (C) and `dump_norm_in_if_match` (Rust) under
+  `CELT_TRACE_NORM_IN`, called at band entry in `quant_all_bands`.
+- Added `celt_trace_stereo_split_dump` (C) and `dump_stereo_split_if_match`
+  (Rust) under `CELT_TRACE_STEREO_SPLIT`, called after
+  `intensity_stereo`/`stereo_split` in `compute_theta`, and now include
+  `bandE` left/right in the dump.
+
+Findings (frame 12, band 10):
+- `celt_norm_in` inputs **match** exactly between C/Rust, so the drift happens
+  after band entry.
+- `celt_stereo_itheta_in` for the top‑level stereo block (n=16, stereo=1)
+  matches; the **only mismatch** is inside the split path where
+  `stereo=0, n=8` (depth 1 in `quant_partition`).
+- `celt_stereo_split` outputs differ by ~1 ULP even though `bandE` matches and
+  the preceding inputs align; mismatches show up in `x` (mid) and some `y`
+  values.
+
+Attempted alignment:
+- In Rust `stereo_split`, changed the scale constant to `0.70710678_f32` to
+  mirror C’s `QCONST16(.70710678f, 15)` and tried fused `mul_add` for
+  `scale*xl ± scale*yr`. The 1‑ULP drift **persisted**.
+
+Conclusion:
+- The remaining mismatch appears to be inside `intensity_stereo`/`stereo_split`
+  rounding/contraction rather than upstream inputs or band energies.
+- Next step: add deeper per‑term tracing inside `intensity_stereo`/`stereo_split`
+  (e.g., `norm`, `a1/a2`, and `scale*left/right` intermediates) to identify the
+  first mismatching float op.
+
+## 2026-01-25 — stereo_split detail trace + explicit muls (frame 12)
+
+New trace (detail):
+- Added `CELT_TRACE_STEREO_SPLIT_DETAIL=1` to dump `intensity_stereo` and
+  `stereo_split` intermediates (`left/right/norm/a1/a2`, per‑sample mul/sum,
+  `scale`, `l/r/sum/diff`). Implemented in both C (`opus-c/celt/bands.c`) and
+  Rust (`src/celt/bands.rs`) with band gating under `CELT_TRACE_RC*`.
+
+Change:
+- Rust `stereo_split` now uses explicit mul/add/sub (`scale*xl`, `scale*yr`,
+  `sum`, `diff`) instead of `mul_add_f32`, matching the float C macro path.
+
+Trace commands:
+```
+CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12 CELT_TRACE_RC_BAND=10 \
+CELT_TRACE_STEREO_SPLIT_DETAIL=1 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_trace.opuspkt
+
+CELT_TRACE_RC=1 CELT_TRACE_RC_FRAME=12 CELT_TRACE_RC_BAND=10 \
+CELT_TRACE_STEREO_SPLIT_DETAIL=1 RUSTFLAGS="--cfg test" \
+cargo run --example opus_packet_tool -- encode ehren-paper_lights-96.pcm /tmp/rust_packets_trace.opuspkt
+```
+
+Findings (frame 12, band 10):
+- `celt_stereo_split_detail` **matches** between C/Rust for both `intensity` and
+  `split` stages (all per‑term intermediates align).
+- `celt_stereo_split` outputs now **match** for band 10 (no 1‑ULP drift).
+
+Follow‑up (`stereo_itheta_in`):
+- The nested `compute_theta` call with `stereo=0, n=8` still shows 1‑ULP
+  differences in `x/y` inputs (e.g., `x[2]`, `y[2]`, `y[7]`), so the remaining
+  drift persists in the split‑band inputs downstream of the top‑level stereo
+  split.
+
+Packet compare (after change):
+- Frames: C 11405, Rust 11405.
+- **First payload mismatch remains at frame 12** (0‑based).
+- Packet lengths: C 161 vs Rust 159.
+- First payload byte mismatch: offset 84 (after 16‑byte OPUSPKT1 header).
+
+Conclusion:
+- `stereo_split` is now bit‑aligned with C, but a small drift persists in the
+  split‑band (`stereo=0`) `stereo_itheta_in` inputs. Next step: trace the band
+  coefficients just before `quant_partition`’s split `compute_theta` to locate
+  the first divergence (likely in `haar1`/`deinterleave_hadamard`).

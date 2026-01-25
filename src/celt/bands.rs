@@ -385,6 +385,12 @@ pub(crate) fn compute_theta(
     }
 
     let mut itheta = if encode {
+        #[cfg(test)]
+        if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+            rc_band_trace::dump_stereo_itheta_input_if_match(
+                frame_idx, band, n, stereo, x, y,
+            );
+        }
         stereo_itheta(x, y, stereo, n, ctx.arch)
     } else {
         0
@@ -529,12 +535,42 @@ pub(crate) fn compute_theta(
             itheta = celt_udiv((itheta * 16_384) as u32, qn as u32) as i32;
         }
         if encode && stereo {
+            let band_e_left = band_e[band];
+            let band_e_right = band_e[band + mode.num_ebands];
+            #[cfg(test)]
+            rc_band_trace::set_stereo_split_detail_band(band);
             if itheta == 0 {
                 intensity_stereo(mode, x, y, band_e, band, n);
+                #[cfg(test)]
+                if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+                    rc_band_trace::dump_stereo_split_if_match(
+                        frame_idx,
+                        band,
+                        n,
+                        "intensity",
+                        band_e_left,
+                        band_e_right,
+                        &x[..n],
+                        &y[..n],
+                    );
+                }
             } else {
                 let x_band = &mut x[..n];
                 let y_band = &mut y[..n];
                 stereo_split(x_band, y_band);
+                #[cfg(test)]
+                if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
+                    rc_band_trace::dump_stereo_split_if_match(
+                        frame_idx,
+                        band,
+                        n,
+                        "split",
+                        band_e_left,
+                        band_e_right,
+                        x_band,
+                        y_band,
+                    );
+                }
             }
         }
     } else if stereo {
@@ -1687,6 +1723,17 @@ pub(crate) fn quant_all_bands(
         let x_band = &mut x[band_start..band_end];
         let mut y_band = y.as_mut().map(|slice| &mut slice[band_start..band_end]);
 
+        #[cfg(test)]
+        if let Some(frame_idx) = rc_trace_frame_idx {
+            rc_band_trace::dump_norm_in_if_match(
+                frame_idx,
+                band,
+                n,
+                x_band,
+                y_band.as_deref(),
+            );
+        }
+
         let mut effective_lowband = None;
         let mut x_cm = 0u32;
         let mut y_cm = 0u32;
@@ -2224,7 +2271,7 @@ mod rc_band_trace {
     use std::sync::OnceLock;
 
     use crate::celt::entcode::{ec_tell, ec_tell_frac, EcCtx};
-    use crate::celt::OpusVal32;
+    use crate::celt::{OpusVal16, OpusVal32};
 
     pub(crate) struct TraceConfig {
         frame: Option<usize>,
@@ -2232,8 +2279,13 @@ mod rc_band_trace {
     }
 
     static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static STEREO_ITHETA_INPUT_ENABLED: OnceLock<bool> = OnceLock::new();
+    static NORM_IN_ENABLED: OnceLock<bool> = OnceLock::new();
+    static STEREO_SPLIT_ENABLED: OnceLock<bool> = OnceLock::new();
+    static STEREO_SPLIT_DETAIL_ENABLED: OnceLock<bool> = OnceLock::new();
     static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
     static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
+    static STEREO_SPLIT_DETAIL_BAND: AtomicIsize = AtomicIsize::new(-1);
     static PVQ_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
     pub(crate) struct PvqDepthGuard {
@@ -2316,6 +2368,64 @@ mod rc_band_trace {
             cfg.frame.map_or(true, |frame| frame == frame_idx)
                 && cfg.band.map_or(true, |target_band| target_band == band)
         })
+    }
+
+    fn stereo_itheta_input_enabled() -> bool {
+        *STEREO_ITHETA_INPUT_ENABLED.get_or_init(|| {
+            match env::var("CELT_TRACE_STEREO_ITHETA_IN") {
+                Ok(value) => !value.is_empty() && value != "0",
+                Err(_) => false,
+            }
+        })
+    }
+
+    fn norm_in_enabled() -> bool {
+        *NORM_IN_ENABLED.get_or_init(|| match env::var("CELT_TRACE_NORM_IN") {
+            Ok(value) => !value.is_empty() && value != "0",
+            Err(_) => false,
+        })
+    }
+
+    fn stereo_split_enabled() -> bool {
+        *STEREO_SPLIT_ENABLED.get_or_init(|| match env::var("CELT_TRACE_STEREO_SPLIT") {
+            Ok(value) => !value.is_empty() && value != "0",
+            Err(_) => false,
+        })
+    }
+
+    fn stereo_split_detail_enabled() -> bool {
+        *STEREO_SPLIT_DETAIL_ENABLED.get_or_init(|| {
+            match env::var("CELT_TRACE_STEREO_SPLIT_DETAIL") {
+                Ok(value) => !value.is_empty() && value != "0",
+                Err(_) => false,
+            }
+        })
+    }
+
+    pub(crate) fn set_stereo_split_detail_band(band: usize) {
+        if stereo_split_detail_enabled() {
+            STEREO_SPLIT_DETAIL_BAND.store(band as isize, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn stereo_split_detail_band() -> Option<usize> {
+        let band = STEREO_SPLIT_DETAIL_BAND.load(Ordering::Relaxed);
+        if band < 0 {
+            None
+        } else {
+            Some(band as usize)
+        }
+    }
+
+    fn fmt_exp(value: OpusVal32) -> String {
+        let formatted = format!("{:.9e}", value as f64);
+        if let Some(idx) = formatted.find('e') {
+            let mantissa = &formatted[..idx];
+            let exp = formatted[idx + 1..].parse::<i32>().unwrap_or(0);
+            format!("{mantissa}e{exp:+03}")
+        } else {
+            formatted
+        }
     }
 
     pub(crate) fn dump_theta_if_match(
@@ -2496,16 +2606,6 @@ mod rc_band_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        fn fmt_exp(value: OpusVal32) -> String {
-            let formatted = format!("{:.9e}", value as f64);
-            if let Some(idx) = formatted.find('e') {
-                let mantissa = &formatted[..idx];
-                let exp = formatted[idx + 1..].parse::<i32>().unwrap_or(0);
-                format!("{mantissa}e{exp:+03}")
-            } else {
-                formatted
-            }
-        }
         std::println!(
             "celt_stereo_itheta[{frame_idx}].band[{band}].n={n}"
         );
@@ -2547,6 +2647,336 @@ mod rc_band_trace {
         std::println!(
             "celt_stereo_itheta[{frame_idx}].band[{band}].side_bits=0x{:08x}",
             side.to_bits()
+        );
+    }
+
+    pub(crate) fn dump_stereo_itheta_input_if_match(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        stereo: bool,
+        x: &[OpusVal16],
+        y: &[OpusVal16],
+    ) {
+        if !should_dump(frame_idx, band) || !stereo_itheta_input_enabled() {
+            return;
+        }
+        let len = n.min(x.len()).min(y.len());
+        std::println!(
+            "celt_stereo_itheta_in[{frame_idx}].band[{band}].n={n}"
+        );
+        std::println!(
+            "celt_stereo_itheta_in[{frame_idx}].band[{band}].stereo={}",
+            i32::from(stereo)
+        );
+        for i in 0..len {
+            let xv = x[i];
+            let yv = y[i];
+            std::println!(
+                "celt_stereo_itheta_in[{frame_idx}].band[{band}].x[{i}]={}",
+                fmt_exp(xv as OpusVal32)
+            );
+            std::println!(
+                "celt_stereo_itheta_in[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
+                xv.to_bits()
+            );
+            std::println!(
+                "celt_stereo_itheta_in[{frame_idx}].band[{band}].y[{i}]={}",
+                fmt_exp(yv as OpusVal32)
+            );
+            std::println!(
+                "celt_stereo_itheta_in[{frame_idx}].band[{band}].y_bits[{i}]=0x{:08x}",
+                yv.to_bits()
+            );
+        }
+    }
+
+    pub(crate) fn dump_norm_in_if_match(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        x: &[OpusVal16],
+        y: Option<&[OpusVal16]>,
+    ) {
+        if !should_dump(frame_idx, band) || !norm_in_enabled() {
+            return;
+        }
+        let len = n.min(x.len());
+        std::println!("celt_norm_in[{frame_idx}].band[{band}].n={n}");
+        std::println!(
+            "celt_norm_in[{frame_idx}].band[{band}].stereo={}",
+            i32::from(y.is_some())
+        );
+        for i in 0..len {
+            let xv = x[i];
+            std::println!(
+                "celt_norm_in[{frame_idx}].band[{band}].x[{i}]={}",
+                fmt_exp(xv as OpusVal32)
+            );
+            std::println!(
+                "celt_norm_in[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
+                xv.to_bits()
+            );
+            if let Some(ys) = y {
+                if i < ys.len() {
+                    let yv = ys[i];
+                    std::println!(
+                        "celt_norm_in[{frame_idx}].band[{band}].y[{i}]={}",
+                        fmt_exp(yv as OpusVal32)
+                    );
+                    std::println!(
+                        "celt_norm_in[{frame_idx}].band[{band}].y_bits[{i}]=0x{:08x}",
+                        yv.to_bits()
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn dump_stereo_split_if_match(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        stage: &str,
+        band_e_left: OpusVal32,
+        band_e_right: OpusVal32,
+        x: &[OpusVal16],
+        y: &[OpusVal16],
+    ) {
+        if !should_dump(frame_idx, band) || !stereo_split_enabled() {
+            return;
+        }
+        let len = n.min(x.len()).min(y.len());
+        std::println!("celt_stereo_split[{frame_idx}].band[{band}].stage={stage}");
+        std::println!("celt_stereo_split[{frame_idx}].band[{band}].n={n}");
+        std::println!(
+            "celt_stereo_split[{frame_idx}].band[{band}].band_e_left={}",
+            fmt_exp(band_e_left)
+        );
+        std::println!(
+            "celt_stereo_split[{frame_idx}].band[{band}].band_e_left_bits=0x{:08x}",
+            band_e_left.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split[{frame_idx}].band[{band}].band_e_right={}",
+            fmt_exp(band_e_right)
+        );
+        std::println!(
+            "celt_stereo_split[{frame_idx}].band[{band}].band_e_right_bits=0x{:08x}",
+            band_e_right.to_bits()
+        );
+        for i in 0..len {
+            let xv = x[i];
+            let yv = y[i];
+            std::println!(
+                "celt_stereo_split[{frame_idx}].band[{band}].x[{i}]={}",
+                fmt_exp(xv as OpusVal32)
+            );
+            std::println!(
+                "celt_stereo_split[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
+                xv.to_bits()
+            );
+            std::println!(
+                "celt_stereo_split[{frame_idx}].band[{band}].y[{i}]={}",
+                fmt_exp(yv as OpusVal32)
+            );
+            std::println!(
+                "celt_stereo_split[{frame_idx}].band[{band}].y_bits[{i}]=0x{:08x}",
+                yv.to_bits()
+            );
+        }
+    }
+
+    pub(crate) fn dump_stereo_split_detail_intensity_begin(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        left: OpusVal32,
+        right: OpusVal32,
+        norm: OpusVal32,
+        a1: OpusVal32,
+        a2: OpusVal32,
+    ) -> bool {
+        if !should_dump(frame_idx, band) || !stereo_split_detail_enabled() {
+            return false;
+        }
+        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].stage=intensity");
+        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].n={n}");
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].left={}",
+            fmt_exp(left)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].left_bits=0x{:08x}",
+            left.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].right={}",
+            fmt_exp(right)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].right_bits=0x{:08x}",
+            right.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].norm={}",
+            fmt_exp(norm)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].norm_bits=0x{:08x}",
+            norm.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].a1={}",
+            fmt_exp(a1)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].a1_bits=0x{:08x}",
+            a1.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].a2={}",
+            fmt_exp(a2)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].a2_bits=0x{:08x}",
+            a2.to_bits()
+        );
+        true
+    }
+
+    pub(crate) fn dump_stereo_split_detail_intensity_sample(
+        frame_idx: usize,
+        band: usize,
+        idx: usize,
+        l: OpusVal32,
+        r: OpusVal32,
+        mul1: OpusVal32,
+        mul2: OpusVal32,
+        sum: OpusVal32,
+    ) {
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].l[{idx}]={}",
+            fmt_exp(l)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].l_bits[{idx}]=0x{:08x}",
+            l.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].r[{idx}]={}",
+            fmt_exp(r)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].r_bits[{idx}]=0x{:08x}",
+            r.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul1[{idx}]={}",
+            fmt_exp(mul1)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul1_bits[{idx}]=0x{:08x}",
+            mul1.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul2[{idx}]={}",
+            fmt_exp(mul2)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul2_bits[{idx}]=0x{:08x}",
+            mul2.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum[{idx}]={}",
+            fmt_exp(sum)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum_bits[{idx}]=0x{:08x}",
+            sum.to_bits()
+        );
+    }
+
+    pub(crate) fn dump_stereo_split_detail_split_begin(
+        frame_idx: usize,
+        band: usize,
+        n: usize,
+        scale: OpusVal32,
+    ) -> bool {
+        if !should_dump(frame_idx, band) || !stereo_split_detail_enabled() {
+            return false;
+        }
+        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].stage=split");
+        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].n={n}");
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].scale={}",
+            fmt_exp(scale)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].scale_bits=0x{:08x}",
+            scale.to_bits()
+        );
+        true
+    }
+
+    pub(crate) fn dump_stereo_split_detail_split_sample(
+        frame_idx: usize,
+        band: usize,
+        idx: usize,
+        x_in: OpusVal32,
+        y_in: OpusVal32,
+        l: OpusVal32,
+        r: OpusVal32,
+        sum: OpusVal32,
+        diff: OpusVal32,
+    ) {
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].x_in[{idx}]={}",
+            fmt_exp(x_in)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].x_in_bits[{idx}]=0x{:08x}",
+            x_in.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].y_in[{idx}]={}",
+            fmt_exp(y_in)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].y_in_bits[{idx}]=0x{:08x}",
+            y_in.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].l[{idx}]={}",
+            fmt_exp(l)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].l_bits[{idx}]=0x{:08x}",
+            l.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].r[{idx}]={}",
+            fmt_exp(r)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].r_bits[{idx}]=0x{:08x}",
+            r.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum[{idx}]={}",
+            fmt_exp(sum)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum_bits[{idx}]=0x{:08x}",
+            sum.to_bits()
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].diff[{idx}]={}",
+            fmt_exp(diff)
+        );
+        std::println!(
+            "celt_stereo_split_detail[{frame_idx}].band[{band}].diff_bits[{idx}]=0x{:08x}",
+            diff.to_bits()
         );
     }
 
@@ -2666,10 +3096,37 @@ pub(crate) fn intensity_stereo(
     let a1 = left / norm;
     let a2 = right / norm;
 
+    #[cfg(test)]
+    let trace_detail = rc_band_trace::current_frame_idx().and_then(|frame_idx| {
+        if rc_band_trace::dump_stereo_split_detail_intensity_begin(
+            frame_idx, band_id, n, left, right, norm, a1, a2,
+        ) {
+            Some(frame_idx)
+        } else {
+            None
+        }
+    });
+
     for idx in 0..n {
         let l = x[idx];
         let r = y[idx];
-        x[idx] = a1 * l + a2 * r;
+        let mul1 = a1 * l;
+        let mul2 = a2 * r;
+        let sum = mul1 + mul2;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_detail {
+            rc_band_trace::dump_stereo_split_detail_intensity_sample(
+                frame_idx,
+                band_id,
+                idx,
+                l,
+                r,
+                mul1,
+                mul2,
+                sum,
+            );
+        }
+        x[idx] = sum;
     }
 }
 
@@ -2678,9 +3135,9 @@ pub(crate) fn intensity_stereo(
 /// Mirrors `stereo_split()` from `celt/bands.c`. The helper applies the
 /// orthonormal transform that maps a mid (sum) signal and a side (difference)
 /// signal back to the left/right domain while preserving energy. CELT encodes
-/// mid/side pairs using Q15 fixed-point arithmetic; the float build operates on
-/// `f32`, so the Rust port multiplies by `FRAC_1_SQRT_2` instead of the
-/// `QCONST16(0.70710678f, 15)` constant used in the original source.
+/// mid/side pairs using Q15 fixed-point arithmetic; the float build uses the
+/// `QCONST16(0.70710678f, 15)` literal, so the Rust port keeps the same
+/// constant to preserve bit-level agreement.
 pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
     assert_eq!(
         x.len(),
@@ -2688,11 +3145,38 @@ pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
         "stereo_split expects slices of equal length",
     );
 
-    for (left, right) in x.iter_mut().zip(y.iter_mut()) {
-        let mid = FRAC_1_SQRT_2 * *left;
-        let side = FRAC_1_SQRT_2 * *right;
-        *left = mid + side;
-        *right = side - mid;
+    #[allow(clippy::approx_constant)]
+    let scale = 0.70710678_f32;
+    #[cfg(test)]
+    let trace_detail = rc_band_trace::current_frame_idx().and_then(|frame_idx| {
+        rc_band_trace::stereo_split_detail_band().and_then(|band| {
+            if rc_band_trace::dump_stereo_split_detail_split_begin(
+                frame_idx,
+                band,
+                x.len(),
+                scale,
+            ) {
+                Some((frame_idx, band))
+            } else {
+                None
+            }
+        })
+    });
+    for (idx, (left, right)) in x.iter_mut().zip(y.iter_mut()).enumerate() {
+        let xl = *left;
+        let yr = *right;
+        let l = scale * xl;
+        let r = scale * yr;
+        let sum = l + r;
+        let diff = r - l;
+        #[cfg(test)]
+        if let Some((frame_idx, band)) = trace_detail {
+            rc_band_trace::dump_stereo_split_detail_split_sample(
+                frame_idx, band, idx, xl, yr, l, r, sum, diff,
+            );
+        }
+        *left = sum;
+        *right = diff;
     }
 }
 
