@@ -7,6 +7,7 @@
 //! decoder state so they can be exercised in isolation while larger control
 //! flow is still being translated.
 
+use crate::celt::math::mul_add_f32;
 use crate::celt::types::{CeltCoef, OpusCustomMode, OpusInt32, OpusVal16, OpusVal32};
 
 /// Minimum comb-filter period supported by the scalar implementation.
@@ -100,7 +101,9 @@ pub(crate) fn comb_filter_const(
     for (i, sample) in y.iter_mut().enumerate() {
         let current = x[x_start + i];
         let x0 = x[x_start + i - t + 2];
-        let acc = current + g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4);
+        let mut acc = mul_add_f32(g10, x2, current);
+        acc = mul_add_f32(g11, x1 + x3, acc);
+        acc = mul_add_f32(g12, x0 + x4, acc);
         *sample = acc;
 
         x4 = x3;
@@ -206,15 +209,20 @@ pub(crate) fn comb_filter(
         let past2 = x[x_start + i - t0 + 2];
         let pastm2 = x[x_start + i - t0 - 2];
 
-        let blended = current
-            + one_minus_f * g00 * past0
-            + one_minus_f * g01 * (past1 + pastm1)
-            + one_minus_f * g02 * (past2 + pastm2)
-            + f * g10 * x2
-            + f * g11 * (x1 + x3)
-            + f * g12 * (x0 + x4);
+        let g00f = one_minus_f * g00;
+        let g01f = one_minus_f * g01;
+        let g02f = one_minus_f * g02;
+        let g10f = f * g10;
+        let g11f = f * g11;
+        let g12f = f * g12;
 
-        y[i] = blended;
+        let mut acc = mul_add_f32(g00f, past0, current);
+        acc = mul_add_f32(g01f, past1 + pastm1, acc);
+        acc = mul_add_f32(g02f, past2 + pastm2, acc);
+        acc = mul_add_f32(g10f, x2, acc);
+        acc = mul_add_f32(g11f, x1 + x3, acc);
+        acc = mul_add_f32(g12f, x0 + x4, acc);
+        y[i] = acc;
 
         x4 = x3;
         x3 = x2;

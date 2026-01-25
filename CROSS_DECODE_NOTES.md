@@ -2552,3 +2552,32 @@ OPUS_TRACE_PCM=ehren-paper_lights-96.pcm OPUS_TRACE_FRAMES=64 \
 OPUS_TRACE_MODE=1 OPUS_TRACE_MODE_FRAME=21 \
 cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture
 ```
+
+## 2026-01-25 — Prefilter comb_filter uses fused mul-add (mismatch now frame 693)
+
+Findings (frame 104):
+- Prefilter params and inputs matched, but `celt_prefilter.post` differed by
+  1 ULP at sample 0 (`0x4327a552` vs `0x4327a553`).
+- Tracing showed the first drift in the comb filter overlap section
+  (prefilter output), before MDCT/quantization.
+- C is built with `-ffast-math`, so fused multiply-add contraction is allowed;
+  Rust was doing separate mul + add.
+
+Fix:
+- Use `mul_add_f32` (libm `fmaf`) when accumulating terms in `comb_filter` and
+  `comb_filter_const`, matching C’s fused rounding.
+
+Results:
+- `celt_prefilter[104].post.*` sample bits now match exactly.
+- **First packet mismatch moved to frame 693** (0‑based), length 170 vs 171;
+  first differing byte offset 23 (C=193, Rust=194).
+
+Trace commands:
+```
+CELT_TRACE_PREFILTER=1 CELT_TRACE_PREFILTER_FRAME=104 CELT_TRACE_PREFILTER_BITS=1 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets.opuspkt
+
+CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=128 \
+CELT_TRACE_PREFILTER=1 CELT_TRACE_PREFILTER_FRAME=104 CELT_TRACE_PREFILTER_BITS=1 \
+cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
+```
