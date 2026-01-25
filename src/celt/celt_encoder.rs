@@ -56,7 +56,7 @@ extern crate std;
 mod celt_alloc_trace {
     extern crate std;
 
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
     use std::env;
     use std::sync::OnceLock;
 
@@ -449,7 +449,7 @@ mod celt_vbr_budget_trace {
 mod celt_rc_trace {
     extern crate std;
 
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
     use std::env;
     use std::sync::OnceLock;
 
@@ -461,17 +461,30 @@ mod celt_rc_trace {
 
     static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
     static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
 
     pub(crate) fn begin_frame() -> Option<usize> {
         if config().is_some() {
-            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
+            let idx = FRAME_INDEX.fetch_add(1, Ordering::Relaxed);
+            CURRENT_FRAME.store(idx as isize, Ordering::Relaxed);
+            Some(idx)
         } else {
+            CURRENT_FRAME.store(-1, Ordering::Relaxed);
             None
         }
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
         config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+    }
+
+    pub(crate) fn current_frame_idx() -> Option<usize> {
+        let value = CURRENT_FRAME.load(Ordering::Relaxed);
+        if value >= 0 {
+            Some(value as usize)
+        } else {
+            None
+        }
     }
 
     fn config() -> Option<&'static TraceConfig> {
@@ -749,7 +762,7 @@ mod celt_loge_adjust_trace {
 mod celt_prefilter_trace {
     extern crate std;
 
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
     use std::env;
     use std::sync::OnceLock;
 
@@ -762,17 +775,30 @@ mod celt_prefilter_trace {
 
     static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
     static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
 
     pub(crate) fn begin_frame() -> Option<usize> {
         if config().is_some() {
-            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
+            let idx = FRAME_INDEX.fetch_add(1, Ordering::Relaxed);
+            CURRENT_FRAME.store(idx as isize, Ordering::Relaxed);
+            Some(idx)
         } else {
+            CURRENT_FRAME.store(-1, Ordering::Relaxed);
             None
         }
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
         config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+    }
+
+    pub(crate) fn current_frame_idx() -> Option<usize> {
+        let value = CURRENT_FRAME.load(Ordering::Relaxed);
+        if value >= 0 {
+            Some(value as usize)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn config() -> Option<&'static TraceConfig> {
@@ -2704,6 +2730,10 @@ fn run_prefilter(
     assert!(channels > 0, "run_prefilter requires at least one channel");
     assert!(n > 0, "run_prefilter expects a positive frame size");
 
+    #[cfg(test)]
+    let trace_frame_idx = celt_prefilter_trace::current_frame_idx()
+        .filter(|&idx| celt_prefilter_trace::should_dump(idx));
+
     let mode = encoder.mode;
     let overlap = mode.overlap;
     let stride = overlap + n;
@@ -2761,7 +2791,7 @@ fn run_prefilter(
                     search_span,
                     encoder.arch,
                 );
-                pitch_index = result;
+                pitch_index = history_len as i32 - result;
             }
         }
 
@@ -2809,6 +2839,46 @@ fn run_prefilter(
         gain1 *= analysis.max_pitch_ratio;
     }
 
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].gain1_pre={:.9}",
+            gain1
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pitch_index_pre={}",
+            pitch_index
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].prefilter_period_pre={}",
+            encoder.prefilter_period
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].prefilter_gain_pre={:.9}",
+            encoder.prefilter_gain
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].analysis_max_pitch_ratio={:.9}",
+            analysis.max_pitch_ratio
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].tf_estimate={:.9}",
+            tf_estimate
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].toneishness={:.9}",
+            toneishness
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].tone_freq={:.9}",
+            tone_freq
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].nb_available_bytes={}",
+            nb_available_bytes
+        );
+    }
+
     let mut pf_threshold: f32 = 0.2;
 
     if (pitch_index - encoder.prefilter_period).abs() * 10 > pitch_index {
@@ -2832,11 +2902,18 @@ fn run_prefilter(
 
     pf_threshold = pf_threshold.max(0.2);
 
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pf_threshold={:.9}",
+            pf_threshold
+        );
+    }
+
     let mut pf_on = false;
     let mut qg_local = 0;
     if gain1 < pf_threshold {
         gain1 = 0.0;
-        pitch_index = COMBFILTER_MINPERIOD as i32;
     } else {
         if (gain1 - encoder.prefilter_gain).abs() < 0.1 {
             gain1 = encoder.prefilter_gain;
@@ -2846,6 +2923,26 @@ fn run_prefilter(
         gain1 = 0.093_75 * (quant + 1) as f32;
         qg_local = quant;
         pf_on = true;
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].gain1_quant={:.9}",
+            gain1
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pitch_index_quant={}",
+            pitch_index
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].qg_local={}",
+            qg_local
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pf_on_pre_cancel={}",
+            pf_on as i32
+        );
     }
 
     let mut before = [0.0f32; MAX_CHANNELS];
@@ -2942,6 +3039,42 @@ fn run_prefilter(
         cancel_pitch = true;
     }
 
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        for ch in 0..channels {
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].before.ch[{ch}]={:.9}",
+                before[ch]
+            );
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].after.ch[{ch}]={:.9}",
+                after[ch]
+            );
+        }
+        if channels == 2 {
+            let thresh0 = 0.25 * gain1 * before[0] + 0.01 * before[1];
+            let thresh1 = 0.25 * gain1 * before[1] + 0.01 * before[0];
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].thresh0={:.9}",
+                thresh0
+            );
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].thresh1={:.9}",
+                thresh1
+            );
+        } else {
+            let thresh0 = 0.25 * gain1 * before[0];
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].thresh0={:.9}",
+                thresh0
+            );
+        }
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].cancel_pitch={}",
+            cancel_pitch as i32
+        );
+    }
+
     if cancel_pitch {
         for ch in 0..channels {
             let input_offset = ch * stride;
@@ -2976,6 +3109,22 @@ fn run_prefilter(
         gain1 = 0.0;
         qg_local = 0;
         pf_on = false;
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].gain1_final={:.9}",
+            gain1
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].qg_local_final={}",
+            qg_local
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pf_on_final={}",
+            pf_on as i32
+        );
     }
 
     for ch in 0..channels {
@@ -3771,6 +3920,9 @@ fn celt_encode_with_ec_inner<'a>(
     let mut qg = 0;
     let mut pitch_change = false;
     let prefilter_tapset = encoder.tapset_decision;
+    let prefilter_period_old = encoder.prefilter_period;
+    let prefilter_gain_old = encoder.prefilter_gain;
+    let prefilter_tapset_old = encoder.prefilter_tapset;
     let enabled = ((encoder.lfe && nb_available_bytes > 3)
         || nb_available_bytes > 12 * c as i32)
         && !hybrid
@@ -3796,6 +3948,64 @@ fn celt_encode_with_ec_inner<'a>(
         tone_freq,
         toneishness,
     );
+    #[cfg(test)]
+    if trace_prefilter_should_dump {
+        let frame_idx = trace_prefilter_frame_idx.unwrap();
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].enabled={}",
+            if enabled { 1 } else { 0 }
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].pf_on={}",
+            if pf_on { 1 } else { 0 }
+        );
+        std::println!("celt_prefilter_param[{frame_idx}].pitch_index={pitch_index}");
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].gain1={:.9e}",
+            gain1 as f64
+        );
+        std::println!("celt_prefilter_param[{frame_idx}].qg={qg}");
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].prefilter_period_old={prefilter_period_old}"
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].prefilter_gain_old={:.9e}",
+            prefilter_gain_old as f64
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].prefilter_tapset_old={prefilter_tapset_old}"
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].prefilter_tapset={prefilter_tapset}"
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].tf_estimate={:.9e}",
+            tf_estimate as f64
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].tone_freq={:.9e}",
+            tone_freq as f64
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].toneishness={:.9e}",
+            toneishness as f64
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].nb_available_bytes={nb_available_bytes}"
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].analysis_valid={}",
+            if analysis.valid { 1 } else { 0 }
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].max_pitch_ratio={:.9e}",
+            analysis.max_pitch_ratio as f64
+        );
+        std::println!(
+            "celt_prefilter_param[{frame_idx}].loss_rate={}",
+            encoder.loss_rate
+        );
+    }
     #[cfg(test)]
     if trace_prefilter_should_dump {
         celt_prefilter_trace::dump("post", trace_prefilter_frame_idx.unwrap(), &input, cc);

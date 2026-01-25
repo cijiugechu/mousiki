@@ -2478,3 +2478,34 @@ cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
 Next:
 - Start tracing frame 16 (same CELT control/VBR/alloc path). Check whether the
   first drift is still in VBR target/alloc or later in quantization/RC.
+
+## 2026-01-25 — Prefilter threshold branch keeps pitch_index (frame 12)
+
+Findings (frame 12, `run_prefilter` debug):
+- C and Rust agree on `gain1_pre`, `pf_threshold`, and `pf_on_pre_cancel`.
+- **Difference**: when `gain1 < pf_threshold`, C **does not** reset
+  `pitch_index`; Rust was forcing `pitch_index = COMBFILTER_MINPERIOD`.
+- This showed up as `pitch_index_quant` mismatch: C=1021 vs Rust=15.
+
+Fix:
+- Removed the `pitch_index = COMBFILTER_MINPERIOD` assignment in the
+  `gain1 < pf_threshold` branch of Rust `run_prefilter`, matching C.
+
+Result:
+- Prefilter debug outputs now match for frame 12.
+- Packet mismatch moved forward again.
+
+Packet compare (OPUSPKT1):
+- **First payload mismatch is now frame 21** (0‑based).
+- Lengths match: C=161, Rust=161.
+- First differing byte offset: 8 (C=76, Rust=81).
+
+Trace commands:
+```
+CELT_TRACE_PREFILTER=1 CELT_TRACE_PREFILTER_FRAME=12 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets.opuspkt
+
+CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=64 \
+CELT_TRACE_PREFILTER=1 CELT_TRACE_PREFILTER_FRAME=12 \
+cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
+```
