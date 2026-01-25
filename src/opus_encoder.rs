@@ -2381,13 +2381,20 @@ fn encode_frame_native<'mode>(
     let _trace_pcm_frame = opus_pcm_trace::begin_frame();
     #[cfg(test)]
     let trace_budget_frame_idx = opus_celt_budget_trace::begin_frame();
+    #[cfg(test)]
+    let trace_range_frame_idx = crate::range::begin_range_done_trace_frame();
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_range_frame_idx {
+        crate::range::set_range_done_trace_frame(frame_idx);
+    }
 
     let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
     let frame_rate = encoder
         .fs
         .checked_div(frame_size_i32)
         .ok_or(OpusEncodeError::BadArgument)?;
-    let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    let mut max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    max_data_bytes = max_data_bytes.min(1276);
     let mut pcm_buf_storage = [OpusRes::default(); MAX_PCM_BUF_SAMPLES];
     let pcm_buf_len =
         prepare_pcm_buffer(encoder, pcm, frame_size, channels, &mut pcm_buf_storage)?;
@@ -2668,7 +2675,7 @@ fn encode_frame_native<'mode>(
             })?;
 
             let range_final = range_encoder.range_final();
-            let payload = range_encoder.finish();
+            let payload = range_encoder.finish_without_done();
             let mut payload_len = payload.len();
             if payload_len > max_payload_bytes {
                 return Err(OpusEncodeError::BufferTooSmall);

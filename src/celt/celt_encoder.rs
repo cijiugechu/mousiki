@@ -2210,7 +2210,7 @@ fn transient_analysis(
     }
 
     let len2 = len / 2;
-    let mut mask_metric = 0.0f32;
+    let mut mask_metric = 0i32;
     *tf_chan = 0;
 
     for c in 0..channels {
@@ -2252,8 +2252,8 @@ fn transient_analysis(
         }
 
         let frame_energy = celt_sqrt(mean * max_e * 0.5 * len2 as f32);
-        // Equivalent to the floating-point branch of the original `norm` computation.
-        let norm = (len2 as f32) / (frame_energy * 0.5 + 1e-15f32);
+        // Matches the float build of the reference (no SHR32 scaling).
+        let norm = (len2 as f32) / (frame_energy + 1e-15f32);
 
         let mut unmask = 0i32;
         for i in (12..len2.saturating_sub(5)).step_by(4) {
@@ -2267,7 +2267,7 @@ fn transient_analysis(
         if len2 > 17 {
             let denom = 6 * (len2 as i32 - 17);
             if denom > 0 {
-                let value = (64 * unmask * 4) as f32 / denom as f32;
+                let value = (64 * unmask * 4) / denom;
                 if value > mask_metric {
                     mask_metric = value;
                     *tf_chan = c;
@@ -2276,16 +2276,16 @@ fn transient_analysis(
         }
     }
 
-    let mut is_transient = mask_metric > 200.0;
+    let mut is_transient = mask_metric > 200;
     if toneishness > 0.98 && tone_freq < 0.026 {
         is_transient = false;
     }
-    if allow_weak_transients && is_transient && mask_metric < 600.0 {
+    if allow_weak_transients && is_transient && mask_metric < 600 {
         is_transient = false;
         *weak_transient = true;
     }
 
-    let mut tf_max = celt_sqrt(27.0 * mask_metric) - 42.0;
+    let mut tf_max = celt_sqrt(27.0 * mask_metric as f32) - 42.0;
     if tf_max < 0.0 {
         tf_max = 0.0;
     }
@@ -3226,11 +3226,11 @@ fn compute_vbr(
         let tonal = (analysis.tonality - 0.15f32).max(0.0) - 0.12f32;
         if tonal != 0.0 {
             let coded = (i64::from(coded_bins) << bitres) as f32;
-            let mut tonal_target = target as f32 + 1.2f32 * coded * tonal;
+            let mut tonal_target = target + (1.2f32 * coded * tonal) as i32;
             if pitch_change {
-                tonal_target += 0.8f32 * coded;
+                tonal_target += (0.8f32 * coded) as i32;
             }
-            target = tonal_target as i32;
+            target = tonal_target;
         }
     }
     #[cfg(test)]
@@ -4448,6 +4448,7 @@ fn celt_encode_with_ec_inner<'a>(
         }
         enc.enc_icdf(alloc_trim as usize, &TRIM_ICDF, 7);
         tell_frac = ec_tell_frac(enc.ctx()) as i32;
+        tell = tell_frac;
     }
 
     if vbr_rate > 0 {
@@ -4774,6 +4775,10 @@ fn celt_encode_with_ec_inner<'a>(
         let anti_collapse_on = encoder.consec_transient < 2;
         enc.enc_bits(anti_collapse_on as u32, 1);
     }
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_rc_frame_idx {
+        celt_rc_trace::dump_if_match(frame_idx, "post_anticollapse", enc.ctx());
+    }
 
     let remaining_bits = nb_compressed_bytes as i32 * 8 - ec_tell(enc.ctx());
     quant_energy_finalise(
@@ -4788,6 +4793,10 @@ fn celt_encode_with_ec_inner<'a>(
         enc,
         c,
     );
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_rc_frame_idx {
+        celt_rc_trace::dump_if_match(frame_idx, "post_fine_energy", enc.ctx());
+    }
 
     encoder.energy_error.fill(0.0);
     for channel in 0..c {

@@ -2337,3 +2337,144 @@ Next step:
 - Trace frame 13 `music_prob` drift using the same tonality/activity traces
   (or add a targeted trace inside `tonality_get_info` around `prob_avg` /
   `prob_min` / `prob_max`).
+
+## 2026-01-25 — GRU trace (frame 13) + h_post alignment
+
+After the tonality + music_prob fixes, the first drift moved to frame 13
+`analysis_info[13].music_prob`. Activity trace showed:
+- `features` now match (after the FMA tweak on `features[4+i]`).
+- The remaining mismatch was only in `rnn_post` (and thus `frame_probs`).
+
+### GRU trace (new)
+Added a focused GRU trace in both C and Rust:
+- C: `opus-c/src/mlp.c` prints `analysis_gru[frame]` dumps for `z`, `r`,
+  `h_pre`, `h_act`, `h_mix1`, `h_mix2`, `h_post` with optional bits.
+- Rust: `src/mlp.rs` mirrors the same dumps under a new
+  `ANALYSIS_TRACE_GRU*` env; `src/analysis.rs` sets the frame index each
+  iteration (`set_gru_trace_frame`).
+- C `analysis.c` now always calls `analysis_gru_set_frame(...)` with its own
+  per‑frame counter so the GRU trace does not depend on the activity trace.
+
+Findings (frame 13):
+- `z`, `r`, `h_pre`, and `h_act` all match between C/Rust.
+- The first mismatch was **only** in `h_post`.
+- After exposing `h_mix1 = z*state` and `h_mix2 = (1-z)*h_act`, both `h_mix*`
+  terms match, so the fix is to use a **plain sum** (no FMA) for `h_post`.
+
+Fix:
+- Rust `analysis_compute_gru` now computes:
+  `h_mix1 = z*state`, `h_mix2 = (1-z)*h_act`, `h_post = h_mix1 + h_mix2`.
+  This aligns the GRU output with C.
+
+Result:
+- Activity trace for frame 13 now matches fully.
+- `analysis_compare` first diff moved to frame 14:
+  `analysis_state[14].cmean[0]` (1‑ULP).
+
+GRU trace commands:
+```
+ANALYSIS_TRACE_GRU=1 ANALYSIS_TRACE_GRU_FRAME=13 ANALYSIS_TRACE_GRU_BITS=1 \
+ctests/build/analysis_compare ehren-paper_lights-96.pcm 64 \
+  > /tmp/analysis_gru13_c.txt
+
+ANALYSIS_TRACE_GRU=1 ANALYSIS_TRACE_GRU_FRAME=13 ANALYSIS_TRACE_GRU_BITS=1 \
+ANALYSIS_PCM=ehren-paper_lights-96.pcm ANALYSIS_FRAMES=64 \
+cargo test -p mousiki --lib analysis_compare_output -- --nocapture \
+  > /tmp/analysis_gru13_r.txt
+```
+
+Next step:
+- Trace frame 14 `cmean[0]` drift with activity trace (check `bfcc` inputs and
+  `cmean` update formula for FMA/ordering).
+
+2026-01-25 — Activity/tonality alignment through frame 64
+
+Progression after frame 14 fix:
+- Frame 17 mismatch moved into activity/MLP inputs. Activity trace showed
+  mismatched `log_e`/`bfcc`/features; tonality slope trace matched.
+- Switched `log_e` to use `log` with f64 intermediates to mirror C’s
+  `(float)log(...)`, and re-ordered feature[0..3] accumulation with fma to
+  match C’s rounding.
+- Frame 18 mismatch isolated to `frame_noisiness`/`n_e` accumulation. Fixed by
+  using `fma` for `n_e` update: `n_e = fma(bin_e*2, (0.5-noisiness), n_e)`.
+- Frame 27 mismatch isolated to `relative_e`. Fixed by keeping the denominator
+  as `1e-5 + (high_e - low_e)` explicitly (matches C’s parentheses).
+- Frame 47 tonality mismatch traced to `max_frame_tonality` weighting.
+  C effectively evaluates `(1 + 0.03*(b-NB_TBANDS))` in higher precision; Rust
+  now uses f64 intermediates for the weight and weighted term before casting
+  back to f32.
+
+Trace hooks added (debug-only / env-gated):
+- Activity trace now dumps `frame_noisiness`, `relative_e`, `activity`, plus
+  per-band `band_e`, `band_n_e`, `band_noisiness` (with optional bits).
+- Tonality trace now dumps per-band `frame_tonality`, `weight`, `weighted`,
+  `max_frame_tonality`, and per-frame `max_frame_tonality` / `frame_tonality`
+  details (with optional bits).
+
+Result:
+- `analysis_compare` (64 frames, `ehren-paper_lights-96.pcm`) now shows no
+  mismatches between C and Rust.
+
+## 2026-01-25 — Frame 13 CELT VBR/alloc alignment (mismatch now at frame 16)
+
+Packet compare (OPUSPKT1, `ehren-paper_lights-96.pcm`) after the range‑coder
+fixes:
+- First payload mismatch moved from frame 13 to frame 16.
+- New first mismatch: frame index 16, payload len C=165 / Rust=165, first
+  differing byte at offset 1 (payload includes TOC).
+
+### Root cause for frame 13 (now fixed)
+The first mismatch was in CELT VBR/alloc before quantization:
+- `celt_ctrl` showed `nb_compressed_bytes`, `tf_estimate`, `alloc_trim`, and
+  `bits` diverging.
+- `celt_vbr_budget` drifted at `post_target`.
+- `celt_alloc_interp` already diverged at `bits1/bits2` for band 0.
+
+Fixes:
+1) **Clamp max_data_bytes inside `encode_frame_native`**  
+   C clamps `orig_max_data_bytes` to 1276 per frame. Rust was only clamping
+   to `MAX_PACKET_BYTES` at the outer layer, so the CELT budget saw 3828
+   bytes. Now `encode_frame_native` caps `max_data_bytes` to 1276.
+   - `opus_celt_budget` trace matches C (frame 13).
+
+2) **`transient_analysis` float branch**  
+   - Use `norm = len2 / (frame_energy + 1e-15)` (float build: `SHR32` is a
+     no‑op in C; Rust was dividing by `frame_energy * 0.5`).
+   - Keep `mask_metric` as **int** and normalize with integer division
+     (`64*unmask*4/(6*(len2-17))`) like C.  
+   Result: `tf_estimate` matches bit‑exact.
+
+3) **`compute_vbr` tonality step truncation**  
+   C does `target + (int)(coded*1.2*tonal)`; Rust was casting after the sum.
+   Now Rust truncates the product before adding, matching C and fixing the
+   1‑LSB drift after `after_tonality`.
+
+4) **Trace parity for `tell`**  
+   After encoding `alloc_trim`, set `tell = tell_frac` to mirror C’s use of
+   `ec_tell_frac` for later traces (`celt_ctrl`, `celt_vbr_budget`).
+
+After these changes (frame 13):
+- `celt_vbr_budget`, `celt_ctrl`, `celt_alloc_interp`, `celt_quant` (bit
+  dumps), and `celt_rc` all match C.
+- The packet mismatch moved forward to frame 16.
+
+Trace commands used:
+```
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=13 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets.opuspkt
+
+CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=64 \
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=13 \
+cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
+
+CELT_TRACE_ALLOC_INTERP=1 CELT_TRACE_ALLOC_INTERP_FRAME=13 CELT_TRACE_ALLOC_INTERP_BAND=0 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets.opuspkt
+
+CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=64 \
+CELT_TRACE_ALLOC_INTERP=1 CELT_TRACE_ALLOC_INTERP_FRAME=13 CELT_TRACE_ALLOC_INTERP_BAND=0 \
+cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
+```
+
+Next:
+- Start tracing frame 16 (same CELT control/VBR/alloc path). Check whether the
+  first drift is still in VBR target/alloc or later in quantization/RC.
