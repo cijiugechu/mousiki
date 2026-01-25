@@ -2590,6 +2590,18 @@ fn encode_frame_native<'mode>(
                 bandwidth = Bandwidth::Wide;
             }
 
+            let end_band = match bandwidth {
+                Bandwidth::Narrow => 13,
+                Bandwidth::Medium | Bandwidth::Wide => 17,
+                Bandwidth::SuperWide => 19,
+                Bandwidth::Full => 21,
+            };
+            opus_custom_encoder_ctl(
+                encoder.celt.encoder(),
+                CeltEncoderCtlRequest::SetEndBand(end_band),
+            )
+            .map_err(|_| OpusEncodeError::InternalError)?;
+
             opus_custom_encoder_ctl(
                 encoder.celt.encoder(),
                 CeltEncoderCtlRequest::SetLsbDepth(lsb_depth),

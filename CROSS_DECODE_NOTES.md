@@ -2509,3 +2509,46 @@ CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=64 \
 CELT_TRACE_PREFILTER=1 CELT_TRACE_PREFILTER_FRAME=12 \
 cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
 ```
+
+## 2026-01-25 — Temporal VBR + CELT-only end_band fixes (mismatch now frame 104)
+
+Findings:
+- Frame 21 mismatch traced back to `celt_ctrl` showing `end` mismatch
+  (C=19 vs Rust=21) and `tell` drift before `clt_compute_allocation`.
+- Opus mode trace for frame 21 shows `bandwidth=1104` (SuperWide) on both sides,
+  but Rust **never set `end_band` in the CELT-only path**, so the CELT encoder
+  retained the previous (fullband) `end_band`.
+- `compute_vbr` delta drift started at frame 16 due to **temporal VBR math**:
+  - `follow` decay was wrong (`max(follow, candidate)`), so it never decayed.
+  - `temporal_vbr` incorrectly used `frame_avg * 32` even in float build; C’s
+    `SHL32` is a no-op, so it should be just `frame_avg - spec_avg`.
+
+Fixes:
+- Correct `follow` update in temporal VBR:
+  `follow = (follow - 1.0).max(candidate);`
+- Remove the `* 32` in `temporal_vbr` (float build matches C’s `SHL32` no-op).
+- Set `CELT_SET_END_BAND` in the **CELT-only** encode path, matching the
+  hybrid path.
+
+Results:
+- `celt_temporal_vbr`/`celt_vbr_budget` now match for frame 16.
+- `celt_ctrl` end-band mismatch for frame 21 resolved.
+- **First packet mismatch moved to frame 104** (0‑based), length 158; first
+  differing byte offset 79 (C=141, Rust=159).
+
+Trace commands:
+```
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=16 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets.opuspkt
+
+CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=64 \
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=16 \
+cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
+
+OPUS_TRACE_MODE=1 OPUS_TRACE_MODE_FRAME=21 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets.opuspkt
+
+OPUS_TRACE_PCM=ehren-paper_lights-96.pcm OPUS_TRACE_FRAMES=64 \
+OPUS_TRACE_MODE=1 OPUS_TRACE_MODE_FRAME=21 \
+cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture
+```

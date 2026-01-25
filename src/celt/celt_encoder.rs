@@ -4319,6 +4319,15 @@ fn celt_encode_with_ec_inner<'a>(
     }
 
     if !encoder.lfe {
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_vbr_frame_idx {
+            if celt_vbr_budget_trace::should_dump(frame_idx) {
+                std::println!(
+                    "celt_temporal_vbr[{frame_idx}].spec_avg_pre={:.9e}",
+                    encoder.spec_avg as f64
+                );
+            }
+        }
         let mut follow = -10.0f32;
         let mut frame_avg = 0.0f32;
         let offset = if short_blocks != 0 { 0.5 * lm as f32 } else { 0.0 };
@@ -4327,15 +4336,37 @@ fn celt_encode_with_ec_inner<'a>(
             if c == 2 {
                 candidate = candidate.max(band_log_e[nb_ebands + band] - offset);
             }
-            follow = follow.max(candidate).max(follow - 1.0);
+            follow = (follow - 1.0).max(candidate);
             frame_avg += follow;
         }
         if end as usize > start {
             frame_avg /= (end as usize - start) as f32;
         }
-        temporal_vbr = (frame_avg * 32.0) - encoder.spec_avg;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_vbr_frame_idx {
+            if celt_vbr_budget_trace::should_dump(frame_idx) {
+                std::println!(
+                    "celt_temporal_vbr[{frame_idx}].frame_avg={:.9e}",
+                    frame_avg as f64
+                );
+            }
+        }
+        temporal_vbr = frame_avg - encoder.spec_avg;
         temporal_vbr = temporal_vbr.clamp(-1.5, 3.0);
         encoder.spec_avg += 0.02 * temporal_vbr;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_vbr_frame_idx {
+            if celt_vbr_budget_trace::should_dump(frame_idx) {
+                std::println!(
+                    "celt_temporal_vbr[{frame_idx}].temporal_vbr={:.9e}",
+                    temporal_vbr as f64
+                );
+                std::println!(
+                    "celt_temporal_vbr[{frame_idx}].spec_avg_post={:.9e}",
+                    encoder.spec_avg as f64
+                );
+            }
+        }
     }
 
     if !second_mdct {
