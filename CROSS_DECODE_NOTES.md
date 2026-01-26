@@ -2581,3 +2581,51 @@ CELT_TRACE_PCM=ehren-paper_lights-96.pcm CELT_TRACE_FRAMES=128 \
 CELT_TRACE_PREFILTER=1 CELT_TRACE_PREFILTER_FRAME=104 CELT_TRACE_PREFILTER_BITS=1 \
 cargo test -p mousiki --lib celt_alloc_trace_output -- --nocapture
 ```
+
+## 2026-01-26 — transient_analysis inv_table mismatch fixed (frame 693 VBR aligns)
+
+New trace knobs (C + Rust):
+- `CELT_TRACE_TRANSIENT=1`
+- `CELT_TRACE_TRANSIENT_FRAME=<n>`
+- `CELT_TRACE_TRANSIENT_BITS=1` (optional)
+
+Findings (frame 693):
+- `mask_metric` differed by 1: C=175 vs Rust=176, which propagated into
+  `tf_estimate` and VBR target.
+- Per-step unmask trace showed the first *effective* divergence at
+  `channel[1]`, `i=368`: `clamped=110` matched but `inv_table` differed
+  (C=3 vs Rust=4).
+- Rust `INV_TABLE` had four mismatched entries vs C:
+  indices 73, 85, 110, 111.
+
+Fix:
+- Update Rust `INV_TABLE` in `transient_analysis` to match the C table.
+
+Results:
+- `mask_metric`, `tf_max`, `tf_estimate` now match bit‑exact for frame 693.
+- `celt_vbr_budget` now matches C for frame 693
+  (`target=10816`, `nb_compressed_bytes=169`).
+- Packet compare on the first 700 frames (`/tmp/ehren-700.pcm`) now matches:
+  no payload/TOC/length mismatches across frames 0‑699.
+
+Trace commands used:
+```
+CELT_TRACE_TRANSIENT=1 CELT_TRACE_TRANSIENT_FRAME=693 CELT_TRACE_TRANSIENT_BITS=1 \
+ctests/build/opus_packet_encode /tmp/ehren-700.pcm /tmp/opus_c_transient_693.opuspkt \
+  > /tmp/opus_c_transient_693.txt
+
+CELT_TRACE_TRANSIENT=1 CELT_TRACE_TRANSIENT_FRAME=693 CELT_TRACE_TRANSIENT_BITS=1 \
+OPUS_TRACE_PCM=/tmp/ehren-700.pcm OPUS_TRACE_FRAMES=700 \
+cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
+  > /tmp/opus_r_transient_693.txt
+```
+
+Packet compare (700 frames):
+```
+ctests/build/opus_packet_encode /tmp/ehren-700.pcm /tmp/c_packets_new.opuspkt
+cargo run --example opus_packet_tool -- encode /tmp/ehren-700.pcm /tmp/rust_packets_new.opuspkt
+```
+
+Next:
+- Re-run packet compare to see whether the frame‑693 payload mismatch is
+  resolved and find the new first mismatch frame (if any).

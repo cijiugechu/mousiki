@@ -46,7 +46,7 @@ use core::f32::consts::FRAC_1_SQRT_2;
 use core::ptr::NonNull;
 #[cfg(not(feature = "fixed_point"))]
 use libm::acosf;
-use libm::floorf;
+use libm::{floor, floorf};
 #[cfg(test)]
 use crate::celt::mdct::mdct_trace as mdct_input_trace;
 #[cfg(test)]
@@ -1069,6 +1069,71 @@ mod celt_mdct_trace {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod celt_transient_trace {
+    extern crate std;
+
+    use core::cell::Cell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+    use std::thread_local;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+        want_bits: bool,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    thread_local! { static CURRENT_FRAME: Cell<Option<usize>> = Cell::new(None); }
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            let frame = FRAME_INDEX.fetch_add(1, Ordering::Relaxed);
+            CURRENT_FRAME.with(|current| current.set(Some(frame)));
+            Some(frame)
+        } else {
+            CURRENT_FRAME.with(|current| current.set(None));
+            None
+        }
+    }
+
+    pub(crate) fn current_frame_idx() -> Option<usize> {
+        CURRENT_FRAME.with(|current| current.get())
+    }
+
+    pub(crate) fn should_dump(frame_idx: usize) -> bool {
+        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+    }
+
+    pub(crate) fn want_bits() -> bool {
+        config().map_or(false, |cfg| cfg.want_bits)
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("CELT_TRACE_TRANSIENT") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("CELT_TRACE_TRANSIENT_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                let want_bits = match env::var("CELT_TRACE_TRANSIENT_BITS") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                Some(TraceConfig { frame, want_bits })
+            })
+            .as_ref()
     }
 }
 
@@ -2218,14 +2283,22 @@ fn transient_analysis(
     toneishness: OpusVal32,
 ) -> bool {
     const INV_TABLE: [u8; 128] = [
-        255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18,
-        17, 16, 16, 15, 15, 14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9,
-        8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5,
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-        4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
+        255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25,
+        23, 22, 21, 20, 19, 18, 17, 16, 16, 15, 15, 14, 13, 13, 12, 12,
+        12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8,
+        8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3,
+        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
     ];
 
     debug_assert!(channels * len <= input.len());
+    #[cfg(test)]
+    let trace_frame_idx = celt_transient_trace::current_frame_idx()
+        .filter(|&idx| celt_transient_trace::should_dump(idx));
+    #[cfg(test)]
+    let trace_bits = celt_transient_trace::want_bits();
 
     let mut tmp = vec![0.0f32; len];
     *weak_transient = false;
@@ -2238,6 +2311,15 @@ fn transient_analysis(
     let len2 = len / 2;
     let mut mask_metric = 0i32;
     *tf_chan = 0;
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!("celt_transient[{frame_idx}].len={len}");
+        std::println!("celt_transient[{frame_idx}].channels={channels}");
+        std::println!(
+            "celt_transient[{frame_idx}].allow_weak_transients={}",
+            i32::from(allow_weak_transients)
+        );
+    }
 
     for c in 0..channels {
         let mut mem0 = 0.0f32;
@@ -2280,20 +2362,59 @@ fn transient_analysis(
         let frame_energy = celt_sqrt(mean * max_e * 0.5 * len2 as f32);
         // Matches the float build of the reference (no SHR32 scaling).
         let norm = (len2 as f32) / (frame_energy + 1e-15f32);
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame_idx {
+            std::println!(
+                "celt_transient[{frame_idx}].channel[{c}].mean={:.9e}",
+                mean as f64
+            );
+            std::println!(
+                "celt_transient[{frame_idx}].channel[{c}].max_e={:.9e}",
+                max_e as f64
+            );
+            std::println!(
+                "celt_transient[{frame_idx}].channel[{c}].frame_energy={:.9e}",
+                frame_energy as f64
+            );
+            std::println!(
+                "celt_transient[{frame_idx}].channel[{c}].norm={:.9e}",
+                norm as f64
+            );
+        }
 
         let mut unmask = 0i32;
         for i in (12..len2.saturating_sub(5)).step_by(4) {
             debug_assert!(!tmp[i].is_nan());
             debug_assert!(!norm.is_nan());
-            let scaled = floorf(64.0 * norm * (tmp[i] + 1e-15f32));
-            let clamped = scaled.clamp(0.0, 127.0) as usize;
+            let product = 64.0f64 * f64::from(norm) * (f64::from(tmp[i]) + 1e-15f64);
+            let scaled = floor(product);
+            let clamped = scaled.max(0.0).min(127.0) as usize;
             unmask += i32::from(INV_TABLE[clamped]);
+            #[cfg(test)]
+            if let Some(frame_idx) = trace_frame_idx {
+                std::println!(
+                    "celt_transient[{frame_idx}].channel[{c}].unmask_step i={i} tmp={:.9e} product={:.9e} scaled={:.9e} clamped={clamped} inv={}",
+                    tmp[i] as f64,
+                    product,
+                    scaled,
+                    INV_TABLE[clamped],
+                );
+            }
         }
 
         if len2 > 17 {
             let denom = 6 * (len2 as i32 - 17);
             if denom > 0 {
                 let value = (64 * unmask * 4) / denom;
+                #[cfg(test)]
+                if let Some(frame_idx) = trace_frame_idx {
+                    std::println!(
+                        "celt_transient[{frame_idx}].channel[{c}].unmask_sum={unmask}"
+                    );
+                    std::println!(
+                        "celt_transient[{frame_idx}].channel[{c}].unmask_norm={value}"
+                    );
+                }
                 if value > mask_metric {
                     mask_metric = value;
                     *tf_chan = c;
@@ -2311,13 +2432,50 @@ fn transient_analysis(
         *weak_transient = true;
     }
 
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!("celt_transient[{frame_idx}].mask_metric={mask_metric}");
+    }
     let mut tf_max = celt_sqrt(27.0 * mask_metric as f32) - 42.0;
+    #[cfg(test)]
+    let tf_max_raw = tf_max;
     if tf_max < 0.0 {
         tf_max = 0.0;
     }
     let tf_max = tf_max.min(163.0);
     let value = (0.0069 * tf_max - 0.139).max(0.0);
     *tf_estimate = celt_sqrt(value);
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_transient[{frame_idx}].tf_max_raw={:.9e}",
+            tf_max_raw as f64
+        );
+        std::println!("celt_transient[{frame_idx}].tf_max={:.9e}", tf_max as f64);
+        std::println!("celt_transient[{frame_idx}].value={:.9e}", value as f64);
+        std::println!(
+            "celt_transient[{frame_idx}].tf_estimate={:.9e}",
+            *tf_estimate as f64
+        );
+        if trace_bits {
+            std::println!(
+                "celt_transient[{frame_idx}].tf_max_raw_bits=0x{:08x}",
+                tf_max_raw.to_bits()
+            );
+            std::println!(
+                "celt_transient[{frame_idx}].tf_max_bits=0x{:08x}",
+                tf_max.to_bits()
+            );
+            std::println!(
+                "celt_transient[{frame_idx}].value_bits=0x{:08x}",
+                value.to_bits()
+            );
+            std::println!(
+                "celt_transient[{frame_idx}].tf_estimate_bits=0x{:08x}",
+                (*tf_estimate).to_bits()
+            );
+        }
+    }
     is_transient
 }
 
@@ -3696,6 +3854,8 @@ fn celt_encode_with_ec_inner<'a>(
         trace_mdct_frame_idx.map_or(false, |frame_idx| celt_mdct_trace::should_dump(frame_idx));
     #[cfg(test)]
     mdct_input_trace::set_frame(trace_mdct_frame_idx.unwrap_or(usize::MAX));
+    #[cfg(test)]
+    let _trace_transient_frame_idx = celt_transient_trace::begin_frame();
     #[cfg(test)]
     let trace_pcm_frame_idx = celt_pcm_input_trace::begin_frame();
     #[cfg(test)]

@@ -13,7 +13,7 @@ use crate::celt::entcode::ec_ilog;
 use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
 #[cfg(not(miri))]
-use libm::sqrtf;
+use libm::sqrt;
 use libm::{cosf, exp, fmaf, log};
 
 #[cfg(test)]
@@ -317,7 +317,7 @@ pub(crate) fn celt_sqrt(x: f32) -> f32 {
 
     #[cfg(not(miri))]
     {
-        sqrtf(x)
+        sqrt(x as f64) as f32
     }
 }
 
