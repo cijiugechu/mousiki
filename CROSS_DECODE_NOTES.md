@@ -2626,6 +2626,15 @@ ctests/build/opus_packet_encode /tmp/ehren-700.pcm /tmp/c_packets_new.opuspkt
 cargo run --example opus_packet_tool -- encode /tmp/ehren-700.pcm /tmp/rust_packets_new.opuspkt
 ```
 
+Full packet compare (entire file):
+- First mismatch now at **frame 6099** (0‑based), len C=149 vs Rust=151,
+  first differing byte offset 1 (C=234, Rust=1).
+
+```
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_full.opuspkt
+cargo run --example opus_packet_tool -- encode ehren-paper_lights-96.pcm /tmp/rust_packets_full.opuspkt
+```
+
 Next:
 - Re-run packet compare to see whether the frame‑693 payload mismatch is
   resolved and find the new first mismatch frame (if any).
