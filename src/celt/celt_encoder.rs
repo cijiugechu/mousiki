@@ -4493,11 +4493,48 @@ fn celt_encode_with_ec_inner<'a>(
         let offset = if short_blocks != 0 { 0.5 * lm as f32 } else { 0.0 };
         for band in start..end as usize {
             let mut candidate = band_log_e[band] - offset;
+            #[cfg(test)]
+            let left_val = band_log_e[band];
+            #[cfg(test)]
+            let mut right_val = 0.0f32;
             if c == 2 {
-                candidate = candidate.max(band_log_e[nb_ebands + band] - offset);
+                let right = band_log_e[nb_ebands + band] - offset;
+                #[cfg(test)]
+                {
+                    right_val = band_log_e[nb_ebands + band];
+                }
+                candidate = candidate.max(right);
             }
             follow = (follow - 1.0).max(candidate);
             frame_avg += follow;
+            #[cfg(test)]
+            if let Some(frame_idx) = trace_vbr_frame_idx {
+                if celt_vbr_budget_trace::should_dump(frame_idx) {
+                    if c == 2 {
+                        std::println!(
+                            "celt_temporal_vbr[{frame_idx}].band[{band}].loge_l={:.9e}",
+                            left_val as f64
+                        );
+                        std::println!(
+                            "celt_temporal_vbr[{frame_idx}].band[{band}].loge_r={:.9e}",
+                            right_val as f64
+                        );
+                    } else {
+                        std::println!(
+                            "celt_temporal_vbr[{frame_idx}].band[{band}].loge={:.9e}",
+                            left_val as f64
+                        );
+                    }
+                    std::println!(
+                        "celt_temporal_vbr[{frame_idx}].band[{band}].candidate={:.9e}",
+                        candidate as f64
+                    );
+                    std::println!(
+                        "celt_temporal_vbr[{frame_idx}].band[{band}].follow={:.9e}",
+                        follow as f64
+                    );
+                }
+            }
         }
         if end as usize > start {
             frame_avg /= (end as usize - start) as f32;
@@ -4632,6 +4669,26 @@ fn celt_encode_with_ec_inner<'a>(
         tone_freq,
         toneishness,
     );
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_vbr_frame_idx {
+        if celt_vbr_budget_trace::should_dump(frame_idx) {
+            std::println!("celt_dynalloc_summary[{frame_idx}].tot_boost={tot_boost}");
+            std::println!(
+                "celt_dynalloc_summary[{frame_idx}].max_depth={:.9e}",
+                max_depth as f64
+            );
+            std::println!(
+                "celt_dynalloc_summary[{frame_idx}].max_depth_bits=0x{:08x}",
+                max_depth.to_bits()
+            );
+            for band in start..end as usize {
+                std::println!(
+                    "celt_dynalloc_summary[{frame_idx}].offsets[{band}]={}",
+                    offsets[band]
+                );
+            }
+        }
+    }
 
     let mut tf_res = vec![0i32; nb_ebands];
     let tf_select = if enable_tf_analysis {
@@ -4774,6 +4831,8 @@ fn celt_encode_with_ec_inner<'a>(
     total_bits <<= BITRES;
     let mut total_boost = 0i32;
     let mut tell_frac = ec_tell_frac(enc.ctx()) as i32;
+    #[cfg(test)]
+    let mut tell_frac_pre_dynalloc = tell_frac;
 
     for band in start..end as usize {
         let width = (c as i32 * (mode.e_bands[band + 1] - mode.e_bands[band]) as i32) << lm;
@@ -4799,6 +4858,35 @@ fn celt_encode_with_ec_inner<'a>(
             dynalloc_logp = max(2, dynalloc_logp - 1);
         }
         offsets[band] = boost;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_vbr_frame_idx {
+            if celt_vbr_budget_trace::should_dump(frame_idx) {
+                std::println!(
+                    "celt_dynalloc_bits[{frame_idx}].band[{band}].boost={boost}"
+                );
+                std::println!(
+                    "celt_dynalloc_bits[{frame_idx}].band[{band}].tell_frac={tell_frac}"
+                );
+                std::println!(
+                    "celt_dynalloc_bits[{frame_idx}].band[{band}].total_boost={total_boost}"
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_vbr_frame_idx {
+        if celt_vbr_budget_trace::should_dump(frame_idx) {
+            std::println!(
+                "celt_dynalloc_bits[{frame_idx}].tell_frac_pre={tell_frac_pre_dynalloc}"
+            );
+            std::println!(
+                "celt_dynalloc_bits[{frame_idx}].tell_frac_post={tell_frac}"
+            );
+            std::println!(
+                "celt_dynalloc_bits[{frame_idx}].total_boost={total_boost}"
+            );
+        }
     }
 
     let mut dual_stereo = 0;
@@ -4850,6 +4938,17 @@ fn celt_encode_with_ec_inner<'a>(
         enc.enc_icdf(alloc_trim as usize, &TRIM_ICDF, 7);
         tell_frac = ec_tell_frac(enc.ctx()) as i32;
         tell = tell_frac;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_vbr_frame_idx {
+            if celt_vbr_budget_trace::should_dump(frame_idx) {
+                std::println!(
+                    "celt_alloc_trim[{frame_idx}].tell_frac_post={tell_frac}"
+                );
+                std::println!(
+                    "celt_alloc_trim[{frame_idx}].total_boost={total_boost}"
+                );
+            }
+        }
     }
 
     if vbr_rate > 0 {

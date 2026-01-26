@@ -2665,6 +2665,45 @@ Next:
   earlier stages to locate where they first diverge (likely analysis/RC path
   or temporal VBR state).
 
+### Frame 6099 deeper trace (tot_boost / tell_frac / max_depth / temporal_vbr)
+
+Findings:
+- **Temporal VBR drift starts at band 0**:
+  - C: `bandLogE[0].ch0=-8.7376e-02`, `bandLogE[0].ch1=-4.6890e-01`
+  - Rust: `bandLogE[0].ch0=2.1404e-01`, `bandLogE[0].ch1=-4.0834e-01`
+  - This flips the `candidate`/`follow` sequence and yields
+    `frame_avg` C=-1.964e-01 vs Rust=6.201e-02.
+- **dynalloc_analysis divergence**:
+  - C: `tot_boost=0`, `max_depth=1.3943e+01`, offsets all zero.
+  - Rust: `tot_boost=48`, `max_depth=1.4530e+01`,
+    **offsets[1]=1** (all others zero).
+- **tell_frac already diverged before dynalloc bit loop**:
+  - C: `tell_frac_pre=647` → `tell_frac_post=651`
+  - Rust: `tell_frac_pre=484` → `tell_frac_post=546`
+  - So RC state differs *before* dynalloc bits/alloc_trim.
+
+Conclusion:
+- The first visible drift at frame 6099 is in **band energies/logE** (band 0),
+  which cascades into temporal VBR and dynalloc (tot_boost). RC `tell_frac`
+  already differs before dynalloc, so the earlier divergence likely occurs
+  **before or during coarse energy/TF/spreading decisions**, not in VBR.
+
+Trace commands:
+```
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=6099 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/opus_c_vbr_budget_6099.opuspkt \
+  > /tmp/opus_c_vbr_budget_6099.txt
+
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=6099 \
+OPUS_TRACE_PCM=ehren-paper_lights-96.pcm OPUS_TRACE_FRAMES=6100 \
+cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
+  > /tmp/opus_r_vbr_budget_6099.txt
+```
+
+Next:
+- Trace earlier CELT stages for frame 6099 (prefilter / MDCT / band energies)
+  to pinpoint the first time-domain or spectral mismatch.
+
 Next:
 - Re-run packet compare to see whether the frame‑693 payload mismatch is
   resolved and find the new first mismatch frame (if any).
