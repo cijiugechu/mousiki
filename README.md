@@ -9,13 +9,12 @@ A Rust port of the Xiph `opus-c` reference implementation. The core crate is
   front-ends are wired.
 - Opus encode front-end supports SILK-only 10/20/40/60 ms packets (plus repacketized
   >60 ms frames), CELT-only multiframe packing, and hybrid single-frame 10/20 ms
-  payloads.
+  payloads. The full encode/decode loop can run the `examples/trivial_example`
+  round-trip on `testdata/ehren-paper_lights-96.pcm`.
 - Repacketizer, packet helpers, extension padding, mapping/projection matrices, and
   tonality analysis are available.
 
 ### Known gaps
-- Full encoder parity (hybrid multiframe, full CELT/HYBRID packing, remaining CTLs)
-  is still pending.
 - Fixed-point decode backend, SIMD back-ends, and optional DRED/Deep PLC paths are
   not complete.
 - See `PORTING_STATUS.md` for detailed status.
