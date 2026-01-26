@@ -3,6 +3,7 @@
 Cargo.lock
 *.wav
 *.pcm
+!testdata/ehren-paper_lights-96.pcm
 *.opus
 *.opuspkt
 opus_decode_fuzzer

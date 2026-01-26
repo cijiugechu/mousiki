@@ -36,6 +36,13 @@ cargo run --example decode -- testdata/tiny.ogg output_mono.pcm
 cargo run --example playback -- testdata/tiny.ogg
 ```
 
+- Round-trip a full 48 kHz stereo PCM sample through the trivial encoder/decoder:
+
+```bash
+cargo run --example trivial_example -- \
+  testdata/ehren-paper_lights-96.pcm ehren-paper_lights-96_trivial_out.pcm
+```
+
 ### Run the tests
 - Full test suite:
 
