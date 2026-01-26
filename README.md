@@ -120,11 +120,6 @@ Tip: If you need the full Opus API surface (stereo, CELT/Hybrid, multistream),
 use `opus_decoder` instead of `decoder::Decoder`. For Ogg input, see the
 `oggreader` example to extract raw Opus packets.
 
-## Compatibility and roadmap
-- Target environments: no_std + alloc, constrained memory, real-time systems.
-- The `decoder::Decoder` path remains SILK-only and single-frame; the full Opus
-  API surface is exposed via `opus_decoder`/`opus_encoder`.
-- For detailed porting milestones, see `PORTING_STATUS.md`.
 
 ## License and acknowledgements
 - License: MIT (see `LICENSE`).
