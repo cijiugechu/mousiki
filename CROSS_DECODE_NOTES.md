@@ -2726,6 +2726,26 @@ cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
   > /tmp/opus_r_band_6099.txt
 ```
 
+### Frame 6099 MDCT comparison (first 64 bins)
+
+MDCT already diverges (channel 0) at the first bin:
+- idx0 ch0: C=-3.98263454 vs Rust=-5.518184185
+- Many subsequent bins differ, so the mismatch is **at or before MDCT**.
+
+Trace commands:
+```
+CELT_TRACE_MDCT=1 CELT_TRACE_MDCT_FRAME=6099 CELT_TRACE_MDCT_BITS=1 \
+CELT_TRACE_MDCT_START=0 CELT_TRACE_MDCT_COUNT=64 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/opus_c_mdct_6099.opuspkt \
+  > /tmp/opus_c_mdct_6099.txt
+
+CELT_TRACE_MDCT=1 CELT_TRACE_MDCT_FRAME=6099 CELT_TRACE_MDCT_BITS=1 \
+CELT_TRACE_MDCT_START=0 CELT_TRACE_MDCT_COUNT=64 \
+OPUS_TRACE_PCM=ehren-paper_lights-96.pcm OPUS_TRACE_FRAMES=6100 \
+cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
+  > /tmp/opus_r_mdct_6099.txt
+```
+
 Next:
 - Re-run packet compare to see whether the frame‑693 payload mismatch is
   resolved and find the new first mismatch frame (if any).
