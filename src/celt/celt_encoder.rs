@@ -3352,7 +3352,7 @@ fn tf_encode(
     mut tf_select: i32,
     enc: &mut EcEnc<'_>,
 ) {
-    debug_assert!(start <= end);
+    debug_assert!(start <= tf_res.len());
     debug_assert!(end <= tf_res.len());
     debug_assert!(lm < TF_SELECT_TABLE.len());
 
@@ -3367,15 +3367,15 @@ fn tf_encode(
         budget -= 1;
     }
 
-    for slot in tf_res[start..end].iter_mut() {
+    for slot in start..end {
         if tell + logp <= budget {
-            let symbol = OpusInt32::from(*slot ^ curr);
+            let symbol = OpusInt32::from(tf_res[slot] ^ curr);
             enc.enc_bit_logp(symbol, logp);
             tell = ec_tell(enc.ctx()) as OpusUint32;
-            curr = *slot;
+            curr = tf_res[slot];
             tf_changed |= curr;
         } else {
-            *slot = curr;
+            tf_res[slot] = curr;
         }
         logp = if is_transient { 4u32 } else { 5u32 };
     }
@@ -3393,10 +3393,10 @@ fn tf_encode(
 
     debug_assert!((0..=1).contains(&tf_select));
 
-    for slot in tf_res[start..end].iter_mut() {
-        debug_assert!((0..=1).contains(slot));
-        let offset = base + 2 * tf_select as usize + *slot as usize;
-        *slot = i32::from(TF_SELECT_TABLE[lm][offset]);
+    for slot in start..end {
+        debug_assert!((0..=1).contains(&tf_res[slot]));
+        let offset = base + 2 * tf_select as usize + tf_res[slot] as usize;
+        tf_res[slot] = i32::from(TF_SELECT_TABLE[lm][offset]);
     }
 }
 
@@ -6226,6 +6226,18 @@ mod tests {
         tf_encode(0, tf_res.len(), false, &mut tf_res, 0, 1, &mut enc);
 
         assert_eq!(tf_res, [0, 0]);
+    }
+
+    #[test]
+    fn tf_encode_accepts_empty_band_ranges() {
+        let mut buffer = [0u8; 16];
+        let mut enc = EcEnc::new(&mut buffer);
+        let mut tf_res = [0, 1, 0];
+        let expected = tf_res;
+
+        tf_encode(2, 1, false, &mut tf_res, 1, 1, &mut enc);
+
+        assert_eq!(tf_res, expected);
     }
 
     #[test]

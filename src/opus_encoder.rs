@@ -2601,6 +2601,11 @@ fn encode_frame_native<'mode>(
                 CeltEncoderCtlRequest::SetEndBand(end_band),
             )
             .map_err(|_| OpusEncodeError::InternalError)?;
+            opus_custom_encoder_ctl(
+                encoder.celt.encoder(),
+                CeltEncoderCtlRequest::SetStartBand(0),
+            )
+            .map_err(|_| OpusEncodeError::InternalError)?;
 
             opus_custom_encoder_ctl(
                 encoder.celt.encoder(),
@@ -4779,6 +4784,21 @@ mod tests {
         assert!(len >= 1);
         assert_eq!(opus_packet_get_mode(&out[..len]).unwrap(), crate::packet::Mode::HYBRID);
         assert_eq!(opus_packet_get_samples_per_frame(&out[..len], 48_000).unwrap(), 960);
+    }
+
+    #[test]
+    fn celt_start_band_resets_when_switching_to_celt_only() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_HYBRID)).unwrap();
+        let pcm = [0i16; 960];
+        let mut out = [0u8; 4000];
+
+        opus_encode(&mut enc, &pcm, 960, &mut out).expect("hybrid encode");
+        assert_eq!(enc.celt.encoder().start_band, 17);
+
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_CELT_ONLY)).unwrap();
+        opus_encode(&mut enc, &pcm, 960, &mut out).expect("celt encode");
+        assert_eq!(enc.celt.encoder().start_band, 0);
     }
 
     #[test]
