@@ -2784,3 +2784,23 @@ Next:
 - Re-run the MDCT/band‑energy traces for frame 6099 to confirm the first
   spectral mismatch is gone, then re-run packet compare to find the new first
   mismatch frame.
+
+## 2026-01-26 — OPUSPKT1 packet compare (frame 12 recheck)
+
+After fixing the CELT start_band reset in the CELT_ONLY path, re-ran the
+packet compare on the full `ehren-paper_lights-96.pcm` stream:
+
+```
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_latest.opuspkt
+cargo run --example opus_packet_tool -- encode ehren-paper_lights-96.pcm /tmp/rust_packets_latest.opuspkt
+```
+
+Result (full stream, 11,405 frames):
+- `length_mismatch=0`
+- `toc_mismatch=0`
+- `payload_mismatch=0`
+- `first_payload_diff_frame=None`
+- `first_toc_diff_frame=None`
+
+Conclusion: **frame 12 payload mismatch is resolved**; the full packet stream
+now matches between C and Rust for this input.

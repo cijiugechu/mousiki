@@ -5,7 +5,6 @@ use crate::mlp_data::{
     LAYER2_WEIGHTS,
 };
 use libm::fmaf;
-
 /// Scaling factor applied to all dense and GRU outputs.
 pub(crate) const WEIGHTS_SCALE: f32 = 1.0 / 128.0;
 
@@ -28,6 +27,101 @@ pub(crate) struct AnalysisGRULayer {
     pub recurrent_weights: &'static [i8],
     pub nb_inputs: usize,
     pub nb_neurons: usize,
+}
+
+#[cfg(test)]
+mod gru_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicIsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+        want_bits: bool,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static TRACE_FRAME: AtomicIsize = AtomicIsize::new(-1);
+
+    fn env_truthy(name: &str) -> bool {
+        match env::var(name) {
+            Ok(value) => !value.is_empty() && value != "0",
+            Err(_) => false,
+        }
+    }
+
+    pub(crate) fn set_frame(frame_idx: usize) {
+        TRACE_FRAME.store(frame_idx as isize, Ordering::Relaxed);
+    }
+
+    fn current_frame() -> Option<usize> {
+        let value = TRACE_FRAME.load(Ordering::Relaxed);
+        if value >= 0 {
+            Some(value as usize)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = env_truthy("ANALYSIS_TRACE_GRU")
+                    || env_truthy("ANALYSIS_TRACE_GRU_FRAME")
+                    || env_truthy("ANALYSIS_TRACE_GRU_BITS");
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("ANALYSIS_TRACE_GRU_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                Some(TraceConfig {
+                    frame,
+                    want_bits: env_truthy("ANALYSIS_TRACE_GRU_BITS"),
+                })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn should_dump(cfg: &TraceConfig) -> Option<usize> {
+        let frame_idx = current_frame()?;
+        if cfg.frame.map_or(true, |value| value == frame_idx) {
+            Some(frame_idx)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn dump_vec(
+        cfg: &TraceConfig,
+        frame_idx: usize,
+        label: &str,
+        values: &[f32],
+    ) {
+        std::println!(
+            "analysis_gru[{frame_idx}].{label}.len={}",
+            values.len()
+        );
+        for (idx, &value) in values.iter().enumerate() {
+            std::println!(
+                "analysis_gru[{frame_idx}].{label}[{idx}]={:.9e}",
+                value as f64
+            );
+            if cfg.want_bits {
+                std::println!(
+                    "analysis_gru[{frame_idx}].{label}_bits[{idx}]=0x{:08x}",
+                    value.to_bits()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_gru_trace_frame(frame_idx: usize) {
+    gru_trace::set_frame(frame_idx);
 }
 
 #[inline]
@@ -142,6 +236,10 @@ pub(crate) fn analysis_compute_gru(gru: &AnalysisGRULayer, state: &mut [f32], in
     let mut z = [0.0f32; MAX_NEURONS];
     let mut r = [0.0f32; MAX_NEURONS];
     let mut h = [0.0f32; MAX_NEURONS];
+    let mut h_pre = [0.0f32; MAX_NEURONS];
+    let mut h_act = [0.0f32; MAX_NEURONS];
+    let mut h_mix1 = [0.0f32; MAX_NEURONS];
+    let mut h_mix2 = [0.0f32; MAX_NEURONS];
 
     // Update gate.
     for (dst, &bias) in z.iter_mut().zip(&gru.bias[..n]) {
@@ -172,8 +270,26 @@ pub(crate) fn analysis_compute_gru(gru: &AnalysisGRULayer, state: &mut [f32], in
     }
     gemm_accum(&mut h, &gru.input_weights[2 * n..], n, m, stride, input);
     gemm_accum(&mut h, &gru.recurrent_weights[2 * n..], n, n, stride, &tmp);
+    h_pre[..n].copy_from_slice(&h[..n]);
     for i in 0..n {
-        h[i] = z[i] * state[i] + (1.0 - z[i]) * tansig_approx(h[i] * WEIGHTS_SCALE);
+        h_act[i] = tansig_approx(h[i] * WEIGHTS_SCALE);
+    }
+    for i in 0..n {
+        h_mix1[i] = z[i] * state[i];
+        h_mix2[i] = (1.0 - z[i]) * h_act[i];
+        h[i] = h_mix1[i] + h_mix2[i];
+    }
+    #[cfg(test)]
+    if let Some(cfg) = gru_trace::config() {
+        if let Some(frame_idx) = gru_trace::should_dump(cfg) {
+            gru_trace::dump_vec(cfg, frame_idx, "z", &z[..n]);
+            gru_trace::dump_vec(cfg, frame_idx, "r", &r[..n]);
+            gru_trace::dump_vec(cfg, frame_idx, "h_pre", &h_pre[..n]);
+            gru_trace::dump_vec(cfg, frame_idx, "h_act", &h_act[..n]);
+            gru_trace::dump_vec(cfg, frame_idx, "h_mix1", &h_mix1[..n]);
+            gru_trace::dump_vec(cfg, frame_idx, "h_mix2", &h_mix2[..n]);
+            gru_trace::dump_vec(cfg, frame_idx, "h_post", &h[..n]);
+        }
     }
     state[..n].copy_from_slice(&h[..n]);
 }

@@ -13,6 +13,9 @@ use crate::celt::entcode::{
 use crate::celt::types::{OpusInt32, OpusUint32};
 use alloc::vec::Vec;
 
+#[cfg(test)]
+extern crate std;
+
 /// Range encoder backed by a mutable byte slice.
 #[derive(Debug)]
 pub struct EcEnc<'a> {
@@ -263,29 +266,116 @@ impl<'a> EcEnc<'a> {
 
     /// Finalises the encoding process and flushes buffered data.
     pub fn enc_done(&mut self) {
+        #[cfg(test)]
+        let trace_frame = enc_done_trace::frame_to_dump();
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame {
+            std::println!(
+                "opus_enc_done[{frame_idx}].init.rng=0x{:08x}",
+                self.ctx.rng
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].init.val=0x{:08x}",
+                self.ctx.val
+            );
+            std::println!("opus_enc_done[{frame_idx}].init.rem={}", self.ctx.rem);
+            std::println!("opus_enc_done[{frame_idx}].init.ext={}", self.ctx.ext);
+            std::println!(
+                "opus_enc_done[{frame_idx}].init.end_window=0x{:08x}",
+                self.ctx.end_window
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].init.nend_bits={}",
+                self.ctx.nend_bits
+            );
+            std::println!("opus_enc_done[{frame_idx}].init.offs={}", self.ctx.offs);
+            std::println!(
+                "opus_enc_done[{frame_idx}].init.end_offs={}",
+                self.ctx.end_offs
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].init.storage={}",
+                self.ctx.storage
+            );
+        }
         let mut window = self.ctx.end_window;
         let mut used = self.ctx.nend_bits;
         let mut l: OpusInt32 = EC_CODE_BITS as OpusInt32 - ec_ilog(self.ctx.rng);
         let mut msk = (EC_CODE_TOP - 1) >> l;
         let mut end = (self.ctx.val + msk) & !msk;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame {
+            std::println!("opus_enc_done[{frame_idx}].l_init={}", l);
+            std::println!("opus_enc_done[{frame_idx}].msk_init=0x{:08x}", msk);
+            std::println!("opus_enc_done[{frame_idx}].end_init=0x{:08x}", end);
+        }
         if (end | msk) >= self.ctx.val.wrapping_add(self.ctx.rng) {
             l += 1;
             msk >>= 1;
             end = (self.ctx.val + msk) & !msk;
         }
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame {
+            std::println!("opus_enc_done[{frame_idx}].l_adj={}", l);
+            std::println!("opus_enc_done[{frame_idx}].msk_adj=0x{:08x}", msk);
+            std::println!("opus_enc_done[{frame_idx}].end_adj=0x{:08x}", end);
+        }
+        #[cfg(test)]
+        let mut carry_iter: OpusInt32 = 0;
         while l > 0 {
+            #[cfg(test)]
+            if let Some(frame_idx) = trace_frame {
+                std::println!(
+                    "opus_enc_done[{frame_idx}].carry[{carry_iter}].in=0x{:08x}",
+                    end >> EC_CODE_SHIFT
+                );
+            }
             self.carry_out((end >> EC_CODE_SHIFT) as OpusInt32);
             end = (end << EC_SYM_BITS) & (EC_CODE_TOP - 1);
             l -= EC_SYM_BITS as OpusInt32;
+            #[cfg(test)]
+            {
+                carry_iter += 1;
+            }
         }
         if self.ctx.rem >= 0 || self.ctx.ext > 0 {
             self.carry_out(0);
+        }
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame {
+            std::println!(
+                "opus_enc_done[{frame_idx}].after_carry.offs={}",
+                self.ctx.offs
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].after_carry.rem={}",
+                self.ctx.rem
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].after_carry.ext={}",
+                self.ctx.ext
+            );
         }
         while used >= EC_SYM_BITS as OpusInt32 {
             self.ctx.error |=
                 self.write_byte_at_end((window & EC_SYM_MAX as EcWindow) as OpusUint32);
             window >>= EC_SYM_BITS;
             used -= EC_SYM_BITS as OpusInt32;
+        }
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame {
+            std::println!(
+                "opus_enc_done[{frame_idx}].after_window.end_offs={}",
+                self.ctx.end_offs
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].after_window.used={}",
+                used
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].after_window.window=0x{:08x}",
+                window
+            );
         }
         if self.ctx.error == 0 {
             let start = self.ctx.offs as usize;
@@ -313,6 +403,21 @@ impl<'a> EcEnc<'a> {
         }
         self.ctx.end_window = window;
         self.ctx.nend_bits = used;
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame {
+            std::println!(
+                "opus_enc_done[{frame_idx}].final.offs={}",
+                self.ctx.offs
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].final.end_offs={}",
+                self.ctx.end_offs
+            );
+            std::println!(
+                "opus_enc_done[{frame_idx}].final.error={}",
+                self.ctx.error
+            );
+        }
     }
 
     /// Returns the number of bytes written to the range portion of the stream.
@@ -396,6 +501,68 @@ impl<'a> core::ops::DerefMut for EcEnc<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ctx
     }
+}
+
+#[cfg(test)]
+mod enc_done_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicIsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
+
+    pub(crate) fn set_frame(frame_idx: usize) {
+        CURRENT_FRAME.store(frame_idx as isize, Ordering::Relaxed);
+    }
+
+    fn current_frame() -> Option<usize> {
+        let value = CURRENT_FRAME.load(Ordering::Relaxed);
+        if value >= 0 {
+            Some(value as usize)
+        } else {
+            None
+        }
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("OPUS_TRACE_RANGE_DONE_DETAIL") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("OPUS_TRACE_RANGE_DONE_DETAIL_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                Some(TraceConfig { frame })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn frame_to_dump() -> Option<usize> {
+        let cfg = config()?;
+        let frame_idx = current_frame()?;
+        if cfg.frame.map_or(true, |frame| frame == frame_idx) {
+            Some(frame_idx)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_enc_done_trace_frame(frame_idx: usize) {
+    enc_done_trace::set_frame(frame_idx);
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::cmp::{max, min};
 use core::f32::consts::{LOG2_E, PI};
 
-use libm::{fmaf, floorf, log10f, logf, sqrt, sqrtf};
+use libm::{fmaf, floorf, log, log10f, logf, sqrt, sqrtf};
 
 use crate::celt::{
     AnalysisInfo, CELT_SIG_SCALE, KissFftCpx, KissFftState, OpusCustomMode, celt_maxabs32,
@@ -520,6 +520,10 @@ mod tonality_trace {
 
     pub(crate) fn frame_matches(cfg: &TraceConfig, frame: usize) -> bool {
         cfg.frame.map_or(true, |value| value == frame)
+    }
+
+    pub(crate) fn want_bits(cfg: &TraceConfig) -> bool {
+        cfg.want_bits
     }
 
     pub(crate) fn dump_band(
@@ -1375,7 +1379,7 @@ mod activity_trace {
                 "analysis_activity[{frame_idx}].features[{idx}]={:.9e}",
                 value as f64
             );
-            if cfg.want_bits {
+        if cfg.want_bits {
                 std::println!(
                     "analysis_activity[{frame_idx}].features_bits[{idx}]=0x{:08x}",
                     value.to_bits()
@@ -1419,6 +1423,38 @@ mod activity_trace {
                     value.to_bits()
                 );
             }
+        }
+    }
+
+    pub(crate) fn dump_scalar(cfg: &TraceConfig, frame_idx: usize, label: &str, value: f32) {
+        std::println!(
+            "analysis_activity[{frame_idx}].{label}={:.9e}",
+            value as f64
+        );
+        if cfg.want_bits {
+            std::println!(
+                "analysis_activity[{frame_idx}].{label}_bits=0x{:08x}",
+                value.to_bits()
+            );
+        }
+    }
+
+    pub(crate) fn dump_band_scalar(
+        cfg: &TraceConfig,
+        frame_idx: usize,
+        label: &str,
+        band: usize,
+        value: f32,
+    ) {
+        std::println!(
+            "analysis_activity[{frame_idx}].{label}[{band}]={:.9e}",
+            value as f64
+        );
+        if cfg.want_bits {
+            std::println!(
+                "analysis_activity[{frame_idx}].{label}_bits[{band}]=0x{:08x}",
+                value.to_bits()
+            );
         }
     }
 
@@ -2198,6 +2234,15 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         }
     }
 
+    #[cfg(test)]
+    let activity_cfg = activity_trace::config();
+    #[cfg(test)]
+    let activity_frame_idx = fft_trace::frame_index();
+    #[cfg(test)]
+    let activity_trace_enabled = activity_cfg
+        .map(|cfg| activity_trace::frame_matches(cfg, activity_frame_idx))
+        .unwrap_or(false);
+
     // Capture the accumulated high-pass energy for this analysis window (matches C).
     let hp_ener = {
         let avail = min(len as usize, ANALYSIS_BUF_SIZE - tonal.mem_fill);
@@ -2538,15 +2583,32 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             }
             band_e += bin_e;
             t_e = accumulate_t_e(t_e, bin_e, tonality_clamped);
-            n_e += bin_e * 2.0 * (0.5 - noisiness[i]);
+            let noisiness_term = 0.5 - noisiness[i];
+            n_e = mul_add_f32(bin_e * 2.0, noisiness_term, n_e);
         }
 
         tonal.e[tonal.e_count][b] = band_e;
-        frame_noisiness += n_e / (1e-15 + band_e);
+        let band_noisiness = n_e / (1e-15 + band_e);
+        frame_noisiness += band_noisiness;
+        #[cfg(test)]
+        if activity_trace_enabled {
+            let cfg = activity_cfg.expect("activity cfg");
+            activity_trace::dump_band_scalar(cfg, activity_frame_idx, "band_e", b, band_e);
+            activity_trace::dump_band_scalar(cfg, activity_frame_idx, "band_n_e", b, n_e);
+            activity_trace::dump_band_scalar(
+                cfg,
+                activity_frame_idx,
+                "band_noisiness",
+                b,
+                band_noisiness,
+            );
+        }
 
         frame_loudness += sqrtf(band_e + 1e-10);
-        log_e[b] = logf(band_e + 1e-10);
-        band_log2[b + 1] = 0.5 * LOG2_E * logf(band_e + 1e-10);
+        let band_e_eps = band_e + 1e-10;
+        let log_e_val = log(band_e_eps as f64) as f32;
+        log_e[b] = log_e_val;
+        band_log2[b + 1] = 0.5 * LOG2_E * log_e_val;
         tonal.log_e[tonal.e_count][b] = log_e[b];
 
         if tonal.count == 0 {
@@ -2567,7 +2629,8 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             tonal.low_e[b] = log_e[b];
             tonal.high_e[b] = (tonal.low_e[b] + 15.0).min(tonal.high_e[b]);
         }
-        relative_e += (log_e[b] - tonal.low_e[b]) / (1e-5 + tonal.high_e[b] - tonal.low_e[b]);
+        let denom = 1e-5 + (tonal.high_e[b] - tonal.low_e[b]);
+        relative_e += (log_e[b] - tonal.low_e[b]) / denom;
 
         let mut l1 = 0.0f32;
         let mut l2 = 0.0f32;
@@ -2627,8 +2690,9 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             let idx = b + NB_TONAL_SKIP_BANDS - NB_TBANDS;
             frame_tonality -= band_tonality[idx];
         }
-        max_frame_tonality =
-            max_frame_tonality.max((1.0 + 0.03 * (b as f32 - NB_TBANDS as f32)) * frame_tonality);
+        let weight = (1.0_f64 + 0.03_f64 * (b as f64 - NB_TBANDS as f64)) as f32;
+        let weighted = (weight as f64 * frame_tonality as f64) as f32;
+        max_frame_tonality = max_frame_tonality.max(weighted);
         let slope_delta = (b as i32 - 8) as f32;
         let slope_pre = slope;
         let slope_term = band_tonality[b] * slope_delta;
@@ -2656,6 +2720,40 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
                     slope_term,
                     slope,
                 );
+                std::println!(
+                    "analysis_tonality_accum[{frame_idx}].band[{b}].frame_tonality={:.9e}",
+                    frame_tonality as f64
+                );
+                std::println!(
+                    "analysis_tonality_accum[{frame_idx}].band[{b}].weight={:.9e}",
+                    weight as f64
+                );
+                std::println!(
+                    "analysis_tonality_accum[{frame_idx}].band[{b}].weighted={:.9e}",
+                    weighted as f64
+                );
+                std::println!(
+                    "analysis_tonality_accum[{frame_idx}].band[{b}].max_frame_tonality={:.9e}",
+                    max_frame_tonality as f64
+                );
+                if tonality_trace::want_bits(cfg) {
+                    std::println!(
+                        "analysis_tonality_accum[{frame_idx}].band[{b}].frame_tonality_bits=0x{:08x}",
+                        frame_tonality.to_bits()
+                    );
+                    std::println!(
+                        "analysis_tonality_accum[{frame_idx}].band[{b}].weight_bits=0x{:08x}",
+                        weight.to_bits()
+                    );
+                    std::println!(
+                        "analysis_tonality_accum[{frame_idx}].band[{b}].weighted_bits=0x{:08x}",
+                        weighted.to_bits()
+                    );
+                    std::println!(
+                        "analysis_tonality_accum[{frame_idx}].band[{b}].max_frame_tonality_bits=0x{:08x}",
+                        max_frame_tonality.to_bits()
+                    );
+                }
             }
         }
         tonal.prev_band_tonality[b] = band_tonality[b];
@@ -2856,9 +2954,58 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         relative_e = 0.5;
     }
     frame_noisiness /= NB_TBANDS as f32;
-    info.activity = frame_noisiness + (1.0 - frame_noisiness) * relative_e;
+    info.activity = mul_add_f32(1.0 - frame_noisiness, relative_e, frame_noisiness);
     frame_tonality = max_frame_tonality / (NB_TBANDS - NB_TONAL_SKIP_BANDS) as f32;
-    frame_tonality = frame_tonality.max(tonal.prev_tonality * 0.8);
+    let prev_term = tonal.prev_tonality * 0.8;
+    frame_tonality = frame_tonality.max(prev_term);
+    #[cfg(test)]
+    if let Some(cfg) = tonality_trace::config() {
+        let frame_idx = fft_trace::frame_index();
+        if tonality_trace::frame_matches(cfg, frame_idx) {
+            std::println!(
+                "analysis_tonality_frame[{frame_idx}].max_frame_tonality={:.9e}",
+                max_frame_tonality as f64
+            );
+            std::println!(
+                "analysis_tonality_frame[{frame_idx}].frame_tonality_pre={:.9e}",
+                (max_frame_tonality / (NB_TBANDS - NB_TONAL_SKIP_BANDS) as f32) as f64
+            );
+            std::println!(
+                "analysis_tonality_frame[{frame_idx}].prev_tonality={:.9e}",
+                tonal.prev_tonality as f64
+            );
+            std::println!(
+                "analysis_tonality_frame[{frame_idx}].prev_term={:.9e}",
+                prev_term as f64
+            );
+            std::println!(
+                "analysis_tonality_frame[{frame_idx}].frame_tonality={:.9e}",
+                frame_tonality as f64
+            );
+            if tonality_trace::want_bits(cfg) {
+                std::println!(
+                    "analysis_tonality_frame[{frame_idx}].max_frame_tonality_bits=0x{:08x}",
+                    max_frame_tonality.to_bits()
+                );
+                std::println!(
+                    "analysis_tonality_frame[{frame_idx}].frame_tonality_pre_bits=0x{:08x}",
+                    (max_frame_tonality / (NB_TBANDS - NB_TONAL_SKIP_BANDS) as f32).to_bits()
+                );
+                std::println!(
+                    "analysis_tonality_frame[{frame_idx}].prev_tonality_bits=0x{:08x}",
+                    tonal.prev_tonality.to_bits()
+                );
+                std::println!(
+                    "analysis_tonality_frame[{frame_idx}].prev_term_bits=0x{:08x}",
+                    prev_term.to_bits()
+                );
+                std::println!(
+                    "analysis_tonality_frame[{frame_idx}].frame_tonality_bits=0x{:08x}",
+                    frame_tonality.to_bits()
+                );
+            }
+        }
+    }
     tonal.prev_tonality = frame_tonality;
 
     slope /= 64.0;
@@ -2869,29 +3016,36 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     info.tonality = frame_tonality;
 
     for i in 0..4 {
-        features[i] = -0.122_99 * (bfcc[i] + tonal.mem[i + 24])
-            + 0.491_95 * (tonal.mem[i] + tonal.mem[i + 16])
-            + 0.696_93 * tonal.mem[i + 8]
-            - 1.4349 * tonal.cmean[i];
+        let bfcc_mem = bfcc[i] + tonal.mem[i + 24];
+        let mem_sum = tonal.mem[i] + tonal.mem[i + 16];
+        let mut sum = mul_add_f32(-0.122_99, bfcc_mem, 0.491_95 * mem_sum);
+        sum = mul_add_f32(0.696_93, tonal.mem[i + 8], sum);
+        sum = mul_add_f32(-1.4349, tonal.cmean[i], sum);
+        features[i] = sum;
     }
 
     for i in 0..4 {
-        tonal.cmean[i] = (1.0 - alpha) * tonal.cmean[i] + alpha * bfcc[i];
+        let update = alpha * bfcc[i];
+        tonal.cmean[i] = mul_add_f32(1.0 - alpha, tonal.cmean[i], update);
     }
 
     for i in 0..4 {
-        features[4 + i] = 0.632_46 * (bfcc[i] - tonal.mem[i + 24])
-            + 0.316_23 * (tonal.mem[i] - tonal.mem[i + 16]);
+        let bfcc_delta = bfcc[i] - tonal.mem[i + 24];
+        let mem_delta = tonal.mem[i] - tonal.mem[i + 16];
+        let tail = 0.316_23 * mem_delta;
+        features[4 + i] = mul_add_f32(0.632_46, bfcc_delta, tail);
     }
     for i in 0..3 {
-        features[8 + i] = 0.534_52 * (bfcc[i] + tonal.mem[i + 24])
-            - 0.267_26 * (tonal.mem[i] + tonal.mem[i + 16])
-            - 0.534_52 * tonal.mem[i + 8];
+        let bfcc_sum = bfcc[i] + tonal.mem[i + 24];
+        let mem_sum = tonal.mem[i] + tonal.mem[i + 16];
+        let part = mul_add_f32(0.534_52, bfcc_sum, -0.267_26 * mem_sum);
+        features[8 + i] = mul_add_f32(-0.534_52, tonal.mem[i + 8], part);
     }
 
     if tonal.count > 5 {
         for i in 0..9 {
-            tonal.std[i] = (1.0 - alpha) * tonal.std[i] + alpha * features[i] * features[i];
+            let update = alpha * features[i] * features[i];
+            tonal.std[i] = mul_add_f32(1.0 - alpha, tonal.std[i], update);
         }
     }
     for i in 0..4 {
@@ -2906,7 +3060,8 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     }
 
     for i in 0..9 {
-        features[11 + i] = sqrtf(tonal.std[i]) - STD_FEATURE_BIAS[i];
+        let std_sqrt = sqrt(tonal.std[i] as f64) as f32;
+        features[11 + i] = std_sqrt - STD_FEATURE_BIAS[i];
     }
     features[18] = spec_variability - 0.78;
     features[20] = info.tonality - 0.154_723;
@@ -2916,26 +3071,21 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     features[24] = tonal.low_e_count - 0.067_930;
 
     #[cfg(test)]
-    let activity_cfg = activity_trace::config();
-    #[cfg(test)]
-    let activity_frame_idx = fft_trace::frame_index();
-    #[cfg(test)]
-    let mut activity_trace_enabled = false;
-    #[cfg(test)]
     let mut rnn_pre: Vec<f32> = Vec::new();
     #[cfg(test)]
-    if let Some(cfg) = activity_cfg {
-        if activity_trace::frame_matches(cfg, activity_frame_idx) {
-            activity_trace_enabled = true;
-            rnn_pre.extend_from_slice(&tonal.rnn_state[..LAYER1.nb_neurons]);
-            activity_trace::dump_layer(cfg, activity_frame_idx, "mem_pre", &tonal.mem);
-            activity_trace::dump_layer(cfg, activity_frame_idx, "log_e", &log_e);
-            activity_trace::dump_log_hist(cfg, activity_frame_idx, &tonal.log_e);
-            activity_trace::dump_layer(cfg, activity_frame_idx, "bfcc", &bfcc);
-            activity_trace::dump_layer(cfg, activity_frame_idx, "mid_e", &mid_e);
-            activity_trace::dump_features(cfg, activity_frame_idx, &features);
-            activity_trace::dump_layer(cfg, activity_frame_idx, "rnn_pre", &rnn_pre);
-        }
+    if activity_trace_enabled {
+        let cfg = activity_cfg.expect("activity cfg");
+        rnn_pre.extend_from_slice(&tonal.rnn_state[..LAYER1.nb_neurons]);
+        activity_trace::dump_layer(cfg, activity_frame_idx, "mem_pre", &tonal.mem);
+        activity_trace::dump_layer(cfg, activity_frame_idx, "log_e", &log_e);
+        activity_trace::dump_log_hist(cfg, activity_frame_idx, &tonal.log_e);
+        activity_trace::dump_layer(cfg, activity_frame_idx, "bfcc", &bfcc);
+        activity_trace::dump_layer(cfg, activity_frame_idx, "mid_e", &mid_e);
+        activity_trace::dump_features(cfg, activity_frame_idx, &features);
+        activity_trace::dump_scalar(cfg, activity_frame_idx, "frame_noisiness", frame_noisiness);
+        activity_trace::dump_scalar(cfg, activity_frame_idx, "relative_e", relative_e);
+        activity_trace::dump_scalar(cfg, activity_frame_idx, "activity", info.activity);
+        activity_trace::dump_layer(cfg, activity_frame_idx, "rnn_pre", &rnn_pre);
     }
 
     analysis_compute_dense(&LAYER0, &mut layer_out, &features);
@@ -2949,6 +3099,8 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             &layer_out[..LAYER0.nb_neurons],
         );
     }
+    #[cfg(test)]
+    crate::mlp::set_gru_trace_frame(fft_trace::frame_index());
     analysis_compute_gru(&LAYER1, &mut tonal.rnn_state, &layer_out);
     #[cfg(test)]
     if activity_trace_enabled {
