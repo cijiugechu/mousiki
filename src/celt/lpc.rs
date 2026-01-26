@@ -13,7 +13,7 @@ use alloc::vec;
 #[cfg(feature = "fixed_point")]
 use alloc::vec::Vec;
 
-use crate::celt::math::frac_div32;
+use crate::celt::math::{frac_div32, mul_add_f32};
 use crate::celt::pitch::celt_pitch_xcorr;
 use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
 #[cfg(feature = "fixed_point")]
@@ -69,9 +69,9 @@ pub(crate) fn celt_lpc(lpc: &mut [OpusVal16], ac: &[OpusVal32]) {
     let mut error = ac0;
 
     for i in 0..order {
-        let mut rr = 0.0;
+        let mut rr = 0.0f32;
         for j in 0..i {
-            rr += lpc[j] * ac[i - j];
+            rr = mul_add_f32(lpc[j], ac[i - j], rr);
         }
         rr += ac[i + 1];
 
@@ -82,11 +82,12 @@ pub(crate) fn celt_lpc(lpc: &mut [OpusVal16], ac: &[OpusVal32]) {
         for j in 0..half {
             let tmp1 = lpc[j];
             let tmp2 = lpc[i - 1 - j];
-            lpc[j] = tmp1 + reflection * tmp2;
-            lpc[i - 1 - j] = tmp2 + reflection * tmp1;
+            lpc[j] = mul_add_f32(reflection, tmp2, tmp1);
+            lpc[i - 1 - j] = mul_add_f32(reflection, tmp1, tmp2);
         }
 
-        error -= (reflection * reflection) * error;
+        let r2 = reflection * reflection;
+        error = mul_add_f32(-r2, error, error);
         if error <= 0.001 * ac0 {
             break;
         }

@@ -2891,6 +2891,8 @@ fn run_prefilter(
     #[cfg(test)]
     let trace_frame_idx = celt_prefilter_trace::current_frame_idx()
         .filter(|&idx| celt_prefilter_trace::should_dump(idx));
+    #[cfg(test)]
+    crate::celt::pitch::remove_doubling_trace_set_frame(trace_frame_idx);
 
     let mode = encoder.mode;
     let overlap = mode.overlap;
@@ -2937,6 +2939,39 @@ fn run_prefilter(
             downsample_len,
             encoder.arch,
         );
+
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame_idx {
+            if std::env::var("CELT_TRACE_PITCH_BUF")
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false)
+            {
+                let start = std::env::var("CELT_TRACE_PITCH_BUF_START")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let count = std::env::var("CELT_TRACE_PITCH_BUF_COUNT")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(64);
+                let want_bits = std::env::var("CELT_TRACE_PITCH_BUF_BITS")
+                    .map(|value| !value.is_empty() && value != "0")
+                    .unwrap_or(false);
+                let end = start.saturating_add(count).min(pitch_buf.len());
+                for idx in start..end {
+                    std::println!(
+                        "celt_pitch_buf[{frame_idx}].idx[{idx}]={:.9}",
+                        pitch_buf[idx]
+                    );
+                    if want_bits {
+                        std::println!(
+                            "celt_pitch_buf[{frame_idx}].idx_bits[{idx}]=0x{:08x}",
+                            pitch_buf[idx].to_bits()
+                        );
+                    }
+                }
+            }
+        }
 
         let search_span = history_len - 3 * COMBFILTER_MINPERIOD;
         if search_span > 0 {

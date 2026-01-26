@@ -2749,3 +2749,38 @@ cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
 Next:
 - Re-run packet compare to see whether the frame‑693 payload mismatch is
   resolved and find the new first mismatch frame (if any).
+
+## 2026-01-26 — Frame 6099 prefilter alignment (pitch/LPC/remove_doubling)
+
+Findings:
+- Prefilter **input** matched bit‑for‑bit, but **output** diverged at
+  `celt_prefilter[6099].post` (ch0 idx 122 / ch1 idx 121). `gain1_pre` was just
+  below `pf_threshold` in Rust, so `pf_on`/`qg_local` diverged.
+- `ac` bits from `pitch_downsample` match C; the drift was in `lpc/lpc2` and the
+  `yy` accumulation inside `remove_doubling`.
+
+Changes:
+- `celt_lpc`: use `mul_add_f32` for `rr` accumulation and coefficient updates;
+  update `error` via `mul_add_f32` to match C evaluation order.
+- `pitch_downsample`: make the 0.25/0.5 accumulations explicit (C’s left‑assoc
+  order) and compute `lpc2` via `mul_add_f32`.
+- `remove_doubling`: split `yy += a*a - b*b` into two sequential ops to match C.
+- New trace bits:
+  - `CELT_TRACE_PITCH_LPC_BITS`
+  - `CELT_TRACE_PITCH_BUF_BITS`
+  - `CELT_TRACE_REMOVE_DOUBLING_BITS`
+  (C + Rust, for bit‑level diffing of `ac/lpc/lpc2`, pitch buffer, and
+  remove_doubling intermediates.)
+
+Results:
+- `celt_pitch_lpc` **ac/lpc/lpc2 bits match** for frame 6099.
+- `celt_pitch_buf` bits match for the full buffer (992 samples).
+- `remove_doubling` bits match (`xx/xy/yy/g0/best_yy/g` aligned).
+- Prefilter debug now matches at the decision point; `gain1_pre` is on the
+  correct side of `pf_threshold`, and **prefilter output bits match** for the
+  full 1200‑sample trace.
+
+Next:
+- Re-run the MDCT/band‑energy traces for frame 6099 to confirm the first
+  spectral mismatch is gone, then re-run packet compare to find the new first
+  mismatch frame.
