@@ -2635,6 +2635,36 @@ ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/c_packets_full.op
 cargo run --example opus_packet_tool -- encode ehren-paper_lights-96.pcm /tmp/rust_packets_full.opuspkt
 ```
 
+### Frame 6099 VBR budget trace (next target)
+
+Initial VBR trace shows the divergence already in inputs:
+- `tell_frac`: C=671 vs Rust=566
+- `tot_boost`: C=0 vs Rust=48
+- `stereo_saving`: C=-7.202e‑4 vs Rust=-3.557e‑4
+- `max_depth`: C=13.9433 vs Rust=14.5302
+- `temporal_vbr`: C=-0.5208 vs Rust=-0.2624
+
+As a result:
+- `target`: C=9472 vs Rust=9600
+- `nb_compressed_bytes`: C=148 vs Rust=150
+
+Trace commands:
+```
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=6099 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/opus_c_vbr_budget_6099.opuspkt \
+  > /tmp/opus_c_vbr_budget_6099.txt
+
+CELT_TRACE_VBR_BUDGET=1 CELT_TRACE_VBR_BUDGET_FRAME=6099 \
+OPUS_TRACE_PCM=ehren-paper_lights-96.pcm OPUS_TRACE_FRAMES=6100 \
+cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
+  > /tmp/opus_r_vbr_budget_6099.txt
+```
+
+Next:
+- Trace `tot_boost`, `tell_frac`, `max_depth`, and `temporal_vbr` inputs at the
+  earlier stages to locate where they first diverge (likely analysis/RC path
+  or temporal VBR state).
+
 Next:
 - Re-run packet compare to see whether the frame‑693 payload mismatch is
   resolved and find the new first mismatch frame (if any).
