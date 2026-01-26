@@ -2704,6 +2704,28 @@ Next:
 - Trace earlier CELT stages for frame 6099 (prefilter / MDCT / band energies)
   to pinpoint the first time-domain or spectral mismatch.
 
+### Frame 6099 band energy comparison
+
+Using `CELT_TRACE_BAND_ENERGY`, the first mismatch is already in
+`compute_band_energies` output:
+- **Band 0, ch 0**: C=81.5788956 vs Rust=100.534309387 (diff +18.96)
+- Band 0, ch 1 also differs (C=62.6218834 vs Rust=65.306854248)
+
+So the divergence is **before** `amp2_log2` and VBR; next step is to trace
+MDCT outputs and prefilter for frame 6099.
+
+Trace commands:
+```
+CELT_TRACE_BAND_ENERGY=1 CELT_TRACE_BAND_ENERGY_FRAME=6099 CELT_TRACE_BAND_ENERGY_BITS=1 \
+ctests/build/opus_packet_encode ehren-paper_lights-96.pcm /tmp/opus_c_band_6099.opuspkt \
+  > /tmp/opus_c_band_6099.txt
+
+CELT_TRACE_BAND_ENERGY=1 CELT_TRACE_BAND_ENERGY_FRAME=6099 CELT_TRACE_BAND_ENERGY_BITS=1 \
+OPUS_TRACE_PCM=ehren-paper_lights-96.pcm OPUS_TRACE_FRAMES=6100 \
+cargo test -p mousiki --lib opus_mode_trace_output -- --nocapture \
+  > /tmp/opus_r_band_6099.txt
+```
+
 Next:
 - Re-run packet compare to see whether the frame‑693 payload mismatch is
   resolved and find the new first mismatch frame (if any).
