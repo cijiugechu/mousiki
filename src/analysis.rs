@@ -2383,14 +2383,14 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         }
 
         let d2_angle_int = float2int(d2_angle);
-        let mut mod1_pre = d2_angle - d2_angle_int as f32;
+        let mod1_pre = d2_angle - d2_angle_int as f32;
         noisiness[i] = mod1_pre.abs();
         let mut mod1 = mod1_pre;
         mod1 *= mod1;
         mod1 *= mod1;
 
         let d2_angle2_int = float2int(d2_angle2);
-        let mut mod2_pre = d2_angle2 - d2_angle2_int as f32;
+        let mod2_pre = d2_angle2 - d2_angle2_int as f32;
         noisiness[i] += mod2_pre.abs();
         let mut mod2 = mod2_pre;
         mod2 *= mod2;
