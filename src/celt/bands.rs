@@ -28,17 +28,19 @@ use crate::celt::{
 };
 use core::convert::TryFrom;
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::{float2sig, EPSILON as FIXED_EPSILON};
+use crate::celt::fixed_arch::{DB_SHIFT, EPSILON as FIXED_EPSILON};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
-    abs32, extract16, mult16_16, mult16_32_q15, pshr32, shl32, shr32, vshr32,
+    abs32, extract16, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, shl32, shr32, vshr32,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::{celt_ilog2, celt_zlog2};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::{celt_rcp as celt_rcp_fixed, celt_sqrt as celt_sqrt_fixed};
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltEner, FixedCeltNorm, FixedCeltSig};
+use crate::celt::types::{FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig};
+#[cfg(feature = "fixed_point")]
+use crate::celt::float_cast::{float2int, float2int16};
 
 #[cfg(test)]
 mod quant_trace {
@@ -4128,6 +4130,111 @@ pub(crate) fn normalise_bands_fixed(
         }
     }
 }
+
+#[cfg(feature = "fixed_point")]
+const E_MEANS_Q4: [i8; 25] = [
+    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60, 60,
+    60, 60, 60,
+];
+
+#[cfg(feature = "fixed_point")]
+fn celt_exp2_db_frac(x: FixedCeltGlog) -> FixedCeltSig {
+    const D0: i16 = 16_383;
+    const D1: i16 = 22_804;
+    const D2: i16 = 14_819;
+    const D3: i16 = 10_204;
+
+    let frac = ((pshr32(x, DB_SHIFT - 10) as i16) << 4) as i16;
+    let mut acc = mult16_16_q15(D3, frac);
+    acc = D2.wrapping_add(acc);
+    acc = mult16_16_q15(frac, acc);
+    acc = D1.wrapping_add(acc);
+    acc = mult16_16_q15(frac, acc);
+    let res = D0.wrapping_add(acc);
+    shl32(res as i32, 14)
+}
+
+#[cfg(feature = "fixed_point")]
+fn denormalise_bands_fixed_from_log(
+    mode: &OpusCustomMode<'_>,
+    x: &[FixedCeltNorm],
+    freq: &mut [FixedCeltSig],
+    band_log_e: &[FixedCeltGlog],
+    mut start: usize,
+    mut end: usize,
+    m: usize,
+    downsample: usize,
+    silence: bool,
+) {
+    assert!(end <= mode.num_ebands);
+    assert!(mode.e_bands.len() > end);
+    assert!(band_log_e.len() >= end);
+    assert!(downsample > 0);
+
+    let n = m * mode.short_mdct_size;
+    assert!(freq.len() >= n);
+    assert!(x.len() >= n);
+
+    let mut bound = m * usize::try_from(mode.e_bands[end]).expect("band edge must be non-negative");
+    if bound > n {
+        bound = n;
+    }
+    if downsample != 1 {
+        bound = bound.min(n / downsample);
+    }
+
+    if silence {
+        bound = 0;
+        start = 0;
+        end = 0;
+    }
+
+    let start_edge =
+        m * usize::try_from(mode.e_bands[start]).expect("band edge must be non-negative");
+    freq[..start_edge].fill(0);
+
+    let mut freq_idx = start_edge;
+    let mut x_idx = start_edge;
+
+    for band in start..end {
+        let band_end =
+            m * usize::try_from(mode.e_bands[band + 1]).expect("band edge must be non-negative");
+        assert!(band_end <= n);
+
+        let e_mean = i32::from(E_MEANS_Q4[band]);
+        let lg = band_log_e[band].wrapping_add(shl32(e_mean, DB_SHIFT - 4));
+        let mut shift = 15 - (lg >> DB_SHIFT);
+        let mut g: FixedCeltSig;
+        if shift > 31 {
+            shift = 0;
+            g = 0;
+        } else {
+            g = celt_exp2_db_frac(lg & ((1 << DB_SHIFT) - 1));
+        }
+
+        if shift < 0 {
+            if shift <= -2 {
+                g = 16_384i32.wrapping_mul(32_768);
+                shift = -2;
+            }
+            while freq_idx < band_end {
+                let value = mult16_32_q15(x[x_idx], g);
+                freq[freq_idx] = shl32(value, (-shift) as u32);
+                freq_idx += 1;
+                x_idx += 1;
+            }
+        } else {
+            while freq_idx < band_end {
+                let value = mult16_32_q15(x[x_idx], g);
+                freq[freq_idx] = shr32(value, shift as u32);
+                freq_idx += 1;
+                x_idx += 1;
+            }
+        }
+    }
+
+    freq[bound..n].fill(0);
+}
 /// Rescales the unit-energy coefficients back to their target magnitudes.
 ///
 /// Mirrors the float variant of `denormalise_bands()` from `celt/bands.c` by
@@ -4213,21 +4320,32 @@ pub(crate) fn denormalise_bands_fixed(
     downsample: usize,
     silence: bool,
 ) {
-    let mut temp = vec![0.0f32; freq.len()];
-    denormalise_bands(
+    let n = m * mode.short_mdct_size;
+    assert!(x.len() >= n);
+    assert!(band_log_e.len() >= end);
+
+    let mut x_fixed = Vec::with_capacity(n);
+    for &sample in x.iter().take(n) {
+        x_fixed.push(float2int16(sample));
+    }
+
+    let mut log_fixed = Vec::with_capacity(end);
+    let log_scale = (1u32 << DB_SHIFT) as f32;
+    for &value in band_log_e.iter().take(end) {
+        log_fixed.push(float2int(value * log_scale));
+    }
+
+    denormalise_bands_fixed_from_log(
         mode,
-        x,
-        &mut temp,
-        band_log_e,
+        &x_fixed,
+        freq,
+        &log_fixed,
         start,
         end,
         m,
         downsample,
         silence,
     );
-    for (dst, &src) in freq.iter_mut().zip(temp.iter()) {
-        *dst = float2sig(src);
-    }
 }
 
 #[cfg(test)]
@@ -4237,10 +4355,10 @@ mod tests {
         bitexact_log2tan, celt_lcg_rand, compute_band_energies, compute_channel_weights,
         compute_qn, compute_theta, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
         hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
-        special_hybrid_folding, spreading_decision, stereo_merge, stereo_split,
+        special_hybrid_folding, spreading_decision, stereo_merge, stereo_split, DB_SHIFT,
     };
     #[cfg(feature = "fixed_point")]
-    use super::{compute_band_energies_fixed, normalise_bands_fixed};
+    use super::{compute_band_energies_fixed, denormalise_bands_fixed_from_log, normalise_bands_fixed};
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::EPSILON as FIXED_EPSILON;
     use crate::celt::entcode::BITRES;
@@ -5317,5 +5435,68 @@ mod tests {
         normalise_bands_fixed(&mode, &freq, &mut x, &band_e, mode.num_ebands, 1, 1);
 
         assert!(x.iter().all(|&v| v == 0));
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_normalise_bands_matches_reference() {
+        let e_bands = [0i16, 1, 2, 4];
+        let log_n = [0i16, 0, 0];
+        let mdct = MdctLookup::new(16, 0);
+        let window = crate::celt::modes::compute_mdct_window(8);
+        let mut mode =
+            OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        mode.short_mdct_size = 4;
+        mode.num_short_mdcts = 1;
+
+        let freq = vec![1000i32, -2000, 3000, -4000];
+        let band_e = vec![1 << 10, 1 << 20, 1 << 15];
+        let mut x = vec![0i16; 4];
+
+        normalise_bands_fixed(&mode, &freq, &mut x, &band_e, mode.num_ebands, 1, 1);
+
+        assert_eq!(x, vec![15984, -31, 1500, -2000]);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_denormalise_bands_matches_reference() {
+        let e_bands = [0i16, 1, 2, 4];
+        let log_n = [0i16, 0, 0];
+        let mdct = MdctLookup::new(16, 0);
+        let window = crate::celt::modes::compute_mdct_window(8);
+        let mut mode =
+            OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        mode.short_mdct_size = 4;
+        mode.num_short_mdcts = 1;
+
+        let x_in = vec![1234i16, -2345, 3456, -4567];
+        let band_log_e = vec![
+            -(18i32 << DB_SHIFT),
+            17i32 << DB_SHIFT,
+            10i32 << DB_SHIFT,
+        ];
+
+        let mut freq = vec![0i32; 4];
+        denormalise_bands_fixed_from_log(&mode, &x_in, &mut freq, &band_log_e, 0, 3, 1, 1, false);
+        assert_eq!(freq, vec![0, -153_681_920, 47_616_768, -62_924_126]);
+
+        let mut freq_downsample = vec![0i32; 4];
+        denormalise_bands_fixed_from_log(
+            &mode,
+            &x_in,
+            &mut freq_downsample,
+            &band_log_e,
+            0,
+            3,
+            1,
+            2,
+            false,
+        );
+        assert_eq!(freq_downsample, vec![0, -153_681_920, 0, 0]);
+
+        let mut freq_silence = vec![1i32, -1, 2, -2];
+        denormalise_bands_fixed_from_log(&mode, &x_in, &mut freq_silence, &band_log_e, 0, 3, 1, 1, true);
+        assert_eq!(freq_silence, vec![0, 0, 0, 0]);
     }
 }

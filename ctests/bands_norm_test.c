@@ -61,7 +61,7 @@ int main(void) {
   celt_norm x_in[4] = {1234, -2345, 3456, -4567};
   celt_sig freq_out[4] = {0};
   celt_glog bandLogE[3] = {-(18 << DB_SHIFT), (17 << DB_SHIFT), (10 << DB_SHIFT)};
-  const celt_sig expected_denorm[4] = {0, -153681920, 884682, -1169081};
+  const celt_sig expected_denorm[4] = {0, -153681920, 47616768, -62924126};
 
   denormalise_bands(&mode, x_in, freq_out, bandLogE, 0, 3, 1, 1, 0);
   failures += check_i32_array("denormalise_bands", freq_out, expected_denorm, 4);

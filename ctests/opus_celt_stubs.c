@@ -6,7 +6,10 @@
 #include "vq.h"
 
 #ifdef FIXED_POINT
-const signed char eMeans[25] = {0};
+const signed char eMeans[25] = {
+    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74,
+    76, 71, 60, 60, 60, 60, 60,
+};
 #else
 const opus_val16 eMeans[25] = {0};
 #endif
