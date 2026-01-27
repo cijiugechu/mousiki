@@ -85,8 +85,45 @@ rustup run nightly cargo fuzz run decode_fuzzer
 Seed corpus lives in `fuzz/corpus/decode_fuzzer/`.
 
 ### Use in your code
-The snippet below uses the lightweight `decoder::Decoder` (SILK-only, single-frame)
-to decode a single Opus packet into `i16` PCM (mono, 48 kHz):
+The full Opus front-end (SILK/CELT/Hybrid, stereo) is exposed via
+`opus_encoder`/`opus_decoder`, matching the `trivial_example` round-trip:
+
+```rust
+use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
+use mousiki::opus_encoder::{
+    opus_encode, opus_encoder_create, opus_encoder_ctl, OpusEncoderCtlRequest,
+};
+
+const SAMPLE_RATE: i32 = 48_000;
+const CHANNELS: i32 = 2;
+const APPLICATION: i32 = 2049; // OPUS_APPLICATION_AUDIO
+const FRAME_SIZE: usize = 960; // 20 ms at 48 kHz
+const MAX_FRAME_SIZE: usize = 6 * 960;
+const MAX_PACKET_SIZE: usize = 3 * 1276;
+
+let mut encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, APPLICATION)?;
+opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetBitrate(64_000))?;
+let mut decoder = opus_decoder_create(SAMPLE_RATE, CHANNELS)?;
+
+let pcm_in = [0i16; FRAME_SIZE * 2]; // interleaved stereo
+let mut packet = [0u8; MAX_PACKET_SIZE];
+let packet_len = opus_encode(&mut encoder, &pcm_in, FRAME_SIZE, &mut packet)?;
+
+let mut pcm_out = [0i16; MAX_FRAME_SIZE * 2];
+let decoded = opus_decode(
+    &mut decoder,
+    Some(&packet[..packet_len]),
+    packet_len,
+    &mut pcm_out,
+    MAX_FRAME_SIZE,
+    false,
+)?;
+let total_samples = decoded * CHANNELS as usize;
+let _decoded_pcm = &pcm_out[..total_samples];
+```
+
+If you only need the lightweight SILK-only, single-frame decoder (mono, 48 kHz),
+use `decoder::Decoder` directly:
 
 ```rust
 use mousiki::decoder::Decoder;
@@ -103,22 +140,8 @@ assert!(!stereo, "mono only for now");
 // `pcm_bytes` now contains 48 kHz i16 little-endian PCM data
 ```
 
-For `f32` output, use `decode_float32` and a buffer of length 960 for a 20 ms frame:
-
-```rust
-use mousiki::decoder::Decoder;
-
-let packet: &[u8] = /* your Opus packet */;
-let mut pcm_f32 = [0.0f32; 960];
-
-let mut decoder = Decoder::new();
-let (_bandwidth, stereo) = decoder.decode_float32(packet, &mut pcm_f32)?;
-assert!(!stereo);
-```
-
-Tip: If you need the full Opus API surface (stereo, CELT/Hybrid, multistream),
-use `opus_decoder` instead of `decoder::Decoder`. For Ogg input, see the
-`oggreader` example to extract raw Opus packets.
+For `f32` output, use `decode_float32` and a buffer of length 960 for a 20 ms frame.
+For Ogg input, see the `oggreader` example to extract raw Opus packets.
 
 ## TODO
 - Make the public API more Rust-idiomatic.
