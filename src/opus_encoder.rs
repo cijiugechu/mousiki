@@ -5,7 +5,6 @@
 //! SILK-only packets. Hybrid/CELT modes will be wired once the remaining CELT
 //! bitstream packing path is ported.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 #[cfg(test)]
@@ -2362,7 +2361,7 @@ fn encode_frame_native<'mode>(
     mode: i32,
     to_celt: bool,
     equiv_rate: i32,
-    first_frame: bool,
+    _first_frame: bool,
     dred_bitrate_bps: i32,
 ) -> Result<usize, OpusEncodeError> {
     if data.len() < 2 {
@@ -2513,7 +2512,7 @@ fn encode_frame_native<'mode>(
         }
     }
 
-    let mut ret = match mode {
+    let ret = match mode {
         MODE_SILK_ONLY => {
             encoder.configure_silk_control(frame_size_i32, max_payload_bytes);
             encoder.silk_mode.use_dtx = i32::from(silk_use_dtx);
@@ -2920,7 +2919,7 @@ fn encode_frame_native<'mode>(
                 redundancy_bytes = 0;
             }
 
-            let mut nb_compr_bytes = usize::try_from(
+            let nb_compr_bytes = usize::try_from(
                 (max_frame_bytes_i32 - 1 - redundancy_bytes).max(0),
             )
             .map_err(|_| OpusEncodeError::BadArgument)?;

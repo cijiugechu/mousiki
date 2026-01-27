@@ -53,7 +53,7 @@ use crate::celt::quant_bands::unquant_energy_finalise;
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
-    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
+    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes,
     OpusUint32, OpusVal16, OpusVal32,
 };
 #[cfg(feature = "fixed_point")]
