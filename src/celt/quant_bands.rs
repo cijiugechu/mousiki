@@ -13,6 +13,16 @@ use crate::celt::entdec::EcDec;
 use crate::celt::entenc::{EcEnc, EcEncSnapshot};
 use crate::celt::rate::MAX_FINE_BITS;
 use crate::celt::types::{CeltGlog, OpusCustomMode};
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedCeltEner, FixedCeltGlog};
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::DB_SHIFT;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{
+    add32, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, qconst32, shl32, shr32, sub32, vshr32,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::celt_ilog2;
 use libm::floorf;
 
 use crate::celt::math::{celt_exp2, celt_log2};
@@ -119,6 +129,72 @@ pub(crate) const E_MEANS: [f32; 25] = [
     6.437_5, 6.25, 5.75, 5.312_5, 5.062_5, 4.812_5, 4.5, 4.375, 4.875, 4.687_5, 4.562_5, 4.437_5,
     4.875, 4.625, 4.312_5, 4.5, 4.375, 4.625, 4.75, 4.437_5, 3.75, 3.75, 3.75, 3.75, 3.75,
 ];
+
+#[cfg(feature = "fixed_point")]
+const E_MEANS_Q4: [i8; 25] = [
+    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60, 60,
+    60, 60, 60,
+];
+
+#[cfg(feature = "fixed_point")]
+const PRED_COEF_Q15: [i16; 4] = [29_440, 26_112, 21_248, 16_384];
+
+#[cfg(feature = "fixed_point")]
+const BETA_COEF_Q15: [i16; 4] = [30_147, 22_282, 12_124, 6_554];
+
+#[cfg(feature = "fixed_point")]
+const BETA_INTRA_Q15: i16 = 4_915;
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn gconst(value: f64) -> FixedCeltGlog {
+    qconst32(value, DB_SHIFT)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn add16(a: i16, b: i16) -> i16 {
+    a.wrapping_add(b)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn celt_log2_q10(x: FixedCeltGlog) -> i16 {
+    const C0: i16 = -6801 + (1 << (13 - 10));
+    const C1: i16 = 15_746;
+    const C2: i16 = -5_217;
+    const C3: i16 = 2_545;
+    const C4: i16 = -1_401;
+
+    if x == 0 {
+        return -32_767;
+    }
+    let i = celt_ilog2(x);
+    let n = (vshr32(x, i - 15).wrapping_sub(32_768).wrapping_sub(16_384)) as i16;
+    let frac = add16(
+        C0,
+        mult16_16_q15(
+            n,
+            add16(
+                C1,
+                mult16_16_q15(
+                    n,
+                    add16(C2, mult16_16_q15(n, add16(C3, mult16_16_q15(n, C4)))),
+                ),
+            ),
+        ),
+    );
+    let integer_term = (i - 13) << 10;
+    let frac_term = shr32(i32::from(frac), 14 - 10);
+    (integer_term.wrapping_add(frac_term)) as i16
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn celt_log2_db_fixed(x: FixedCeltGlog) -> FixedCeltGlog {
+    let log2 = i32::from(celt_log2_q10(x));
+    shl32(log2, DB_SHIFT - 10)
+}
 
 /// Prediction coefficients (`pred_coef`) converted to floating point.
 #[allow(dead_code)]
@@ -246,6 +322,45 @@ pub(crate) fn loss_distortion(
     }
 
     distortion.min(200.0)
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn loss_distortion_fixed(
+    e_bands: &[FixedCeltGlog],
+    old_e_bands: &[FixedCeltGlog],
+    start: usize,
+    end: usize,
+    bands_per_channel: usize,
+    channels: usize,
+) -> FixedCeltGlog {
+    if start >= end {
+        return 0;
+    }
+    assert!(
+        e_bands.len() >= channels * bands_per_channel,
+        "energy buffers must cover channel bands"
+    );
+    assert!(
+        old_e_bands.len() >= channels * bands_per_channel,
+        "energy buffers must cover channel bands"
+    );
+    assert!(end <= bands_per_channel, "end band must lie within the channel span");
+
+    let mut dist: FixedCeltGlog = 0;
+    let shift = (DB_SHIFT - 7) as u32;
+
+    for channel in 0..channels {
+        let base = channel * bands_per_channel;
+        for band in start..end {
+            let idx = base + band;
+            let diff = sub32(e_bands[idx], old_e_bands[idx]);
+            let d = pshr32(diff, shift) as i16;
+            dist = add32(dist, mult16_16(d, d));
+        }
+    }
+
+    let dist = shr32(dist, 14);
+    dist.min(200)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -376,6 +491,107 @@ fn quant_coarse_energy_impl(
                     );
                 }
             }
+        }
+    }
+
+    if lfe { 0 } else { badness }
+}
+
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+fn quant_coarse_energy_impl_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    e_bands: &[FixedCeltGlog],
+    old_e_bands: &mut [FixedCeltGlog],
+    budget: i32,
+    initial_tell: i32,
+    prob_model: &[u8],
+    error: &mut [FixedCeltGlog],
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+    lm: usize,
+    intra: bool,
+    max_decay: FixedCeltGlog,
+    lfe: bool,
+) -> i32 {
+    assert!(lm < PRED_COEF_Q15.len());
+    assert!(old_e_bands.len() >= channels * mode.num_ebands);
+    assert_eq!(e_bands.len(), channels * mode.num_ebands);
+    assert_eq!(error.len(), channels * mode.num_ebands);
+    assert!(end <= mode.num_ebands);
+    assert!(prob_model.len() >= 2 * core::cmp::min(end, 21));
+
+    let stride = mode.num_ebands;
+    let mut prev = vec![0i32; channels];
+    let coef = if intra { 0 } else { PRED_COEF_Q15[lm] };
+    let beta = if intra { BETA_INTRA_Q15 } else { BETA_COEF_Q15[lm] };
+    let mut badness = 0;
+    let channels_i32 = channels as i32;
+
+    if initial_tell + 3 <= budget {
+        enc.enc_bit_logp(i32::from(intra), 3);
+    }
+
+    for band in start..end {
+        for (channel, prev_entry) in prev.iter_mut().enumerate().take(channels) {
+            let idx = channel * stride + band;
+            let x = e_bands[idx];
+            let old_e = old_e_bands[idx].max(-gconst(9.0));
+            let f = sub32(sub32(x, mult16_32_q15(coef, old_e)), *prev_entry);
+            let f_rounded = add32(f, gconst(0.5));
+            let mut qi = shr32(f_rounded, DB_SHIFT) as i32;
+            let decay_bound = (old_e_bands[idx].wrapping_sub(max_decay)).max(-gconst(28.0));
+            if qi < 0 && x < decay_bound {
+                qi = qi.wrapping_add(shr32(decay_bound.wrapping_sub(x), DB_SHIFT) as i32);
+                if qi > 0 {
+                    qi = 0;
+                }
+            }
+
+            let qi0 = qi;
+            let tell = ec_tell(enc.ctx());
+            let bits_left = budget - tell - 3 * channels_i32 * (end - band) as i32;
+            if band != start && bits_left < 30 {
+                if bits_left < 24 {
+                    qi = qi.min(1);
+                }
+                if bits_left < 16 {
+                    qi = qi.max(-1);
+                }
+            }
+            if lfe && band >= 2 {
+                qi = qi.min(0);
+            }
+
+            if budget - tell >= 15 {
+                let pi = 2 * core::cmp::min(band, 20);
+                let mut symbol = qi;
+                laplace_encode(
+                    enc,
+                    &mut symbol,
+                    u32::from(prob_model[pi]) << 7,
+                    u32::from(prob_model[pi + 1]) << 6,
+                );
+                qi = symbol;
+            } else if budget - tell >= 2 {
+                qi = qi.clamp(-1, 1);
+                let symbol = ((2 * qi) ^ -i32::from(qi < 0)) as usize;
+                enc.enc_icdf(symbol, &SMALL_ENERGY_ICDF, 2);
+            } else if budget - tell >= 1 {
+                qi = qi.min(0);
+                enc.enc_bit_logp((-qi) as i32, 1);
+            } else {
+                qi = -1;
+            }
+
+            error[idx] = sub32(f, shl32(qi, DB_SHIFT));
+            badness += (qi0 - qi).abs();
+            let q = shl32(qi, DB_SHIFT);
+            let tmp = add32(add32(mult16_32_q15(coef, old_e), *prev_entry), q);
+            old_e_bands[idx] = tmp.max(-gconst(28.0));
+            *prev_entry = sub32(add32(*prev_entry, q), mult16_32_q15(beta, q));
         }
     }
 
@@ -527,6 +743,147 @@ pub(crate) fn quant_coarse_energy(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quant_coarse_energy_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    eff_end: usize,
+    e_bands: &[FixedCeltGlog],
+    old_e_bands: &mut [FixedCeltGlog],
+    budget: u32,
+    error: &mut [FixedCeltGlog],
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+    lm: usize,
+    nb_available_bytes: i32,
+    force_intra: bool,
+    delayed_intra: &mut FixedCeltGlog,
+    mut two_pass: bool,
+    loss_rate: i32,
+    lfe: bool,
+) {
+    assert!(end <= mode.num_ebands);
+    assert!(eff_end <= end);
+    assert_eq!(e_bands.len(), channels * mode.num_ebands);
+    assert!(old_e_bands.len() >= channels * mode.num_ebands);
+    assert_eq!(error.len(), channels * mode.num_ebands);
+    assert!(lm < PRED_COEF_Q15.len());
+
+    let channels_i32 = channels as i32;
+    let band_span = (end - start) as i32;
+    let mut intra = force_intra
+        || (!two_pass
+            && *delayed_intra > 2 * channels_i32 * band_span
+            && nb_available_bytes > band_span * channels_i32);
+
+    let budget_i32 = budget as i32;
+    let initial_tell = ec_tell(enc.ctx());
+    if initial_tell + 3 > budget_i32 {
+        two_pass = false;
+        intra = false;
+    }
+
+    let intra_bias = (((budget as i64) * i64::from(*delayed_intra) * i64::from(loss_rate))
+        / (i64::from(channels_i32) * 512)) as i32;
+    let new_distortion = loss_distortion_fixed(
+        e_bands,
+        old_e_bands,
+        start,
+        eff_end,
+        mode.num_ebands,
+        channels,
+    );
+
+    let mut max_decay = gconst(16.0);
+    if end - start > 10 {
+        let scaled = shr32(max_decay, DB_SHIFT - 3);
+        max_decay = shl32(scaled.min(nb_available_bytes), DB_SHIFT - 3);
+    }
+    if lfe {
+        max_decay = gconst(3.0);
+    }
+
+    let start_snapshot = EcEncSnapshot::capture(enc);
+    let mut old_intra = vec![0i32; old_e_bands.len()];
+    let mut error_intra = vec![0i32; error.len()];
+    let mut intra_snapshot = None;
+    let mut badness_intra = 0;
+    let mut tell_intra = 0u32;
+
+    if two_pass || intra {
+        old_intra.copy_from_slice(old_e_bands);
+        error_intra.copy_from_slice(error);
+        badness_intra = quant_coarse_energy_impl_fixed(
+            mode,
+            start,
+            end,
+            e_bands,
+            &mut old_intra,
+            budget_i32,
+            initial_tell,
+            &E_PROB_MODEL[lm][1],
+            &mut error_intra,
+            enc,
+            channels,
+            lm,
+            true,
+            max_decay,
+            lfe,
+        );
+        intra_snapshot = Some(EcEncSnapshot::capture(enc));
+        tell_intra = ec_tell_frac(enc.ctx());
+    }
+
+    if intra {
+        if let Some(snapshot) = &intra_snapshot {
+            snapshot.restore(enc);
+        }
+        old_e_bands.copy_from_slice(&old_intra);
+        error.copy_from_slice(&error_intra);
+    } else {
+        start_snapshot.restore(enc);
+        let badness_inter = quant_coarse_energy_impl_fixed(
+            mode,
+            start,
+            end,
+            e_bands,
+            old_e_bands,
+            budget_i32,
+            initial_tell,
+            &E_PROB_MODEL[lm][0],
+            error,
+            enc,
+            channels,
+            lm,
+            false,
+            max_decay,
+            lfe,
+        );
+
+        if two_pass
+            && (badness_intra < badness_inter
+                || (badness_intra == badness_inter
+                    && (ec_tell_frac(enc.ctx()) as i32 + intra_bias) > tell_intra as i32))
+        {
+            if let Some(snapshot) = &intra_snapshot {
+                snapshot.restore(enc);
+            }
+            old_e_bands.copy_from_slice(&old_intra);
+            error.copy_from_slice(&error_intra);
+            intra = true;
+        }
+    }
+
+    if intra {
+        *delayed_intra = new_distortion;
+    } else {
+        let coef = mult16_16_q15(PRED_COEF_Q15[lm], PRED_COEF_Q15[lm]);
+        *delayed_intra = add32(mult16_32_q15(coef, *delayed_intra), new_distortion);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn unquant_coarse_energy(
     mode: &OpusCustomMode<'_>,
@@ -578,6 +935,57 @@ pub(crate) fn unquant_coarse_energy(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+pub(crate) fn unquant_coarse_energy_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_e_bands: &mut [FixedCeltGlog],
+    intra: bool,
+    dec: &mut EcDec<'_>,
+    channels: usize,
+    lm: usize,
+) {
+    assert!(end <= mode.num_ebands);
+    assert!(old_e_bands.len() >= channels * mode.num_ebands);
+    assert!(lm < PRED_COEF_Q15.len());
+
+    let stride = mode.num_ebands;
+    let prob_model = &E_PROB_MODEL[lm][usize::from(intra)];
+    let mut prev = vec![0i32; channels];
+    let coef = if intra { 0 } else { PRED_COEF_Q15[lm] };
+    let beta = if intra { BETA_INTRA_Q15 } else { BETA_COEF_Q15[lm] };
+    let budget = (dec.ctx().storage * 8) as i32;
+
+    for band in start..end {
+        for (channel, prev_entry) in prev.iter_mut().enumerate().take(channels) {
+            let idx = channel * stride + band;
+            let tell = ec_tell(dec.ctx());
+            let qi = if budget - tell >= 15 {
+                let pi = 2 * core::cmp::min(band, 20);
+                laplace_decode(
+                    dec,
+                    u32::from(prob_model[pi]) << 7,
+                    u32::from(prob_model[pi + 1]) << 6,
+                )
+            } else if budget - tell >= 2 {
+                let sym = dec.dec_icdf(&SMALL_ENERGY_ICDF, 2);
+                (sym >> 1) ^ -(sym & 1)
+            } else if budget - tell >= 1 {
+                -dec.dec_bit_logp(1)
+            } else {
+                -1
+            };
+
+            old_e_bands[idx] = old_e_bands[idx].max(-gconst(9.0));
+            let q = shl32(qi, DB_SHIFT);
+            let tmp = add32(add32(mult16_32_q15(coef, old_e_bands[idx]), *prev_entry), q);
+            old_e_bands[idx] = tmp.clamp(-gconst(28.0), gconst(28.0));
+            *prev_entry = sub32(add32(*prev_entry, q), mult16_32_q15(beta, q));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn amp2_log2(
     mode: &OpusCustomMode<'_>,
@@ -622,6 +1030,43 @@ pub(crate) fn amp2_log2(
         }
         for log_slot in band_log_chunk.iter_mut().take(end).skip(eff_end) {
             *log_slot = -14.0;
+        }
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn amp2_log2_fixed(
+    mode: &OpusCustomMode<'_>,
+    eff_end: usize,
+    end: usize,
+    band_e: &[FixedCeltEner],
+    band_log_e: &mut [FixedCeltGlog],
+    channels: usize,
+) {
+    assert!(eff_end <= end);
+    assert!(end <= mode.num_ebands);
+    assert_eq!(band_e.len(), channels * mode.num_ebands);
+    assert_eq!(band_log_e.len(), channels * mode.num_ebands);
+
+    let stride = mode.num_ebands;
+    for (channel, (band_e_chunk, band_log_chunk)) in band_e
+        .chunks(stride)
+        .zip(band_log_e.chunks_mut(stride))
+        .take(channels)
+        .enumerate()
+    {
+        let _ = channel;
+        for (band, log_slot) in band_log_chunk[..eff_end].iter_mut().enumerate() {
+            let energy = band_e_chunk[band];
+            let mean = i32::from(E_MEANS_Q4[band]);
+            let mut log_val = celt_log2_db_fixed(energy);
+            log_val = sub32(log_val, shl32(mean, DB_SHIFT - 4));
+            log_val = add32(log_val, gconst(2.0));
+            *log_slot = log_val;
+        }
+        for log_slot in band_log_chunk.iter_mut().take(end).skip(eff_end) {
+            *log_slot = -gconst(14.0);
         }
     }
 }
@@ -862,6 +1307,55 @@ pub(crate) fn quant_fine_energy(
                     offset,
                 );
             }
+        }
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quant_fine_energy_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [FixedCeltGlog],
+    error: &mut [FixedCeltGlog],
+    fine_quant: &[i32],
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+) {
+    assert!(old_ebands.len() >= channels * mode.num_ebands);
+    assert!(error.len() >= channels * mode.num_ebands);
+    assert!(end <= mode.num_ebands);
+    assert!(fine_quant.len() >= end);
+
+    let stride = mode.num_ebands;
+
+    for (band, &fine) in fine_quant.iter().enumerate().take(end).skip(start) {
+        if fine <= 0 {
+            continue;
+        }
+
+        let fine_bits = fine as u32;
+        let frac = 1i32 << fine_bits;
+        let max_q = frac - 1;
+
+        for (old_slice, error_slice) in old_ebands
+            .chunks_mut(stride)
+            .zip(error.chunks_mut(stride))
+            .take(channels)
+        {
+            let target = add32(error_slice[band], gconst(0.5));
+            let mut q2 = shr32(target, DB_SHIFT - fine_bits) as i32;
+            q2 = q2.clamp(0, max_q);
+
+            enc.enc_bits(q2 as u32, fine_bits);
+
+            let offset = sub32(
+                vshr32(2 * q2 + 1, fine as i32 - DB_SHIFT as i32 + 1),
+                gconst(0.5),
+            );
+            old_slice[band] = add32(old_slice[band], offset);
+            error_slice[band] = sub32(error_slice[band], offset);
         }
     }
 }
@@ -1270,6 +1764,65 @@ pub(crate) fn quant_energy_finalise(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quant_energy_finalise_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [FixedCeltGlog],
+    error: &mut [FixedCeltGlog],
+    fine_quant: &[i32],
+    fine_priority: &[i32],
+    mut bits_left: i32,
+    enc: &mut EcEnc<'_>,
+    channels: usize,
+) {
+    assert!(old_ebands.len() >= channels * mode.num_ebands);
+    assert!(error.len() >= channels * mode.num_ebands);
+    assert!(end <= mode.num_ebands);
+    assert!(fine_quant.len() >= end);
+    assert!(fine_priority.len() >= end);
+
+    let stride = mode.num_ebands;
+    let channels_i32 = channels as i32;
+
+    for priority in 0..2 {
+        for (band, (&fine, &priority_flag)) in fine_quant
+            .iter()
+            .zip(fine_priority.iter())
+            .enumerate()
+            .take(end)
+            .skip(start)
+        {
+            if bits_left < channels_i32 {
+                break;
+            }
+
+            if fine >= MAX_FINE_BITS || priority_flag != priority {
+                continue;
+            }
+
+            let fine_bits = fine.max(0) as u32;
+            for (old_slice, error_slice) in old_ebands
+                .chunks_mut(stride)
+                .zip(error.chunks_mut(stride))
+                .take(channels)
+            {
+                let q2 = if error_slice[band] < 0 { 0 } else { 1 };
+                enc.enc_bits(q2 as u32, 1);
+                let offset = shr32(
+                    sub32(shl32(q2, DB_SHIFT), gconst(0.5)),
+                    fine_bits + 1,
+                );
+                old_slice[band] = add32(old_slice[band], offset);
+                error_slice[band] = sub32(error_slice[band], offset);
+                bits_left -= 1;
+            }
+        }
+    }
+}
+
 /// Restores the fine energy quantisation from the bit-stream.
 ///
 /// Mirrors the float path of `unquant_fine_energy()` by replaying the raw bits
@@ -1305,6 +1858,39 @@ pub(crate) fn unquant_fine_energy(
             let q2 = dec.dec_bits(fine_bits as u32) as i32;
             let offset = (q2 as f32 + 0.5) * scale - 0.5;
             band_slice[band] += offset;
+        }
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+pub(crate) fn unquant_fine_energy_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [FixedCeltGlog],
+    fine_quant: &[i32],
+    dec: &mut EcDec<'_>,
+    channels: usize,
+) {
+    assert!(end <= mode.num_ebands);
+    assert!(fine_quant.len() >= end);
+    assert!(old_ebands.len() >= channels * mode.num_ebands);
+
+    let stride = mode.num_ebands;
+
+    for (band, &fine) in fine_quant.iter().enumerate().take(end).skip(start) {
+        if fine <= 0 {
+            continue;
+        }
+
+        let fine_bits = fine as u32;
+        for band_slice in old_ebands.chunks_mut(stride).take(channels) {
+            let q2 = dec.dec_bits(fine_bits) as i32;
+            let offset = sub32(
+                vshr32(2 * q2 + 1, fine as i32 - DB_SHIFT as i32 + 1),
+                gconst(0.5),
+            );
+            band_slice[band] = add32(band_slice[band], offset);
         }
     }
 }
@@ -1364,19 +1950,80 @@ pub(crate) fn unquant_energy_finalise(
     }
 }
 
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unquant_energy_finalise_fixed(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    old_ebands: &mut [FixedCeltGlog],
+    fine_quant: &[i32],
+    fine_priority: &[i32],
+    mut bits_left: i32,
+    dec: &mut EcDec<'_>,
+    channels: usize,
+) {
+    assert!(end <= mode.num_ebands);
+    assert!(fine_quant.len() >= end);
+    assert!(fine_priority.len() >= end);
+    assert!(old_ebands.len() >= channels * mode.num_ebands);
+
+    let stride = mode.num_ebands;
+    let channels_i32 = channels as i32;
+
+    for priority in 0..2 {
+        for band in start..end {
+            if bits_left < channels_i32 {
+                break;
+            }
+
+            let fine = fine_quant[band];
+            if fine >= MAX_FINE_BITS || fine_priority[band] != priority {
+                continue;
+            }
+
+            let fine_bits = fine.max(0) as u32;
+            for channel in 0..channels {
+                let idx = channel * stride + band;
+                let q2 = dec.dec_bits(1) as i32;
+                let offset = shr32(
+                    sub32(shl32(q2, DB_SHIFT), gconst(0.5)),
+                    fine_bits + 1,
+                );
+                old_ebands[idx] = add32(old_ebands[idx], offset);
+                bits_left -= 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use super::{
         BETA_COEF, BETA_INTRA, E_MEANS, E_PROB_MODEL, PRED_COEF, SMALL_ENERGY_ICDF, amp2_log2,
         loss_distortion, quant_coarse_energy, quant_energy_finalise, quant_fine_energy,
         unquant_coarse_energy, unquant_energy_finalise, unquant_fine_energy,
     };
+    #[cfg(feature = "fixed_point")]
+    use super::{
+        E_MEANS_Q4, amp2_log2_fixed, quant_coarse_energy_fixed, quant_energy_finalise_fixed,
+        quant_fine_energy_fixed, unquant_coarse_energy_fixed, unquant_energy_finalise_fixed,
+        unquant_fine_energy_fixed,
+    };
     use crate::celt::entcode::ec_tell;
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
+    use crate::celt::rate::MAX_FINE_BITS;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::DB_SHIFT;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::{add32, qconst32, shl32, sub32};
     use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::types::{FixedCeltEner, FixedCeltGlog};
 
     #[test]
     fn loss_distortion_matches_manual_accumulation() {
@@ -1417,6 +2064,306 @@ mod tests {
         let e = vec![0.0f32; 16];
         let old = vec![0.0f32; 16];
         assert_eq!(loss_distortion(&e, &old, 6, 4, 8, 2), 0.0);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn gconst_q24(value: f64) -> FixedCeltGlog {
+        qconst32(value, DB_SHIFT)
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fixed_mode<'a>(
+        e_bands: &'a [i16],
+        log_n: &'a [i16],
+        alloc_vectors: &'a [u8],
+        window: &'a [f32],
+    ) -> OpusCustomMode<'a> {
+        let mdct = MdctLookup::new(4, 0);
+        OpusCustomMode::new(
+            48_000,
+            0,
+            e_bands,
+            alloc_vectors,
+            log_n,
+            window,
+            mdct,
+            PulseCacheData::default(),
+        )
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_amp2_log2_matches_reference_formula() {
+        let e_bands = [0i16, 1, 2, 4];
+        let log_n = [6i16; 3];
+        let alloc_vectors = [0u8; 4];
+        let window = [0.0f32; 4];
+        let mode = fixed_mode(&e_bands, &log_n, &alloc_vectors, &window);
+        let channels = 2;
+        let mut band_e: [FixedCeltEner; 6] = [0; 6];
+        band_e[0] = 1 << 12;
+        band_e[1] = 0;
+        band_e[2] = 1 << 8;
+        band_e[3] = 1 << 10;
+        band_e[4] = 1 << 9;
+        band_e[5] = 1;
+
+        let mut band_log_e = [0i32; 6];
+        amp2_log2_fixed(&mode, 2, 3, &band_e, &mut band_log_e, channels);
+
+        for channel in 0..channels {
+            for band in 0..2 {
+                let idx = channel * 3 + band;
+                let mean = i32::from(E_MEANS_Q4[band]);
+                let expected = add32(
+                    sub32(super::celt_log2_db_fixed(band_e[idx]), shl32(mean, DB_SHIFT - 4)),
+                    gconst_q24(2.0),
+                );
+                assert_eq!(band_log_e[idx], expected);
+            }
+            assert_eq!(band_log_e[channel * 3 + 2], -gconst_q24(14.0));
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn coarse_roundtrip_fixed(
+        mode: &OpusCustomMode<'_>,
+        e_bands: &[FixedCeltGlog],
+        old_init: &[FixedCeltGlog],
+        channels: usize,
+        lm: usize,
+        budget: u32,
+        force_intra: bool,
+        nb_available_bytes: i32,
+        two_pass: bool,
+        loss_rate: i32,
+        lfe: bool,
+    ) -> Vec<FixedCeltGlog> {
+        let storage_bytes = (budget / 8).max(1) as usize;
+        let mut buffer = vec![0u8; storage_bytes];
+        let mut enc = EcEnc::new(&mut buffer);
+        let mut old_enc = old_init.to_vec();
+        let mut error = vec![0i32; old_init.len()];
+        let mut delayed_intra = 0i32;
+
+        quant_coarse_energy_fixed(
+            mode,
+            0,
+            mode.num_ebands,
+            mode.num_ebands,
+            e_bands,
+            &mut old_enc,
+            budget,
+            &mut error,
+            &mut enc,
+            channels,
+            lm,
+            nb_available_bytes,
+            force_intra,
+            &mut delayed_intra,
+            two_pass,
+            loss_rate,
+            lfe,
+        );
+        enc.enc_done();
+
+        let mut dec = EcDec::new(&mut buffer);
+        let tell = ec_tell(dec.ctx());
+        let intra = if tell + 3 <= budget as i32 {
+            dec.dec_bit_logp(3) != 0
+        } else {
+            false
+        };
+
+        let mut old_dec = old_init.to_vec();
+        unquant_coarse_energy_fixed(
+            mode,
+            0,
+            mode.num_ebands,
+            &mut old_dec,
+            intra,
+            &mut dec,
+            channels,
+            lm,
+        );
+
+        assert_eq!(old_dec, old_enc);
+        old_enc
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_coarse_energy_roundtrip_matches_encoder() {
+        let e_bands = [0i16, 1, 2, 3, 4];
+        let log_n = [6i16; 4];
+        let alloc_vectors = [0u8; 4];
+        let window = [0.0f32; 4];
+        let mode = fixed_mode(&e_bands, &log_n, &alloc_vectors, &window);
+        let channels = 2;
+        let e_bands_vals = [
+            gconst_q24(6.0),
+            gconst_q24(1.0),
+            gconst_q24(4.0),
+            gconst_q24(0.5),
+            gconst_q24(5.0),
+            gconst_q24(2.5),
+            gconst_q24(3.0),
+            gconst_q24(-1.0),
+        ];
+        let old_init = [
+            gconst_q24(0.0),
+            gconst_q24(-3.0),
+            gconst_q24(1.5),
+            gconst_q24(-2.0),
+            gconst_q24(1.0),
+            gconst_q24(-1.0),
+            gconst_q24(0.25),
+            gconst_q24(-4.0),
+        ];
+
+        coarse_roundtrip_fixed(
+            &mode,
+            &e_bands_vals,
+            &old_init,
+            channels,
+            1,
+            192,
+            false,
+            24,
+            false,
+            0,
+            false,
+        );
+        coarse_roundtrip_fixed(
+            &mode,
+            &e_bands_vals,
+            &old_init,
+            channels,
+            1,
+            16,
+            true,
+            2,
+            false,
+            0,
+            true,
+        );
+        coarse_roundtrip_fixed(
+            &mode,
+            &e_bands_vals,
+            &old_init,
+            channels,
+            1,
+            16,
+            true,
+            2,
+            false,
+            0,
+            false,
+        );
+
+        let lfe_mode_e_bands = [0i16, 1, 2, 3];
+        let lfe_log_n = [6i16; 3];
+        let lfe_alloc_vectors = [0u8; 4];
+        let lfe_window = [0.0f32; 4];
+        let lfe_mode = fixed_mode(
+            &lfe_mode_e_bands,
+            &lfe_log_n,
+            &lfe_alloc_vectors,
+            &lfe_window,
+        );
+        let lfe_e_bands = [gconst_q24(1.5), gconst_q24(2.5), gconst_q24(4.0)];
+        let lfe_old = [0i32; 3];
+        let old_lfe = coarse_roundtrip_fixed(
+            &lfe_mode,
+            &lfe_e_bands,
+            &lfe_old,
+            1,
+            0,
+            32,
+            true,
+            4,
+            false,
+            0,
+            true,
+        );
+        let old_non_lfe = coarse_roundtrip_fixed(
+            &lfe_mode,
+            &lfe_e_bands,
+            &lfe_old,
+            1,
+            0,
+            32,
+            true,
+            4,
+            false,
+            0,
+            false,
+        );
+        assert!(old_lfe[2] <= old_non_lfe[2]);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_fine_energy_roundtrip_matches_encoder() {
+        let e_bands = [0i16, 1, 2, 3, 4];
+        let log_n = [6i16; 4];
+        let alloc_vectors = [0u8; 4];
+        let window = [0.0f32; 4];
+        let mode = fixed_mode(&e_bands, &log_n, &alloc_vectors, &window);
+
+        let mut buffer = vec![0u8; 16];
+        let mut enc = EcEnc::new(&mut buffer);
+        let mut old_enc = [
+            gconst_q24(-2.0),
+            gconst_q24(1.5),
+            gconst_q24(-0.5),
+            gconst_q24(3.0),
+        ];
+        let mut error = [
+            gconst_q24(-0.75),
+            gconst_q24(0.25),
+            gconst_q24(0.9),
+            gconst_q24(-0.1),
+        ];
+        let fine_quant = [0, 1, MAX_FINE_BITS, 2];
+        let fine_priority = [0, 1, 0, 1];
+
+        quant_fine_energy_fixed(&mode, 0, 4, &mut old_enc, &mut error, &fine_quant, &mut enc, 1);
+        quant_energy_finalise_fixed(
+            &mode,
+            0,
+            4,
+            &mut old_enc,
+            &mut error,
+            &fine_quant,
+            &fine_priority,
+            2,
+            &mut enc,
+            1,
+        );
+        enc.enc_done();
+
+        let mut dec = EcDec::new(&mut buffer);
+        let mut old_dec = [
+            gconst_q24(-2.0),
+            gconst_q24(1.5),
+            gconst_q24(-0.5),
+            gconst_q24(3.0),
+        ];
+        unquant_fine_energy_fixed(&mode, 0, 4, &mut old_dec, &fine_quant, &mut dec, 1);
+        unquant_energy_finalise_fixed(
+            &mode,
+            0,
+            4,
+            &mut old_dec,
+            &fine_quant,
+            &fine_priority,
+            2,
+            &mut dec,
+            1,
+        );
+
+        assert_eq!(old_dec, old_enc);
     }
 
     #[test]
