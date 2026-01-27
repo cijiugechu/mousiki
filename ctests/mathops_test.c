@@ -50,6 +50,47 @@ int main(void) {
   failures += check_i16("celt_cos_norm_wrap", celt_cos_norm(0x20000), 32767);
   failures += check_i16("celt_cos_norm_mask", celt_cos_norm(0x1FFFF), 32767);
 
+  /* celt_ilog2: boundary and high-range values. */
+  {
+    struct {
+      opus_int32 input;
+      opus_int16 expected;
+    } ilog2_cases[] = {
+        {1, 0},         {2, 1},         {3, 1},         {4, 2},
+        {5, 2},         {7, 2},         {8, 3},         {9, 3},
+        {15, 3},        {16, 4},        {17, 4},        {31, 4},
+        {32, 5},        {33, 5},        {255, 7},       {256, 8},
+        {257, 8},       {2147483647, 30},
+    };
+    for (size_t i = 0; i < sizeof(ilog2_cases) / sizeof(ilog2_cases[0]); ++i) {
+      char label[64];
+      snprintf(label, sizeof(label), "celt_ilog2_%d",
+               (int)ilog2_cases[i].input);
+      failures += check_i16(label, celt_ilog2(ilog2_cases[i].input),
+                            ilog2_cases[i].expected);
+    }
+  }
+
+  /* celt_log2: zero path, sub-1 inputs, and larger magnitudes. */
+  {
+    struct {
+      opus_val32 input;
+      opus_val16 expected;
+    } log2_cases[] = {
+        {0, -32767},     {1, -14336},     {2, -13312},     {100, -7533},
+        {1000, -4131},   {8192, -1024},   {16384, 0},      {20000, 295},
+        {24576, 599},    {32768, 1024},   {40000, 1319},   {49152, 1623},
+        {65536, 2048},   {131072, 3072},  {1048576, 6144},
+    };
+    for (size_t i = 0; i < sizeof(log2_cases) / sizeof(log2_cases[0]); ++i) {
+      char label[64];
+      snprintf(label, sizeof(label), "celt_log2_%d",
+               (int)log2_cases[i].input);
+      failures += check_i16(label, celt_log2(log2_cases[i].input),
+                            log2_cases[i].expected);
+    }
+  }
+
   return failures ? 1 : 0;
 }
 #else

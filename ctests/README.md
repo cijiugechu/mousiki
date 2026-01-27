@@ -23,6 +23,9 @@ Common options:
 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   --cmake-arg -DOPUS_DISABLE_INTRINSICS=ON
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
+  -- --tests-regex celt_mathops_test
 ./ctests/run.sh -- --verbose
 ```
 
