@@ -18,6 +18,12 @@ Common options:
 ```sh
 ./ctests/run.sh --clean -j 8
 ./ctests/run.sh --cmake-arg -DOPUS_CUSTOM_MODES=ON
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_DISABLE_MDCT_TRACE=ON
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
+  --cmake-arg -DOPUS_DISABLE_INTRINSICS=ON
 ./ctests/run.sh -- --verbose
 ```
 
