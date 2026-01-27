@@ -78,8 +78,16 @@ fn shl32(value: i32, shift: u32) -> i32 {
     value.wrapping_shl(shift)
 }
 
+fn shr16(value: i16, shift: u32) -> i16 {
+    value >> shift
+}
+
 fn shl16(value: i16, shift: u32) -> i16 {
     i32::from(value).wrapping_shl(shift) as i16
+}
+
+fn extract16(value: i32) -> i16 {
+    value as i16
 }
 
 fn add16(a: i16, b: i16) -> i16 {
@@ -218,6 +226,49 @@ pub(crate) fn frac_div32(a: i32, b: i32) -> i32 {
         -2_147_483_647
     } else {
         shl32(result, 2)
+    }
+}
+
+/// Fixed-point division using reciprocal.
+/// Mirrors `celt_div` macro in C fixed-point build.
+pub(crate) fn celt_div(a: i32, b: i32) -> i32 {
+    mult32_32_q31(a, celt_rcp(b))
+}
+
+/// 4th order polynomial approximation of atan.
+/// Input is in Q15 format and normalized by pi/4. Output is in Q15 format.
+/// Mirrors `celt_atan01()` from `celt/mathops.h`.
+fn celt_atan01(x: i16) -> i16 {
+    const M1: i32 = 32767;
+    const M2: i32 = -21;
+    const M3: i32 = -11943;
+    const M4: i32 = 4936;
+    
+    // Nested polynomial evaluation: x * (M1 + x * (M2 + x * (M3 + x * M4)))
+    let term4 = mult16_16_p15(M4 as i16, x);
+    let term3 = add32(M3, i32::from(term4));
+    let term3 = mult16_16_p15(x, term3 as i16);
+    let term2 = add32(M2, i32::from(term3));
+    let term2 = mult16_16_p15(x, term2 as i16);
+    let term1 = add32(M1, i32::from(term2));
+    mult16_16_p15(x, term1 as i16)
+}
+
+/// atan2() approximation valid for positive input values.
+/// Mirrors `celt_atan2p()` from `celt/mathops.h`.
+pub(crate) fn celt_atan2p(y: i16, x: i16) -> i16 {
+    if y < x {
+        let mut arg = celt_div(shl32(i32::from(y), 15), i32::from(x));
+        if arg >= 32767 {
+            arg = 32767;
+        }
+        shr16(celt_atan01(extract16(arg) as i16), 1)
+    } else {
+        let mut arg = celt_div(shl32(i32::from(x), 15), i32::from(y));
+        if arg >= 32767 {
+            arg = 32767;
+        }
+        25736 - shr16(celt_atan01(extract16(arg) as i16), 1)
     }
 }
 
