@@ -20,7 +20,6 @@ Common options:
 ./ctests/run.sh --cmake-arg -DOPUS_CUSTOM_MODES=ON
 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF
-./ctests/run.sh --cmake-arg -DOPUS_CTESTS_DISABLE_MDCT_TRACE=ON
 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   --cmake-arg -DOPUS_DISABLE_INTRINSICS=ON
@@ -28,6 +27,10 @@ Common options:
 ```
 
 Run `./ctests/run.sh --help` to see all available options.
+
+Fixed-point runs only build the minimal CELT subset needed by the fixed-point
+tests (e.g., band energy + pitch), so the mdct/synthesis/analysis tools are
+skipped in that configuration.
 
 ## Packet stream tools
 
