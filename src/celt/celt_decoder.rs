@@ -38,9 +38,9 @@ use crate::celt::{
     update_plc_state,
 };
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::SIG_SHIFT;
+use crate::celt::fixed_arch::{DB_SHIFT, SIG_SHIFT};
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_ops::{add32_ovflw, pshr32};
+use crate::celt::fixed_ops::{add32_ovflw, pshr32, qconst32};
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 use crate::celt::math::{celt_sqrt, frac_div32};
 #[cfg(not(feature = "fixed_point"))]
@@ -49,15 +49,21 @@ use crate::celt::mdct::clt_mdct_backward;
 use crate::celt::mdct_fixed::{clt_mdct_backward_fixed, FixedMdctLookup};
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{pitch_downsample, pitch_search};
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::unquant_energy_finalise;
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
+#[cfg(feature = "fixed_point")]
+use crate::celt::quant_bands::{
+    unquant_coarse_energy_fixed, unquant_energy_finalise_fixed, unquant_fine_energy_fixed,
+};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
     CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
     OpusUint32, OpusVal16, OpusVal32,
 };
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltCoef, FixedCeltSig};
+use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltSig};
 use crate::celt::vq::SPREAD_NORMAL;
 use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
@@ -70,6 +76,30 @@ type PlcHandle<'a> = Option<&'a mut LpcNetPlcState>;
 type PlcHandle<'a> = ();
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+
+#[cfg(feature = "fixed_point")]
+fn glog_from_fixed(value: FixedCeltGlog) -> f32 {
+    value as f32 / (1u32 << DB_SHIFT) as f32
+}
+
+#[cfg(feature = "fixed_point")]
+fn glog_to_fixed(value: f32) -> FixedCeltGlog {
+    qconst32(value as f64, DB_SHIFT)
+}
+
+#[cfg(feature = "fixed_point")]
+fn sync_loge_from_fixed(dst: &mut [CeltGlog], src: &[FixedCeltGlog]) {
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = glog_from_fixed(value);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn sync_loge_to_fixed(dst: &mut [FixedCeltGlog], src: &[CeltGlog]) {
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = glog_to_fixed(value);
+    }
+}
 
 /// Linear prediction order used by the decoder side filters.
 ///
@@ -1246,7 +1276,17 @@ pub(crate) fn opus_custom_decoder_get_size(
     let size = DECODER_PREFIX_SIZE
         + (decode_mem - 1) * core::mem::size_of::<CeltSig>()
         + lpc * core::mem::size_of::<OpusVal16>()
-        + 4 * band_history * core::mem::size_of::<CeltGlog>();
+        + 4 * band_history * core::mem::size_of::<CeltGlog>()
+        + {
+            #[cfg(feature = "fixed_point")]
+            {
+                band_history * core::mem::size_of::<FixedCeltGlog>()
+            }
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                0
+            }
+        };
     Some(size)
 }
 
@@ -1881,7 +1921,25 @@ where
         }
     }
 
-    unquant_coarse_energy(mode, start, end, decoder.old_ebands, intra_ener, dec, c, lm);
+    #[cfg(feature = "fixed_point")]
+    {
+        sync_loge_to_fixed(decoder.fixed_old_ebands, decoder.old_ebands);
+        unquant_coarse_energy_fixed(
+            mode,
+            start,
+            end,
+            decoder.fixed_old_ebands,
+            intra_ener,
+            dec,
+            c,
+            lm,
+        );
+        sync_loge_from_fixed(decoder.old_ebands, decoder.fixed_old_ebands);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        unquant_coarse_energy(mode, start, end, decoder.old_ebands, intra_ener, dec, c, lm);
+    }
 
     let mut tf_res = vec![0; nb_ebands];
     tf_decode(start, end, is_transient, &mut tf_res, lm, dec);
@@ -1969,7 +2027,23 @@ where
         0,
     );
 
-    unquant_fine_energy(mode, start, end, decoder.old_ebands, &fine_quant, dec, c);
+    #[cfg(feature = "fixed_point")]
+    {
+        unquant_fine_energy_fixed(
+            mode,
+            start,
+            end,
+            decoder.fixed_old_ebands,
+            &fine_quant,
+            dec,
+            c,
+        );
+        sync_loge_from_fixed(decoder.old_ebands, decoder.fixed_old_ebands);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        unquant_fine_energy(mode, start, end, decoder.old_ebands, &fine_quant, dec, c);
+    }
 
     let tell = entcode::ec_tell(dec.ctx());
 
@@ -2185,17 +2259,35 @@ where
     }
 
     let remaining_bits = (packet_len as OpusInt32 * 8) - entcode::ec_tell(dec.ctx());
-    unquant_energy_finalise(
-        mode,
-        start,
-        end,
-        decoder.old_ebands,
-        &fine_quant,
-        &fine_priority,
-        remaining_bits,
-        dec,
-        c,
-    );
+    #[cfg(feature = "fixed_point")]
+    {
+        unquant_energy_finalise_fixed(
+            mode,
+            start,
+            end,
+            decoder.fixed_old_ebands,
+            &fine_quant,
+            &fine_priority,
+            remaining_bits,
+            dec,
+            c,
+        );
+        sync_loge_from_fixed(decoder.old_ebands, decoder.fixed_old_ebands);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        unquant_energy_finalise(
+            mode,
+            start,
+            end,
+            decoder.old_ebands,
+            &fine_quant,
+            &fine_priority,
+            remaining_bits,
+            dec,
+            c,
+        );
+    }
 
     if anti_collapse_on {
         anti_collapse(
@@ -2219,6 +2311,10 @@ where
 
     if silence {
         decoder.old_ebands.fill(-28.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            sync_loge_to_fixed(decoder.fixed_old_ebands, decoder.old_ebands);
+        }
     }
 
     if decoder.prefilter_and_fold {
@@ -2537,6 +2633,8 @@ pub(crate) struct CeltDecoderAlloc {
     old_log_e: Vec<CeltGlog>,
     old_log_e2: Vec<CeltGlog>,
     background_log_e: Vec<CeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    fixed_old_ebands: Vec<FixedCeltGlog>,
 }
 
 impl CeltDecoderAlloc {
@@ -2562,6 +2660,8 @@ impl CeltDecoderAlloc {
             old_log_e: vec![0.0; band_count],
             old_log_e2: vec![0.0; band_count],
             background_log_e: vec![0.0; band_count],
+            #[cfg(feature = "fixed_point")]
+            fixed_old_ebands: vec![0; band_count],
         }
     }
 
@@ -2585,11 +2685,25 @@ impl CeltDecoderAlloc {
         debug_assert_eq!(self.old_log_e.len(), band_history);
         debug_assert_eq!(self.old_log_e2.len(), band_history);
         debug_assert_eq!(self.background_log_e.len(), band_history);
+        #[cfg(feature = "fixed_point")]
+        {
+            debug_assert_eq!(self.fixed_old_ebands.len(), band_history);
+        }
 
         DECODER_PREFIX_SIZE
             + (decode_mem - 1) * core::mem::size_of::<CeltSig>()
             + self.lpc.len() * core::mem::size_of::<OpusVal16>()
             + 4 * band_history * core::mem::size_of::<CeltGlog>()
+            + {
+                #[cfg(feature = "fixed_point")]
+                {
+                    band_history * core::mem::size_of::<FixedCeltGlog>()
+                }
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    0
+                }
+            }
     }
 
     /// Borrows the allocation as an [`OpusCustomDecoder`] tied to the provided
@@ -2605,17 +2719,35 @@ impl CeltDecoderAlloc {
         channels: usize,
         stream_channels: usize,
     ) -> OpusCustomDecoder<'a> {
-        OpusCustomDecoder::new(
-            mode,
-            channels,
-            stream_channels,
-            self.decode_mem.as_mut_slice(),
-            self.lpc.as_mut_slice(),
-            self.old_ebands.as_mut_slice(),
-            self.old_log_e.as_mut_slice(),
-            self.old_log_e2.as_mut_slice(),
-            self.background_log_e.as_mut_slice(),
-        )
+        #[cfg(feature = "fixed_point")]
+        {
+            OpusCustomDecoder::new(
+                mode,
+                channels,
+                stream_channels,
+                self.decode_mem.as_mut_slice(),
+                self.lpc.as_mut_slice(),
+                self.old_ebands.as_mut_slice(),
+                self.old_log_e.as_mut_slice(),
+                self.old_log_e2.as_mut_slice(),
+                self.background_log_e.as_mut_slice(),
+                self.fixed_old_ebands.as_mut_slice(),
+            )
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            OpusCustomDecoder::new(
+                mode,
+                channels,
+                stream_channels,
+                self.decode_mem.as_mut_slice(),
+                self.lpc.as_mut_slice(),
+                self.old_ebands.as_mut_slice(),
+                self.old_log_e.as_mut_slice(),
+                self.old_log_e2.as_mut_slice(),
+                self.background_log_e.as_mut_slice(),
+            )
+        }
     }
 
     /// Resets the allocation contents to zero.
@@ -2637,6 +2769,12 @@ impl CeltDecoderAlloc {
         }
         for history in &mut self.background_log_e {
             *history = 0.0;
+        }
+        #[cfg(feature = "fixed_point")]
+        {
+            for history in &mut self.fixed_old_ebands {
+                *history = 0;
+            }
         }
     }
 
@@ -2930,6 +3068,8 @@ mod tests {
         assert_eq!(alloc.old_log_e.len(), 2 * mode.num_ebands);
         assert_eq!(alloc.old_log_e2.len(), 2 * mode.num_ebands);
         assert_eq!(alloc.background_log_e.len(), 2 * mode.num_ebands);
+        #[cfg(feature = "fixed_point")]
+        assert_eq!(alloc.fixed_old_ebands.len(), 2 * mode.num_ebands);
 
         // Ensure the reset helper clears all buffers.
         alloc.decode_mem.fill(1.0);
@@ -2938,6 +3078,8 @@ mod tests {
         alloc.old_log_e.fill(1.0);
         alloc.old_log_e2.fill(1.0);
         alloc.background_log_e.fill(1.0);
+        #[cfg(feature = "fixed_point")]
+        alloc.fixed_old_ebands.fill(7);
         alloc.reset();
 
         assert!(alloc.decode_mem.iter().all(|&v| v == 0.0));
@@ -2946,6 +3088,8 @@ mod tests {
         assert!(alloc.old_log_e.iter().all(|&v| v == 0.0));
         assert!(alloc.old_log_e2.iter().all(|&v| v == 0.0));
         assert!(alloc.background_log_e.iter().all(|&v| v == 0.0));
+        #[cfg(feature = "fixed_point")]
+        assert!(alloc.fixed_old_ebands.iter().all(|&v| v == 0));
 
         let expected_size = opus_custom_decoder_get_size(&mode, 2).expect("decoder size");
         assert_eq!(alloc.size_in_bytes(), expected_size);
@@ -3298,6 +3442,8 @@ mod tests {
         decoder.old_log_e.fill(1.0);
         decoder.old_log_e2.fill(1.5);
         decoder.background_log_e.fill(0.125);
+        #[cfg(feature = "fixed_point")]
+        decoder.fixed_old_ebands.fill(7);
 
         opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::ResetState).unwrap();
 
@@ -3319,6 +3465,8 @@ mod tests {
         assert!(decoder.old_ebands.iter().all(|&v| v == 0.0));
         assert!(decoder.old_log_e.iter().all(|&v| v == -28.0));
         assert!(decoder.old_log_e2.iter().all(|&v| v == -28.0));
+        #[cfg(feature = "fixed_point")]
+        assert!(decoder.fixed_old_ebands.iter().all(|&v| v == 0));
         assert!(decoder.background_log_e.iter().all(|&v| v == 0.0));
     }
 

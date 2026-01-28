@@ -7,7 +7,9 @@ use super::vq::SPREAD_NORMAL;
 #[cfg(feature = "deep_plc")]
 use super::deep_plc::PLC_UPDATE_SAMPLES;
 #[cfg(feature = "fixed_point")]
-use super::fixed_ops::qconst16;
+use super::fixed_arch::DB_SHIFT;
+#[cfg(feature = "fixed_point")]
+use super::fixed_ops::{qconst16, qconst32};
 #[cfg(feature = "fixed_point")]
 use super::mdct_fixed::FixedMdctLookup;
 use crate::celt::mdct_twiddles_48000_960::MDCT_TWIDDLES_960;
@@ -368,6 +370,8 @@ pub struct OpusCustomEncoder<'a> {
     pub rng: OpusUint32,
     pub spread_decision: i32,
     pub delayed_intra: OpusVal32,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_delayed_intra: FixedCeltGlog,
     pub tonal_average: i32,
     pub last_coded_bands: i32,
     pub hf_average: i32,
@@ -380,6 +384,8 @@ pub struct OpusCustomEncoder<'a> {
     pub silk_info: SilkInfo,
     pub preemph_mem_encoder: [OpusVal32; 2],
     pub preemph_mem_decoder: [OpusVal32; 2],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_preemph_mem_encoder: [FixedCeltSig; 2],
     pub vbr_reservoir: OpusInt32,
     pub vbr_drift: OpusInt32,
     pub vbr_offset: OpusInt32,
@@ -395,6 +401,14 @@ pub struct OpusCustomEncoder<'a> {
     pub old_log_e: &'a mut [CeltGlog],
     pub old_log_e2: &'a mut [CeltGlog],
     pub energy_error: &'a mut [CeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_old_band_e: &'a mut [FixedCeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_energy_error: &'a mut [FixedCeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_mdct: FixedMdctLookup,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_window: Vec<FixedCeltCoef>,
 }
 
 impl<'a> OpusCustomEncoder<'a> {
@@ -410,6 +424,8 @@ impl<'a> OpusCustomEncoder<'a> {
         old_log_e: &'a mut [CeltGlog],
         old_log_e2: &'a mut [CeltGlog],
         energy_error: &'a mut [CeltGlog],
+        #[cfg(feature = "fixed_point")] fixed_old_band_e: &'a mut [FixedCeltGlog],
+        #[cfg(feature = "fixed_point")] fixed_energy_error: &'a mut [FixedCeltGlog],
     ) -> Self {
         let overlap = mode.overlap * channels;
         debug_assert_eq!(in_mem.len(), overlap);
@@ -418,6 +434,19 @@ impl<'a> OpusCustomEncoder<'a> {
         debug_assert_eq!(old_log_e.len(), band_count);
         debug_assert_eq!(old_log_e2.len(), band_count);
         debug_assert_eq!(energy_error.len(), band_count);
+        #[cfg(feature = "fixed_point")]
+        {
+            debug_assert_eq!(fixed_old_band_e.len(), band_count);
+            debug_assert_eq!(fixed_energy_error.len(), band_count);
+        }
+        #[cfg(feature = "fixed_point")]
+        let fixed_mdct = FixedMdctLookup::new(mode.mdct.len(), mode.mdct.max_shift());
+        #[cfg(feature = "fixed_point")]
+        let fixed_window = mode
+            .window
+            .iter()
+            .map(|&value| qconst16(f64::from(value), 15))
+            .collect();
         Self {
             mode,
             channels,
@@ -441,6 +470,8 @@ impl<'a> OpusCustomEncoder<'a> {
             rng: 0,
             spread_decision: 0,
             delayed_intra: 0.0,
+            #[cfg(feature = "fixed_point")]
+            fixed_delayed_intra: qconst32(0.0, DB_SHIFT),
             tonal_average: 0,
             last_coded_bands: 0,
             hf_average: 0,
@@ -453,6 +484,8 @@ impl<'a> OpusCustomEncoder<'a> {
             silk_info: SilkInfo::default(),
             preemph_mem_encoder: [0.0; 2],
             preemph_mem_decoder: [0.0; 2],
+            #[cfg(feature = "fixed_point")]
+            fixed_preemph_mem_encoder: [0; 2],
             vbr_reservoir: 0,
             vbr_drift: 0,
             vbr_offset: 0,
@@ -468,6 +501,14 @@ impl<'a> OpusCustomEncoder<'a> {
             old_log_e,
             old_log_e2,
             energy_error,
+            #[cfg(feature = "fixed_point")]
+            fixed_old_band_e,
+            #[cfg(feature = "fixed_point")]
+            fixed_energy_error,
+            #[cfg(feature = "fixed_point")]
+            fixed_mdct,
+            #[cfg(feature = "fixed_point")]
+            fixed_window,
         }
     }
 
@@ -478,6 +519,10 @@ impl<'a> OpusCustomEncoder<'a> {
         self.rng = 0;
         self.spread_decision = SPREAD_NORMAL;
         self.delayed_intra = 1.0;
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_delayed_intra = qconst32(1.0, DB_SHIFT);
+        }
         self.tonal_average = 256;
         self.last_coded_bands = 0;
         self.hf_average = 0;
@@ -490,6 +535,10 @@ impl<'a> OpusCustomEncoder<'a> {
         self.silk_info = SilkInfo::default();
         self.preemph_mem_encoder = [0.0; 2];
         self.preemph_mem_decoder = [0.0; 2];
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_preemph_mem_encoder = [0; 2];
+        }
         self.vbr_reservoir = 0;
         self.vbr_drift = 0;
         self.vbr_offset = 0;
@@ -505,6 +554,11 @@ impl<'a> OpusCustomEncoder<'a> {
         self.old_log_e.fill(-28.0);
         self.old_log_e2.fill(-28.0);
         self.energy_error.fill(0.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_old_band_e.fill(0);
+            self.fixed_energy_error.fill(0);
+        }
     }
 }
 
@@ -548,6 +602,8 @@ pub struct OpusCustomDecoder<'a> {
     pub old_log_e2: &'a mut [CeltGlog],
     pub background_log_e: &'a mut [CeltGlog],
     #[cfg(feature = "fixed_point")]
+    pub fixed_old_ebands: &'a mut [FixedCeltGlog],
+    #[cfg(feature = "fixed_point")]
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
     pub fixed_window: Vec<FixedCeltCoef>,
@@ -565,6 +621,7 @@ impl<'a> OpusCustomDecoder<'a> {
         old_log_e: &'a mut [CeltGlog],
         old_log_e2: &'a mut [CeltGlog],
         background_log_e: &'a mut [CeltGlog],
+        #[cfg(feature = "fixed_point")] fixed_old_ebands: &'a mut [FixedCeltGlog],
     ) -> Self {
         let overlap = mode.overlap;
         let decode_stride = if channels > 0 {
@@ -579,6 +636,10 @@ impl<'a> OpusCustomDecoder<'a> {
         debug_assert_eq!(old_log_e.len(), band_count);
         debug_assert_eq!(old_log_e2.len(), band_count);
         debug_assert_eq!(background_log_e.len(), band_count);
+        #[cfg(feature = "fixed_point")]
+        {
+            debug_assert_eq!(fixed_old_ebands.len(), band_count);
+        }
         #[cfg(feature = "fixed_point")]
         let fixed_mdct = FixedMdctLookup::new(mode.mdct.len(), mode.mdct.max_shift());
         #[cfg(feature = "fixed_point")]
@@ -625,6 +686,8 @@ impl<'a> OpusCustomDecoder<'a> {
             old_log_e2,
             background_log_e,
             #[cfg(feature = "fixed_point")]
+            fixed_old_ebands,
+            #[cfg(feature = "fixed_point")]
             fixed_mdct,
             #[cfg(feature = "fixed_point")]
             fixed_window,
@@ -668,5 +731,9 @@ impl<'a> OpusCustomDecoder<'a> {
         self.old_log_e.fill(RESET_LOG_ENERGY);
         self.old_log_e2.fill(RESET_LOG_ENERGY);
         self.background_log_e.fill(0.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_old_ebands.fill(0);
+        }
     }
 }

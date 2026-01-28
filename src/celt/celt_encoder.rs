@@ -18,6 +18,8 @@ use crate::celt::bands::{
     BandCodingState, compute_band_energies, haar1, hysteresis_decision, normalise_bands,
     quant_all_bands, spreading_decision,
 };
+#[cfg(feature = "fixed_point")]
+use crate::celt::bands::compute_band_energies_fixed;
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
 };
@@ -26,19 +28,37 @@ use crate::celt::entcode::{BITRES, ec_ilog, ec_tell, ec_tell_frac};
 use crate::celt::entenc::EcEnc;
 use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::{DB_SHIFT, EPSILON as FIXED_EPSILON, SIG_SAT, SIG_SHIFT, float2sig};
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{
+    abs32, add32, mult16_32_q15, qconst16, qconst32, shl32, shr32, sub32,
+};
+#[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 use crate::celt::math::{celt_exp2, celt_log2, celt_maxabs16, celt_rcp, celt_sqrt, frac_div32_q29};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
+#[cfg(feature = "fixed_point")]
+use crate::celt::mdct_fixed::{clt_mdct_forward_fixed, FixedMdctLookup};
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
-use crate::celt::quant_bands::{E_MEANS, amp2_log2, quant_coarse_energy, quant_energy_finalise, quant_fine_energy};
+use crate::celt::quant_bands::E_MEANS;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::quant_bands::{
+    amp2_log2, quant_coarse_energy, quant_energy_finalise, quant_fine_energy,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::quant_bands::{
+    amp2_log2_fixed, quant_coarse_energy_fixed, quant_energy_finalise_fixed, quant_fine_energy_fixed,
+};
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
     AnalysisInfo, CeltGlog, CeltNorm, CeltSig, OpusCustomEncoder, OpusCustomMode, OpusInt16,
     OpusInt32, OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltSig};
 use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
 use alloc::boxed::Box;
 use core::cmp::{max, min};
@@ -51,6 +71,43 @@ use libm::{floor, floorf};
 use crate::celt::mdct::mdct_trace as mdct_input_trace;
 #[cfg(test)]
 extern crate std;
+
+#[cfg(feature = "fixed_point")]
+fn glog_from_fixed(value: FixedCeltGlog) -> f32 {
+    value as f32 / (1u32 << DB_SHIFT) as f32
+}
+
+#[cfg(feature = "fixed_point")]
+fn glog_to_fixed(value: f32) -> FixedCeltGlog {
+    qconst32(value as f64, DB_SHIFT)
+}
+
+#[cfg(feature = "fixed_point")]
+fn sync_loge_from_fixed(dst: &mut [CeltGlog], src: &[FixedCeltGlog]) {
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = glog_from_fixed(value);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn sync_loge_to_fixed(dst: &mut [FixedCeltGlog], src: &[CeltGlog]) {
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = glog_to_fixed(value);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn fill_fixed_sig(dst: &mut [FixedCeltSig], src: &[CeltSig]) {
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        let sample = float2sig(value);
+        *out = sample.clamp(-SIG_SAT, SIG_SAT);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn lm_offset_fixed(lm: usize) -> FixedCeltGlog {
+    shl32(lm as i32, DB_SHIFT - 1)
+}
 
 #[cfg(test)]
 mod celt_alloc_trace {
@@ -1252,6 +1309,16 @@ pub(crate) fn opus_custom_encoder_get_size(mode: &OpusCustomMode<'_>, channels: 
     in_mem * core::mem::size_of::<CeltSig>()
         + prefilter_mem * core::mem::size_of::<CeltSig>()
         + 4 * band_count * core::mem::size_of::<CeltGlog>()
+        + {
+            #[cfg(feature = "fixed_point")]
+            {
+                2 * band_count * core::mem::size_of::<FixedCeltGlog>()
+            }
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                0
+            }
+        }
 }
 
 /// Returns the size of the canonical CELT encoder operating at 48 kHz/960.
@@ -1893,6 +1960,83 @@ fn compute_mdcts(
     let _ = arch;
 }
 
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+fn compute_mdcts_fixed(
+    mode: &OpusCustomMode<'_>,
+    fixed_mdct: &FixedMdctLookup,
+    fixed_window: &[FixedCeltCoef],
+    short_blocks: usize,
+    input: &[FixedCeltSig],
+    output: &mut [FixedCeltSig],
+    coded_channels: usize,
+    total_channels: usize,
+    lm: usize,
+    upsample: usize,
+) {
+    assert!(coded_channels > 0 && coded_channels <= total_channels);
+    assert!(upsample > 0);
+    assert!(lm <= mode.max_lm);
+
+    let overlap = mode.overlap;
+    let (block_count, shift) = if short_blocks != 0 {
+        (short_blocks, mode.max_lm)
+    } else {
+        (1, mode.max_lm - lm)
+    };
+    let transform_len = fixed_mdct.effective_len(shift);
+    assert!(transform_len.is_multiple_of(2));
+    let frame_len = transform_len >> 1;
+
+    let channel_input_stride = block_count * frame_len + overlap;
+    let channel_output_stride = block_count * frame_len;
+
+    assert!(input.len() >= total_channels * channel_input_stride);
+    assert!(output.len() >= total_channels * channel_output_stride);
+
+    for channel in 0..total_channels {
+        let input_base = channel * channel_input_stride;
+        let output_base = channel * channel_output_stride;
+
+        for block in 0..block_count {
+            let input_offset = input_base + block * frame_len;
+            let output_offset = output_base + block;
+            let input_end = input_offset + overlap + frame_len;
+            let output_end = output_base + channel_output_stride;
+
+            clt_mdct_forward_fixed(
+                fixed_mdct,
+                &input[input_offset..input_end],
+                &mut output[output_offset..output_end],
+                fixed_window,
+                overlap,
+                shift,
+                block_count,
+            );
+        }
+    }
+
+    if total_channels == 2 && coded_channels == 1 {
+        let band_len = block_count * frame_len;
+        for i in 0..band_len {
+            let left = output[i];
+            let right = output[band_len + i];
+            output[i] = add32(shr32(left, 1), shr32(right, 1));
+        }
+    }
+
+    if upsample != 1 {
+        for channel in 0..coded_channels {
+            let base = channel * channel_output_stride;
+            let bound = channel_output_stride / upsample;
+            for idx in 0..bound {
+                output[base + idx] = output[base + idx].wrapping_mul(upsample as i32);
+            }
+            output[base + bound..base + channel_output_stride].fill(0);
+        }
+    }
+}
+
 fn ensure_pcm_capacity(pcmp: &[OpusRes], channels: usize, samples: usize) {
     if samples == 0 {
         return;
@@ -1992,6 +2136,73 @@ pub(crate) fn celt_preemphasis(
     *mem = m;
 }
 
+/// Mirrors `celt_preemphasis()` from `celt/celt_encoder.c` for the fixed build.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_preemphasis_fixed(
+    pcmp: &[CeltSig],
+    inp: &mut [FixedCeltSig],
+    n: usize,
+    channels: usize,
+    upsample: usize,
+    coef: &[OpusVal16; 4],
+    mem: &mut FixedCeltSig,
+    clip: bool,
+) {
+    assert!(channels > 0, "channel count must be positive");
+    assert!(upsample > 0, "upsample factor must be positive");
+    assert!(
+        inp.len() >= n,
+        "output buffer too small for requested frame"
+    );
+
+    let coef0 = qconst16(f64::from(coef[0]), 15);
+    let coef1 = qconst16(f64::from(coef[1]), 15);
+    let coef2 = qconst16(f64::from(coef[2]), SIG_SHIFT);
+    let mut m = *mem;
+
+    let _ = clip;
+
+    if coef[1] == 0.0 && upsample == 1 {
+        ensure_pcm_capacity(pcmp, channels, n);
+
+        for i in 0..n {
+            let x = float2sig(pcmp[channels * i]);
+            inp[i] = sub32(x, m);
+            m = mult16_32_q15(coef0, x);
+        }
+
+        *mem = m;
+        return;
+    }
+
+    let nu = n / upsample;
+    if upsample != 1 {
+        inp[..n].fill(0);
+    }
+
+    ensure_pcm_capacity(pcmp, channels, nu);
+    for i in 0..nu {
+        inp[i * upsample] = float2sig(pcmp[channels * i]);
+    }
+
+    if coef[1] != 0.0 {
+        for value in &mut inp[..n] {
+            let x = *value;
+            let tmp = shl32(mult16_32_q15(coef2, x), (15 - SIG_SHIFT) as u32);
+            *value = add32(tmp, m);
+            m = sub32(mult16_32_q15(coef1, *value), mult16_32_q15(coef0, tmp));
+        }
+    } else {
+        for value in &mut inp[..n] {
+            let x = *value;
+            *value = sub32(x, m);
+            m = mult16_32_q15(coef0, x);
+        }
+    }
+
+    *mem = m;
+}
+
 /// Helper owning the trailing buffers that back [`OpusCustomEncoder`].
 #[derive(Debug, Default)]
 pub(crate) struct CeltEncoderAlloc {
@@ -2001,6 +2212,10 @@ pub(crate) struct CeltEncoderAlloc {
     old_log_e: Vec<CeltGlog>,
     old_log_e2: Vec<CeltGlog>,
     energy_error: Vec<CeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    fixed_old_band_e: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    fixed_energy_error: Vec<FixedCeltGlog>,
     static_mode: Option<NonNull<OpusCustomMode<'static>>>,
 }
 
@@ -2022,6 +2237,10 @@ impl CeltEncoderAlloc {
             old_log_e: vec![0.0; band_count],
             old_log_e2: vec![0.0; band_count],
             energy_error: vec![0.0; band_count],
+            #[cfg(feature = "fixed_point")]
+            fixed_old_band_e: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            fixed_energy_error: vec![0; band_count],
             static_mode: None,
         }
     }
@@ -2036,6 +2255,17 @@ impl CeltEncoderAlloc {
                 + self.old_log_e2.len()
                 + self.energy_error.len())
                 * core::mem::size_of::<CeltGlog>()
+            + {
+                #[cfg(feature = "fixed_point")]
+                {
+                    (self.fixed_old_band_e.len() + self.fixed_energy_error.len())
+                        * core::mem::size_of::<FixedCeltGlog>()
+                }
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    0
+                }
+            }
     }
 
     /// Borrows the allocation as an [`OpusCustomEncoder`] tied to the provided mode.
@@ -2046,18 +2276,38 @@ impl CeltEncoderAlloc {
         stream_channels: usize,
         energy_mask: Option<&'a [CeltGlog]>,
     ) -> OpusCustomEncoder<'a> {
-        OpusCustomEncoder::new(
-            mode,
-            channels,
-            stream_channels,
-            energy_mask,
-            self.in_mem.as_mut_slice(),
-            self.prefilter_mem.as_mut_slice(),
-            self.old_band_e.as_mut_slice(),
-            self.old_log_e.as_mut_slice(),
-            self.old_log_e2.as_mut_slice(),
-            self.energy_error.as_mut_slice(),
-        )
+        #[cfg(feature = "fixed_point")]
+        {
+            OpusCustomEncoder::new(
+                mode,
+                channels,
+                stream_channels,
+                energy_mask,
+                self.in_mem.as_mut_slice(),
+                self.prefilter_mem.as_mut_slice(),
+                self.old_band_e.as_mut_slice(),
+                self.old_log_e.as_mut_slice(),
+                self.old_log_e2.as_mut_slice(),
+                self.energy_error.as_mut_slice(),
+                self.fixed_old_band_e.as_mut_slice(),
+                self.fixed_energy_error.as_mut_slice(),
+            )
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            OpusCustomEncoder::new(
+                mode,
+                channels,
+                stream_channels,
+                energy_mask,
+                self.in_mem.as_mut_slice(),
+                self.prefilter_mem.as_mut_slice(),
+                self.old_band_e.as_mut_slice(),
+                self.old_log_e.as_mut_slice(),
+                self.old_log_e2.as_mut_slice(),
+                self.energy_error.as_mut_slice(),
+            )
+        }
     }
 
     /// Clears the buffers and restores the reference reset state.
@@ -2068,6 +2318,11 @@ impl CeltEncoderAlloc {
         self.energy_error.fill(0.0);
         self.old_log_e.fill(-28.0);
         self.old_log_e2.fill(-28.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_old_band_e.fill(0);
+            self.fixed_energy_error.fill(0);
+        }
     }
 
     /// Internal helper shared by the public initialisation routines.
@@ -3803,14 +4058,41 @@ fn encode_internal(
     );
 
     let mut band_log = vec![0.0f32; encoder.stream_channels * mode.num_ebands];
-    amp2_log2(
-        mode,
-        end_band,
-        end_band,
-        &band_e,
-        &mut band_log,
-        encoder.stream_channels,
-    );
+    #[cfg(feature = "fixed_point")]
+    {
+        let mut fixed_freq = vec![0; encoder.stream_channels * frame_size];
+        let mut band_e_fixed = vec![0; encoder.stream_channels * mode.num_ebands];
+        let mut band_log_fixed = vec![0; encoder.stream_channels * mode.num_ebands];
+        fill_fixed_sig(&mut fixed_freq, &freq);
+        compute_band_energies_fixed(
+            mode,
+            &fixed_freq,
+            &mut band_e_fixed,
+            end_band,
+            encoder.stream_channels,
+            lm,
+        );
+        amp2_log2_fixed(
+            mode,
+            end_band,
+            end_band,
+            &band_e_fixed,
+            &mut band_log_fixed,
+            encoder.stream_channels,
+        );
+        sync_loge_from_fixed(&mut band_log, &band_log_fixed);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        amp2_log2(
+            mode,
+            end_band,
+            end_band,
+            &band_e,
+            &mut band_log,
+            encoder.stream_channels,
+        );
+    }
 
     let stride = mode.num_ebands;
     for (dst, src) in encoder
@@ -4056,6 +4338,8 @@ fn celt_encode_with_ec_inner<'a>(
     }
 
     let mut input = vec![0.0f32; cc * (n + overlap)];
+    #[cfg(feature = "fixed_point")]
+    let mut input_fixed = vec![0; cc * (n + overlap)];
     #[cfg(test)]
     if let Some(frame_idx) = trace_pcm_frame_idx {
         celt_pcm_input_trace::dump("preemph_in", frame_idx, pcm, cc, frame_size_internal);
@@ -4064,6 +4348,9 @@ fn celt_encode_with_ec_inner<'a>(
         let input_offset = ch * (n + overlap);
         let prefilter_offset = (ch + 1) * COMBFILTER_MAXPERIOD - overlap;
         let input_slice = &mut input[input_offset + overlap..input_offset + overlap + n];
+        #[cfg(feature = "fixed_point")]
+        let input_fixed_slice =
+            &mut input_fixed[input_offset + overlap..input_offset + overlap + n];
         let channel_pcm = &pcm[ch..];
 
         let need_clip = encoder.clip && sample_max > PREEMPHASIS_CLIP_LIMIT;
@@ -4077,9 +4364,30 @@ fn celt_encode_with_ec_inner<'a>(
             &mut encoder.preemph_mem_encoder[ch],
             need_clip,
         );
+        #[cfg(feature = "fixed_point")]
+        {
+            celt_preemphasis_fixed(
+                channel_pcm,
+                input_fixed_slice,
+                n,
+                cc,
+                upsample,
+                &mode.pre_emphasis,
+                &mut encoder.fixed_preemph_mem_encoder[ch],
+                need_clip,
+            );
+        }
         input[input_offset..input_offset + overlap].copy_from_slice(
             &encoder.prefilter_mem[prefilter_offset..prefilter_offset + overlap],
         );
+        #[cfg(feature = "fixed_point")]
+        {
+            let overlap_src = &encoder.prefilter_mem[prefilter_offset..prefilter_offset + overlap];
+            let overlap_dst = &mut input_fixed[input_offset..input_offset + overlap];
+            for (dst, &value) in overlap_dst.iter_mut().zip(overlap_src.iter()) {
+                *dst = float2sig(value);
+            }
+        }
     }
     #[cfg(test)]
     if trace_prefilter_should_dump {
@@ -4205,6 +4513,12 @@ fn celt_encode_with_ec_inner<'a>(
     if trace_prefilter_should_dump {
         celt_prefilter_trace::dump("post", trace_prefilter_frame_idx.unwrap(), &input, cc);
     }
+    #[cfg(feature = "fixed_point")]
+    {
+        // The prefilter currently runs in float; mirror its output into the fixed buffer
+        // so the fixed MDCT sees the same time-domain signal.
+        fill_fixed_sig(&mut input_fixed, &input);
+    }
 
     if (gain1 > 0.4 || encoder.prefilter_gain > 0.4)
         && (!encoder.analysis.valid || encoder.analysis.tonality > 0.3)
@@ -4246,6 +4560,14 @@ fn celt_encode_with_ec_inner<'a>(
     let mut band_e = vec![0.0f32; nb_ebands * c];
     let mut band_log_e = vec![0.0f32; nb_ebands * c];
     let mut band_log_e2 = vec![0.0f32; nb_ebands * c];
+    #[cfg(feature = "fixed_point")]
+    let mut fixed_freq = vec![0; cc * n];
+    #[cfg(feature = "fixed_point")]
+    let mut band_e_fixed = vec![0; nb_ebands * c];
+    #[cfg(feature = "fixed_point")]
+    let mut band_log_e_fixed = vec![0; nb_ebands * c];
+    #[cfg(feature = "fixed_point")]
+    let mut band_log_e2_fixed = vec![0; nb_ebands * c];
 
     let second_mdct = short_blocks != 0 && encoder.complexity >= 8;
     if second_mdct {
@@ -4280,18 +4602,43 @@ fn celt_encode_with_ec_inner<'a>(
                 trace_band_want_bits,
             );
         }
-        amp2_log2(
-            mode,
-            eff_end,
-            end as usize,
-            &band_e,
-            &mut band_log_e2,
-            c,
-        );
-        for channel in 0..c {
-            let base = channel * nb_ebands;
-            for band in 0..end as usize {
-                band_log_e2[base + band] += 0.5 * lm as f32;
+        #[cfg(feature = "fixed_point")]
+        {
+            fill_fixed_sig(&mut fixed_freq[..c * n], &freq[..c * n]);
+            compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
+            amp2_log2_fixed(
+                mode,
+                eff_end,
+                end as usize,
+                &band_e_fixed,
+                &mut band_log_e2_fixed,
+                c,
+            );
+            let offset = lm_offset_fixed(lm);
+            for channel in 0..c {
+                let base = channel * nb_ebands;
+                for band in 0..end as usize {
+                    band_log_e2_fixed[base + band] =
+                        add32(band_log_e2_fixed[base + band], offset);
+                }
+            }
+            sync_loge_from_fixed(&mut band_log_e2, &band_log_e2_fixed);
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            amp2_log2(
+                mode,
+                eff_end,
+                end as usize,
+                &band_e,
+                &mut band_log_e2,
+                c,
+            );
+            for channel in 0..c {
+                let base = channel * nb_ebands;
+                for band in 0..end as usize {
+                    band_log_e2[base + band] += 0.5 * lm as f32;
+                }
             }
         }
     }
@@ -4412,14 +4759,44 @@ fn celt_encode_with_ec_inner<'a>(
         }
     }
 
-    amp2_log2(
-        mode,
-        eff_end,
-        end as usize,
-        &band_e,
-        &mut band_log_e,
-        c,
-    );
+    #[cfg(feature = "fixed_point")]
+    {
+        fill_fixed_sig(&mut fixed_freq[..c * n], &freq[..c * n]);
+        compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
+        if encoder.lfe {
+            let limit = mult16_32_q15(qconst16(1e-4, 15), band_e_fixed[0]);
+            let min_val = FixedCeltEner::from(FIXED_EPSILON);
+            for band in 2..end as usize {
+                let idx = band;
+                let clamped = if band_e_fixed[idx] > limit {
+                    limit
+                } else {
+                    band_e_fixed[idx]
+                };
+                band_e_fixed[idx] = clamped.max(min_val);
+            }
+        }
+        amp2_log2_fixed(
+            mode,
+            eff_end,
+            end as usize,
+            &band_e_fixed,
+            &mut band_log_e_fixed,
+            c,
+        );
+        sync_loge_from_fixed(&mut band_log_e, &band_log_e_fixed);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        amp2_log2(
+            mode,
+            eff_end,
+            end as usize,
+            &band_e,
+            &mut band_log_e,
+            c,
+        );
+    }
 
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
@@ -4603,6 +4980,8 @@ fn celt_encode_with_ec_inner<'a>(
 
     if !second_mdct {
         band_log_e2.copy_from_slice(&band_log_e);
+        #[cfg(feature = "fixed_point")]
+        band_log_e2_fixed.copy_from_slice(&band_log_e_fixed);
     }
 
     if lm > 0
@@ -4642,18 +5021,44 @@ fn celt_encode_with_ec_inner<'a>(
                 lm,
                 encoder.arch,
             );
-            amp2_log2(
-                mode,
-                eff_end,
-                end as usize,
-                &band_e,
-                &mut band_log_e,
-                c,
-            );
-            for channel in 0..c {
-                let base = channel * nb_ebands;
-                for band in 0..end as usize {
-                    band_log_e2[base + band] += 0.5 * lm as f32;
+            #[cfg(feature = "fixed_point")]
+            {
+                fill_fixed_sig(&mut fixed_freq[..c * n], &freq[..c * n]);
+                compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
+                amp2_log2_fixed(
+                    mode,
+                    eff_end,
+                    end as usize,
+                    &band_e_fixed,
+                    &mut band_log_e_fixed,
+                    c,
+                );
+                sync_loge_from_fixed(&mut band_log_e, &band_log_e_fixed);
+                let offset = lm_offset_fixed(lm);
+                for channel in 0..c {
+                    let base = channel * nb_ebands;
+                    for band in 0..end as usize {
+                        band_log_e2_fixed[base + band] =
+                            add32(band_log_e2_fixed[base + band], offset);
+                    }
+                }
+                sync_loge_from_fixed(&mut band_log_e2, &band_log_e2_fixed);
+            }
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                amp2_log2(
+                    mode,
+                    eff_end,
+                    end as usize,
+                    &band_e,
+                    &mut band_log_e,
+                    c,
+                );
+                for channel in 0..c {
+                    let base = channel * nb_ebands;
+                    for band in 0..end as usize {
+                        band_log_e2[base + band] += 0.5 * lm as f32;
+                    }
                 }
             }
             tf_estimate = 0.2;
@@ -4762,57 +5167,133 @@ fn celt_encode_with_ec_inner<'a>(
         0
     };
 
+    #[cfg(not(feature = "fixed_point"))]
     let mut error = vec![0.0f32; c * nb_ebands];
+    #[cfg(feature = "fixed_point")]
+    let mut error_fixed = vec![0; c * nb_ebands];
     #[cfg(test)]
     let trace_loge_frame_idx = celt_loge_adjust_trace::begin_frame();
-    for channel in 0..c {
-        let base = channel * nb_ebands;
-        for band in start..end as usize {
-            let idx = base + band;
-            let log_before = band_log_e[idx];
-            let old = encoder.old_band_e[idx];
-            let err = encoder.energy_error[idx];
-            let diff = (log_before - old).abs();
-            let apply = diff < 2.0;
-            if apply {
-                band_log_e[idx] = log_before - 0.25 * err;
+    #[cfg(feature = "fixed_point")]
+    {
+        sync_loge_to_fixed(encoder.fixed_old_band_e, encoder.old_band_e);
+        sync_loge_to_fixed(encoder.fixed_energy_error, encoder.energy_error);
+        encoder.fixed_delayed_intra = glog_to_fixed(encoder.delayed_intra);
+
+        let diff_limit = glog_to_fixed(2.0);
+        let quarter = qconst16(0.25, 15);
+        for channel in 0..c {
+            let base = channel * nb_ebands;
+            for band in start..end as usize {
+                let idx = base + band;
+                let log_before = band_log_e_fixed[idx];
+                let old = encoder.fixed_old_band_e[idx];
+                let err = encoder.fixed_energy_error[idx];
+                let diff = abs32(sub32(log_before, old));
+                let apply = diff < diff_limit;
+                if apply {
+                    band_log_e_fixed[idx] = sub32(log_before, mult16_32_q15(quarter, err));
+                }
+                #[cfg(test)]
+                if let Some(frame_idx) = trace_loge_frame_idx {
+                    let log_before_f = glog_from_fixed(log_before);
+                    let old_f = glog_from_fixed(old);
+                    let err_f = glog_from_fixed(err);
+                    let diff_f = glog_from_fixed(diff);
+                    let log_after_f = glog_from_fixed(band_log_e_fixed[idx]);
+                    celt_loge_adjust_trace::dump_if_match(
+                        frame_idx,
+                        band,
+                        channel,
+                        log_before_f,
+                        old_f,
+                        err_f,
+                        diff_f,
+                        apply,
+                        log_after_f,
+                    );
+                }
             }
-            #[cfg(test)]
-            if let Some(frame_idx) = trace_loge_frame_idx {
-                celt_loge_adjust_trace::dump_if_match(
-                    frame_idx,
-                    band,
-                    channel,
-                    log_before,
-                    old,
-                    err,
-                    diff,
-                    apply,
-                    band_log_e[idx],
-                );
+        }
+        sync_loge_from_fixed(&mut band_log_e, &band_log_e_fixed);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        for channel in 0..c {
+            let base = channel * nb_ebands;
+            for band in start..end as usize {
+                let idx = base + band;
+                let log_before = band_log_e[idx];
+                let old = encoder.old_band_e[idx];
+                let err = encoder.energy_error[idx];
+                let diff = (log_before - old).abs();
+                let apply = diff < 2.0;
+                if apply {
+                    band_log_e[idx] = log_before - 0.25 * err;
+                }
+                #[cfg(test)]
+                if let Some(frame_idx) = trace_loge_frame_idx {
+                    celt_loge_adjust_trace::dump_if_match(
+                        frame_idx,
+                        band,
+                        channel,
+                        log_before,
+                        old,
+                        err,
+                        diff,
+                        apply,
+                        band_log_e[idx],
+                    );
+                }
             }
         }
     }
 
-    quant_coarse_energy(
-        mode,
-        start,
-        end as usize,
-        eff_end,
-        &band_log_e,
-        encoder.old_band_e,
-        total_bits as u32,
-        &mut error,
-        enc,
-        c,
-        lm,
-        nb_available_bytes,
-        encoder.force_intra,
-        &mut encoder.delayed_intra,
-        encoder.complexity >= 4,
-        encoder.loss_rate,
-        encoder.lfe,
-    );
+    #[cfg(feature = "fixed_point")]
+    {
+        quant_coarse_energy_fixed(
+            mode,
+            start,
+            end as usize,
+            eff_end,
+            &band_log_e_fixed,
+            encoder.fixed_old_band_e,
+            total_bits as u32,
+            &mut error_fixed,
+            enc,
+            c,
+            lm,
+            nb_available_bytes,
+            encoder.force_intra,
+            &mut encoder.fixed_delayed_intra,
+            encoder.complexity >= 4,
+            encoder.loss_rate,
+            encoder.lfe,
+        );
+        encoder.delayed_intra = glog_from_fixed(encoder.fixed_delayed_intra);
+        sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        quant_coarse_energy(
+            mode,
+            start,
+            end as usize,
+            eff_end,
+            &band_log_e,
+            encoder.old_band_e,
+            total_bits as u32,
+            &mut error,
+            enc,
+            c,
+            lm,
+            nb_available_bytes,
+            encoder.force_intra,
+            &mut encoder.delayed_intra,
+            encoder.complexity >= 4,
+            encoder.loss_rate,
+            encoder.lfe,
+        );
+    }
 
     tf_encode(start, end as usize, is_transient, &mut tf_res, lm, tf_select, enc);
 
@@ -5248,16 +5729,33 @@ fn celt_encode_with_ec_inner<'a>(
     if let Some(frame_idx) = trace_rc_frame_idx {
         celt_rc_trace::dump_if_match(frame_idx, "pre_quant_fine_energy", enc.ctx());
     }
-    quant_fine_energy(
-        mode,
-        start,
-        end as usize,
-        encoder.old_band_e,
-        &mut error,
-        &fine_quant,
-        enc,
-        c,
-    );
+    #[cfg(feature = "fixed_point")]
+    {
+        quant_fine_energy_fixed(
+            mode,
+            start,
+            end as usize,
+            encoder.fixed_old_band_e,
+            &mut error_fixed,
+            &fine_quant,
+            enc,
+            c,
+        );
+        sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        quant_fine_energy(
+            mode,
+            start,
+            end as usize,
+            encoder.old_band_e,
+            &mut error,
+            &fine_quant,
+            enc,
+            c,
+        );
+    }
     #[cfg(test)]
     if let Some(frame_idx) = trace_rc_frame_idx {
         celt_rc_trace::dump_if_match(frame_idx, "pre_quant_all_bands", enc.ctx());
@@ -5316,35 +5814,87 @@ fn celt_encode_with_ec_inner<'a>(
     }
 
     let remaining_bits = nb_compressed_bytes as i32 * 8 - ec_tell(enc.ctx());
-    quant_energy_finalise(
-        mode,
-        start,
-        end as usize,
-        encoder.old_band_e,
-        &mut error,
-        &fine_quant,
-        &fine_priority,
-        remaining_bits,
-        enc,
-        c,
-    );
+    #[cfg(feature = "fixed_point")]
+    {
+        quant_energy_finalise_fixed(
+            mode,
+            start,
+            end as usize,
+            encoder.fixed_old_band_e,
+            &mut error_fixed,
+            &fine_quant,
+            &fine_priority,
+            remaining_bits,
+            enc,
+            c,
+        );
+        sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        quant_energy_finalise(
+            mode,
+            start,
+            end as usize,
+            encoder.old_band_e,
+            &mut error,
+            &fine_quant,
+            &fine_priority,
+            remaining_bits,
+            enc,
+            c,
+        );
+    }
     #[cfg(test)]
     if let Some(frame_idx) = trace_rc_frame_idx {
         celt_rc_trace::dump_if_match(frame_idx, "post_fine_energy", enc.ctx());
     }
 
-    encoder.energy_error.fill(0.0);
-    for channel in 0..c {
-        let base = channel * nb_ebands;
-        for band in start..end as usize {
-            let idx = base + band;
-            encoder.energy_error[idx] = error[idx].clamp(-0.5, 0.5);
+    #[cfg(feature = "fixed_point")]
+    {
+        encoder.fixed_energy_error.fill(0);
+        let clamp = glog_to_fixed(0.5);
+        for channel in 0..c {
+            let base = channel * nb_ebands;
+            for band in start..end as usize {
+                let idx = base + band;
+                let err = error_fixed[idx];
+                let clamped = err.clamp(-clamp, clamp);
+                encoder.fixed_energy_error[idx] = clamped;
+            }
+        }
+        sync_loge_from_fixed(encoder.energy_error, encoder.fixed_energy_error);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        encoder.energy_error.fill(0.0);
+        for channel in 0..c {
+            let base = channel * nb_ebands;
+            for band in start..end as usize {
+                let idx = base + band;
+                encoder.energy_error[idx] = error[idx].clamp(-0.5, 0.5);
+            }
         }
     }
 
     if silence {
-        for value in encoder.old_band_e.iter_mut().take(c * nb_ebands) {
-            *value = -28.0;
+        #[cfg(feature = "fixed_point")]
+        {
+            let reset = glog_to_fixed(-28.0);
+            for value in encoder
+                .fixed_old_band_e
+                .iter_mut()
+                .take(c * nb_ebands)
+            {
+                *value = reset;
+            }
+            sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            for value in encoder.old_band_e.iter_mut().take(c * nb_ebands) {
+                *value = -28.0;
+            }
         }
     }
 
@@ -5353,8 +5903,17 @@ fn celt_encode_with_ec_inner<'a>(
     encoder.prefilter_tapset = prefilter_tapset;
 
     if cc == 2 && c == 1 {
-        let (left, right) = encoder.old_band_e.split_at_mut(nb_ebands);
-        right[..nb_ebands].copy_from_slice(&left[..nb_ebands]);
+        #[cfg(feature = "fixed_point")]
+        {
+            let (left, right) = encoder.fixed_old_band_e.split_at_mut(nb_ebands);
+            right[..nb_ebands].copy_from_slice(&left[..nb_ebands]);
+            sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            let (left, right) = encoder.old_band_e.split_at_mut(nb_ebands);
+            right[..nb_ebands].copy_from_slice(&left[..nb_ebands]);
+        }
     }
 
     if !is_transient {
@@ -5946,6 +6505,10 @@ mod tests {
     use crate::celt::celt::TF_SELECT_TABLE;
     use crate::celt::cpu_support::opus_select_arch;
     use crate::celt::entenc::EcEnc;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::DB_SHIFT;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::qconst32;
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::math::celt_log2;
     use crate::celt::modes::{
@@ -6774,6 +7337,11 @@ mod tests {
         assert_eq!(alloc.old_log_e.len(), 2 * mode.num_ebands);
         assert_eq!(alloc.old_log_e2.len(), 2 * mode.num_ebands);
         assert_eq!(alloc.energy_error.len(), 2 * mode.num_ebands);
+        #[cfg(feature = "fixed_point")]
+        {
+            assert_eq!(alloc.fixed_old_band_e.len(), 2 * mode.num_ebands);
+            assert_eq!(alloc.fixed_energy_error.len(), 2 * mode.num_ebands);
+        }
 
         let bytes = alloc.size_in_bytes();
         assert_eq!(bytes, super::opus_custom_encoder_get_size(&mode, 2));
@@ -6789,6 +7357,11 @@ mod tests {
         alloc.old_log_e2.fill(0.25);
         alloc.old_band_e.fill(1.0);
         alloc.energy_error.fill(1.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            alloc.fixed_old_band_e.fill(7);
+            alloc.fixed_energy_error.fill(9);
+        }
         alloc.prefilter_mem.fill(1.0);
         alloc.in_mem.fill(1.0);
 
@@ -6800,6 +7373,11 @@ mod tests {
         assert!(alloc.energy_error.iter().all(|&v| v == 0.0));
         assert!(alloc.old_log_e.iter().all(|&v| (v + 28.0).abs() < 1e-6));
         assert!(alloc.old_log_e2.iter().all(|&v| (v + 28.0).abs() < 1e-6));
+        #[cfg(feature = "fixed_point")]
+        {
+            assert!(alloc.fixed_old_band_e.iter().all(|&v| v == 0));
+            assert!(alloc.fixed_energy_error.iter().all(|&v| v == 0));
+        }
     }
 
     #[test]
@@ -6827,6 +7405,10 @@ mod tests {
         assert_eq!(encoder.lsb_depth, 24);
         assert_eq!(encoder.spread_decision, SPREAD_NORMAL);
         assert!((encoder.delayed_intra - 1.0).abs() < 1e-6);
+        #[cfg(feature = "fixed_point")]
+        {
+            assert_eq!(encoder.fixed_delayed_intra, qconst32(1.0, DB_SHIFT));
+        }
         assert_eq!(encoder.tonal_average, 256);
         assert_eq!(encoder.hf_average, 0);
         assert_eq!(encoder.tapset_decision, 0);
