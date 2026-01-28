@@ -26,6 +26,26 @@ if (OPUS_CTESTS_FIXED_POINT)
     "${OPUS_ROOT}/celt/pitch.c"
     "${CMAKE_CURRENT_LIST_DIR}/opus_celt_stubs.c"
   )
+  add_library(celt_custom_ctest_support STATIC
+    "${OPUS_ROOT}/celt/bands.c"
+    "${OPUS_ROOT}/celt/celt.c"
+    "${OPUS_ROOT}/celt/celt_decoder.c"
+    "${OPUS_ROOT}/celt/celt_encoder.c"
+    "${OPUS_ROOT}/celt/celt_lpc.c"
+    "${OPUS_ROOT}/celt/cwrs.c"
+    "${OPUS_ROOT}/celt/entcode.c"
+    "${OPUS_ROOT}/celt/entdec.c"
+    "${OPUS_ROOT}/celt/entenc.c"
+    "${OPUS_ROOT}/celt/kiss_fft.c"
+    "${OPUS_ROOT}/celt/laplace.c"
+    "${OPUS_ROOT}/celt/mathops.c"
+    "${CMAKE_CURRENT_LIST_DIR}/mdct_fixed.c"
+    "${OPUS_ROOT}/celt/modes.c"
+    "${OPUS_ROOT}/celt/pitch.c"
+    "${OPUS_ROOT}/celt/quant_bands.c"
+    "${OPUS_ROOT}/celt/rate.c"
+    "${OPUS_ROOT}/celt/vq.c"
+  )
   add_library(celt_quant_bands_ctest_support STATIC
     "${OPUS_ROOT}/celt/quant_bands.c"
     "${OPUS_ROOT}/celt/entcode.c"
@@ -40,6 +60,12 @@ if (OPUS_CTESTS_FIXED_POINT)
       "${OPUS_ROOT}/include"
       "${OPUS_ROOT}/src"
   )
+  target_include_directories(celt_custom_ctest_support
+    PRIVATE
+      "${OPUS_ROOT}/celt"
+      "${OPUS_ROOT}/include"
+      "${OPUS_ROOT}/src"
+  )
   target_include_directories(celt_quant_bands_ctest_support
     PRIVATE
       "${OPUS_ROOT}/celt"
@@ -47,6 +73,7 @@ if (OPUS_CTESTS_FIXED_POINT)
       "${OPUS_ROOT}/src"
   )
   target_compile_definitions(celt_fixedpoint_ctest_support PRIVATE OPUS_BUILD)
+  target_compile_definitions(celt_custom_ctest_support PRIVATE OPUS_BUILD CUSTOM_MODES)
   target_compile_definitions(celt_quant_bands_ctest_support PRIVATE OPUS_BUILD)
 else()
   add_subdirectory("${OPUS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/opus-c-build" EXCLUDE_FROM_ALL)
@@ -73,6 +100,7 @@ endif()
 add_executable(celt_compute_band_energies_test compute_band_energies_test.c)
 if (OPUS_CTESTS_FIXED_POINT)
   add_executable(celt_bands_norm_test bands_norm_test.c)
+  add_executable(celt_fixed_encode_test celt_fixed_encode_test.c)
   add_executable(celt_mathops_test mathops_test.c)
   add_executable(celt_pitch_test pitch_test.c)
   add_executable(celt_quant_bands_test quant_bands_test.c)
@@ -99,6 +127,12 @@ if (OPUS_CTESTS_FIXED_POINT)
     PRIVATE
       "${OPUS_ROOT}/celt"
       "${OPUS_ROOT}/include"
+  )
+  target_include_directories(celt_fixed_encode_test
+    PRIVATE
+      "${OPUS_ROOT}/celt"
+      "${OPUS_ROOT}/include"
+      "${OPUS_ROOT}/src"
   )
   target_include_directories(celt_mathops_test
     PRIVATE
@@ -165,6 +199,7 @@ endif()
 if (OPUS_CTESTS_FIXED_POINT)
   target_link_libraries(celt_compute_band_energies_test PRIVATE celt_fixedpoint_ctest_support)
   target_link_libraries(celt_bands_norm_test PRIVATE celt_fixedpoint_ctest_support)
+  target_link_libraries(celt_fixed_encode_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_mathops_test PRIVATE celt_fixedpoint_ctest_support)
   target_link_libraries(celt_pitch_test PRIVATE celt_fixedpoint_ctest_support)
   target_link_libraries(celt_quant_bands_test PRIVATE celt_quant_bands_ctest_support)
@@ -184,6 +219,7 @@ endif()
 target_compile_definitions(celt_compute_band_energies_test PRIVATE OPUS_BUILD)
 if (OPUS_CTESTS_FIXED_POINT)
   target_compile_definitions(celt_bands_norm_test PRIVATE OPUS_BUILD)
+  target_compile_definitions(celt_fixed_encode_test PRIVATE OPUS_BUILD CUSTOM_MODES)
   target_compile_definitions(celt_mathops_test PRIVATE OPUS_BUILD)
   target_compile_definitions(celt_pitch_test PRIVATE OPUS_BUILD)
   target_compile_definitions(celt_quant_bands_test PRIVATE OPUS_BUILD)
@@ -204,9 +240,11 @@ if (OPUS_VAR_ARRAYS)
   target_compile_definitions(celt_compute_band_energies_test PRIVATE VAR_ARRAYS)
   if (OPUS_CTESTS_FIXED_POINT)
     target_compile_definitions(celt_bands_norm_test PRIVATE VAR_ARRAYS)
+    target_compile_definitions(celt_fixed_encode_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_mathops_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_pitch_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_fixedpoint_ctest_support PRIVATE VAR_ARRAYS)
+    target_compile_definitions(celt_custom_ctest_support PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_quant_bands_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_quant_bands_ctest_support PRIVATE VAR_ARRAYS)
   endif()
@@ -218,9 +256,11 @@ elseif (OPUS_USE_ALLOCA)
   target_compile_definitions(celt_compute_band_energies_test PRIVATE USE_ALLOCA)
   if (OPUS_CTESTS_FIXED_POINT)
     target_compile_definitions(celt_bands_norm_test PRIVATE USE_ALLOCA)
+    target_compile_definitions(celt_fixed_encode_test PRIVATE USE_ALLOCA)
     target_compile_definitions(celt_mathops_test PRIVATE USE_ALLOCA)
     target_compile_definitions(celt_pitch_test PRIVATE USE_ALLOCA)
     target_compile_definitions(celt_fixedpoint_ctest_support PRIVATE USE_ALLOCA)
+    target_compile_definitions(celt_custom_ctest_support PRIVATE USE_ALLOCA)
     target_compile_definitions(celt_quant_bands_test PRIVATE USE_ALLOCA)
     target_compile_definitions(celt_quant_bands_ctest_support PRIVATE USE_ALLOCA)
   endif()
@@ -232,9 +272,11 @@ elseif (OPUS_NONTHREADSAFE_PSEUDOSTACK)
   target_compile_definitions(celt_compute_band_energies_test PRIVATE NONTHREADSAFE_PSEUDOSTACK)
   if (OPUS_CTESTS_FIXED_POINT)
     target_compile_definitions(celt_bands_norm_test PRIVATE NONTHREADSAFE_PSEUDOSTACK)
+    target_compile_definitions(celt_fixed_encode_test PRIVATE NONTHREADSAFE_PSEUDOSTACK)
     target_compile_definitions(celt_mathops_test PRIVATE NONTHREADSAFE_PSEUDOSTACK)
     target_compile_definitions(celt_pitch_test PRIVATE NONTHREADSAFE_PSEUDOSTACK)
     target_compile_definitions(celt_fixedpoint_ctest_support PRIVATE NONTHREADSAFE_PSEUDOSTACK)
+    target_compile_definitions(celt_custom_ctest_support PRIVATE NONTHREADSAFE_PSEUDOSTACK)
     target_compile_definitions(celt_quant_bands_test PRIVATE NONTHREADSAFE_PSEUDOSTACK)
     target_compile_definitions(celt_quant_bands_ctest_support PRIVATE NONTHREADSAFE_PSEUDOSTACK)
   endif()
@@ -246,9 +288,11 @@ else()
   target_compile_definitions(celt_compute_band_energies_test PRIVATE VAR_ARRAYS)
   if (OPUS_CTESTS_FIXED_POINT)
     target_compile_definitions(celt_bands_norm_test PRIVATE VAR_ARRAYS)
+    target_compile_definitions(celt_fixed_encode_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_mathops_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_pitch_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_fixedpoint_ctest_support PRIVATE VAR_ARRAYS)
+    target_compile_definitions(celt_custom_ctest_support PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_quant_bands_test PRIVATE VAR_ARRAYS)
     target_compile_definitions(celt_quant_bands_ctest_support PRIVATE VAR_ARRAYS)
   endif()
@@ -263,6 +307,7 @@ if (MATH_LIBRARY)
   target_link_libraries(celt_compute_band_energies_test PRIVATE "${MATH_LIBRARY}")
   if (OPUS_CTESTS_FIXED_POINT)
     target_link_libraries(celt_bands_norm_test PRIVATE "${MATH_LIBRARY}")
+    target_link_libraries(celt_fixed_encode_test PRIVATE "${MATH_LIBRARY}")
     target_link_libraries(celt_mathops_test PRIVATE "${MATH_LIBRARY}")
     target_link_libraries(celt_pitch_test PRIVATE "${MATH_LIBRARY}")
     target_link_libraries(celt_quant_bands_test PRIVATE "${MATH_LIBRARY}")
@@ -277,6 +322,7 @@ enable_testing()
 add_test(NAME celt_compute_band_energies COMMAND celt_compute_band_energies_test)
 if (OPUS_CTESTS_FIXED_POINT)
   add_test(NAME celt_bands_norm_test COMMAND celt_bands_norm_test)
+  add_test(NAME celt_fixed_encode_test COMMAND celt_fixed_encode_test)
   add_test(NAME celt_mathops_test COMMAND celt_mathops_test)
   add_test(NAME celt_pitch_test COMMAND celt_pitch_test)
   add_test(NAME celt_quant_bands_test COMMAND celt_quant_bands_test)
