@@ -42,6 +42,14 @@ cargo run --example trivial_example -- \
   testdata/ehren-paper_lights-96.pcm ehren-paper_lights-96_trivial_out.pcm
 ```
 
+- Convert the raw PCM output to WAV for playback:
+
+```bash
+ffmpeg -y -f s16le -ar 48000 -ac 2 \
+  -i ehren-paper_lights-96_trivial_out.pcm \
+  ehren-paper_lights-96_trivial_out.wav
+```
+
 ### Run the tests
 - Full test suite:
 
