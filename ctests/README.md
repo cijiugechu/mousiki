@@ -25,6 +25,9 @@ Common options:
   --cmake-arg -DOPUS_DISABLE_INTRINSICS=ON
 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
+  -- --tests-regex 'celt_(comb_filter|prefilter)_test'
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   -- --tests-regex celt_fixed_encode_test
 CELT_FIXED_ENC_DUMP=1 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
