@@ -4604,7 +4604,18 @@ fn celt_encode_with_ec_inner<'a>(
         }
         #[cfg(feature = "fixed_point")]
         {
-            fill_fixed_sig(&mut fixed_freq[..c * n], &freq[..c * n]);
+            compute_mdcts_fixed(
+                mode,
+                &encoder.fixed_mdct,
+                &encoder.fixed_window,
+                0,
+                &input_fixed,
+                &mut fixed_freq,
+                c,
+                cc,
+                lm,
+                upsample,
+            );
             compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
             amp2_log2_fixed(
                 mode,
@@ -4761,7 +4772,18 @@ fn celt_encode_with_ec_inner<'a>(
 
     #[cfg(feature = "fixed_point")]
     {
-        fill_fixed_sig(&mut fixed_freq[..c * n], &freq[..c * n]);
+        compute_mdcts_fixed(
+            mode,
+            &encoder.fixed_mdct,
+            &encoder.fixed_window,
+            short_blocks,
+            &input_fixed,
+            &mut fixed_freq,
+            c,
+            cc,
+            lm,
+            upsample,
+        );
         compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
         if encoder.lfe {
             let limit = mult16_32_q15(qconst16(1e-4, 15), band_e_fixed[0]);
@@ -5023,7 +5045,18 @@ fn celt_encode_with_ec_inner<'a>(
             );
             #[cfg(feature = "fixed_point")]
             {
-                fill_fixed_sig(&mut fixed_freq[..c * n], &freq[..c * n]);
+                compute_mdcts_fixed(
+                    mode,
+                    &encoder.fixed_mdct,
+                    &encoder.fixed_window,
+                    short_blocks,
+                    &input_fixed,
+                    &mut fixed_freq,
+                    c,
+                    cc,
+                    lm,
+                    upsample,
+                );
                 compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
                 amp2_log2_fixed(
                     mode,
