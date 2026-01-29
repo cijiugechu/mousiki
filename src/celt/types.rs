@@ -378,6 +378,8 @@ pub struct OpusCustomEncoder<'a> {
     pub tapset_decision: i32,
     pub prefilter_period: i32,
     pub prefilter_gain: OpusVal16,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_prefilter_gain: FixedOpusVal16,
     pub prefilter_tapset: i32,
     pub consec_transient: i32,
     pub analysis: AnalysisInfo,
@@ -397,6 +399,10 @@ pub struct OpusCustomEncoder<'a> {
     pub spec_avg: CeltGlog,
     pub in_mem: &'a mut [CeltSig],
     pub prefilter_mem: &'a mut [CeltSig],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_in_mem: &'a mut [FixedCeltSig],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_prefilter_mem: &'a mut [FixedCeltSig],
     pub old_band_e: &'a mut [CeltGlog],
     pub old_log_e: &'a mut [CeltGlog],
     pub old_log_e2: &'a mut [CeltGlog],
@@ -420,6 +426,8 @@ impl<'a> OpusCustomEncoder<'a> {
         energy_mask: Option<&'a [CeltGlog]>,
         in_mem: &'a mut [CeltSig],
         prefilter_mem: &'a mut [CeltSig],
+        #[cfg(feature = "fixed_point")] fixed_in_mem: &'a mut [FixedCeltSig],
+        #[cfg(feature = "fixed_point")] fixed_prefilter_mem: &'a mut [FixedCeltSig],
         old_band_e: &'a mut [CeltGlog],
         old_log_e: &'a mut [CeltGlog],
         old_log_e2: &'a mut [CeltGlog],
@@ -429,6 +437,11 @@ impl<'a> OpusCustomEncoder<'a> {
     ) -> Self {
         let overlap = mode.overlap * channels;
         debug_assert_eq!(in_mem.len(), overlap);
+        #[cfg(feature = "fixed_point")]
+        {
+            debug_assert_eq!(fixed_in_mem.len(), in_mem.len());
+            debug_assert_eq!(fixed_prefilter_mem.len(), prefilter_mem.len());
+        }
         let band_count = channels * mode.num_ebands;
         debug_assert_eq!(old_band_e.len(), band_count);
         debug_assert_eq!(old_log_e.len(), band_count);
@@ -478,6 +491,8 @@ impl<'a> OpusCustomEncoder<'a> {
             tapset_decision: 0,
             prefilter_period: 0,
             prefilter_gain: 0.0,
+            #[cfg(feature = "fixed_point")]
+            fixed_prefilter_gain: 0,
             prefilter_tapset: 0,
             consec_transient: 0,
             analysis: AnalysisInfo::default(),
@@ -497,6 +512,10 @@ impl<'a> OpusCustomEncoder<'a> {
             spec_avg: 0.0,
             in_mem,
             prefilter_mem,
+            #[cfg(feature = "fixed_point")]
+            fixed_in_mem,
+            #[cfg(feature = "fixed_point")]
+            fixed_prefilter_mem,
             old_band_e,
             old_log_e,
             old_log_e2,
@@ -529,6 +548,10 @@ impl<'a> OpusCustomEncoder<'a> {
         self.tapset_decision = 0;
         self.prefilter_period = 0;
         self.prefilter_gain = 0.0;
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_prefilter_gain = 0;
+        }
         self.prefilter_tapset = 0;
         self.consec_transient = 0;
         self.analysis = AnalysisInfo::default();
@@ -550,6 +573,11 @@ impl<'a> OpusCustomEncoder<'a> {
         self.spec_avg = 0.0;
         self.in_mem.fill(0.0);
         self.prefilter_mem.fill(0.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_in_mem.fill(0);
+            self.fixed_prefilter_mem.fill(0);
+        }
         self.old_band_e.fill(0.0);
         self.old_log_e.fill(-28.0);
         self.old_log_e2.fill(-28.0);

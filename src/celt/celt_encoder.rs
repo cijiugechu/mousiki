@@ -23,6 +23,8 @@ use crate::celt::bands::compute_band_energies_fixed;
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
 };
+#[cfg(feature = "fixed_point")]
+use crate::celt::celt::comb_filter_fixed;
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entcode::{BITRES, ec_ilog, ec_tell, ec_tell_frac};
 use crate::celt::entenc::EcEnc;
@@ -31,7 +33,7 @@ use crate::celt::float_cast::CELT_SIG_SCALE;
 use crate::celt::fixed_arch::{DB_SHIFT, EPSILON as FIXED_EPSILON, SIG_SAT, SIG_SHIFT, float2sig};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
-    abs32, add32, mult16_32_q15, qconst16, qconst32, shl32, shr32, sub32,
+    abs32, add32, mult16_16_q15, mult16_32_q15, qconst16, qconst32, shl32, shr32, sub32,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
@@ -43,6 +45,10 @@ use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::mdct_fixed::{clt_mdct_forward_fixed, FixedMdctLookup};
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
+#[cfg(feature = "fixed_point")]
+use crate::celt::pitch::{
+    pitch_downsample_fixed, pitch_search_fixed, remove_doubling_fixed,
+};
 use crate::celt::quant_bands::E_MEANS;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::{
@@ -58,7 +64,9 @@ use crate::celt::types::{
     OpusInt32, OpusRes, OpusUint32, OpusVal16, OpusVal32, SilkInfo,
 };
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltSig};
+use crate::celt::types::{
+    FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltSig, FixedOpusVal16,
+};
 use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
 use alloc::boxed::Box;
 use core::cmp::{max, min};
@@ -101,6 +109,24 @@ fn fill_fixed_sig(dst: &mut [FixedCeltSig], src: &[CeltSig]) {
     for (out, &value) in dst.iter_mut().zip(src.iter()) {
         let sample = float2sig(value);
         *out = sample.clamp(-SIG_SAT, SIG_SAT);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn fixed_sig_to_float(value: FixedCeltSig) -> f32 {
+    let scale = CELT_SIG_SCALE * (1u32 << SIG_SHIFT) as f32;
+    value as f32 / scale
+}
+
+#[cfg(feature = "fixed_point")]
+fn fill_float_sig(dst: &mut [CeltSig], src: &[FixedCeltSig]) {
+    assert_eq!(
+        dst.len(),
+        src.len(),
+        "float buffer must mirror fixed buffer length",
+    );
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = fixed_sig_to_float(value);
     }
 }
 
@@ -1312,7 +1338,8 @@ pub(crate) fn opus_custom_encoder_get_size(mode: &OpusCustomMode<'_>, channels: 
         + {
             #[cfg(feature = "fixed_point")]
             {
-                2 * band_count * core::mem::size_of::<FixedCeltGlog>()
+                (in_mem + prefilter_mem) * core::mem::size_of::<FixedCeltSig>()
+                    + 2 * band_count * core::mem::size_of::<FixedCeltGlog>()
             }
             #[cfg(not(feature = "fixed_point"))]
             {
@@ -2160,9 +2187,7 @@ pub(crate) fn celt_preemphasis_fixed(
     let coef2 = qconst16(f64::from(coef[2]), SIG_SHIFT);
     let mut m = *mem;
 
-    let _ = clip;
-
-    if coef[1] == 0.0 && upsample == 1 {
+    if coef[1] == 0.0 && upsample == 1 && !clip {
         ensure_pcm_capacity(pcmp, channels, n);
 
         for i in 0..n {
@@ -2208,6 +2233,10 @@ pub(crate) fn celt_preemphasis_fixed(
 pub(crate) struct CeltEncoderAlloc {
     in_mem: Vec<CeltSig>,
     prefilter_mem: Vec<CeltSig>,
+    #[cfg(feature = "fixed_point")]
+    fixed_in_mem: Vec<FixedCeltSig>,
+    #[cfg(feature = "fixed_point")]
+    fixed_prefilter_mem: Vec<FixedCeltSig>,
     old_band_e: Vec<CeltGlog>,
     old_log_e: Vec<CeltGlog>,
     old_log_e2: Vec<CeltGlog>,
@@ -2233,6 +2262,10 @@ impl CeltEncoderAlloc {
         Self {
             in_mem: vec![0.0; overlap],
             prefilter_mem: vec![0.0; channels * COMBFILTER_MAXPERIOD],
+            #[cfg(feature = "fixed_point")]
+            fixed_in_mem: vec![0; overlap],
+            #[cfg(feature = "fixed_point")]
+            fixed_prefilter_mem: vec![0; channels * COMBFILTER_MAXPERIOD],
             old_band_e: vec![0.0; band_count],
             old_log_e: vec![0.0; band_count],
             old_log_e2: vec![0.0; band_count],
@@ -2258,7 +2291,10 @@ impl CeltEncoderAlloc {
             + {
                 #[cfg(feature = "fixed_point")]
                 {
-                    (self.fixed_old_band_e.len() + self.fixed_energy_error.len())
+                    (self.fixed_in_mem.len()
+                        + self.fixed_prefilter_mem.len()
+                        + self.fixed_old_band_e.len()
+                        + self.fixed_energy_error.len())
                         * core::mem::size_of::<FixedCeltGlog>()
                 }
                 #[cfg(not(feature = "fixed_point"))]
@@ -2285,6 +2321,8 @@ impl CeltEncoderAlloc {
                 energy_mask,
                 self.in_mem.as_mut_slice(),
                 self.prefilter_mem.as_mut_slice(),
+                self.fixed_in_mem.as_mut_slice(),
+                self.fixed_prefilter_mem.as_mut_slice(),
                 self.old_band_e.as_mut_slice(),
                 self.old_log_e.as_mut_slice(),
                 self.old_log_e2.as_mut_slice(),
@@ -2320,6 +2358,8 @@ impl CeltEncoderAlloc {
         self.old_log_e2.fill(-28.0);
         #[cfg(feature = "fixed_point")]
         {
+            self.fixed_in_mem.fill(0);
+            self.fixed_prefilter_mem.fill(0);
             self.fixed_old_band_e.fill(0);
             self.fixed_energy_error.fill(0);
         }
@@ -3598,6 +3638,528 @@ fn run_prefilter(
     pf_on
 }
 
+#[cfg(feature = "fixed_point")]
+fn q15_to_float(value: FixedOpusVal16) -> f32 {
+    value as f32 / 32_768.0
+}
+
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+fn run_prefilter_fixed(
+    encoder: &mut OpusCustomEncoder<'_>,
+    input: &mut [CeltSig],
+    input_fixed: &mut [FixedCeltSig],
+    channels: usize,
+    n: usize,
+    prefilter_tapset: i32,
+    pitch: &mut i32,
+    gain: &mut OpusVal16,
+    gain_fixed: &mut FixedOpusVal16,
+    qgain: &mut i32,
+    enabled: bool,
+    tf_estimate: OpusVal16,
+    nb_available_bytes: i32,
+    analysis: &AnalysisInfo,
+    mut tone_freq: OpusVal16,
+    toneishness: OpusVal32,
+) -> bool {
+    assert!(channels > 0, "run_prefilter requires at least one channel");
+    assert!(n > 0, "run_prefilter expects a positive frame size");
+
+    #[cfg(test)]
+    let trace_frame_idx = celt_prefilter_trace::current_frame_idx()
+        .filter(|&idx| celt_prefilter_trace::should_dump(idx));
+    #[cfg(test)]
+    crate::celt::pitch::remove_doubling_trace_set_frame(trace_frame_idx);
+
+    let mode = encoder.mode;
+    let overlap = mode.overlap;
+    let stride = overlap + n;
+    let history_len = COMBFILTER_MAXPERIOD;
+
+    assert!(
+        input_fixed.len() >= channels * stride,
+        "time buffer must expose channels * (n + overlap) samples",
+    );
+    assert!(
+        encoder.fixed_prefilter_mem.len() >= channels * history_len,
+        "prefilter history must expose channels * COMBFILTER_MAXPERIOD samples",
+    );
+    assert!(
+        encoder.fixed_in_mem.len() >= channels * overlap,
+        "overlap history must expose channels * overlap samples",
+    );
+
+    let mut pre = vec![0; channels * (n + history_len)];
+    for ch in 0..channels {
+        let pre_offset = ch * (n + history_len);
+        let pre_slice = &mut pre[pre_offset..pre_offset + history_len + n];
+        let history = &encoder.fixed_prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        pre_slice[..history_len].copy_from_slice(history);
+
+        let input_offset = ch * stride;
+        let input_slice = &input_fixed[input_offset + overlap..input_offset + overlap + n];
+        pre_slice[history_len..history_len + n].copy_from_slice(input_slice);
+    }
+
+    let mut channel_views: [&[FixedCeltSig]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+    for ch in 0..channels {
+        let start = ch * (n + history_len);
+        let end = start + history_len + n;
+        channel_views[ch] = &pre[start..end];
+    }
+
+    let mut pitch_index = COMBFILTER_MINPERIOD as i32;
+    let mut gain1: FixedOpusVal16 = 0;
+
+    if enabled {
+        let downsample_len = history_len + n;
+        let mut pitch_buf = vec![0i16; downsample_len >> 1];
+        pitch_downsample_fixed(
+            &channel_views[..channels],
+            &mut pitch_buf,
+            downsample_len,
+            encoder.arch,
+        );
+
+        #[cfg(test)]
+        if let Some(frame_idx) = trace_frame_idx {
+            if std::env::var("CELT_TRACE_PITCH_BUF")
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false)
+            {
+                let start = std::env::var("CELT_TRACE_PITCH_BUF_START")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let count = std::env::var("CELT_TRACE_PITCH_BUF_COUNT")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(64);
+                let want_bits = std::env::var("CELT_TRACE_PITCH_BUF_BITS")
+                    .map(|value| !value.is_empty() && value != "0")
+                    .unwrap_or(false);
+                let end = start.saturating_add(count).min(pitch_buf.len());
+                for idx in start..end {
+                    let value = pitch_buf[idx] as f32;
+                    std::println!(
+                        "celt_pitch_buf[{frame_idx}].idx[{idx}]={:.9}",
+                        value
+                    );
+                    if want_bits {
+                        std::println!(
+                            "celt_pitch_buf[{frame_idx}].idx_bits[{idx}]=0x{:08x}",
+                            pitch_buf[idx] as u16 as u32
+                        );
+                    }
+                }
+            }
+        }
+
+        let search_span = history_len - 3 * COMBFILTER_MINPERIOD;
+        if search_span > 0 {
+            let offset = history_len >> 1;
+            if offset < pitch_buf.len() {
+                let result =
+                    pitch_search_fixed(&pitch_buf[offset..], &pitch_buf, n, search_span, encoder.arch);
+                pitch_index = history_len as i32 - result;
+            }
+        }
+
+        gain1 = remove_doubling_fixed(
+            &pitch_buf,
+            history_len,
+            COMBFILTER_MINPERIOD,
+            n,
+            &mut pitch_index,
+            encoder.prefilter_period,
+            encoder.fixed_prefilter_gain,
+            encoder.arch,
+        );
+        let max_period = (history_len - 2) as i32;
+        if pitch_index > max_period {
+            pitch_index = max_period;
+        }
+        gain1 = mult16_16_q15(qconst16(0.7, 15), gain1);
+
+        let toneishness_fixed = qconst32(f64::from(toneishness), 29);
+        if toneishness_fixed > qconst32(0.99, 29) {
+            let mut tone_freq_fixed = qconst16(f64::from(tone_freq), 13);
+            while tone_freq_fixed >= qconst16(0.39, 13) {
+                tone_freq_fixed >>= 1;
+                tone_freq *= 0.5;
+            }
+            if tone_freq_fixed > qconst16(0.006_148, 13) && tone_freq_fixed > 0 {
+                let candidate = 51472 / tone_freq_fixed as i32;
+                pitch_index = candidate.min(max_period);
+            } else {
+                pitch_index = COMBFILTER_MINPERIOD as i32;
+            }
+            gain1 = qconst16(0.75, 15);
+        }
+
+        if encoder.loss_rate > 2 {
+            gain1 >>= 1;
+        }
+        if encoder.loss_rate > 4 {
+            gain1 >>= 1;
+        }
+        if encoder.loss_rate > 8 {
+            gain1 = 0;
+        }
+    } else {
+        gain1 = 0;
+        pitch_index = COMBFILTER_MINPERIOD as i32;
+    }
+
+    if analysis.valid {
+        let scaled = (gain1 as f32) * analysis.max_pitch_ratio;
+        let clamped = scaled
+            .max(i16::MIN as f32)
+            .min(i16::MAX as f32) as i32;
+        gain1 = clamped as FixedOpusVal16;
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].gain1_pre={:.9}",
+            q15_to_float(gain1)
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pitch_index_pre={}",
+            pitch_index
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].prefilter_period_pre={}",
+            encoder.prefilter_period
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].prefilter_gain_pre={:.9}",
+            q15_to_float(encoder.fixed_prefilter_gain)
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].analysis_max_pitch_ratio={:.9}",
+            analysis.max_pitch_ratio
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].tf_estimate={:.9}",
+            tf_estimate
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].toneishness={:.9}",
+            toneishness
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].tone_freq={:.9}",
+            tone_freq
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].nb_available_bytes={}",
+            nb_available_bytes
+        );
+    }
+
+    let mut pf_threshold = qconst16(0.2, 15);
+    let tf_estimate_fixed = qconst16(f64::from(tf_estimate), 14);
+
+    if (pitch_index - encoder.prefilter_period).abs() * 10 > pitch_index {
+        pf_threshold = pf_threshold.wrapping_add(qconst16(0.2, 15));
+        if tf_estimate_fixed > qconst16(0.98, 14) {
+            gain1 = 0;
+        }
+    }
+    if nb_available_bytes < 25 {
+        pf_threshold = pf_threshold.wrapping_add(qconst16(0.1, 15));
+    }
+    if nb_available_bytes < 35 {
+        pf_threshold = pf_threshold.wrapping_add(qconst16(0.1, 15));
+    }
+    if encoder.fixed_prefilter_gain > qconst16(0.4, 15) {
+        pf_threshold = pf_threshold.wrapping_sub(qconst16(0.1, 15));
+    }
+    if encoder.fixed_prefilter_gain > qconst16(0.55, 15) {
+        pf_threshold = pf_threshold.wrapping_sub(qconst16(0.1, 15));
+    }
+
+    pf_threshold = pf_threshold.max(qconst16(0.2, 15));
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pf_threshold={:.9}",
+            q15_to_float(pf_threshold)
+        );
+    }
+
+    let mut pf_on = false;
+    let mut qg_local = 0i32;
+    if gain1 < pf_threshold {
+        gain1 = 0;
+    } else {
+        let diff = (gain1 as i32 - encoder.fixed_prefilter_gain as i32).abs();
+        if diff < qconst16(0.1, 15) as i32 {
+            gain1 = encoder.fixed_prefilter_gain;
+        }
+        let mut quant = ((gain1 as i32 + 1536) >> 10) / 3 - 1;
+        quant = quant.clamp(0, 7);
+        gain1 = (qconst16(0.09375, 15) as i32 * (quant + 1)) as FixedOpusVal16;
+        qg_local = quant;
+        pf_on = true;
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].gain1_quant={:.9}",
+            q15_to_float(gain1)
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pitch_index_quant={}",
+            pitch_index
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].qg_local={}",
+            qg_local
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pf_on_pre_cancel={}",
+            if pf_on { 1 } else { 0 }
+        );
+    }
+
+    let mut before = [0i32; MAX_CHANNELS];
+    let mut after = [0i32; MAX_CHANNELS];
+    let mut cancel_pitch = false;
+
+    let prev_tapset = encoder.prefilter_tapset.max(0) as usize;
+    let new_tapset = prefilter_tapset.max(0) as usize;
+    let offset = mode.short_mdct_size.saturating_sub(overlap).min(n);
+
+    encoder.prefilter_period = encoder.prefilter_period.max(COMBFILTER_MINPERIOD as i32);
+
+    for ch in 0..channels {
+        let input_offset = ch * stride;
+        let (head, tail) =
+            input_fixed[input_offset..input_offset + stride].split_at_mut(overlap);
+        head.copy_from_slice(&encoder.fixed_in_mem[ch * overlap..(ch + 1) * overlap]);
+
+        let mut sum_before = 0i32;
+        for &sample in tail.iter().take(n) {
+            sum_before = sum_before.wrapping_add(abs32(shr32(sample, SIG_SHIFT)));
+        }
+        before[ch] = sum_before;
+
+        let pre_offset = ch * (n + history_len);
+        let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
+
+        let g0 = encoder.fixed_prefilter_gain.wrapping_neg();
+        if offset > 0 {
+            let (first, rest) = tail.split_at_mut(offset);
+            comb_filter_fixed(
+                first,
+                pre_channel,
+                history_len,
+                offset,
+                encoder.prefilter_period,
+                encoder.prefilter_period,
+                g0,
+                g0,
+                prev_tapset,
+                prev_tapset,
+                &[],
+                0,
+                encoder.arch,
+            );
+            comb_filter_fixed(
+                rest,
+                pre_channel,
+                history_len + offset,
+                n - offset,
+                encoder.prefilter_period,
+                pitch_index,
+                g0,
+                gain1.wrapping_neg(),
+                prev_tapset,
+                new_tapset,
+                &encoder.fixed_window,
+                overlap,
+                encoder.arch,
+            );
+        } else {
+            comb_filter_fixed(
+                tail,
+                pre_channel,
+                history_len,
+                n,
+                encoder.prefilter_period,
+                pitch_index,
+                g0,
+                gain1.wrapping_neg(),
+                prev_tapset,
+                new_tapset,
+                &encoder.fixed_window,
+                overlap,
+                encoder.arch,
+            );
+        }
+
+        let mut sum_after = 0i32;
+        for &sample in tail.iter().take(n) {
+            sum_after = sum_after.wrapping_add(abs32(shr32(sample, SIG_SHIFT)));
+        }
+        after[ch] = sum_after;
+    }
+
+    if channels == 2 {
+        let thresh0 = add32(
+            mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[0]),
+            mult16_32_q15(qconst16(0.01, 15), before[1]),
+        );
+        let thresh1 = add32(
+            mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[1]),
+            mult16_32_q15(qconst16(0.01, 15), before[0]),
+        );
+        if after[0].wrapping_sub(before[0]) > thresh0
+            || after[1].wrapping_sub(before[1]) > thresh1
+        {
+            cancel_pitch = true;
+        }
+        if before[0].wrapping_sub(after[0]) < thresh0
+            && before[1].wrapping_sub(after[1]) < thresh1
+        {
+            cancel_pitch = true;
+        }
+    } else if after[0] > before[0] {
+        cancel_pitch = true;
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        for ch in 0..channels {
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].before.ch[{ch}]={}",
+                before[ch]
+            );
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].after.ch[{ch}]={}",
+                after[ch]
+            );
+        }
+        if channels == 2 {
+            let thresh0 = add32(
+                mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[0]),
+                mult16_32_q15(qconst16(0.01, 15), before[1]),
+            );
+            let thresh1 = add32(
+                mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[1]),
+                mult16_32_q15(qconst16(0.01, 15), before[0]),
+            );
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].thresh0={}",
+                thresh0
+            );
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].thresh1={}",
+                thresh1
+            );
+        } else {
+            let thresh0 = mult16_32_q15(
+                mult16_16_q15(qconst16(0.25, 15), gain1),
+                before[0],
+            );
+            std::println!(
+                "celt_prefilter_debug[{frame_idx}].thresh0={}",
+                thresh0
+            );
+        }
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].cancel_pitch={}",
+            if cancel_pitch { 1 } else { 0 }
+        );
+    }
+
+    if cancel_pitch {
+        for ch in 0..channels {
+            let input_offset = ch * stride;
+            let channel = &mut input_fixed[input_offset..input_offset + stride];
+            let pre_offset = ch * (n + history_len);
+            let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
+
+            channel[overlap..overlap + n]
+                .copy_from_slice(&pre_channel[history_len..history_len + n]);
+
+            if overlap > 0 && offset < n {
+                let span = overlap.min(n - offset);
+                let start = overlap + offset;
+                let end = start + span;
+                comb_filter_fixed(
+                    &mut channel[start..end],
+                    pre_channel,
+                    history_len + offset,
+                    span,
+                    encoder.prefilter_period,
+                    pitch_index,
+                    encoder.fixed_prefilter_gain.wrapping_neg(),
+                    0,
+                    prev_tapset,
+                    new_tapset,
+                    &encoder.fixed_window,
+                    span,
+                    encoder.arch,
+                );
+            }
+        }
+        gain1 = 0;
+        qg_local = 0;
+        pf_on = false;
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].gain1_final={:.9}",
+            q15_to_float(gain1)
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].qg_local_final={}",
+            qg_local
+        );
+        std::println!(
+            "celt_prefilter_debug[{frame_idx}].pf_on_final={}",
+            if pf_on { 1 } else { 0 }
+        );
+    }
+
+    for ch in 0..channels {
+        let input_offset = ch * stride;
+        let channel = &input_fixed[input_offset + n..input_offset + n + overlap];
+        encoder.fixed_in_mem[ch * overlap..(ch + 1) * overlap].copy_from_slice(channel);
+
+        let pre_offset = ch * (n + history_len);
+        let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
+        let mem =
+            &mut encoder.fixed_prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        if n > history_len {
+            mem.copy_from_slice(&pre_channel[n..n + history_len]);
+        } else {
+            let shift = history_len - n;
+            mem.copy_within(n..history_len, 0);
+            mem[shift..].copy_from_slice(&pre_channel[history_len..history_len + n]);
+        }
+    }
+
+    fill_float_sig(input, input_fixed);
+    fill_float_sig(encoder.in_mem, encoder.fixed_in_mem);
+    fill_float_sig(encoder.prefilter_mem, encoder.fixed_prefilter_mem);
+
+    *gain_fixed = gain1;
+    *gain = q15_to_float(gain1);
+    *pitch = pitch_index;
+    *qgain = qg_local;
+    pf_on
+}
+
 fn tf_encode(
     start: usize,
     end: usize,
@@ -4377,15 +4939,23 @@ fn celt_encode_with_ec_inner<'a>(
                 need_clip,
             );
         }
-        input[input_offset..input_offset + overlap].copy_from_slice(
-            &encoder.prefilter_mem[prefilter_offset..prefilter_offset + overlap],
-        );
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            input[input_offset..input_offset + overlap].copy_from_slice(
+                &encoder.prefilter_mem[prefilter_offset..prefilter_offset + overlap],
+            );
+        }
         #[cfg(feature = "fixed_point")]
         {
-            let overlap_src = &encoder.prefilter_mem[prefilter_offset..prefilter_offset + overlap];
+            let overlap_src =
+                &encoder.fixed_prefilter_mem[prefilter_offset..prefilter_offset + overlap];
             let overlap_dst = &mut input_fixed[input_offset..input_offset + overlap];
-            for (dst, &value) in overlap_dst.iter_mut().zip(overlap_src.iter()) {
-                *dst = float2sig(value);
+            overlap_dst.copy_from_slice(overlap_src);
+            for (dst, &value) in input[input_offset..input_offset + overlap]
+                .iter_mut()
+                .zip(overlap_src.iter())
+            {
+                *dst = fixed_sig_to_float(value);
             }
         }
     }
@@ -4420,6 +4990,8 @@ fn celt_encode_with_ec_inner<'a>(
 
     let mut pitch_index = COMBFILTER_MINPERIOD as i32;
     let mut gain1 = 0.0;
+    #[cfg(feature = "fixed_point")]
+    let mut gain1_fixed = 0;
     let mut qg = 0;
     let mut pitch_change = false;
     let prefilter_tapset = encoder.tapset_decision;
@@ -4435,6 +5007,7 @@ fn celt_encode_with_ec_inner<'a>(
         && encoder.complexity >= 5;
 
     let analysis = encoder.analysis.clone();
+    #[cfg(not(feature = "fixed_point"))]
     let pf_on = run_prefilter(
         encoder,
         &mut input,
@@ -4443,6 +5016,25 @@ fn celt_encode_with_ec_inner<'a>(
         prefilter_tapset,
         &mut pitch_index,
         &mut gain1,
+        &mut qg,
+        enabled,
+        tf_estimate,
+        nb_available_bytes,
+        &analysis,
+        tone_freq,
+        toneishness,
+    );
+    #[cfg(feature = "fixed_point")]
+    let pf_on = run_prefilter_fixed(
+        encoder,
+        &mut input,
+        &mut input_fixed,
+        cc,
+        n,
+        prefilter_tapset,
+        &mut pitch_index,
+        &mut gain1,
+        &mut gain1_fixed,
         &mut qg,
         enabled,
         tf_estimate,
@@ -4513,13 +5105,6 @@ fn celt_encode_with_ec_inner<'a>(
     if trace_prefilter_should_dump {
         celt_prefilter_trace::dump("post", trace_prefilter_frame_idx.unwrap(), &input, cc);
     }
-    #[cfg(feature = "fixed_point")]
-    {
-        // The prefilter currently runs in float; mirror its output into the fixed buffer
-        // so the fixed MDCT sees the same time-domain signal.
-        fill_fixed_sig(&mut input_fixed, &input);
-    }
-
     if (gain1 > 0.4 || encoder.prefilter_gain > 0.4)
         && (!encoder.analysis.valid || encoder.analysis.tonality > 0.3)
         && (pitch_index > (1.26 * encoder.prefilter_period as f32) as i32
@@ -5934,6 +6519,10 @@ fn celt_encode_with_ec_inner<'a>(
     encoder.prefilter_period = pitch_index;
     encoder.prefilter_gain = gain1;
     encoder.prefilter_tapset = prefilter_tapset;
+    #[cfg(feature = "fixed_point")]
+    {
+        encoder.fixed_prefilter_gain = gain1_fixed;
+    }
 
     if cc == 2 && c == 1 {
         #[cfg(feature = "fixed_point")]
@@ -6527,6 +7116,8 @@ mod tests {
         convert_f32_to_celt_sig, convert_i16_to_celt_sig, convert_i24_to_celt_sig, opus_custom_encode,
         opus_custom_encoder_destroy, opus_custom_encoder_init, opus_custom_encoder_init_arch,
     };
+    #[cfg(feature = "fixed_point")]
+    use super::celt_preemphasis_fixed;
     use super::{
         CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, dynalloc_analysis,
         l1_metric, median_of_3, median_of_5, opus_custom_encoder_ctl, patch_transient_decision,
@@ -6541,13 +7132,19 @@ mod tests {
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::DB_SHIFT;
     #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::float2sig;
+    #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_ops::qconst32;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::{mult16_32_q15, qconst16, sub32};
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::math::celt_log2;
     use crate::celt::modes::{
         compute_preemphasis, opus_custom_mode_create, opus_custom_mode_find_static,
     };
     use crate::celt::types::{AnalysisInfo, OpusCustomDecoder, OpusRes};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::types::FixedCeltSig;
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::format;
     use alloc::string::String;
@@ -6927,6 +7524,110 @@ mod tests {
 
         assert_slice_close(&output, &expected);
         assert!((state - expected_state).abs() < EPSILON);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn pcm_from_i16(values: &[i16]) -> Vec<f32> {
+        values
+            .iter()
+            .map(|&value| value as f32 / CELT_SIG_SCALE)
+            .collect()
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn preemphasis_reference_fixed(
+        pcmp: &[CeltSig],
+        inp: &mut [FixedCeltSig],
+        n: usize,
+        channels: usize,
+        upsample: usize,
+        coef: &[OpusVal16; 4],
+        mem: &mut FixedCeltSig,
+        clip: bool,
+    ) {
+        let coef0 = qconst16(f64::from(coef[0]), 15);
+        let mut m = *mem;
+
+        if coef[1] == 0.0 && upsample == 1 && !clip {
+            for i in 0..n {
+                let x = float2sig(pcmp[channels * i]);
+                inp[i] = sub32(x, m);
+                m = mult16_32_q15(coef0, x);
+            }
+            *mem = m;
+            return;
+        }
+
+        let nu = n / upsample;
+        if upsample != 1 {
+            inp[..n].fill(0);
+        }
+        for i in 0..nu {
+            inp[i * upsample] = float2sig(pcmp[channels * i]);
+        }
+        for value in &mut inp[..n] {
+            let x = *value;
+            *value = sub32(x, m);
+            m = mult16_32_q15(coef0, x);
+        }
+
+        *mem = m;
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn celt_preemphasis_fixed_fast_path_matches_reference() {
+        let pcm_values: [i16; 8] = [1000, -2000, 1500, -500, 700, -900, 300, -100];
+        let pcm = pcm_from_i16(&pcm_values);
+        let n = pcm_values.len();
+        let mut output = vec![0; n];
+        let mut expected = vec![0; n];
+        let coef: [OpusVal16; 4] = [0.85, 0.0, 0.0, 0.0];
+        let mut state: FixedCeltSig = 1234;
+        let mut expected_state = state;
+
+        celt_preemphasis_fixed(&pcm, &mut output, n, 1, 1, &coef, &mut state, false);
+        preemphasis_reference_fixed(
+            &pcm,
+            &mut expected,
+            n,
+            1,
+            1,
+            &coef,
+            &mut expected_state,
+            false,
+        );
+
+        assert_eq!(output, expected);
+        assert_eq!(state, expected_state);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn celt_preemphasis_fixed_upsample_matches_reference() {
+        let pcm_values: [i16; 5] = [1200, -800, 600, -400, 200];
+        let pcm = pcm_from_i16(&pcm_values);
+        let n = 10;
+        let mut output = vec![0; n];
+        let mut expected = vec![0; n];
+        let coef: [OpusVal16; 4] = [0.6, 0.0, 0.0, 0.0];
+        let mut state: FixedCeltSig = -2222;
+        let mut expected_state = state;
+
+        celt_preemphasis_fixed(&pcm, &mut output, n, 1, 2, &coef, &mut state, true);
+        preemphasis_reference_fixed(
+            &pcm,
+            &mut expected,
+            n,
+            1,
+            2,
+            &coef,
+            &mut expected_state,
+            true,
+        );
+
+        assert_eq!(output, expected);
+        assert_eq!(state, expected_state);
     }
 
     fn get_lsb_depth(encoder: &mut OpusCustomEncoder<'_>) -> i32 {
@@ -7372,6 +8073,8 @@ mod tests {
         assert_eq!(alloc.energy_error.len(), 2 * mode.num_ebands);
         #[cfg(feature = "fixed_point")]
         {
+            assert_eq!(alloc.fixed_in_mem.len(), mode.overlap * 2);
+            assert_eq!(alloc.fixed_prefilter_mem.len(), 2 * COMBFILTER_MAXPERIOD);
             assert_eq!(alloc.fixed_old_band_e.len(), 2 * mode.num_ebands);
             assert_eq!(alloc.fixed_energy_error.len(), 2 * mode.num_ebands);
         }
@@ -7392,6 +8095,8 @@ mod tests {
         alloc.energy_error.fill(1.0);
         #[cfg(feature = "fixed_point")]
         {
+            alloc.fixed_in_mem.fill(7);
+            alloc.fixed_prefilter_mem.fill(9);
             alloc.fixed_old_band_e.fill(7);
             alloc.fixed_energy_error.fill(9);
         }
@@ -7408,6 +8113,8 @@ mod tests {
         assert!(alloc.old_log_e2.iter().all(|&v| (v + 28.0).abs() < 1e-6));
         #[cfg(feature = "fixed_point")]
         {
+            assert!(alloc.fixed_in_mem.iter().all(|&v| v == 0));
+            assert!(alloc.fixed_prefilter_mem.iter().all(|&v| v == 0));
             assert!(alloc.fixed_old_band_e.iter().all(|&v| v == 0));
             assert!(alloc.fixed_energy_error.iter().all(|&v| v == 0));
         }
