@@ -15,8 +15,7 @@ A Rust port of the Xiph `opus-c` reference implementation. The core crate is
   tonality analysis are available.
 
 ### Known gaps
-- Fixed-point decode backend, SIMD back-ends, and optional DRED/Deep PLC paths are
-  not complete.
+- Fixed-point decode backend, SIMD back-ends are not complete.
 - See `PORTING_STATUS.md` for detailed status.
 
 
