@@ -33,6 +33,21 @@ int main(void) {
   failures += check_i32("celt_sqrt_sat_plus", celt_sqrt((1 << 30) + 12345),
                         32767);
 
+  /* frac_div32: zero input, rounding, sign handling, and saturation. */
+  failures += check_i32("frac_div32_zero", frac_div32(0, 32768), 0);
+  failures += check_i32("frac_div32_half", frac_div32(32768, 65536),
+                        1073741808);
+  failures += check_i32("frac_div32_neg_half", frac_div32(-32768, 65536),
+                        -1073741824);
+  failures += check_i32("frac_div32_sat_hi", frac_div32(65536, 32768),
+                        2147483647);
+  failures += check_i32("frac_div32_near_one",
+                        frac_div32(1073741824, 1073741824), 2147483632);
+  failures += check_i32("frac_div32_q29_half",
+                        frac_div32_q29(32768, 65536), 268435452);
+  failures += check_i32("frac_div32_q29_sat_input",
+                        frac_div32_q29(65536, 32768), 1073741820);
+
   /* celt_rcp: very small/medium/large inputs exercise ilog2 branches. */
   failures += check_i32("celt_rcp_min", celt_rcp(1), 2147418112);
   failures += check_i32("celt_rcp_1000", celt_rcp(1000), 2147456);
