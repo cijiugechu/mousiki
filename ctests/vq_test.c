@@ -28,6 +28,19 @@ static int check_u32(const char *label, unsigned got, unsigned expected) {
   return 0;
 }
 
+static int check_i32_array(const char *label, const int *got,
+                           const int *expected, int len) {
+  int failures = 0;
+  for (int i = 0; i < len; ++i) {
+    if (got[i] != expected[i]) {
+      fprintf(stderr, "%s[%d] mismatch: got %d expected %d\n", label, i, got[i],
+              expected[i]);
+      failures++;
+    }
+  }
+  return failures;
+}
+
 int main(void) {
   int failures = 0;
 
@@ -286,6 +299,103 @@ int main(void) {
     failures += check_u32("alg_case7_umask", umask, 1);
     failures += check_i16_array("alg_case7_q", xq, expected, N);
     failures += check_i16_array("alg_case7_u", xu, expected, N);
+  }
+
+  /* op_pvq_search: silence triggers sum<=K replacement. */
+  {
+    enum { N = 8, K = 6 };
+    celt_norm x[N] = {0};
+    int iy[N];
+    const celt_norm expected_x[N] = {16384, 0, 0, 0, 0, 0, 0, 0};
+    const int expected_iy[N] = {6, 0, 0, 0, 0, 0, 0, 0};
+    opus_val16 yy = op_pvq_search(x, iy, K, N, 0);
+
+    failures += check_u32("op_silence_yy", (unsigned)yy, 36);
+    failures += check_i16_array("op_silence_x", x, expected_x, N);
+    failures += check_i32_array("op_silence_iy", iy, expected_iy, N);
+  }
+
+  /* op_pvq_search: oversized K forces pulsesLeft > N+3 fallback. */
+  {
+    enum { N = 2, K = 10 };
+    celt_norm x[N] = {0, 0};
+    int iy[N];
+    const celt_norm expected_x[N] = {16384, 0};
+    const int expected_iy[N] = {10, 0};
+    opus_val16 yy = op_pvq_search(x, iy, K, N, 0);
+
+    failures += check_u32("op_bigk_yy", (unsigned)yy, 100);
+    failures += check_i16_array("op_bigk_x", x, expected_x, N);
+    failures += check_i32_array("op_bigk_iy", iy, expected_iy, N);
+  }
+
+  /* op_pvq_search: sign handling and pre-search path. */
+  {
+    enum { N = 8, K = 6 };
+    celt_norm x[N] = {100, -50, 25, -12, 6, -3, 2, -1};
+    int iy[N];
+    const celt_norm expected_x[N] = {100, 50, 25, 12, 6, 3, 2, 1};
+    const int expected_iy[N] = {5, -1, 0, 0, 0, 0, 0, 0};
+    opus_val16 yy = op_pvq_search(x, iy, K, N, 0);
+
+    failures += check_u32("op_small_yy", (unsigned)yy, 26);
+    failures += check_i16_array("op_small_x", x, expected_x, N);
+    failures += check_i32_array("op_small_iy", iy, expected_iy, N);
+  }
+
+  /* alg_quant/alg_unquant: collapse mask full coverage. */
+  {
+    enum { N = 8, K = 8, B = 4 };
+    unsigned char buffer[256];
+    celt_norm x[N] = {6000, -6000, 6000, -6000, 6000, -6000, 6000, -6000};
+    celt_norm xq[N];
+    celt_norm xu[N];
+    const celt_norm expected[N] = {5792, -5792, 5792, -5792,
+                                   5792, -5792, 5792, -5792};
+    ec_enc enc;
+    ec_dec dec;
+    unsigned mask;
+    unsigned umask;
+
+    memcpy(xq, x, sizeof(x));
+    ec_enc_init(&enc, buffer, sizeof(buffer));
+    mask = alg_quant(xq, N, K, SPREAD_NONE, B, &enc, Q31ONE, 1, 0);
+    ec_enc_done(&enc);
+
+    ec_dec_init(&dec, buffer, sizeof(buffer));
+    umask = alg_unquant(xu, N, K, SPREAD_NONE, B, &dec, Q31ONE);
+
+    failures += check_u32("alg_case8_mask", mask, 15);
+    failures += check_u32("alg_case8_umask", umask, 15);
+    failures += check_i16_array("alg_case8_q", xq, expected, N);
+    failures += check_i16_array("alg_case8_u", xu, expected, N);
+  }
+
+  /* alg_quant/alg_unquant: collapse mask single tail block. */
+  {
+    enum { N = 8, K = 3, B = 4 };
+    unsigned char buffer[256];
+    celt_norm x[N] = {0, 0, 0, 0, 0, 0, 12000, -8000};
+    celt_norm xq[N];
+    celt_norm xu[N];
+    const celt_norm expected[N] = {0, 0, 0, 0, 0, 0, 14654, -7327};
+    ec_enc enc;
+    ec_dec dec;
+    unsigned mask;
+    unsigned umask;
+
+    memcpy(xq, x, sizeof(x));
+    ec_enc_init(&enc, buffer, sizeof(buffer));
+    mask = alg_quant(xq, N, K, SPREAD_NONE, B, &enc, Q31ONE, 1, 0);
+    ec_enc_done(&enc);
+
+    ec_dec_init(&dec, buffer, sizeof(buffer));
+    umask = alg_unquant(xu, N, K, SPREAD_NONE, B, &dec, Q31ONE);
+
+    failures += check_u32("alg_case9_mask", mask, 8);
+    failures += check_u32("alg_case9_umask", umask, 8);
+    failures += check_i16_array("alg_case9_q", xq, expected, N);
+    failures += check_i16_array("alg_case9_u", xu, expected, N);
   }
 
   return failures ? 1 : 0;
