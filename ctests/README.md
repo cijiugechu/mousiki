@@ -36,6 +36,10 @@ CELT_FIXED_ENC_DUMP=1 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   -- --tests-regex celt_mathops_test
 # Includes fixed-point mathops coverage (e.g., celt_sqrt, frac_div32, frac_div32_q29).
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
+  -- --tests-regex celt_vq_test
+# Covers fixed-point PVQ/VQ core (renormalise_vector, alg_quant, alg_unquant).
 ./ctests/run.sh -- --verbose
 ```
 
