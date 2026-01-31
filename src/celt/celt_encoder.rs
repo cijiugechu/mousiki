@@ -15,11 +15,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::celt::bands::{
-    BandCodingState, compute_band_energies, haar1, hysteresis_decision, normalise_bands,
-    quant_all_bands, spreading_decision,
+    BandCodingState, compute_band_energies, haar1, hysteresis_decision, quant_all_bands,
+    spreading_decision,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::bands::normalise_bands;
 #[cfg(feature = "fixed_point")]
-use crate::celt::bands::compute_band_energies_fixed;
+use crate::celt::bands::{compute_band_energies_fixed, normalise_bands_fixed};
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
 };
@@ -65,7 +67,7 @@ use crate::celt::types::{
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{
-    FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltSig, FixedOpusVal16,
+    FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16,
 };
 use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
 use alloc::boxed::Box;
@@ -127,6 +129,23 @@ fn fill_float_sig(dst: &mut [CeltSig], src: &[FixedCeltSig]) {
     );
     for (out, &value) in dst.iter_mut().zip(src.iter()) {
         *out = fixed_sig_to_float(value);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+fn fixed_norm_to_float(value: FixedCeltNorm) -> f32 {
+    value as f32 / 32_768.0
+}
+
+#[cfg(feature = "fixed_point")]
+fn fill_float_norm(dst: &mut [CeltNorm], src: &[FixedCeltNorm]) {
+    assert_eq!(
+        dst.len(),
+        src.len(),
+        "float norm buffer must mirror fixed buffer length",
+    );
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = fixed_norm_to_float(value);
     }
 }
 
@@ -5688,7 +5707,16 @@ fn celt_encode_with_ec_inner<'a>(
     }
 
     let mut x = vec![0.0f32; c * n];
-    normalise_bands(mode, &freq[..c * n], &mut x, &band_e, eff_end, c, m);
+    #[cfg(feature = "fixed_point")]
+    {
+        let mut x_fixed = vec![0i16; c * n];
+        normalise_bands_fixed(mode, &fixed_freq, &mut x_fixed, &band_e_fixed, eff_end, c, m);
+        fill_float_norm(&mut x, &x_fixed);
+    }
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        normalise_bands(mode, &freq[..c * n], &mut x, &band_e, eff_end, c, m);
+    }
 
     let enable_tf_analysis = effective_bytes >= 15 * c as i32
         && !hybrid
