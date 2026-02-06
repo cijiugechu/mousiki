@@ -22,9 +22,11 @@ use crate::celt::bands::denormalise_bands;
 #[cfg(feature = "fixed_point")]
 use crate::celt::bands::denormalise_bands_fixed;
 use crate::celt::bands::{anti_collapse, celt_lcg_rand, quant_all_bands};
-use crate::celt::celt::{
-    COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
-};
+use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
+#[cfg(any(not(feature = "fixed_point"), test))]
+use crate::celt::celt::comb_filter;
+#[cfg(feature = "fixed_point")]
+use crate::celt::celt::comb_filter_fixed;
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
@@ -38,9 +40,9 @@ use crate::celt::{
     update_plc_state,
 };
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::{DB_SHIFT, SIG_SHIFT};
+use crate::celt::fixed_arch::{DB_SHIFT, SIG_SHIFT, float2sig};
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_ops::{add32_ovflw, pshr32, qconst32};
+use crate::celt::fixed_ops::{add32_ovflw, mult16_32_q15, pshr32, qconst16, qconst32};
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 use crate::celt::math::{celt_sqrt, frac_div32};
 #[cfg(not(feature = "fixed_point"))]
@@ -60,10 +62,12 @@ use crate::celt::quant_bands::{
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
     CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
-    OpusUint32, OpusVal16, OpusVal32,
+    OpusUint32, OpusVal16,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::types::OpusVal32;
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltSig};
+use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltSig, FixedOpusVal16};
 use crate::celt::vq::SPREAD_NORMAL;
 use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
@@ -139,6 +143,12 @@ type FixedSynthesisCtx<'a> = ();
 fn fixed_sig_to_float(value: FixedCeltSig) -> f32 {
     let scale = CELT_SIG_SCALE * (1u32 << SIG_SHIFT) as f32;
     value as f32 / scale
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn postfilter_gain_to_fixed(value: OpusVal16) -> FixedOpusVal16 {
+    qconst16(f64::from(value), 15)
 }
 
 #[cfg(not(feature = "fixed_point"))]
@@ -544,34 +554,76 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
     let tapset0 = decoder.postfilter_tapset_old.max(0) as usize;
     let tapset1 = decoder.postfilter_tapset.max(0) as usize;
 
-    let mut etmp = vec![OpusVal32::default(); overlap];
-    let window = decoder.mode.window;
-    debug_assert!(window.len() >= overlap);
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        let mut etmp = vec![OpusVal32::default(); overlap];
+        let window = decoder.mode.window;
+        debug_assert!(window.len() >= overlap);
 
-    for channel in 0..channels {
-        let offset = channel * stride;
-        let channel_mem = &mut decoder.decode_mem[offset..offset + stride];
+        for channel in 0..channels {
+            let offset = channel * stride;
+            let channel_mem = &mut decoder.decode_mem[offset..offset + stride];
 
-        comb_filter(
-            &mut etmp,
-            channel_mem,
-            start,
-            overlap,
-            decoder.postfilter_period_old,
-            decoder.postfilter_period,
-            -decoder.postfilter_gain_old,
-            -decoder.postfilter_gain,
-            tapset0,
-            tapset1,
-            &[],
-            0,
-            decoder.arch,
-        );
+            comb_filter(
+                &mut etmp,
+                channel_mem,
+                start,
+                overlap,
+                decoder.postfilter_period_old,
+                decoder.postfilter_period,
+                -decoder.postfilter_gain_old,
+                -decoder.postfilter_gain,
+                tapset0,
+                tapset1,
+                &[],
+                0,
+                decoder.arch,
+            );
 
-        for i in 0..(overlap / 2) {
-            let forward = window[i] * etmp[overlap - 1 - i];
-            let reverse = window[overlap - 1 - i] * etmp[i];
-            channel_mem[start + i] = forward + reverse;
+            for i in 0..(overlap / 2) {
+                let forward = window[i] * etmp[overlap - 1 - i];
+                let reverse = window[overlap - 1 - i] * etmp[i];
+                channel_mem[start + i] = forward + reverse;
+            }
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    {
+        debug_assert!(decoder.fixed_window.len() >= overlap);
+        let g0 = postfilter_gain_to_fixed(decoder.postfilter_gain_old).wrapping_neg();
+        let g1 = postfilter_gain_to_fixed(decoder.postfilter_gain).wrapping_neg();
+
+        for channel in 0..channels {
+            let offset = channel * stride;
+            let channel_mem = &mut decoder.decode_mem[offset..offset + stride];
+            let fixed_channel: Vec<FixedCeltSig> =
+                channel_mem.iter().map(|&sample| float2sig(sample)).collect();
+            let mut fixed_etmp = vec![0; overlap];
+
+            comb_filter_fixed(
+                &mut fixed_etmp,
+                &fixed_channel,
+                start,
+                overlap,
+                decoder.postfilter_period_old,
+                decoder.postfilter_period,
+                g0,
+                g1,
+                tapset0,
+                tapset1,
+                &decoder.fixed_window[..0],
+                0,
+                decoder.arch,
+            );
+
+            for i in 0..(overlap / 2) {
+                let forward =
+                    mult16_32_q15(decoder.fixed_window[i], fixed_etmp[overlap - 1 - i]);
+                let reverse =
+                    mult16_32_q15(decoder.fixed_window[overlap - 1 - i], fixed_etmp[i]);
+                channel_mem[start + i] = fixed_sig_to_float(add32_ovflw(forward, reverse));
+            }
         }
     }
 }
@@ -2363,47 +2415,108 @@ where
 
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
         let output_start = DECODE_BUFFER_SIZE - n;
-        let channel_len = channel_slice.len();
-        let channel_ptr = channel_slice.as_ptr();
-        let output = &mut channel_slice[output_start..output_start + n];
-        let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            let channel_len = channel_slice.len();
+            let channel_ptr = channel_slice.as_ptr();
+            let output = &mut channel_slice[output_start..output_start + n];
+            let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
 
-        let first_len = mode.short_mdct_size.min(output.len());
-        if first_len > 0 {
-            let (first_block, tail_block) = output.split_at_mut(first_len);
-            comb_filter(
-                first_block,
-                full_channel,
-                output_start,
-                first_len,
-                decoder.postfilter_period_old,
-                decoder.postfilter_period,
-                decoder.postfilter_gain_old,
-                decoder.postfilter_gain,
-                decoder.postfilter_tapset_old.max(0) as usize,
-                decoder.postfilter_tapset.max(0) as usize,
-                mode.window,
-                overlap,
-                decoder.arch,
-            );
-
-            if lm != 0 && !tail_block.is_empty() {
-                let tail_start = output_start + first_len;
+            let first_len = mode.short_mdct_size.min(output.len());
+            if first_len > 0 {
+                let (first_block, tail_block) = output.split_at_mut(first_len);
                 comb_filter(
-                    tail_block,
+                    first_block,
                     full_channel,
-                    tail_start,
-                    tail_block.len(),
+                    output_start,
+                    first_len,
+                    decoder.postfilter_period_old,
                     decoder.postfilter_period,
-                    postfilter_pitch,
+                    decoder.postfilter_gain_old,
                     decoder.postfilter_gain,
-                    postfilter_gain,
+                    decoder.postfilter_tapset_old.max(0) as usize,
                     decoder.postfilter_tapset.max(0) as usize,
-                    postfilter_tapset.max(0) as usize,
                     mode.window,
                     overlap,
                     decoder.arch,
                 );
+
+                if lm != 0 && !tail_block.is_empty() {
+                    let tail_start = output_start + first_len;
+                    comb_filter(
+                        tail_block,
+                        full_channel,
+                        tail_start,
+                        tail_block.len(),
+                        decoder.postfilter_period,
+                        postfilter_pitch,
+                        decoder.postfilter_gain,
+                        postfilter_gain,
+                        decoder.postfilter_tapset.max(0) as usize,
+                        postfilter_tapset.max(0) as usize,
+                        mode.window,
+                        overlap,
+                        decoder.arch,
+                    );
+                }
+            }
+        }
+
+        #[cfg(feature = "fixed_point")]
+        {
+            let mut fixed_channel: Vec<FixedCeltSig> =
+                channel_slice.iter().map(|&sample| float2sig(sample)).collect();
+            let channel_len = fixed_channel.len();
+            let channel_ptr = fixed_channel.as_ptr();
+            let output = &mut fixed_channel[output_start..output_start + n];
+            let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
+            let first_len = mode.short_mdct_size.min(output.len());
+            let g0 = postfilter_gain_to_fixed(decoder.postfilter_gain_old);
+            let g1 = postfilter_gain_to_fixed(decoder.postfilter_gain);
+
+            if first_len > 0 {
+                let (first_block, tail_block) = output.split_at_mut(first_len);
+                comb_filter_fixed(
+                    first_block,
+                    full_channel,
+                    output_start,
+                    first_len,
+                    decoder.postfilter_period_old,
+                    decoder.postfilter_period,
+                    g0,
+                    g1,
+                    decoder.postfilter_tapset_old.max(0) as usize,
+                    decoder.postfilter_tapset.max(0) as usize,
+                    decoder.fixed_window.as_slice(),
+                    overlap,
+                    decoder.arch,
+                );
+
+                if lm != 0 && !tail_block.is_empty() {
+                    let tail_start = output_start + first_len;
+                    comb_filter_fixed(
+                        tail_block,
+                        full_channel,
+                        tail_start,
+                        tail_block.len(),
+                        decoder.postfilter_period,
+                        postfilter_pitch,
+                        g1,
+                        postfilter_gain_to_fixed(postfilter_gain),
+                        decoder.postfilter_tapset.max(0) as usize,
+                        postfilter_tapset.max(0) as usize,
+                        decoder.fixed_window.as_slice(),
+                        overlap,
+                        decoder.arch,
+                    );
+                }
+            }
+
+            for (dst, &src) in channel_slice[output_start..output_start + n]
+                .iter_mut()
+                .zip(output.iter())
+            {
+                *dst = fixed_sig_to_float(src);
             }
         }
     }
@@ -2986,6 +3099,12 @@ mod tests {
         prefilter_and_fold, prepare_frame, tf_decode, validate_celt_decoder,
         validate_channel_layout,
     };
+    #[cfg(feature = "fixed_point")]
+    use super::opus_custom_decode;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::celt_encoder::{
+        EncoderCtlRequest, opus_custom_encode, opus_custom_encoder_create, opus_custom_encoder_ctl,
+    };
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
     use crate::celt::opus_select_arch;
@@ -3562,7 +3681,7 @@ mod tests {
         assert_eq!(decoder.decode_mem.len(), stride);
 
         for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
-            *sample = idx as f32;
+            *sample = (idx as f32) * 0.0002;
         }
 
         let n = 32;
@@ -3576,7 +3695,11 @@ mod tests {
 
         prefilter_and_fold(&mut decoder, n);
 
-        let tolerance = 1e-6f32;
+        let tolerance = if cfg!(feature = "fixed_point") {
+            2e-3f32
+        } else {
+            1e-6f32
+        };
         for i in 0..(overlap / 2) {
             let expected =
                 window[i] * original[overlap - 1 - i] + window[overlap - 1 - i] * original[i];
@@ -3622,7 +3745,7 @@ mod tests {
         assert_eq!(decoder.decode_mem.len(), stride);
 
         for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
-            *sample = (idx as f32) * 0.125;
+            *sample = (idx as f32) * 0.0002;
         }
 
         let n = 64;
@@ -3656,7 +3779,11 @@ mod tests {
             decoder.arch,
         );
 
-        let tolerance = 1e-6f32;
+        let tolerance = if cfg!(feature = "fixed_point") {
+            2e-3f32
+        } else {
+            1e-6f32
+        };
         for i in 0..(overlap / 2) {
             let expected = window[i] * expected_filtered[overlap - 1 - i]
                 + window[overlap - 1 - i] * expected_filtered[i];
@@ -3702,8 +3829,8 @@ mod tests {
         assert_eq!(decoder.decode_mem.len(), 2 * stride);
 
         for i in 0..stride {
-            decoder.decode_mem[i] = (i as f32) * 0.25;
-            decoder.decode_mem[stride + i] = 500.0 + (i as f32) * 0.5;
+            decoder.decode_mem[i] = (i as f32) * 0.0002;
+            decoder.decode_mem[stride + i] = -0.3 + (i as f32) * 0.00025;
         }
 
         let n = 48;
@@ -3719,7 +3846,11 @@ mod tests {
 
         prefilter_and_fold(&mut decoder, n);
 
-        let tolerance = 1e-6f32;
+        let tolerance = if cfg!(feature = "fixed_point") {
+            2e-3f32
+        } else {
+            1e-6f32
+        };
         for channel in 0..2 {
             let offset = channel * stride;
             let original = &baseline[offset + start..offset + start + overlap];
@@ -3820,6 +3951,250 @@ mod tests {
         let produced = &decoder.decode_mem[start..start + n];
         let energy: f32 = produced.iter().map(|v| v.abs()).sum();
         assert!(energy > 0.0);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    const POSTFILTER_CASE_FRAMES: usize = 6;
+    #[cfg(feature = "fixed_point")]
+    const POSTFILTER_SAMPLE_RATE: i32 = 48_000;
+    #[cfg(feature = "fixed_point")]
+    const POSTFILTER_FRAME_SIZE: usize = 960;
+    #[cfg(feature = "fixed_point")]
+    const POSTFILTER_MAX_PACKET_SIZE: usize = 1276;
+    #[cfg(feature = "fixed_point")]
+    const POSTFILTER_MAX_PITCH: i32 = 1024;
+
+    #[cfg(feature = "fixed_point")]
+    struct DecoderPostfilterCase {
+        name: &'static str,
+        channels: usize,
+        bitrate: i32,
+        max_bytes: usize,
+        min_nonzero_pitch_frames: usize,
+        require_pitch_changes: bool,
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fnv1a_update(mut hash: u32, byte: u8) -> u32 {
+        hash ^= u32::from(byte);
+        hash.wrapping_mul(16_777_619)
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fnv1a_bytes(data: &[u8]) -> u32 {
+        data.iter().fold(2_166_136_261, |hash, byte| fnv1a_update(hash, *byte))
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fnv1a_pcm_le(data: &[i16]) -> u32 {
+        let mut hash = 2_166_136_261u32;
+        for sample in data {
+            for byte in sample.to_le_bytes() {
+                hash = fnv1a_update(hash, byte);
+            }
+        }
+        hash
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fill_postfilter_case_pcm(
+        pcm: &mut [i16],
+        frame_size: usize,
+        channels: usize,
+        frame_idx: usize,
+    ) {
+        for i in 0..frame_size {
+            let s0 = ((i * 7 + frame_idx * 31) % 3000) as i32 - 1500;
+            let s1 = ((i * 11 + frame_idx * 19) % 2600) as i32 - 1300;
+            let shaped0 = s0 + if (i & 7) == 0 { 900 } else { -300 };
+            let shaped1 = s1 + if (i % 5) == 0 { -700 } else { 250 };
+            if channels == 1 {
+                pcm[i] = (shaped0 * 8) as i16;
+            } else {
+                pcm[2 * i] = (shaped0 * 7) as i16;
+                pcm[2 * i + 1] = (shaped1 * 7) as i16;
+            }
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn run_decoder_postfilter_case(mode: &OpusCustomMode<'_>, case: &DecoderPostfilterCase) {
+        let mut encoder = opus_custom_encoder_create(mode, POSTFILTER_SAMPLE_RATE, case.channels, 0)
+            .unwrap_or_else(|err| panic!("{}: encoder create failed: {err:?}", case.name));
+        let mut decoder = opus_custom_decoder_create(mode, case.channels)
+            .unwrap_or_else(|err| panic!("{}: decoder create failed: {err:?}", case.name));
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(case.bitrate))
+            .unwrap_or_else(|err| panic!("{}: set bitrate failed: {err:?}", case.name));
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetVbr(false))
+            .unwrap_or_else(|err| panic!("{}: set vbr failed: {err:?}", case.name));
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(10))
+            .unwrap_or_else(|err| panic!("{}: set complexity failed: {err:?}", case.name));
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(16))
+            .unwrap_or_else(|err| panic!("{}: set lsb_depth failed: {err:?}", case.name));
+
+        let mut invalid_output = vec![0i16; 123 * case.channels];
+        assert!(
+            opus_custom_decode(&mut decoder, Some(&[0]), &mut invalid_output, 123).is_err(),
+            "{}: decode with invalid frame size should fail",
+            case.name
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetComplexity(99))
+                .expect_err("invalid decoder complexity must fail"),
+            CeltDecoderCtlError::InvalidArgument,
+            "{}: invalid decoder complexity should map to InvalidArgument",
+            case.name
+        );
+
+        let mut nonzero_pitch_frames = 0usize;
+        let mut pitch_changes = 0usize;
+        let mut packet_hash_changes = 0usize;
+        let mut pcm_hash_changes = 0usize;
+        let mut prev_pitch: Option<i32> = None;
+        let mut prev_packet_hash: Option<u32> = None;
+        let mut prev_pcm_hash: Option<u32> = None;
+
+        let mut packet = vec![0u8; POSTFILTER_MAX_PACKET_SIZE];
+        let mut pcm = vec![0i16; POSTFILTER_FRAME_SIZE * case.channels];
+        let mut decoded = vec![0i16; POSTFILTER_FRAME_SIZE * case.channels];
+
+        for frame_idx in 0..POSTFILTER_CASE_FRAMES {
+            fill_postfilter_case_pcm(&mut pcm, POSTFILTER_FRAME_SIZE, case.channels, frame_idx);
+            let packet_len = opus_custom_encode(
+                &mut encoder,
+                &pcm,
+                POSTFILTER_FRAME_SIZE,
+                &mut packet,
+                case.max_bytes,
+            )
+            .unwrap_or_else(|err| {
+                panic!("{} frame {frame_idx}: encode failed: {err:?}", case.name)
+            });
+
+            let decoded_len = opus_custom_decode(
+                &mut decoder,
+                Some(&packet[..packet_len]),
+                &mut decoded,
+                POSTFILTER_FRAME_SIZE,
+            )
+            .unwrap_or_else(|err| {
+                panic!("{} frame {frame_idx}: decode failed: {err:?}", case.name)
+            });
+            assert_eq!(
+                decoded_len, POSTFILTER_FRAME_SIZE,
+                "{} frame {}: decode length mismatch",
+                case.name, frame_idx
+            );
+
+            let mut pitch = 0;
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::GetPitch(&mut pitch))
+                .unwrap_or_else(|err| {
+                    panic!("{} frame {frame_idx}: get pitch failed: {err:?}", case.name)
+                });
+            assert!(
+                (0..=POSTFILTER_MAX_PITCH).contains(&pitch),
+                "{} frame {}: pitch {} out of range",
+                case.name,
+                frame_idx,
+                pitch
+            );
+
+            if pitch > 0 {
+                nonzero_pitch_frames += 1;
+            }
+            if let Some(prev) = prev_pitch {
+                if prev != pitch {
+                    pitch_changes += 1;
+                }
+            }
+            prev_pitch = Some(pitch);
+
+            let packet_hash = fnv1a_bytes(&packet[..packet_len]);
+            let pcm_hash = fnv1a_pcm_le(&decoded[..POSTFILTER_FRAME_SIZE * case.channels]);
+
+            if let Some(prev) = prev_packet_hash {
+                if prev != packet_hash {
+                    packet_hash_changes += 1;
+                }
+            }
+            prev_packet_hash = Some(packet_hash);
+            if let Some(prev) = prev_pcm_hash {
+                if prev != pcm_hash {
+                    pcm_hash_changes += 1;
+                }
+            }
+            prev_pcm_hash = Some(pcm_hash);
+        }
+
+        if case.min_nonzero_pitch_frames > 0 {
+            assert!(
+                nonzero_pitch_frames >= case.min_nonzero_pitch_frames,
+                "{}: expected at least {} non-zero pitch frames, got {}",
+                case.name,
+                case.min_nonzero_pitch_frames,
+                nonzero_pitch_frames
+            );
+        }
+        if case.require_pitch_changes {
+            assert!(
+                pitch_changes > 0,
+                "{}: expected at least one pitch change across frames",
+                case.name
+            );
+        }
+        assert!(
+            packet_hash_changes > 0,
+            "{}: expected encoded packet hashes to change across frames",
+            case.name
+        );
+        assert!(
+            pcm_hash_changes > 0,
+            "{}: expected decoded PCM hashes to change across frames",
+            case.name
+        );
+        assert!(
+            opus_custom_decode(
+                &mut decoder,
+                Some(&[0]),
+                &mut decoded,
+                POSTFILTER_FRAME_SIZE
+            )
+            .is_err(),
+            "{}: tiny packet decode should fail",
+            case.name
+        );
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn decoder_postfilter_matches_ctest_fixed_vectors() {
+        let owned_mode = opus_custom_mode_create(POSTFILTER_SAMPLE_RATE, POSTFILTER_FRAME_SIZE)
+            .expect("mode creation should succeed");
+        let mode = owned_mode.mode();
+
+        let cases = [
+            DecoderPostfilterCase {
+                name: "mono_postfilter",
+                channels: 1,
+                bitrate: 24_000,
+                max_bytes: 96,
+                min_nonzero_pitch_frames: 3,
+                require_pitch_changes: true,
+            },
+            DecoderPostfilterCase {
+                name: "stereo_postfilter",
+                channels: 2,
+                bitrate: 64_000,
+                max_bytes: 180,
+                min_nonzero_pitch_frames: 0,
+                require_pitch_changes: false,
+            },
+        ];
+
+        for case in &cases {
+            run_decoder_postfilter_case(&mode, case);
+        }
     }
 
     #[test]

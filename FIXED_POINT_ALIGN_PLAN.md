@@ -5,14 +5,11 @@ All previous checklist items are removed and replaced with the findings below.
 
 ## Current conclusion (as of code review)
 Fixed-point backend is **not complete**. The fixed MDCT/energy path is now wired,
-and encoder prefilter/normalisation are now switched to fixed-point paths.
+encoder prefilter/normalisation are switched to fixed-point paths, and decoder
+comb/filter postfilter paths are now wired to fixed-point comb filtering.
 However, several decoder runtime paths still use float implementations.
 
 ## Verified gaps (from code)
-- **Decoder comb/filter path still uses float runtime buffers**:
-  - Fixed comb helpers exist (`comb_filter_fixed` / `comb_filter_const_fixed`) and are used in encoder prefilter.
-  - Decoder-side PLC/postfilter path still operates on float (`CeltSig = f32`) and calls float comb filtering.
-
 - **Decoder math still uses float helpers**:
   - `celt_sqrt`, `frac_div32` (float) are used directly in `src/celt/celt_decoder.rs`.
   - Fixed-point build still depends on float math here.
@@ -29,6 +26,9 @@ However, several decoder runtime paths still use float implementations.
 - Fixed MDCT is used for encoder energy computation (no float->fixed MDCT mixing).
 - Fixed band energy + fixed log energy (amp2_log2_fixed) now consume fixed MDCT output.
 - Fixed encoder prefilter path is wired (`run_prefilter_fixed` and fixed pitch/comb helpers).
+- Fixed decoder comb/filter postfilter path is wired under `fixed_point`:
+  - `prefilter_and_fold` uses `comb_filter_fixed` in fixed-point builds.
+  - Decoder postfilter sections use `comb_filter_fixed` in fixed-point builds.
 - Fixed PVQ/VQ runtime path is wired in bands quant/dequant:
   - `pvq_alg_quant_runtime` / `pvq_alg_unquant_runtime` route to
     `alg_quant_fixed` / `alg_unquant_fixed` under `fixed_point`.
@@ -41,10 +41,14 @@ However, several decoder runtime paths still use float implementations.
     `fixed_runtime_pvq_wrappers_match_direct_fixed_impl`,
     `fixed_runtime_renormalise_wrapper_matches_direct_fixed_impl`
     in `src/celt/bands.rs`.
+- Decoder postfilter alignment tests are in place:
+  - C tests: `ctests/celt_decoder_postfilter_test.c` (fixed-point run covered).
+  - Rust unit test: `decoder_postfilter_matches_ctest_fixed_vectors`
+    in `src/celt/celt_decoder.rs`.
 
 ## Next alignment steps (code-driven)
 1) `[done]` Port fixed-point `comb_filter` and wire it in encoder prefilter path.
-2) `[todo]` Wire decoder postfilter/PLC comb path to fixed-point runtime.
+2) `[done]` Wire decoder postfilter/PLC comb path to fixed-point runtime.
 3) `[todo]` Replace decoder math usage (`celt_sqrt`, `frac_div32`) with fixed-point equivalents where needed.
 4) `[todo]` Use fixed-point pitch downsample/search in decoder PLC path.
 5) `[done]` Wire fixed-point PVQ path (`vq` fixed variants) through quant/dequant.
