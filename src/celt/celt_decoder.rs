@@ -40,11 +40,18 @@ use crate::celt::{
     update_plc_state,
 };
 #[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::{DB_SHIFT, SIG_SHIFT, float2sig};
+use crate::celt::fixed_arch::{DB_SHIFT, SIG_SHIFT, float2sig, sig2word16};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{add32_ovflw, mult16_32_q15, pshr32, qconst16, qconst32};
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::math::{celt_sqrt, frac_div32};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::celt_zlog2;
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::{
+    celt_maxabs16, celt_sqrt as celt_sqrt_fixed, frac_div32 as frac_div32_fixed,
+};
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::mdct::clt_mdct_backward;
 #[cfg(feature = "fixed_point")]
@@ -74,6 +81,7 @@ use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltSig, FixedOpusVa
 use crate::celt::vq::SPREAD_NORMAL;
 use crate::celt::vq::renormalise_vector;
 use core::cell::UnsafeCell;
+#[cfg(not(feature = "fixed_point"))]
 use core::cmp::Ordering;
 use core::cmp::{max, min};
 
@@ -146,6 +154,76 @@ type FixedSynthesisCtx<'a> = ();
 fn fixed_sig_to_float(value: FixedCeltSig) -> f32 {
     let scale = CELT_SIG_SCALE * (1u32 << SIG_SHIFT) as f32;
     value as f32 / scale
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn fixed_sig_to_word16(value: CeltSig) -> OpusInt16 {
+    sig2word16(float2sig(value))
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn q15_to_float(value: FixedOpusVal16) -> f32 {
+    value as f32 / (1u32 << 15) as f32
+}
+
+#[cfg(feature = "fixed_point")]
+fn plc_decay_terms_fixed(exc_sig: &[CeltSig], exc_length: usize) -> (i32, i32, FixedOpusVal16) {
+    debug_assert!(!exc_sig.is_empty(), "excitation history cannot be empty");
+    debug_assert!(
+        exc_length <= exc_sig.len(),
+        "excitation length exceeds history"
+    );
+
+    let history_len = exc_sig.len();
+    let start = history_len.saturating_sub(exc_length);
+    let exc_i16: Vec<OpusInt16> = exc_sig.iter().map(|&sample| fixed_sig_to_word16(sample)).collect();
+    let maxabs = celt_maxabs16(&exc_i16[start..]);
+    let shift = max(0, 2 * celt_zlog2(maxabs) - 20) as u32;
+
+    let decay_length = exc_length >> 1;
+    let mut e1 = 1i32;
+    let mut e2 = 1i32;
+    for i in 0..decay_length {
+        let a = i32::from(exc_i16[history_len - decay_length + i]);
+        let b = i32::from(exc_i16[history_len - 2 * decay_length + i]);
+        e1 = e1.wrapping_add((a.wrapping_mul(a)) >> shift);
+        e2 = e2.wrapping_add((b.wrapping_mul(b)) >> shift);
+    }
+    e1 = min(e1, e2);
+    let decay = celt_sqrt_fixed(frac_div32_fixed(e1 >> 1, e2)) as FixedOpusVal16;
+    (e1, e2, decay)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn plc_ratio_from_energies_fixed(s1: i32, s2: i32) -> FixedOpusVal16 {
+    celt_sqrt_fixed(frac_div32_fixed((s1 >> 1).wrapping_add(1), s2.wrapping_add(1)))
+        as FixedOpusVal16
+}
+
+#[cfg(feature = "fixed_point")]
+fn plc_ratio_terms_fixed(
+    old_sig: &[CeltSig],
+    new_sig: &[CeltSig],
+) -> (i32, i32, FixedOpusVal16) {
+    debug_assert_eq!(
+        old_sig.len(),
+        new_sig.len(),
+        "energy windows must have equal length"
+    );
+
+    let mut s1 = 0i32;
+    let mut s2 = 0i32;
+    for (&old_sample, &new_sample) in old_sig.iter().zip(new_sig.iter()) {
+        let old = i32::from(fixed_sig_to_word16(old_sample));
+        let new = i32::from(fixed_sig_to_word16(new_sample));
+        s1 = s1.wrapping_add((old.wrapping_mul(old)) >> 10);
+        s2 = s2.wrapping_add((new.wrapping_mul(new)) >> 10);
+    }
+    let ratio = plc_ratio_from_energies_fixed(s1, s2);
+    (s1, s2, ratio)
 }
 
 #[cfg(feature = "fixed_point")]
@@ -864,20 +942,31 @@ pub(crate) fn celt_decode_lost(
                 exc[LPC_ORDER + start + idx] = *value;
             }
 
-            let mut e1 = 1.0f32;
-            let mut e2 = 1.0f32;
-            let decay_length = exc_length / 2;
-            if decay_length > 0 {
-                let exc_slice = &exc[LPC_ORDER..];
-                for i in 0..decay_length {
-                    let a = exc_slice[max_period - decay_length + i];
-                    e1 += a * a;
-                    let b = exc_slice[max_period - 2 * decay_length + i];
-                    e2 += b * b;
+            let decay = {
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    let mut e1 = 1.0f32;
+                    let mut e2 = 1.0f32;
+                    let decay_length = exc_length / 2;
+                    if decay_length > 0 {
+                        let exc_slice = &exc[LPC_ORDER..];
+                        for i in 0..decay_length {
+                            let a = exc_slice[max_period - decay_length + i];
+                            e1 += a * a;
+                            let b = exc_slice[max_period - 2 * decay_length + i];
+                            e2 += b * b;
+                        }
+                    }
+                    e1 = e1.min(e2);
+                    celt_sqrt(frac_div32(0.5 * e1, e2))
                 }
-            }
-            e1 = e1.min(e2);
-            let decay = celt_sqrt(frac_div32(0.5 * e1, e2));
+                #[cfg(feature = "fixed_point")]
+                {
+                    let (_e1, _e2, decay_q15) =
+                        plc_decay_terms_fixed(&exc[LPC_ORDER..LPC_ORDER + max_period], exc_length);
+                    q15_to_float(decay_q15)
+                }
+            };
 
             let move_len = DECODE_BUFFER_SIZE
                 .checked_sub(n)
@@ -890,7 +979,10 @@ pub(crate) fn celt_decode_lost(
             let mut j = 0usize;
             let start_index = DECODE_BUFFER_SIZE - n;
             let reference_base = DECODE_BUFFER_SIZE - max_period - n + extrapolation_offset;
+            #[cfg(not(feature = "fixed_point"))]
             let mut s1 = 0.0f32;
+            #[cfg(feature = "fixed_point")]
+            let mut s1 = 0i32;
             for i in 0..extrapolation_len {
                 if j >= pitch_index_usize {
                     j -= pitch_index_usize;
@@ -899,7 +991,15 @@ pub(crate) fn celt_decode_lost(
                 let sample = attenuation * exc[LPC_ORDER + extrapolation_offset + j];
                 channel_slice[start_index + i] = sample;
                 let reference = channel_slice[reference_base + j];
-                s1 += reference * reference;
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    s1 += reference * reference;
+                }
+                #[cfg(feature = "fixed_point")]
+                {
+                    let reference_i16 = i32::from(fixed_sig_to_word16(reference));
+                    s1 = s1.wrapping_add((reference_i16.wrapping_mul(reference_i16)) >> 10);
+                }
                 j += 1;
             }
 
@@ -913,15 +1013,51 @@ pub(crate) fn celt_decode_lost(
             celt_iir(&input, lpc_coeffs, &mut filtered, &mut lpc_mem);
             channel_slice[start_index..start_index + extrapolation_len].copy_from_slice(&filtered);
 
+            #[cfg(not(feature = "fixed_point"))]
             let mut s2 = 0.0f32;
+            #[cfg(feature = "fixed_point")]
+            let mut s2 = 0i32;
             for sample in &filtered {
-                s2 += sample * sample;
+                #[cfg(not(feature = "fixed_point"))]
+                {
+                    s2 += sample * sample;
+                }
+                #[cfg(feature = "fixed_point")]
+                {
+                    let sample_i16 = i32::from(fixed_sig_to_word16(*sample));
+                    s2 = s2.wrapping_add((sample_i16.wrapping_mul(sample_i16)) >> 10);
+                }
             }
 
-            let threshold = 0.2 * s2;
-            if matches!(s1.partial_cmp(&threshold), Some(Ordering::Greater)) {
-                if matches!(s1.partial_cmp(&s2), Some(Ordering::Less)) {
-                    let ratio = celt_sqrt(frac_div32(0.5 * s1 + 1.0, s2 + 1.0));
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                let threshold = 0.2 * s2;
+                if matches!(s1.partial_cmp(&threshold), Some(Ordering::Greater)) {
+                    if matches!(s1.partial_cmp(&s2), Some(Ordering::Less)) {
+                        let ratio = celt_sqrt(frac_div32(0.5 * s1 + 1.0, s2 + 1.0));
+                        for i in 0..overlap {
+                            let gain = 1.0 - mode.window[i] * (1.0 - ratio);
+                            channel_slice[start_index + i] *= gain;
+                        }
+                        for i in overlap..extrapolation_len {
+                            channel_slice[start_index + i] *= ratio;
+                        }
+                    }
+                } else {
+                    for value in &mut channel_slice[start_index..start_index + extrapolation_len] {
+                        *value = 0.0;
+                    }
+                }
+            }
+
+            #[cfg(feature = "fixed_point")]
+            {
+                if s1 <= (s2 >> 2) {
+                    for value in &mut channel_slice[start_index..start_index + extrapolation_len] {
+                        *value = 0.0;
+                    }
+                } else if s1 < s2 {
+                    let ratio = q15_to_float(plc_ratio_from_energies_fixed(s1, s2));
                     for i in 0..overlap {
                         let gain = 1.0 - mode.window[i] * (1.0 - ratio);
                         channel_slice[start_index + i] *= gain;
@@ -929,10 +1065,6 @@ pub(crate) fn celt_decode_lost(
                     for i in overlap..extrapolation_len {
                         channel_slice[start_index + i] *= ratio;
                     }
-                }
-            } else {
-                for value in &mut channel_slice[start_index..start_index + extrapolation_len] {
-                    *value = 0.0;
                 }
             }
         }
@@ -3242,6 +3374,68 @@ mod tests {
             (1..=super::PLC_PITCH_LAG_MAX).contains(&pitch),
             "ctest-like stereo pattern produced out-of-range pitch {pitch}",
         );
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn decoder_plc_decay_terms_match_ctest_vectors() {
+        let mut exc = vec![0.0f32; 320];
+
+        fill_plc_ctest_periodic(&mut exc, 96, 14_000, 0, false);
+        let (e1_a, e2_a, decay_a) = super::plc_decay_terms_fixed(&exc, exc.len());
+        assert_eq!(e1_a, 148_945_491);
+        assert_eq!(e2_a, 172_083_276);
+        assert_eq!(decay_a, 30_486);
+
+        fill_plc_ctest_periodic(&mut exc, 96, 14_000, 0, false);
+        let half = exc.len() / 2;
+        for sample in &mut exc[half..] {
+            let quantised = super::fixed_sig_to_word16(*sample);
+            *sample = (quantised / 4) as f32 / (1u32 << 15) as f32;
+        }
+        let (e1_b, e2_b, decay_b) = super::plc_decay_terms_fixed(&exc, exc.len());
+        assert_eq!(e1_b, 9_306_492);
+        assert_eq!(e2_b, 172_083_276);
+        assert_eq!(decay_b, 7_620);
+        assert!(decay_b < decay_a);
+
+        fill_plc_ctest_periodic(&mut exc, 64, 3_000, 7, true);
+        let third = exc.len() / 3;
+        for sample in &mut exc[..third] {
+            *sample = 0.0;
+        }
+        let (e1_c, e2_c, decay_c) = super::plc_decay_terms_fixed(&exc, exc.len());
+        assert_eq!(e1_c, 45_578_035);
+        assert_eq!(e2_c, 45_578_035);
+        assert_eq!(decay_c, 32_767);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn decoder_plc_ratio_terms_match_ctest_vectors() {
+        let mut old_sig = vec![0.0f32; 144];
+        let mut new_sig = vec![0.0f32; 144];
+
+        fill_plc_ctest_periodic(&mut old_sig, 72, 7_000, 0, false);
+        fill_plc_ctest_periodic(&mut new_sig, 72, 12_000, 11, true);
+        let (s1_a, s2_a, ratio_a) = super::plc_ratio_terms_fixed(&old_sig, &new_sig);
+        assert_eq!(s1_a, 2_299_964);
+        assert_eq!(s2_a, 6_759_820);
+        assert_eq!(ratio_a, 19_113);
+
+        fill_plc_ctest_periodic(&mut old_sig, 72, 12_000, 11, true);
+        fill_plc_ctest_periodic(&mut new_sig, 72, 7_000, 0, false);
+        let (s1_b, s2_b, ratio_b) = super::plc_ratio_terms_fixed(&old_sig, &new_sig);
+        assert_eq!(s1_b, 6_759_820);
+        assert_eq!(s2_b, 2_299_964);
+        assert_eq!(ratio_b, 32_767);
+
+        old_sig.fill(0.0);
+        new_sig.fill(0.0);
+        let (s1_c, s2_c, ratio_c) = super::plc_ratio_terms_fixed(&old_sig, &new_sig);
+        assert_eq!(s1_c, 0);
+        assert_eq!(s2_c, 0);
+        assert_eq!(ratio_c, 32_767);
     }
 
     #[test]
