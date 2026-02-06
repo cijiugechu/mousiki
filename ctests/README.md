@@ -40,6 +40,10 @@ CELT_FIXED_ENC_DUMP=1 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   -- --tests-regex celt_vq_test
 # Covers fixed-point PVQ/VQ core (renormalise_vector, alg_quant, alg_unquant).
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
+  -- --tests-regex celt_decoder_plc_test
+# Covers decoder PLC/postfilter behavior (primed PLC, repeated loss, reset, and invalid packet paths).
 ./ctests/run.sh -- --verbose
 ```
 
