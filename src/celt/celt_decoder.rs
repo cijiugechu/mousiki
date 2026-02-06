@@ -50,7 +50,10 @@ use crate::celt::mdct::clt_mdct_backward;
 #[cfg(feature = "fixed_point")]
 use crate::celt::mdct_fixed::{clt_mdct_backward_fixed, FixedMdctLookup};
 use crate::celt::modes::opus_custom_mode_find_static;
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::pitch::{pitch_downsample, pitch_search};
+#[cfg(feature = "fixed_point")]
+use crate::celt::pitch::{pitch_downsample_fixed, pitch_search_fixed};
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::unquant_energy_finalise;
 #[cfg(not(feature = "fixed_point"))]
@@ -508,21 +511,49 @@ fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) 
         return PLC_PITCH_LAG_MAX;
     }
 
-    let mut lp_pitch_buf = vec![0.0f32; DECODE_BUFFER_SIZE >> 1];
-    pitch_downsample(&channel_views, &mut lp_pitch_buf, DECODE_BUFFER_SIZE, arch);
-
     let offset = (PLC_PITCH_LAG_MAX >> 1) as usize;
-    if offset >= lp_pitch_buf.len() {
-        return PLC_PITCH_LAG_MAX;
-    }
     let max_pitch = (PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN) as usize;
     let target_len = DECODE_BUFFER_SIZE.saturating_sub(PLC_PITCH_LAG_MAX as usize);
     if target_len == 0 {
         return PLC_PITCH_LAG_MAX;
     }
-    let pitch_index =
-        pitch_search(&lp_pitch_buf[offset..], &lp_pitch_buf, target_len, max_pitch, arch);
-    PLC_PITCH_LAG_MAX - pitch_index
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        let mut lp_pitch_buf = vec![0.0f32; DECODE_BUFFER_SIZE >> 1];
+        pitch_downsample(&channel_views, &mut lp_pitch_buf, DECODE_BUFFER_SIZE, arch);
+        if offset >= lp_pitch_buf.len() {
+            return PLC_PITCH_LAG_MAX;
+        }
+        let pitch_index =
+            pitch_search(&lp_pitch_buf[offset..], &lp_pitch_buf, target_len, max_pitch, arch);
+        PLC_PITCH_LAG_MAX - pitch_index
+    }
+    #[cfg(feature = "fixed_point")]
+    {
+        let mut fixed_channels = Vec::with_capacity(channel_views.len());
+        for channel in &channel_views {
+            let mut fixed = Vec::with_capacity(DECODE_BUFFER_SIZE);
+            for &sample in *channel {
+                fixed.push(float2sig(sample));
+            }
+            fixed_channels.push(fixed);
+        }
+        let fixed_views: Vec<&[FixedCeltSig]> = fixed_channels.iter().map(Vec::as_slice).collect();
+
+        let mut lp_pitch_buf = vec![0i16; DECODE_BUFFER_SIZE >> 1];
+        pitch_downsample_fixed(&fixed_views, &mut lp_pitch_buf, DECODE_BUFFER_SIZE, arch);
+        if offset >= lp_pitch_buf.len() {
+            return PLC_PITCH_LAG_MAX;
+        }
+        let pitch_index = pitch_search_fixed(
+            &lp_pitch_buf[offset..],
+            &lp_pitch_buf,
+            target_len,
+            max_pitch,
+            arch,
+        );
+        PLC_PITCH_LAG_MAX - pitch_index
+    }
 }
 
 fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
@@ -3156,6 +3187,61 @@ mod tests {
         let decode_mem = [&left[..], &right[..]];
         let pitch = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
         assert!((pitch - target_period).abs() <= 4);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fill_plc_ctest_periodic(
+        channel: &mut [f32],
+        period: usize,
+        amp: i32,
+        phase: usize,
+        invert: bool,
+    ) {
+        let half = period / 2;
+        for (i, sample) in channel.iter_mut().enumerate() {
+            let pos = (i + phase) % period;
+            let tri = if pos < half { pos } else { period - pos };
+            let centered = (tri as i32 * 2) - half as i32;
+            let mut value = (centered * amp) / half as i32;
+            if invert {
+                value = -value;
+            }
+            *sample = value as f32 / 32768.0;
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn celt_plc_pitch_search_matches_ctest_periodic_mono_shape() {
+        let mut mono = vec![0.0f32; super::DECODE_BUFFER_SIZE];
+        fill_plc_ctest_periodic(&mut mono, 96, 14_000, 0, false);
+
+        let decode_mem = [&mono[..]];
+        let pitch = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
+        let pitch_again = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
+        assert_eq!(pitch, pitch_again, "pitch search should be deterministic");
+        assert!(
+            (1..=super::PLC_PITCH_LAG_MAX).contains(&pitch),
+            "ctest-like mono pattern produced out-of-range pitch {pitch}",
+        );
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn celt_plc_pitch_search_matches_ctest_periodic_stereo_shape() {
+        let mut left = vec![0.0f32; super::DECODE_BUFFER_SIZE];
+        let mut right = vec![0.0f32; super::DECODE_BUFFER_SIZE];
+        fill_plc_ctest_periodic(&mut left, 96, 14_000, 0, false);
+        fill_plc_ctest_periodic(&mut right, 96, 11_500, 23, true);
+
+        let decode_mem = [&left[..], &right[..]];
+        let pitch = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
+        let pitch_again = celt_plc_pitch_search(&decode_mem, decode_mem.len(), 0);
+        assert_eq!(pitch, pitch_again, "pitch search should be deterministic");
+        assert!(
+            (1..=super::PLC_PITCH_LAG_MAX).contains(&pitch),
+            "ctest-like stereo pattern produced out-of-range pitch {pitch}",
+        );
     }
 
     #[test]
