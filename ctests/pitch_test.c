@@ -67,6 +67,23 @@ static int check_int(const char *label, int got, int expected) {
   return 0;
 }
 
+static int check_true(const char *label, int cond) {
+  if (!cond) {
+    fprintf(stderr, "%s failed\n", label);
+    return 1;
+  }
+  return 0;
+}
+
+static int check_int_in_range(const char *label, int value, int lo, int hi) {
+  if (value < lo || value > hi) {
+    fprintf(stderr, "%s out of range: got %d expected [%d, %d]\n",
+            label, value, lo, hi);
+    return 1;
+  }
+  return 0;
+}
+
 int main(void) {
   int failures = 0;
 
@@ -88,6 +105,15 @@ int main(void) {
   failures += check_i16_array("pitch_downsample_large", x_lp,
                               kExpectedPdLarge, kHalfLen);
 
+  /* pitch_downsample: opposite stereo channels should cancel to zero. */
+  fill_pattern_sig(x0, kLen, 8, 1 << 18);
+  for (int i = 0; i < kLen; ++i) {
+    x1[i] = -x0[i];
+  }
+  pitch_downsample(x, x_lp, kLen, 2, 0);
+  failures += check_i16_array("pitch_downsample_cancel", x_lp, kExpectedPdZero,
+                              kHalfLen);
+
   /* pitch_search: low amplitude keeps shift at 0. */
   opus_val16 y[kLen + kMaxPitch];
   opus_val16 x_lp_search[kLen];
@@ -105,6 +131,13 @@ int main(void) {
   pitch_search(x_lp_search, y, kLen, kMaxPitch, &pitch, 0);
   failures += check_int("pitch_search_high", pitch, 96);
 
+  /* pitch_search: unmatched reference still returns a valid pitch index. */
+  memset(y, 0, sizeof(y));
+  fill_triangle_i16(x_lp_search, kLen, 16, 1200);
+  pitch_search(x_lp_search, y, kLen, kMaxPitch, &pitch, 0);
+  failures += check_int_in_range("pitch_search_unmatched_range", pitch, 0,
+                                 kMaxPitch - 1);
+
   /* remove_doubling: early-break when minperiod is large. */
   opus_val16 xbuf[kMaxPeriod + kN];
   opus_val16 pg = 0;
@@ -120,6 +153,15 @@ int main(void) {
   pg = remove_doubling(xbuf, kMaxPeriod, kMinPeriodUpdate, kN, &t0, 40, 8192, 0);
   failures += check_int("remove_doubling_update_t0", t0, 80);
   failures += check_int("remove_doubling_update_pg", pg, 32767);
+
+  /* remove_doubling: large initial lag should clamp back to legal bounds. */
+  t0 = 999;
+  fill_triangle_i16(xbuf, kMaxPeriod + kN, 48, 3000);
+  pg = remove_doubling(xbuf, kMaxPeriod, 30, kN, &t0, 32, 0, 0);
+  failures += check_int_in_range("remove_doubling_clamp_t0", t0, 30,
+                                 kMaxPeriod - 1);
+  failures += check_int_in_range("remove_doubling_clamp_pg", pg, 0, 32767);
+  failures += check_true("remove_doubling_clamp_nonzero_period", t0 > 0);
 
   return failures ? 1 : 0;
 }

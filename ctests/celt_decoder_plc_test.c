@@ -240,6 +240,25 @@ int main(void) {
     return 1;
   }
 
+  /* Constructor argument validation. */
+  {
+    OpusCustomEncoder *bad_enc;
+    OpusCustomDecoder *bad_dec;
+    bad_enc = opus_custom_encoder_create(mode, 3, &err);
+    failures += check_true("encoder_create_three_channels_fails", bad_enc == NULL);
+    failures += check_true("encoder_create_three_channels_sets_err", err != OPUS_OK);
+    if (bad_enc != NULL) {
+      opus_custom_encoder_destroy(bad_enc);
+    }
+
+    bad_dec = opus_custom_decoder_create(mode, 3, &err);
+    failures += check_true("decoder_create_three_channels_fails", bad_dec == NULL);
+    failures += check_true("decoder_create_three_channels_sets_err", err != OPUS_OK);
+    if (bad_dec != NULL) {
+      opus_custom_decoder_destroy(bad_dec);
+    }
+  }
+
   {
     int pitch = 0;
     int prime_pitch = 0;
@@ -248,6 +267,7 @@ int main(void) {
     uint32_t plc_hashes[kMonoLossFrames] = {0};
     int64_t plc_energies[kMonoLossFrames] = {0};
     uint32_t reset_plc_hash = 0;
+    uint32_t reset_plc_hash_repeat = 0;
     int loss_nonzero_first = 0;
 
     OpusCustomEncoder *enc =
@@ -267,6 +287,14 @@ int main(void) {
     }
 
     failures += configure_encoder(enc, 14000);
+    failures += check_eq_int(
+        "mono_decoder_set_complexity_low",
+        opus_custom_decoder_ctl(dec, OPUS_SET_COMPLEXITY(0)),
+        OPUS_OK);
+    failures += check_eq_int(
+        "mono_decoder_set_complexity_high",
+        opus_custom_decoder_ctl(dec, OPUS_SET_COMPLEXITY(10)),
+        OPUS_OK);
 
     /* Non-happy paths. */
     failures += check_eq_int("mono_decode_null_pcm",
@@ -282,6 +310,11 @@ int main(void) {
         "mono_decoder_set_complexity_bad",
         opus_custom_decoder_ctl(dec, OPUS_SET_COMPLEXITY(11)),
         OPUS_BAD_ARG);
+    failures += check_eq_int(
+        "mono_get_pitch_before_prime_ctl",
+        opus_custom_decoder_ctl(dec, OPUS_GET_PITCH(&pitch)),
+        OPUS_OK);
+    failures += check_eq_int("mono_pitch_before_prime_zero", pitch, 0);
 
     failures += prime_decoder_with_postfilter(enc, dec, pcm, packet, kMonoChannels,
                                               &prime_pitch);
@@ -318,6 +351,15 @@ int main(void) {
                              opus_custom_decode(dec, NULL, 0, pcm, kFrameSize),
                              kFrameSize);
     reset_plc_hash = fnv1a_pcm_le(pcm, kFrameSize * kMonoChannels);
+    failures += check_eq_int("mono_decoder_reset_repeat",
+                             opus_custom_decoder_ctl(dec, OPUS_RESET_STATE),
+                             OPUS_OK);
+    failures += check_eq_int("mono_decode_after_reset_repeat_len",
+                             opus_custom_decode(dec, NULL, 0, pcm, kFrameSize),
+                             kFrameSize);
+    reset_plc_hash_repeat = fnv1a_pcm_le(pcm, kFrameSize * kMonoChannels);
+    failures += check_eq_u32("mono_reset_plc_hash_repeat", reset_plc_hash_repeat,
+                             reset_plc_hash);
     packet[0] = 0;
     failures += check_true(
         "mono_decode_tiny_packet_fails",
@@ -378,6 +420,14 @@ int main(void) {
     }
 
     failures += configure_encoder(enc, 64000);
+    failures += check_eq_int(
+        "stereo_decoder_set_complexity_low",
+        opus_custom_decoder_ctl(dec, OPUS_SET_COMPLEXITY(0)),
+        OPUS_OK);
+    failures += check_eq_int(
+        "stereo_decoder_set_complexity_high",
+        opus_custom_decoder_ctl(dec, OPUS_SET_COMPLEXITY(10)),
+        OPUS_OK);
 
     /* Non-happy paths. */
     failures += check_eq_int(
@@ -390,6 +440,11 @@ int main(void) {
     failures +=
         check_true("stereo_decode_bad_frame_size",
                    opus_custom_decode(dec, NULL, 0, pcm, kFrameSize + 120) < 0);
+    failures += check_eq_int(
+        "stereo_get_pitch_before_prime_ctl",
+        opus_custom_decoder_ctl(dec, OPUS_GET_PITCH(&pitch)),
+        OPUS_OK);
+    failures += check_eq_int("stereo_pitch_before_prime_zero", pitch, 0);
 
     failures += prime_decoder_with_postfilter(enc, dec, pcm, packet, kStereoChannels,
                                               &prime_pitch);
