@@ -43,7 +43,7 @@ CELT_FIXED_ENC_DUMP=1 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   -- --tests-regex celt_decoder_plc_test
-# Covers decoder PLC/postfilter behavior (primed PLC, repeated loss, reset, and invalid packet paths).
+# Covers decoder PLC/postfilter behavior (mono+stereo, long loss runs, reset, and invalid-input paths).
 ./ctests/run.sh -- --verbose
 ```
 
