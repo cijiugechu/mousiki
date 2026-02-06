@@ -101,6 +101,7 @@ add_executable(celt_compute_band_energies_test compute_band_energies_test.c)
 if (OPUS_CTESTS_FIXED_POINT)
   add_executable(celt_bands_norm_test bands_norm_test.c)
   add_executable(celt_comb_filter_test comb_filter_test.c)
+  add_executable(celt_decoder_postfilter_test celt_decoder_postfilter_test.c)
   add_executable(celt_decoder_plc_test celt_decoder_plc_test.c)
   add_executable(celt_fixed_encode_test celt_fixed_encode_test.c)
   add_executable(celt_mathops_test mathops_test.c)
@@ -136,6 +137,12 @@ if (OPUS_CTESTS_FIXED_POINT)
     PRIVATE
       "${OPUS_ROOT}/celt"
       "${OPUS_ROOT}/include"
+  )
+  target_include_directories(celt_decoder_postfilter_test
+    PRIVATE
+      "${OPUS_ROOT}/celt"
+      "${OPUS_ROOT}/include"
+      "${OPUS_ROOT}/src"
   )
   target_include_directories(celt_decoder_plc_test
     PRIVATE
@@ -225,6 +232,7 @@ if (OPUS_CTESTS_FIXED_POINT)
   target_link_libraries(celt_compute_band_energies_test PRIVATE celt_fixedpoint_ctest_support)
   target_link_libraries(celt_bands_norm_test PRIVATE celt_fixedpoint_ctest_support)
   target_link_libraries(celt_comb_filter_test PRIVATE celt_custom_ctest_support)
+  target_link_libraries(celt_decoder_postfilter_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_decoder_plc_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_fixed_encode_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_mathops_test PRIVATE celt_fixedpoint_ctest_support)
@@ -249,6 +257,7 @@ target_compile_definitions(celt_compute_band_energies_test PRIVATE OPUS_BUILD)
 if (OPUS_CTESTS_FIXED_POINT)
   target_compile_definitions(celt_bands_norm_test PRIVATE OPUS_BUILD)
   target_compile_definitions(celt_comb_filter_test PRIVATE OPUS_BUILD)
+  target_compile_definitions(celt_decoder_postfilter_test PRIVATE OPUS_BUILD CUSTOM_MODES)
   target_compile_definitions(celt_decoder_plc_test PRIVATE OPUS_BUILD CUSTOM_MODES)
   target_compile_definitions(celt_fixed_encode_test PRIVATE OPUS_BUILD CUSTOM_MODES)
   target_compile_definitions(celt_mathops_test PRIVATE OPUS_BUILD)
@@ -373,6 +382,7 @@ add_test(NAME celt_compute_band_energies COMMAND celt_compute_band_energies_test
 if (OPUS_CTESTS_FIXED_POINT)
   add_test(NAME celt_bands_norm_test COMMAND celt_bands_norm_test)
   add_test(NAME celt_comb_filter_test COMMAND celt_comb_filter_test)
+  add_test(NAME celt_decoder_postfilter_test COMMAND celt_decoder_postfilter_test)
   add_test(NAME celt_decoder_plc_test COMMAND celt_decoder_plc_test)
   add_test(NAME celt_fixed_encode_test COMMAND celt_fixed_encode_test)
   add_test(NAME celt_mathops_test COMMAND celt_mathops_test)
