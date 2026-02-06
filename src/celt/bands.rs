@@ -22,16 +22,20 @@ use crate::celt::{
     math::{isqrt32, mul_add_f32},
     quant_bands::E_MEANS,
     rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, bits2pulses, get_pulses, pulses2bits},
-    renormalise_vector,
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
-    vq::{alg_quant, alg_unquant, stereo_itheta},
+    vq::stereo_itheta,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::renormalise_vector;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::vq::{alg_quant, alg_unquant};
 use core::convert::TryFrom;
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::{DB_SHIFT, EPSILON as FIXED_EPSILON};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
-    abs32, extract16, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, shl32, shr32, vshr32,
+    abs32, extract16, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, qconst32, shl32, shr32,
+    vshr32,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::{celt_ilog2, celt_zlog2};
@@ -41,6 +45,8 @@ use crate::celt::math_fixed::{celt_rcp as celt_rcp_fixed, celt_sqrt as celt_sqrt
 use crate::celt::types::{FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig};
 #[cfg(feature = "fixed_point")]
 use crate::celt::float_cast::{float2int, float2int16};
+#[cfg(feature = "fixed_point")]
+use crate::celt::vq::{alg_quant_fixed, alg_unquant_fixed, renormalise_vector_fixed};
 
 #[cfg(test)]
 mod quant_trace {
@@ -878,6 +884,121 @@ pub(crate) fn quant_band_n1(
     1
 }
 
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn gain_to_q31(gain: OpusVal32) -> i32 {
+    qconst32(f64::from(gain), 31)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn fixed_norm_to_float(value: FixedCeltNorm) -> OpusVal16 {
+    f32::from(value) * (1.0 / 32_768.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "fixed_point"))]
+fn pvq_alg_quant_runtime(
+    x: &mut [OpusVal16],
+    n: usize,
+    k: i32,
+    spread: i32,
+    block_count: usize,
+    enc: &mut EcEnc<'_>,
+    gain: OpusVal32,
+    resynth: bool,
+    arch: i32,
+) -> u32 {
+    alg_quant(x, n, k, spread, block_count, enc, gain, resynth, arch)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "fixed_point")]
+fn pvq_alg_quant_runtime(
+    x: &mut [OpusVal16],
+    n: usize,
+    k: i32,
+    spread: i32,
+    block_count: usize,
+    enc: &mut EcEnc<'_>,
+    gain: OpusVal32,
+    resynth: bool,
+    arch: i32,
+) -> u32 {
+    assert!(x.len() >= n, "input vector shorter than band size");
+    let mut fixed_x: Vec<FixedCeltNorm> = x.iter().take(n).map(|&sample| float2int16(sample)).collect();
+    let mask = alg_quant_fixed(
+        &mut fixed_x,
+        n,
+        k,
+        spread,
+        block_count,
+        enc,
+        gain_to_q31(gain),
+        resynth,
+        arch,
+    );
+    for (dst, &sample) in x.iter_mut().take(n).zip(fixed_x.iter()) {
+        *dst = fixed_norm_to_float(sample);
+    }
+    mask
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn pvq_alg_unquant_runtime(
+    x: &mut [OpusVal16],
+    n: usize,
+    k: i32,
+    spread: i32,
+    block_count: usize,
+    dec: &mut EcDec<'_>,
+    gain: OpusVal32,
+) -> u32 {
+    alg_unquant(x, n, k, spread, block_count, dec, gain)
+}
+
+#[cfg(feature = "fixed_point")]
+fn pvq_alg_unquant_runtime(
+    x: &mut [OpusVal16],
+    n: usize,
+    k: i32,
+    spread: i32,
+    block_count: usize,
+    dec: &mut EcDec<'_>,
+    gain: OpusVal32,
+) -> u32 {
+    assert!(x.len() >= n, "input vector shorter than band size");
+    let mut fixed_x = vec![0i16; n];
+    let mask = alg_unquant_fixed(
+        &mut fixed_x,
+        n,
+        k,
+        spread,
+        block_count,
+        dec,
+        gain_to_q31(gain),
+    );
+    for (dst, &sample) in x.iter_mut().take(n).zip(fixed_x.iter()) {
+        *dst = fixed_norm_to_float(sample);
+    }
+    mask
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn pvq_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: OpusVal32, arch: i32) {
+    renormalise_vector(x, n, gain, arch);
+}
+
+#[cfg(feature = "fixed_point")]
+fn pvq_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: OpusVal32, arch: i32) {
+    assert!(x.len() >= n, "input vector shorter than band size");
+    let mut fixed_x: Vec<FixedCeltNorm> = x.iter().take(n).map(|&sample| float2int16(sample)).collect();
+    renormalise_vector_fixed(&mut fixed_x, n, gain_to_q31(gain), arch);
+    for (dst, &sample) in x.iter_mut().take(n).zip(fixed_x.iter()) {
+        *dst = fixed_norm_to_float(sample);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn quant_partition(
     ctx: &mut BandCtx<'_, '_>,
@@ -1091,7 +1212,7 @@ fn quant_partition(
         let k = get_pulses(q);
         let block_count = b_blocks.max(1) as usize;
         if encode {
-            cm = alg_quant(
+            cm = pvq_alg_quant_runtime(
                 x,
                 n,
                 k,
@@ -1103,7 +1224,7 @@ fn quant_partition(
                 ctx.arch,
             );
         } else {
-            cm = alg_unquant(x, n, k, spread, block_count, coder.decoder_mut(), gain);
+            cm = pvq_alg_unquant_runtime(x, n, k, spread, block_count, coder.decoder_mut(), gain);
         }
     } else if ctx.resynth {
         let cm_mask = mask_from_bits(b_blocks);
@@ -1118,7 +1239,7 @@ fn quant_partition(
                 *dst = *src + noise;
             }
             cm = fill;
-            renormalise_vector(x, n, gain, ctx.arch);
+            pvq_renormalise_runtime(x, n, gain, ctx.arch);
         } else {
             for sample in &mut x[..n] {
                 ctx.seed = celt_lcg_rand(ctx.seed);
@@ -1126,7 +1247,7 @@ fn quant_partition(
                 *sample = value;
             }
             cm = cm_mask;
-            renormalise_vector(x, n, gain, ctx.arch);
+            pvq_renormalise_runtime(x, n, gain, ctx.arch);
         }
     }
 
@@ -3418,7 +3539,7 @@ pub(crate) fn anti_collapse(
 
             if needs_renorm {
                 let end_idx = band_base + band_len;
-                renormalise_vector(&mut x[band_base..end_idx], band_len, 1.0, arch);
+                pvq_renormalise_runtime(&mut x[band_base..end_idx], band_len, 1.0, arch);
             }
         }
     }
@@ -4358,13 +4479,22 @@ mod tests {
         special_hybrid_folding, spreading_decision, stereo_merge, stereo_split, DB_SHIFT,
     };
     #[cfg(feature = "fixed_point")]
-    use super::{compute_band_energies_fixed, denormalise_bands_fixed_from_log, normalise_bands_fixed};
+    use super::{
+        compute_band_energies_fixed, denormalise_bands_fixed_from_log, normalise_bands_fixed,
+        pvq_alg_quant_runtime, pvq_alg_unquant_runtime, pvq_renormalise_runtime,
+    };
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::EPSILON as FIXED_EPSILON;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::qconst32;
     use crate::celt::entcode::BITRES;
     use crate::celt::math::celt_exp2;
     use crate::celt::quant_bands::E_MEANS;
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::float_cast::float2int16;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::vq::{alg_quant_fixed, alg_unquant_fixed, renormalise_vector_fixed};
     use crate::celt::{
         EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, celt_rsqrt_norm,
         dual_inner_prod,
@@ -5393,7 +5523,137 @@ mod tests {
 
         assert!(spectrum[..samples].iter().any(|v| *v != 0.0));
         assert!(energy > 0.0);
-        assert!((energy - 1.0).abs() <= 1e-3, "renormalised energy {energy}");
+        #[cfg(not(feature = "fixed_point"))]
+        let expected_energy = 1.0f32;
+        #[cfg(feature = "fixed_point")]
+        let expected_energy = 0.25f32;
+        assert!(
+            (energy - expected_energy).abs() <= 2e-3,
+            "renormalised energy {energy}"
+        );
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_runtime_pvq_wrappers_match_direct_fixed_impl() {
+        let n = 8usize;
+        let k = 3i32;
+        let spread = SPREAD_NORMAL;
+        let block_count = 2usize;
+        let gain = 0.875f32;
+        let arch = 0;
+        let input = vec![0.12, -0.34, 0.56, -0.27, 0.18, -0.09, 0.41, -0.22];
+
+        let mut wrapped_quant = input.clone();
+        let mut direct_quant: Vec<i16> = input.iter().map(|&sample| float2int16(sample)).collect();
+        let mut wrapped_bits = vec![0u8; 96];
+        let mut direct_bits = vec![0u8; 96];
+
+        let wrapped_mask;
+        {
+            let mut enc = EcEnc::new(&mut wrapped_bits);
+            wrapped_mask = pvq_alg_quant_runtime(
+                &mut wrapped_quant,
+                n,
+                k,
+                spread,
+                block_count,
+                &mut enc,
+                gain,
+                true,
+                arch,
+            );
+            enc.enc_done();
+        }
+
+        let direct_mask;
+        {
+            let mut enc = EcEnc::new(&mut direct_bits);
+            direct_mask = alg_quant_fixed(
+                &mut direct_quant,
+                n,
+                k,
+                spread,
+                block_count,
+                &mut enc,
+                qconst32(f64::from(gain), 31),
+                true,
+                arch,
+            );
+            enc.enc_done();
+        }
+
+        assert_eq!(wrapped_mask, direct_mask);
+        for (idx, (&wrapped, &direct)) in wrapped_quant.iter().zip(direct_quant.iter()).enumerate() {
+            let expected = f32::from(direct) * (1.0 / 32_768.0);
+            assert!(
+                (wrapped - expected).abs() <= f32::EPSILON,
+                "quant sample {idx}: wrapped={wrapped}, expected={expected}"
+            );
+        }
+
+        let mut wrapped_unquant = vec![0.0f32; n];
+        let mut direct_unquant = vec![0i16; n];
+
+        let wrapped_umask;
+        {
+            let mut dec = EcDec::new(&mut wrapped_bits);
+            wrapped_umask = pvq_alg_unquant_runtime(
+                &mut wrapped_unquant,
+                n,
+                k,
+                spread,
+                block_count,
+                &mut dec,
+                gain,
+            );
+        }
+
+        let direct_umask;
+        {
+            let mut dec = EcDec::new(&mut direct_bits);
+            direct_umask = alg_unquant_fixed(
+                &mut direct_unquant,
+                n,
+                k,
+                spread,
+                block_count,
+                &mut dec,
+                qconst32(f64::from(gain), 31),
+            );
+        }
+
+        assert_eq!(wrapped_umask, direct_umask);
+        for (idx, (&wrapped, &direct)) in wrapped_unquant.iter().zip(direct_unquant.iter()).enumerate() {
+            let expected = f32::from(direct) * (1.0 / 32_768.0);
+            assert!(
+                (wrapped - expected).abs() <= f32::EPSILON,
+                "unquant sample {idx}: wrapped={wrapped}, expected={expected}"
+            );
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fixed_runtime_renormalise_wrapper_matches_direct_fixed_impl() {
+        let n = 8usize;
+        let gain = 1.0f32;
+        let arch = 0;
+        let input = vec![0.08, -0.21, 0.37, -0.45, 0.19, -0.11, 0.29, -0.33];
+
+        let mut wrapped = input.clone();
+        pvq_renormalise_runtime(&mut wrapped, n, gain, arch);
+
+        let mut direct: Vec<i16> = input.iter().map(|&sample| float2int16(sample)).collect();
+        renormalise_vector_fixed(&mut direct, n, qconst32(f64::from(gain), 31), arch);
+
+        for (idx, (&wrapped, &direct)) in wrapped.iter().zip(direct.iter()).enumerate() {
+            let expected = f32::from(direct) * (1.0 / 32_768.0);
+            assert!(
+                (wrapped - expected).abs() <= f32::EPSILON,
+                "sample {idx}: wrapped={wrapped}, expected={expected}"
+            );
+        }
     }
 
     #[cfg(feature = "fixed_point")]
