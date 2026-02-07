@@ -74,12 +74,13 @@ use crate::celt::types::{
     CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
     OpusUint32, OpusVal16,
 };
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::types::OpusVal32;
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltSig, FixedOpusVal16};
 use crate::celt::vq::SPREAD_NORMAL;
+#[cfg(not(feature = "fixed_point"))]
 use crate::celt::vq::renormalise_vector;
+#[cfg(feature = "fixed_point")]
+use crate::celt::vq::renormalise_vector_fixed;
 use core::cell::UnsafeCell;
 #[cfg(not(feature = "fixed_point"))]
 use core::cmp::Ordering;
@@ -166,6 +167,47 @@ fn fixed_sig_to_word16(value: CeltSig) -> OpusInt16 {
 #[inline]
 fn q15_to_float(value: FixedOpusVal16) -> f32 {
     value as f32 / (1u32 << 15) as f32
+}
+
+#[cfg(not(feature = "fixed_point"))]
+#[inline]
+fn decoder_noise_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: f32, arch: i32) {
+    renormalise_vector(x, n, gain, arch);
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn fixed_norm_to_float(value: FixedOpusVal16) -> OpusVal16 {
+    f32::from(value) * (1.0 / 32_768.0)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn gain_to_q31(gain: f32) -> i32 {
+    qconst32(f64::from(gain), 31)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn raw_norm_float_to_i16(value: OpusVal16) -> FixedOpusVal16 {
+    libm::rintf(value).clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as FixedOpusVal16
+}
+
+#[cfg(feature = "fixed_point")]
+fn decoder_noise_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: f32, arch: i32) {
+    assert!(x.len() >= n, "input vector shorter than band size");
+    // In the fixed decoder PLC-noise path the spectrum is generated as raw
+    // i16 magnitudes (rng>>20), not unit-range floats. Preserve that domain
+    // before calling the fixed renormaliser.
+    let mut fixed_x: Vec<FixedOpusVal16> = x
+        .iter()
+        .take(n)
+        .map(|&sample| raw_norm_float_to_i16(sample))
+        .collect();
+    renormalise_vector_fixed(&mut fixed_x, n, gain_to_q31(gain), arch);
+    for (dst, &sample) in x.iter_mut().take(n).zip(fixed_x.iter()) {
+        *dst = fixed_norm_to_float(sample);
+    }
 }
 
 #[cfg(feature = "fixed_point")]
@@ -827,7 +869,7 @@ pub(crate) fn celt_decode_lost(
                     seed = celt_lcg_rand(seed);
                     *sample = ((seed as i32) >> 20) as f32;
                 }
-                renormalise_vector(slice, band_width, 1.0, arch);
+                decoder_noise_renormalise_runtime(slice, band_width, 1.0, arch);
             }
         }
         decoder.rng = seed;
@@ -3263,11 +3305,15 @@ mod tests {
         validate_channel_layout,
     };
     #[cfg(feature = "fixed_point")]
+    use super::decoder_noise_renormalise_runtime;
+    #[cfg(feature = "fixed_point")]
     use super::opus_custom_decode;
     #[cfg(feature = "fixed_point")]
     use crate::celt::celt_encoder::{
         EncoderCtlRequest, opus_custom_encode, opus_custom_encoder_create, opus_custom_encoder_ctl,
     };
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::float_cast::float2int16;
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
     use crate::celt::opus_select_arch;
@@ -4475,6 +4521,51 @@ mod tests {
         for case in &cases {
             run_decoder_postfilter_case(&mode, case);
         }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn decoder_noise_renorm_runtime_matches_ctest_vectors() {
+        // Mirrors the fixed-point renormalise vectors covered by ctests/vq_test.c.
+        let mut zeros = [0.0f32; 8];
+        decoder_noise_renormalise_runtime(&mut zeros, 8, 1.0, 0);
+        let zeros_q15: Vec<i16> = zeros.iter().map(|&sample| float2int16(sample)).collect();
+        assert_eq!(zeros_q15, [0; 8], "zero-energy vector should remain zero");
+
+        let mut mixed = [1000.0, -2000.0, 3000.0, -4000.0, 500.0, -600.0, 700.0, -800.0];
+        decoder_noise_renormalise_runtime(&mut mixed, 8, 1.0, 0);
+        let mixed_q15: Vec<i16> = mixed.iter().map(|&sample| float2int16(sample)).collect();
+        assert_eq!(
+            mixed_q15,
+            [2908, -5816, 8724, -11632, 1454, -1745, 2036, -2326],
+            "mixed renormalise result should match C fixed output",
+        );
+
+        let mut large = [30000.0, -30000.0, 20000.0, -10000.0];
+        decoder_noise_renormalise_runtime(&mut large, 4, 1.0, 0);
+        let large_q15: Vec<i16> = large.iter().map(|&sample| float2int16(sample)).collect();
+        assert_eq!(
+            large_q15,
+            [10248, -10248, 6832, -3416],
+            "large-magnitude renormalise result should match C fixed output",
+        );
+
+        let mut half_gain = [30000.0, -30000.0, 20000.0, -10000.0];
+        decoder_noise_renormalise_runtime(&mut half_gain, 4, 0.5, 0);
+        let half_gain_q15: Vec<i16> = half_gain.iter().map(|&sample| float2int16(sample)).collect();
+        assert_eq!(
+            half_gain_q15,
+            [5124, -5124, 3416, -1708],
+            "gain-scaled renormalise result should match C fixed output",
+        );
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    #[should_panic(expected = "input vector shorter than band size")]
+    fn decoder_noise_renorm_runtime_panics_on_short_input() {
+        let mut short = [1000.0f32, -500.0];
+        decoder_noise_renormalise_runtime(&mut short, 3, 1.0, 0);
     }
 
     #[test]

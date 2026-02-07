@@ -7,13 +7,12 @@ All previous checklist items are removed and replaced with the findings below.
 Fixed-point backend is **not complete**. The fixed MDCT/energy path is now wired,
 encoder prefilter/normalisation are switched to fixed-point paths, and decoder
 comb/filter postfilter paths are now wired to fixed-point comb filtering.
-Decoder PLC pitch search and PLC math paths are now wired to fixed-point helpers.
-However, some decoder runtime paths still use float implementations.
+Decoder PLC pitch search, PLC math paths, and packet-loss noise renormalisation
+are now wired to fixed-point helpers.
+No open gap remains in the previously tracked decoder fixed-point checklist items.
 
 ## Verified gaps (from code)
-- **Decoder packet-loss noise renormalisation still uses float helper**:
-  - `renormalise_vector` is still used in the decoder loss branch (`src/celt/celt_decoder.rs`).
-  - The fixed-point build still routes this local renormalisation through float.
+- No remaining gap in this file's previously tracked items.
 
 ## What is already wired (confirmed)
 - Fixed MDCT is used for encoder energy computation (no float->fixed MDCT mixing).
@@ -54,6 +53,15 @@ However, some decoder runtime paths still use float implementations.
     `decoder_plc_decay_terms_match_ctest_vectors`,
     `decoder_plc_ratio_terms_match_ctest_vectors`
     in `src/celt/celt_decoder.rs`.
+- Decoder packet-loss noise renormalisation is wired to fixed-point runtime:
+  - Decoder loss branch now calls fixed runtime wrapper under `fixed_point` and
+    routes to `renormalise_vector_fixed`.
+  - C test: `ctests/celt_decoder_noise_renorm_test.c` (fixed-point run covered,
+    includes non-happy-path checks).
+  - Rust unit tests:
+    `decoder_noise_renorm_runtime_matches_ctest_vectors`,
+    `decoder_noise_renorm_runtime_panics_on_short_input`
+    in `src/celt/celt_decoder.rs`.
 
 ## Next alignment steps (code-driven)
 1) `[done]` Port fixed-point `comb_filter` and wire it in encoder prefilter path.
@@ -63,4 +71,4 @@ However, some decoder runtime paths still use float implementations.
 5) `[done]` Wire fixed-point PVQ path (`vq` fixed variants) through quant/dequant.
 6) `[done]` Switch encoder normalisation to fixed path when `fixed_point` is enabled.
 7) `[done]` Fill PVQ/VQ test gaps (ctests + Rust unit tests for fixed runtime wrappers).
-8) `[todo]` Port decoder packet-loss noise renormalisation path to fixed-point (`renormalise_vector` usage in decoder loss branch).
+8) `[done]` Port decoder packet-loss noise renormalisation path to fixed-point (`renormalise_vector` usage in decoder loss branch).
