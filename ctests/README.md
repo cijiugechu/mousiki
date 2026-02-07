@@ -56,6 +56,10 @@ CELT_FIXED_ENC_DUMP=1 ./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
   --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
   -- --tests-regex celt_decoder_postfilter_test
 # Covers normal decode postfilter comb path (mono+stereo) and invalid-input/error paths.
+./ctests/run.sh --cmake-arg -DOPUS_CTESTS_FIXED_POINT=ON \
+  --cmake-arg -DOPUS_CTESTS_ENABLE_FLOAT_API=OFF \
+  -- --tests-regex celt_decoder_state_test
+# Covers decoder core state transitions (warmup/loss/recovery/reset) and invalid-input/error paths.
 ./ctests/run.sh -- --verbose
 ```
 
