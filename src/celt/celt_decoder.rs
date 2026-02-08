@@ -20,7 +20,7 @@ use crate::celt::BandCodingState;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::bands::denormalise_bands;
 #[cfg(feature = "fixed_point")]
-use crate::celt::bands::denormalise_bands_fixed;
+use crate::celt::bands::{denormalise_bands_fixed, denormalise_bands_fixed_native};
 use crate::celt::bands::{anti_collapse, celt_lcg_rand, quant_all_bands};
 use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
 #[cfg(any(not(feature = "fixed_point"), test))]
@@ -74,8 +74,10 @@ use crate::celt::types::{
     CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
     OpusUint32, OpusVal16,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::types::OpusVal32;
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltSig, FixedOpusVal16};
+use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16};
 use crate::celt::vq::SPREAD_NORMAL;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::vq::renormalise_vector;
@@ -247,6 +249,24 @@ fn decoder_noise_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: f32, a
 #[inline]
 fn fixed_norm_to_float(value: FixedOpusVal16) -> OpusVal16 {
     f32::from(value) * (1.0 / 32_768.0)
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn fixed_norm_slice_to_float(dst: &mut [OpusVal16], src: &[FixedCeltNorm]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = fixed_norm_to_float(value);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn float_norm_slice_to_fixed(dst: &mut [FixedCeltNorm], src: &[OpusVal16]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for (out, &value) in dst.iter_mut().zip(src.iter()) {
+        *out = float2int16(value);
+    }
 }
 
 #[cfg(feature = "fixed_point")]
@@ -667,6 +687,170 @@ pub(crate) fn celt_synthesis(
                         shift,
                     );
                 }
+            }
+        }
+    }
+
+    for channel in out_syn.iter_mut().take(output_channels) {
+        for sample in (*channel).iter_mut().take(n) {
+            *sample = sample.clamp(-SIG_SAT, SIG_SAT);
+        }
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+fn celt_synthesis_fixed_native(
+    mode: &OpusCustomMode<'_>,
+    x: &[FixedCeltNorm],
+    out_syn: &mut [&mut [CeltSig]],
+    old_band_e: &[FixedCeltGlog],
+    start: usize,
+    eff_end: usize,
+    coded_channels: usize,
+    output_channels: usize,
+    is_transient: bool,
+    lm: usize,
+    downsample: usize,
+    silence: bool,
+    fixed_mdct: &FixedMdctLookup,
+    fixed_window: &[FixedCeltCoef],
+    overlap: usize,
+) {
+    assert!(output_channels <= out_syn.len());
+    assert!(coded_channels <= 2);
+    assert!(output_channels <= 2);
+    assert!(lm <= mode.max_lm);
+    assert!(eff_end <= mode.num_ebands);
+    assert!(downsample > 0);
+
+    let nb_ebands = mode.num_ebands;
+    let n = mode.short_mdct_size << lm;
+    let m = 1 << lm;
+
+    assert!(x.len() >= coded_channels * n);
+    assert!(old_band_e.len() >= coded_channels * nb_ebands);
+    for channel in out_syn.iter_mut().take(output_channels) {
+        assert!(channel.len() >= n);
+    }
+
+    let (bands, nb, shift) = if is_transient {
+        (m, mode.short_mdct_size, mode.max_lm)
+    } else {
+        (1, mode.short_mdct_size << lm, mode.max_lm - lm)
+    };
+
+    let mut freq = vec![0; n];
+
+    match (output_channels, coded_channels) {
+        (2, 1) => {
+            let (left, right) = out_syn.split_at_mut(1);
+            let left_out = &mut *left[0];
+            let right_out = &mut *right[0];
+
+            denormalise_bands_fixed_native(
+                mode,
+                &x[..n],
+                &mut freq,
+                &old_band_e[..nb_ebands],
+                start,
+                eff_end,
+                m,
+                downsample,
+                silence,
+            );
+
+            let freq_copy = freq.clone();
+            apply_inverse_mdct_fixed(
+                fixed_mdct,
+                fixed_window,
+                overlap,
+                &freq_copy,
+                left_out,
+                bands,
+                nb,
+                shift,
+            );
+            apply_inverse_mdct_fixed(
+                fixed_mdct,
+                fixed_window,
+                overlap,
+                &freq,
+                right_out,
+                bands,
+                nb,
+                shift,
+            );
+        }
+        (1, 2) => {
+            let out = &mut *out_syn[0];
+            denormalise_bands_fixed_native(
+                mode,
+                &x[..n],
+                &mut freq,
+                &old_band_e[..nb_ebands],
+                start,
+                eff_end,
+                m,
+                downsample,
+                silence,
+            );
+
+            let mut freq_other = vec![0; n];
+            denormalise_bands_fixed_native(
+                mode,
+                &x[n..n * 2],
+                &mut freq_other,
+                &old_band_e[nb_ebands..nb_ebands * 2],
+                start,
+                eff_end,
+                m,
+                downsample,
+                silence,
+            );
+
+            for (lhs, rhs) in freq.iter_mut().zip(freq_other.iter()) {
+                *lhs = pshr32(add32_ovflw(*lhs, *rhs), 1);
+            }
+
+            apply_inverse_mdct_fixed(
+                fixed_mdct,
+                fixed_window,
+                overlap,
+                &freq,
+                out,
+                bands,
+                nb,
+                shift,
+            );
+        }
+        _ => {
+            for channel in 0..output_channels {
+                let spectrum = &x[channel * n..(channel + 1) * n];
+                let energy = &old_band_e[channel * nb_ebands..(channel + 1) * nb_ebands];
+                denormalise_bands_fixed_native(
+                    mode,
+                    spectrum,
+                    &mut freq,
+                    energy,
+                    start,
+                    eff_end,
+                    m,
+                    downsample,
+                    silence,
+                );
+
+                let output = &mut *out_syn[channel];
+                apply_inverse_mdct_fixed(
+                    fixed_mdct,
+                    fixed_window,
+                    overlap,
+                    &freq,
+                    output,
+                    bands,
+                    nb,
+                    shift,
+                );
             }
         }
     }
@@ -1856,8 +2040,8 @@ pub(crate) fn validate_celt_decoder(decoder: &OpusCustomDecoder<'_>) {
         "downsample factor must be strictly positive",
     );
     debug_assert!(
-        decoder.start_band == 0 || decoder.start_band == 17,
-        "decoder start band must be 0 or 17",
+        decoder.start_band >= 0,
+        "decoder start band must be non-negative",
     );
     debug_assert!(
         decoder.start_band < decoder.end_band,
@@ -2602,44 +2786,89 @@ where
     }
 
     let mut collapse_masks = vec![0u8; c * nb_ebands];
-    let mut spectrum = vec![0.0f32; c * n];
     let total_available = total_bits - anti_collapse_rsv;
-    let (first_channel, second_channel_opt) = if c == 2 {
-        let (left, right) = spectrum.split_at_mut(n);
-        (left, Some(right))
-    } else {
-        (&mut spectrum[..], None)
-    };
+    #[cfg(feature = "fixed_point")]
+    let mut spectrum_fixed = vec![0i16; c * n];
+    #[cfg(not(feature = "fixed_point"))]
+    let mut spectrum = vec![0.0f32; c * n];
 
     {
         let dec = range_state.decoder();
         let mut coder = BandCodingState::Decoder(dec);
 
-        quant_all_bands(
-            false,
-            mode,
-            start,
-            end,
-            first_channel,
-            second_channel_opt,
-            &mut collapse_masks,
-            &[],
-            &pulses,
-            short_blocks != 0,
-            spread_decision,
-            dual_stereo != 0,
-            intensity.max(0) as usize,
-            &tf_res,
-            total_available,
-            balance,
-            &mut coder,
-            lm as i32,
-            coded_bands.max(0) as usize,
-            &mut decoder.rng,
-            decoder.complexity,
-            decoder.arch,
-            decoder.disable_inv,
-        );
+        #[cfg(feature = "fixed_point")]
+        {
+            let mut spectrum_float = vec![0.0f32; c * n];
+            fixed_norm_slice_to_float(&mut spectrum_float, &spectrum_fixed);
+            let (first_channel, second_channel_opt) = if c == 2 {
+                let (left, right) = spectrum_float.split_at_mut(n);
+                (left, Some(right))
+            } else {
+                (&mut spectrum_float[..], None)
+            };
+
+            quant_all_bands(
+                false,
+                mode,
+                start,
+                end,
+                first_channel,
+                second_channel_opt,
+                &mut collapse_masks,
+                &[],
+                &pulses,
+                short_blocks != 0,
+                spread_decision,
+                dual_stereo != 0,
+                intensity.max(0) as usize,
+                &tf_res,
+                total_available,
+                balance,
+                &mut coder,
+                lm as i32,
+                coded_bands.max(0) as usize,
+                &mut decoder.rng,
+                decoder.complexity,
+                decoder.arch,
+                decoder.disable_inv,
+            );
+
+            float_norm_slice_to_fixed(&mut spectrum_fixed, &spectrum_float);
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            let (first_channel, second_channel_opt) = if c == 2 {
+                let (left, right) = spectrum.split_at_mut(n);
+                (left, Some(right))
+            } else {
+                (&mut spectrum[..], None)
+            };
+            quant_all_bands(
+                false,
+                mode,
+                start,
+                end,
+                first_channel,
+                second_channel_opt,
+                &mut collapse_masks,
+                &[],
+                &pulses,
+                short_blocks != 0,
+                spread_decision,
+                dual_stereo != 0,
+                intensity.max(0) as usize,
+                &tf_res,
+                total_available,
+                balance,
+                &mut coder,
+                lm as i32,
+                coded_bands.max(0) as usize,
+                &mut decoder.rng,
+                decoder.complexity,
+                decoder.arch,
+                decoder.disable_inv,
+            );
+        }
     }
     let mut anti_collapse_on = false;
     let dec = range_state.decoder();
@@ -2680,23 +2909,49 @@ where
     }
 
     if anti_collapse_on {
-        anti_collapse(
-            mode,
-            &mut spectrum,
-            &collapse_masks,
-            lm,
-            c,
-            n,
-            start,
-            end,
-            decoder.old_ebands,
-            decoder.old_log_e,
-            decoder.old_log_e2,
-            &pulses,
-            decoder.rng,
-            false,
-            decoder.arch,
-        );
+        #[cfg(feature = "fixed_point")]
+        {
+            let mut spectrum_float = vec![0.0f32; c * n];
+            fixed_norm_slice_to_float(&mut spectrum_float, &spectrum_fixed);
+            anti_collapse(
+                mode,
+                &mut spectrum_float,
+                &collapse_masks,
+                lm,
+                c,
+                n,
+                start,
+                end,
+                decoder.old_ebands,
+                decoder.old_log_e,
+                decoder.old_log_e2,
+                &pulses,
+                decoder.rng,
+                false,
+                decoder.arch,
+            );
+            float_norm_slice_to_fixed(&mut spectrum_fixed, &spectrum_float);
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            anti_collapse(
+                mode,
+                &mut spectrum,
+                &collapse_masks,
+                lm,
+                c,
+                n,
+                start,
+                end,
+                decoder.old_ebands,
+                decoder.old_log_e,
+                decoder.old_log_e2,
+                &pulses,
+                decoder.rng,
+                false,
+                decoder.arch,
+            );
+        }
     }
 
     if silence {
@@ -2711,15 +2966,6 @@ where
         prefilter_and_fold(decoder, n);
     }
 
-    #[cfg(feature = "fixed_point")]
-    let fixed_ctx = (
-        &decoder.fixed_mdct,
-        decoder.fixed_window.as_slice(),
-        decoder.overlap,
-    );
-    #[cfg(not(feature = "fixed_point"))]
-    let fixed_ctx = ();
-
     let mut out_slices: Vec<&mut [CeltSig]> = Vec::with_capacity(cc);
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
         let start_idx = DECODE_BUFFER_SIZE
@@ -2727,7 +2973,25 @@ where
             .ok_or(CeltDecodeError::BadArgument)?;
         out_slices.push(&mut channel_slice[start_idx..]);
     }
-
+    #[cfg(feature = "fixed_point")]
+    celt_synthesis_fixed_native(
+        mode,
+        &spectrum_fixed,
+        &mut out_slices,
+        decoder.old_ebands_fixed,
+        start,
+        eff_end,
+        c,
+        cc,
+        is_transient,
+        lm,
+        downsample,
+        silence,
+        &decoder.fixed_mdct,
+        decoder.fixed_window.as_slice(),
+        decoder.overlap,
+    );
+    #[cfg(not(feature = "fixed_point"))]
     celt_synthesis(
         mode,
         &spectrum,
@@ -2741,7 +3005,7 @@ where
         lm,
         downsample,
         silence,
-        fixed_ctx,
+        (),
     );
 
     drop(out_slices);
@@ -4720,6 +4984,10 @@ mod tests {
     const DECODER_STATE_WARM_FRAMES: usize = 8;
     #[cfg(feature = "fixed_point")]
     const DECODER_STATE_LOSS_FRAMES: usize = 6;
+    #[cfg(feature = "fixed_point")]
+    const DECODER_DATAFLOW_FRAMES: usize = 13;
+    #[cfg(feature = "fixed_point")]
+    const DECODER_DATAFLOW_NB_EBANDS: i32 = 21;
 
     #[cfg(feature = "fixed_point")]
     fn fill_decoder_state_pcm(pcm: &mut [i16], frame_size: usize, phase: usize) {
@@ -4733,6 +5001,32 @@ mod tests {
             let mut shaped = centered * amp / half as i32;
             shaped += if (i % 9) == 0 { 1200 } else { -300 };
             *slot = shaped as i16;
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn fill_decoder_dataflow_pcm(pcm: &mut [i16], frame_size: usize, phase: usize) {
+        assert!(
+            pcm.len() >= frame_size * 2,
+            "stereo dataflow pcm buffer must contain 2*frame_size samples",
+        );
+        let period = 120usize;
+        let half = period / 2;
+        let amp_l = 15_000i32;
+        let amp_r = 11_200i32;
+        for i in 0..frame_size {
+            let pos_l = (i + phase) % period;
+            let pos_r = (i + phase + 29) % period;
+            let tri_l = if pos_l < half { pos_l } else { period - pos_l };
+            let tri_r = if pos_r < half { pos_r } else { period - pos_r };
+            let centered_l = (tri_l as i32 * 2) - half as i32;
+            let centered_r = (tri_r as i32 * 2) - half as i32;
+            let mut shaped_l = centered_l * amp_l / half as i32;
+            let mut shaped_r = -(centered_r * amp_r / half as i32);
+            shaped_l += if (i % 11) == 0 { 900 } else { -350 };
+            shaped_r += if (i % 7) == 0 { -700 } else { 220 };
+            pcm[2 * i] = shaped_l as i16;
+            pcm[2 * i + 1] = shaped_r as i16;
         }
     }
 
@@ -4951,6 +5245,254 @@ mod tests {
             assert_eq!(reset_hash_a, expected_reset_loss_hash);
             assert_eq!(reset_hash_b, expected_reset_loss_hash);
         }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn decoder_dataflow_matches_ctest_vectors() {
+        let strict_ctest_vectors = std::env::var_os("RUST_CTEST_STRICT_HASHES").is_some();
+        let expected_packet_hashes: [u32; DECODER_DATAFLOW_FRAMES] = [
+            0x1e1e_1269,
+            0x2dde_7528,
+            0x8e00_0bce,
+            0x6790_92e8,
+            0x143e_3a1e,
+            0x6986_4649,
+            0xe63d_689d,
+            0x9af6_d244,
+            0x6c7a_cb7a,
+            0x6c5b_cdd9,
+            0xbead_c667,
+            0x3e08_723e,
+            0x834e_54b0,
+        ];
+        let expected_pcm_hashes: [u32; DECODER_DATAFLOW_FRAMES] = [
+            0x72d2_ff52,
+            0xfdbe_8b96,
+            0xf442_2f17,
+            0x15d7_fb47,
+            0x4e10_ba6e,
+            0xbb83_37f9,
+            0x0942_b6c6,
+            0x8bee_73ad,
+            0xdd70_c41d,
+            0x630c_948a,
+            0xf86a_2a05,
+            0xf047_b0c5,
+            0x5502_c350,
+        ];
+        let expected_final_ranges: [u32; DECODER_DATAFLOW_FRAMES] = [
+            0x212d_dc00,
+            0x26b1_e200,
+            0x0392_e900,
+            0x1073_2300,
+            0x6328_5f00,
+            0x1946_6300,
+            0x0b72_b000,
+            0x0462_6100,
+            0x69b1_6100,
+            0x1bd0_aa00,
+            0x067a_c700,
+            0x0831_5200,
+            0x3611_a800,
+        ];
+
+        let owned_mode = opus_custom_mode_create(48_000, POSTFILTER_FRAME_SIZE)
+            .expect("mode creation should succeed");
+        let mode = owned_mode.mode();
+        assert_eq!(mode.num_ebands as i32, DECODER_DATAFLOW_NB_EBANDS);
+
+        let mut encoder = opus_custom_encoder_create(&mode, 48_000, 2, 0)
+            .expect("encoder creation should succeed");
+        let mut decoder =
+            opus_custom_decoder_create(&mode, 2).expect("decoder creation should succeed");
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(64_000))
+            .expect("set bitrate should succeed");
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetVbr(false))
+            .expect("set vbr should succeed");
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(10))
+            .expect("set complexity should succeed");
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(16))
+            .expect("set lsb depth should succeed");
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetComplexity(10))
+            .expect("decoder complexity should succeed");
+
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetComplexity(11))
+                .expect_err("invalid complexity must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(-1))
+                .expect_err("negative start band must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(
+                &mut decoder,
+                DecoderCtlRequest::SetStartBand(DECODER_DATAFLOW_NB_EBANDS)
+            )
+            .expect_err("out-of-range start band must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetEndBand(0))
+                .expect_err("zero end band must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(
+                &mut decoder,
+                DecoderCtlRequest::SetEndBand(DECODER_DATAFLOW_NB_EBANDS + 1)
+            )
+            .expect_err("out-of-range end band must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(0))
+                .expect_err("zero stream channels must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(3))
+                .expect_err("three stream channels must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+
+        let mut bad_output = vec![0i16; 123 * 2];
+        assert!(
+            opus_custom_decode(&mut decoder, Some(&[0]), &mut bad_output, 123).is_err(),
+            "decode with invalid frame size should fail",
+        );
+        #[cfg(feature = "deep_plc")]
+        let plc = None;
+        #[cfg(not(feature = "deep_plc"))]
+        let plc = ();
+        let mut empty_pcm: [f32; 0] = [];
+        assert!(
+            super::celt_decode_with_ec_dred(
+                &mut decoder,
+                None,
+                &mut empty_pcm,
+                POSTFILTER_FRAME_SIZE,
+                None,
+                false,
+                plc
+            )
+            .is_err(),
+            "decode with empty PCM output should fail",
+        );
+
+        let mut packet = vec![0u8; POSTFILTER_MAX_PACKET_SIZE];
+        let mut pcm = vec![0i16; POSTFILTER_FRAME_SIZE * 2];
+        let mut decoded = vec![0i16; POSTFILTER_FRAME_SIZE * 2];
+        let mut packet_hashes = [0u32; DECODER_DATAFLOW_FRAMES];
+        let mut pcm_hashes = [0u32; DECODER_DATAFLOW_FRAMES];
+        let mut final_ranges = [0u32; DECODER_DATAFLOW_FRAMES];
+
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::SetStartBand(0),
+        )
+        .expect("set start band should succeed");
+        opus_custom_decoder_ctl(
+            &mut decoder,
+            DecoderCtlRequest::SetEndBand(DECODER_DATAFLOW_NB_EBANDS),
+        )
+        .expect("set end band should succeed");
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(2))
+            .expect("set stream channels should succeed");
+
+        for frame in 0..DECODER_DATAFLOW_FRAMES {
+            if frame == 4 {
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(3))
+                    .expect("set start band should succeed");
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetEndBand(18))
+                    .expect("set end band should succeed");
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(2))
+                    .expect("set stream channels should succeed");
+            } else if frame == 8 {
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(2))
+                    .expect("set start band should succeed");
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetEndBand(19))
+                    .expect("set end band should succeed");
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(1))
+                    .expect("set stream channels should succeed");
+            } else if frame == 12 {
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::ResetState)
+                    .expect("decoder reset should succeed");
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(0))
+                    .expect("set start band should succeed");
+                opus_custom_decoder_ctl(
+                    &mut decoder,
+                    DecoderCtlRequest::SetEndBand(DECODER_DATAFLOW_NB_EBANDS),
+                )
+                .expect("set end band should succeed");
+                opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetChannels(2))
+                    .expect("set stream channels should succeed");
+            }
+
+            fill_decoder_dataflow_pcm(&mut pcm, POSTFILTER_FRAME_SIZE, frame * 13);
+            let packet_len = opus_custom_encode(
+                &mut encoder,
+                &pcm,
+                POSTFILTER_FRAME_SIZE,
+                &mut packet,
+                POSTFILTER_MAX_PACKET_SIZE,
+            )
+            .expect("encode should succeed");
+            let decoded_len = opus_custom_decode(
+                &mut decoder,
+                Some(&packet[..packet_len]),
+                &mut decoded,
+                POSTFILTER_FRAME_SIZE,
+            )
+            .expect("decode should succeed");
+            assert_eq!(decoded_len, POSTFILTER_FRAME_SIZE);
+
+            let mut final_range = 0u32;
+            opus_custom_decoder_ctl(
+                &mut decoder,
+                DecoderCtlRequest::GetFinalRange(&mut final_range),
+            )
+            .expect("get final range should succeed");
+
+            packet_hashes[frame] = fnv1a_bytes(&packet[..packet_len]);
+            pcm_hashes[frame] = fnv1a_pcm_le(&decoded[..POSTFILTER_FRAME_SIZE * 2]);
+            final_ranges[frame] = final_range;
+        }
+
+        assert!(count_hash_changes(&packet_hashes) > 0);
+        assert!(count_hash_changes(&pcm_hashes) > 0);
+        assert!(count_hash_changes(&final_ranges) > 0);
+        if strict_ctest_vectors {
+            assert_eq!(packet_hashes, expected_packet_hashes);
+            assert_eq!(pcm_hashes, expected_pcm_hashes);
+            assert_eq!(final_ranges, expected_final_ranges);
+        }
+
+        assert!(
+            opus_custom_decode(
+                &mut decoder,
+                Some(&[0]),
+                &mut decoded,
+                POSTFILTER_FRAME_SIZE,
+            )
+            .is_err(),
+            "tiny packet decode should fail",
+        );
+
+        assert!(
+            opus_custom_decode(
+                &mut decoder,
+                Some(&vec![0u8; POSTFILTER_MAX_PACKET_SIZE + 1]),
+                &mut decoded,
+                POSTFILTER_FRAME_SIZE,
+            )
+            .is_err(),
+            "oversize packet decode should fail",
+        );
     }
 
     #[cfg(feature = "fixed_point")]

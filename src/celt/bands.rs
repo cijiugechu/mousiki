@@ -4276,7 +4276,7 @@ fn celt_exp2_db_frac(x: FixedCeltGlog) -> FixedCeltSig {
 }
 
 #[cfg(feature = "fixed_point")]
-fn denormalise_bands_fixed_from_log(
+pub(crate) fn denormalise_bands_fixed_native(
     mode: &OpusCustomMode<'_>,
     x: &[FixedCeltNorm],
     freq: &mut [FixedCeltSig],
@@ -4456,7 +4456,7 @@ pub(crate) fn denormalise_bands_fixed(
         log_fixed.push(float2int(value * log_scale));
     }
 
-    denormalise_bands_fixed_from_log(
+    denormalise_bands_fixed_native(
         mode,
         &x_fixed,
         freq,
@@ -4480,7 +4480,7 @@ mod tests {
     };
     #[cfg(feature = "fixed_point")]
     use super::{
-        compute_band_energies_fixed, denormalise_bands_fixed_from_log, normalise_bands_fixed,
+        compute_band_energies_fixed, denormalise_bands_fixed_native, normalise_bands_fixed,
         pvq_alg_quant_runtime, pvq_alg_unquant_runtime, pvq_renormalise_runtime,
     };
     #[cfg(feature = "fixed_point")]
@@ -5738,11 +5738,11 @@ mod tests {
         ];
 
         let mut freq = vec![0i32; 4];
-        denormalise_bands_fixed_from_log(&mode, &x_in, &mut freq, &band_log_e, 0, 3, 1, 1, false);
+        denormalise_bands_fixed_native(&mode, &x_in, &mut freq, &band_log_e, 0, 3, 1, 1, false);
         assert_eq!(freq, vec![0, -153_681_920, 47_616_768, -62_924_126]);
 
         let mut freq_downsample = vec![0i32; 4];
-        denormalise_bands_fixed_from_log(
+        denormalise_bands_fixed_native(
             &mode,
             &x_in,
             &mut freq_downsample,
@@ -5756,7 +5756,17 @@ mod tests {
         assert_eq!(freq_downsample, vec![0, -153_681_920, 0, 0]);
 
         let mut freq_silence = vec![1i32, -1, 2, -2];
-        denormalise_bands_fixed_from_log(&mode, &x_in, &mut freq_silence, &band_log_e, 0, 3, 1, 1, true);
+        denormalise_bands_fixed_native(
+            &mode,
+            &x_in,
+            &mut freq_silence,
+            &band_log_e,
+            0,
+            3,
+            1,
+            1,
+            true,
+        );
         assert_eq!(freq_silence, vec![0, 0, 0, 0]);
     }
 }
