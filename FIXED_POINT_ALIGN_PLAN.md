@@ -30,9 +30,6 @@ float-cache bridges.
   - fixed-native spectrum is now primary in `celt_decode_with_ec_dred`, but
     `quant_all_bands` / `anti_collapse` currently require temporary float
     bridge buffers (`src/celt/celt_decoder.rs`, `src/celt/bands.rs`).
-- Decoder postfilter fixed path still performs per-frame float<->fixed bridging:
-  - each channel block is converted via `float2sig`/`fixed_sig_to_float`
-    around `comb_filter_fixed` (`src/celt/celt_decoder.rs`).
 - Decoder PLC pitch path is only partially fixed:
   - fixed helpers are used for some ratios/energies, but excitation/LPC/IIR
     path remains float-buffer based (`src/celt/celt_decoder.rs`).
@@ -118,11 +115,11 @@ float-cache bridges.
 8) `[done]` Port decoder packet-loss noise renormalisation path to fixed-point (`renormalise_vector` usage in decoder loss branch).
 9) `[done]` Port decoder core state/buffers to fixed-native primary storage in fixed builds (with fixed<->float cache sync barriers).
 10) `[done]` Port `celt_decode_with_ec_dred` band synthesis/dataflow to fixed-native buffers, removing float `spectrum` as fixed-build center path.
+11) `[done]` Remove per-frame float<->fixed conversion in decoder postfilter by keeping postfilter working set fixed-native end-to-end.
 
 ## Remaining global alignment work (priority order)
-1) `[todo]` Remove per-frame float<->fixed conversion in decoder postfilter by keeping postfilter working set fixed-native end-to-end.
-2) `[todo]` Port decoder pitch/PLC excitation-LPC-IIR path to fixed-native buffers and arithmetic (not only helper-level fixed maths).
-3) `[todo]` Replace bands PVQ fixed runtime wrappers with fixed-native interfaces to avoid repeated float<->i16 conversion.
-4) `[todo]` Reduce encoder float/fixed log-energy synchronization points by converging on a fixed-native state flow under `fixed_point`.
-5) `[todo]` Provide fixed-native `opus_custom_decode` sample path without mandatory float temp buffer in fixed builds.
-6) `[todo]` After the above refactors, rerun ctests + Rust parity vectors and then update `README.md` fixed-point gap status.
+1) `[todo]` Port decoder pitch/PLC excitation-LPC-IIR path to fixed-native buffers and arithmetic (not only helper-level fixed maths).
+2) `[todo]` Replace bands PVQ fixed runtime wrappers with fixed-native interfaces to avoid repeated float<->i16 conversion.
+3) `[todo]` Reduce encoder float/fixed log-energy synchronization points by converging on a fixed-native state flow under `fixed_point`.
+4) `[todo]` Provide fixed-native `opus_custom_decode` sample path without mandatory float temp buffer in fixed builds.
+5) `[todo]` After the above refactors, rerun ctests + Rust parity vectors and then update `README.md` fixed-point gap status.

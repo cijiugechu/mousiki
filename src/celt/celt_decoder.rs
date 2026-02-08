@@ -187,6 +187,25 @@ fn sync_from_float_cache_to_fixed_primary(decoder: &mut OpusCustomDecoder<'_>) {
     sync_loge_to_fixed(decoder.background_log_e_fixed, decoder.background_log_e);
 }
 
+#[cfg(feature = "fixed_point")]
+fn sync_fixed_output_window_to_float_cache(
+    decoder: &mut OpusCustomDecoder<'_>,
+    channels: usize,
+    output_start: usize,
+    output_len: usize,
+) {
+    let stride = DECODE_BUFFER_SIZE + decoder.overlap;
+    for channel in 0..channels {
+        let base = channel
+            .checked_mul(stride)
+            .expect("channel stride multiplication overflow");
+        for i in 0..output_len {
+            let idx = base + output_start + i;
+            decoder.decode_mem[idx] = fixed_sig_to_float(decoder.decode_mem_fixed[idx]);
+        }
+    }
+}
+
 /// Linear prediction order used by the decoder side filters.
 ///
 /// Mirrors the `LPC_ORDER` constant from the reference implementation.  The
@@ -215,6 +234,8 @@ const PLC_PITCH_LAG_MIN: i32 = 100;
 
 /// Saturation limit applied to the IMDCT output during synthesis.
 const SIG_SAT: CeltSig = 536_870_911.0;
+#[cfg(feature = "fixed_point")]
+const FIXED_SIG_SAT: FixedCeltSig = 536_870_911;
 
 #[cfg(feature = "fixed_point")]
 type FixedSynthesisCtx<'a> = (&'a FixedMdctLookup, &'a [FixedCeltCoef], usize);
@@ -411,6 +432,34 @@ fn apply_inverse_mdct_fixed(
     nb: usize,
     shift: usize,
 ) {
+    let mut fixed_output = vec![0; output.len()];
+    apply_inverse_mdct_fixed_native(
+        fixed_mdct,
+        fixed_window,
+        overlap,
+        freq,
+        &mut fixed_output,
+        bands,
+        nb,
+        shift,
+    );
+    for (dst, &src) in output.iter_mut().zip(fixed_output.iter()) {
+        *dst = fixed_sig_to_float(src);
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+fn apply_inverse_mdct_fixed_native(
+    fixed_mdct: &FixedMdctLookup,
+    fixed_window: &[FixedCeltCoef],
+    overlap: usize,
+    freq: &[FixedCeltSig],
+    output: &mut [FixedCeltSig],
+    bands: usize,
+    nb: usize,
+    shift: usize,
+) {
     if bands == 0 {
         return;
     }
@@ -447,7 +496,7 @@ fn apply_inverse_mdct_fixed(
         let start = band * nb;
         let dst = &mut output[start..start + nb];
         for (slot, &value) in dst.iter_mut().zip(fixed_out.iter()) {
-            *slot = fixed_sig_to_float(value);
+            *slot = value;
         }
     }
 }
@@ -703,7 +752,7 @@ pub(crate) fn celt_synthesis(
 fn celt_synthesis_fixed_native(
     mode: &OpusCustomMode<'_>,
     x: &[FixedCeltNorm],
-    out_syn: &mut [&mut [CeltSig]],
+    out_syn: &mut [&mut [FixedCeltSig]],
     old_band_e: &[FixedCeltGlog],
     start: usize,
     eff_end: usize,
@@ -761,7 +810,7 @@ fn celt_synthesis_fixed_native(
             );
 
             let freq_copy = freq.clone();
-            apply_inverse_mdct_fixed(
+            apply_inverse_mdct_fixed_native(
                 fixed_mdct,
                 fixed_window,
                 overlap,
@@ -771,7 +820,7 @@ fn celt_synthesis_fixed_native(
                 nb,
                 shift,
             );
-            apply_inverse_mdct_fixed(
+            apply_inverse_mdct_fixed_native(
                 fixed_mdct,
                 fixed_window,
                 overlap,
@@ -813,7 +862,7 @@ fn celt_synthesis_fixed_native(
                 *lhs = pshr32(add32_ovflw(*lhs, *rhs), 1);
             }
 
-            apply_inverse_mdct_fixed(
+            apply_inverse_mdct_fixed_native(
                 fixed_mdct,
                 fixed_window,
                 overlap,
@@ -841,7 +890,7 @@ fn celt_synthesis_fixed_native(
                 );
 
                 let output = &mut *out_syn[channel];
-                apply_inverse_mdct_fixed(
+                apply_inverse_mdct_fixed_native(
                     fixed_mdct,
                     fixed_window,
                     overlap,
@@ -857,7 +906,7 @@ fn celt_synthesis_fixed_native(
 
     for channel in out_syn.iter_mut().take(output_channels) {
         for sample in (*channel).iter_mut().take(n) {
-            *sample = sample.clamp(-SIG_SAT, SIG_SAT);
+            *sample = (*sample).clamp(-FIXED_SIG_SAT, FIXED_SIG_SAT);
         }
     }
 }
@@ -999,14 +1048,12 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
 
         for channel in 0..channels {
             let offset = channel * stride;
-            let channel_mem = &mut decoder.decode_mem[offset..offset + stride];
-            let fixed_channel: Vec<FixedCeltSig> =
-                channel_mem.iter().map(|&sample| float2sig(sample)).collect();
+            let channel_mem_fixed = &mut decoder.decode_mem_fixed[offset..offset + stride];
             let mut fixed_etmp = vec![0; overlap];
 
             comb_filter_fixed(
                 &mut fixed_etmp,
-                &fixed_channel,
+                channel_mem_fixed,
                 start,
                 overlap,
                 decoder.postfilter_period_old,
@@ -1025,7 +1072,10 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
                     mult16_32_q15(decoder.fixed_window[i], fixed_etmp[overlap - 1 - i]);
                 let reverse =
                     mult16_32_q15(decoder.fixed_window[overlap - 1 - i], fixed_etmp[i]);
-                channel_mem[start + i] = fixed_sig_to_float(add32_ovflw(forward, reverse));
+                let folded = add32_ovflw(forward, reverse);
+                let idx = start + i;
+                channel_mem_fixed[idx] = folded;
+                decoder.decode_mem[offset + idx] = fixed_sig_to_float(folded);
             }
         }
     }
@@ -2966,115 +3016,122 @@ where
         prefilter_and_fold(decoder, n);
     }
 
-    let mut out_slices: Vec<&mut [CeltSig]> = Vec::with_capacity(cc);
-    for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
-        let start_idx = DECODE_BUFFER_SIZE
-            .checked_sub(n)
-            .ok_or(CeltDecodeError::BadArgument)?;
-        out_slices.push(&mut channel_slice[start_idx..]);
-    }
     #[cfg(feature = "fixed_point")]
-    celt_synthesis_fixed_native(
-        mode,
-        &spectrum_fixed,
-        &mut out_slices,
-        decoder.old_ebands_fixed,
-        start,
-        eff_end,
-        c,
-        cc,
-        is_transient,
-        lm,
-        downsample,
-        silence,
-        &decoder.fixed_mdct,
-        decoder.fixed_window.as_slice(),
-        decoder.overlap,
-    );
+    {
+        let mut out_slices_fixed: Vec<&mut [FixedCeltSig]> = Vec::with_capacity(cc);
+        for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
+            let start_idx = DECODE_BUFFER_SIZE
+                .checked_sub(n)
+                .ok_or(CeltDecodeError::BadArgument)?;
+            out_slices_fixed.push(&mut channel_slice[start_idx..]);
+        }
+        celt_synthesis_fixed_native(
+            mode,
+            &spectrum_fixed,
+            &mut out_slices_fixed,
+            decoder.old_ebands_fixed,
+            start,
+            eff_end,
+            c,
+            cc,
+            is_transient,
+            lm,
+            downsample,
+            silence,
+            &decoder.fixed_mdct,
+            decoder.fixed_window.as_slice(),
+            decoder.overlap,
+        );
+    }
     #[cfg(not(feature = "fixed_point"))]
-    celt_synthesis(
-        mode,
-        &spectrum,
-        &mut out_slices,
-        decoder.old_ebands,
-        start,
-        eff_end,
-        c,
-        cc,
-        is_transient,
-        lm,
-        downsample,
-        silence,
-        (),
-    );
-
-    drop(out_slices);
+    {
+        let mut out_slices: Vec<&mut [CeltSig]> = Vec::with_capacity(cc);
+        for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+            let start_idx = DECODE_BUFFER_SIZE
+                .checked_sub(n)
+                .ok_or(CeltDecodeError::BadArgument)?;
+            out_slices.push(&mut channel_slice[start_idx..]);
+        }
+        celt_synthesis(
+            mode,
+            &spectrum,
+            &mut out_slices,
+            decoder.old_ebands,
+            start,
+            eff_end,
+            c,
+            cc,
+            is_transient,
+            lm,
+            downsample,
+            silence,
+            (),
+        );
+    }
 
     decoder.postfilter_period = decoder.postfilter_period.max(COMBFILTER_MINPERIOD as i32);
     decoder.postfilter_period_old = decoder
         .postfilter_period_old
         .max(COMBFILTER_MINPERIOD as i32);
 
+    let output_start = DECODE_BUFFER_SIZE - n;
+    #[cfg(not(feature = "fixed_point"))]
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
-        let output_start = DECODE_BUFFER_SIZE - n;
-        #[cfg(not(feature = "fixed_point"))]
-        {
-            let channel_len = channel_slice.len();
-            let channel_ptr = channel_slice.as_ptr();
-            let output = &mut channel_slice[output_start..output_start + n];
-            let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
+        let channel_len = channel_slice.len();
+        let channel_ptr = channel_slice.as_ptr();
+        let output = &mut channel_slice[output_start..output_start + n];
+        let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
 
-            let first_len = mode.short_mdct_size.min(output.len());
-            if first_len > 0 {
-                let (first_block, tail_block) = output.split_at_mut(first_len);
+        let first_len = mode.short_mdct_size.min(output.len());
+        if first_len > 0 {
+            let (first_block, tail_block) = output.split_at_mut(first_len);
+            comb_filter(
+                first_block,
+                full_channel,
+                output_start,
+                first_len,
+                decoder.postfilter_period_old,
+                decoder.postfilter_period,
+                decoder.postfilter_gain_old,
+                decoder.postfilter_gain,
+                decoder.postfilter_tapset_old.max(0) as usize,
+                decoder.postfilter_tapset.max(0) as usize,
+                mode.window,
+                overlap,
+                decoder.arch,
+            );
+
+            if lm != 0 && !tail_block.is_empty() {
+                let tail_start = output_start + first_len;
                 comb_filter(
-                    first_block,
+                    tail_block,
                     full_channel,
-                    output_start,
-                    first_len,
-                    decoder.postfilter_period_old,
+                    tail_start,
+                    tail_block.len(),
                     decoder.postfilter_period,
-                    decoder.postfilter_gain_old,
+                    postfilter_pitch,
                     decoder.postfilter_gain,
-                    decoder.postfilter_tapset_old.max(0) as usize,
+                    postfilter_gain,
                     decoder.postfilter_tapset.max(0) as usize,
+                    postfilter_tapset.max(0) as usize,
                     mode.window,
                     overlap,
                     decoder.arch,
                 );
-
-                if lm != 0 && !tail_block.is_empty() {
-                    let tail_start = output_start + first_len;
-                    comb_filter(
-                        tail_block,
-                        full_channel,
-                        tail_start,
-                        tail_block.len(),
-                        decoder.postfilter_period,
-                        postfilter_pitch,
-                        decoder.postfilter_gain,
-                        postfilter_gain,
-                        decoder.postfilter_tapset.max(0) as usize,
-                        postfilter_tapset.max(0) as usize,
-                        mode.window,
-                        overlap,
-                        decoder.arch,
-                    );
-                }
             }
         }
+    }
 
-        #[cfg(feature = "fixed_point")]
-        {
-            let mut fixed_channel: Vec<FixedCeltSig> =
-                channel_slice.iter().map(|&sample| float2sig(sample)).collect();
-            let channel_len = fixed_channel.len();
-            let channel_ptr = fixed_channel.as_ptr();
-            let output = &mut fixed_channel[output_start..output_start + n];
+    #[cfg(feature = "fixed_point")]
+    {
+        let g0 = postfilter_gain_to_fixed(decoder.postfilter_gain_old);
+        let g1 = postfilter_gain_to_fixed(decoder.postfilter_gain);
+        for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
+            let channel_len = channel_slice.len();
+            let channel_ptr = channel_slice.as_ptr();
+            let output = &mut channel_slice[output_start..output_start + n];
             let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
             let first_len = mode.short_mdct_size.min(output.len());
-            let g0 = postfilter_gain_to_fixed(decoder.postfilter_gain_old);
-            let g1 = postfilter_gain_to_fixed(decoder.postfilter_gain);
 
             if first_len > 0 {
                 let (first_block, tail_block) = output.split_at_mut(first_len);
@@ -3113,14 +3170,8 @@ where
                     );
                 }
             }
-
-            for (dst, &src) in channel_slice[output_start..output_start + n]
-                .iter_mut()
-                .zip(output.iter())
-            {
-                *dst = fixed_sig_to_float(src);
-            }
         }
+        sync_fixed_output_window_to_float_cache(decoder, cc, output_start, n);
     }
 
     decoder.postfilter_period_old = decoder.postfilter_period;
@@ -4487,6 +4538,10 @@ mod tests {
         for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
             *sample = (idx as f32) * 0.0002;
         }
+        #[cfg(feature = "fixed_point")]
+        for (dst, &src) in decoder.decode_mem_fixed.iter_mut().zip(decoder.decode_mem.iter()) {
+            *dst = float2sig(src);
+        }
 
         let n = 32;
         let start = DECODE_BUFFER_SIZE - n;
@@ -4511,6 +4566,12 @@ mod tests {
             assert!(
                 (expected - actual).abs() <= tolerance,
                 "folded sample {i} differs: expected {expected}, got {actual}",
+            );
+            #[cfg(feature = "fixed_point")]
+            assert_eq!(
+                decoder.decode_mem_fixed[start + i],
+                float2sig(actual),
+                "fixed cache mismatch for folded sample {i}",
             );
         }
 
@@ -4550,6 +4611,10 @@ mod tests {
 
         for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
             *sample = (idx as f32) * 0.0002;
+        }
+        #[cfg(feature = "fixed_point")]
+        for (dst, &src) in decoder.decode_mem_fixed.iter_mut().zip(decoder.decode_mem.iter()) {
+            *dst = float2sig(src);
         }
 
         let n = 64;
@@ -4596,6 +4661,13 @@ mod tests {
                 (expected - actual).abs() <= tolerance,
                 "filtered fold {i} differs: expected {expected}, got {actual}",
             );
+            #[cfg(feature = "fixed_point")]
+            assert!(
+                (decoder.decode_mem_fixed[start + i] - float2sig(actual)).abs() <= 1,
+                "fixed cache mismatch for filtered fold {i}: fixed={}, float2sig={}",
+                decoder.decode_mem_fixed[start + i],
+                float2sig(actual),
+            );
         }
 
         for i in overlap / 2..overlap {
@@ -4635,6 +4707,10 @@ mod tests {
         for i in 0..stride {
             decoder.decode_mem[i] = (i as f32) * 0.0002;
             decoder.decode_mem[stride + i] = -0.3 + (i as f32) * 0.00025;
+        }
+        #[cfg(feature = "fixed_point")]
+        for (dst, &src) in decoder.decode_mem_fixed.iter_mut().zip(decoder.decode_mem.iter()) {
+            *dst = float2sig(src);
         }
 
         let n = 48;
@@ -4682,6 +4758,14 @@ mod tests {
                 assert!(
                     (expected - actual).abs() <= tolerance,
                     "channel {channel} fold {i} differs: expected {expected}, got {actual}",
+                );
+                #[cfg(feature = "fixed_point")]
+                assert!(
+                    (decoder.decode_mem_fixed[offset + start + i] - float2sig(actual)).abs()
+                        <= 1,
+                    "channel {channel} fixed cache mismatch at fold {i}: fixed={}, float2sig={}",
+                    decoder.decode_mem_fixed[offset + start + i],
+                    float2sig(actual),
                 );
             }
 
@@ -4786,6 +4870,9 @@ mod tests {
         max_bytes: usize,
         min_nonzero_pitch_frames: usize,
         require_pitch_changes: bool,
+        expected_pitch: [i32; POSTFILTER_CASE_FRAMES],
+        expected_packet_hash: [u32; POSTFILTER_CASE_FRAMES],
+        expected_pcm_hash: [u32; POSTFILTER_CASE_FRAMES],
     }
 
     #[cfg(feature = "fixed_point")]
@@ -4833,6 +4920,7 @@ mod tests {
 
     #[cfg(feature = "fixed_point")]
     fn run_decoder_postfilter_case(mode: &OpusCustomMode<'_>, case: &DecoderPostfilterCase) {
+        let strict_ctest_vectors = std::env::var_os("RUST_CTEST_STRICT_HASHES").is_some();
         let mut encoder = opus_custom_encoder_create(mode, POSTFILTER_SAMPLE_RATE, case.channels, 0)
             .unwrap_or_else(|err| panic!("{}: encoder create failed: {err:?}", case.name));
         let mut decoder = opus_custom_decoder_create(mode, case.channels)
@@ -4939,6 +5027,30 @@ mod tests {
                 }
             }
             prev_pcm_hash = Some(pcm_hash);
+
+            if strict_ctest_vectors {
+                if case.expected_pitch[frame_idx] != 0 {
+                    assert_eq!(
+                        pitch, case.expected_pitch[frame_idx],
+                        "{} frame {}: pitch mismatch",
+                        case.name, frame_idx
+                    );
+                }
+                if case.expected_packet_hash[frame_idx] != 0 {
+                    assert_eq!(
+                        packet_hash, case.expected_packet_hash[frame_idx],
+                        "{} frame {}: packet hash mismatch",
+                        case.name, frame_idx
+                    );
+                }
+                if case.expected_pcm_hash[frame_idx] != 0 {
+                    assert_eq!(
+                        pcm_hash, case.expected_pcm_hash[frame_idx],
+                        "{} frame {}: pcm hash mismatch",
+                        case.name, frame_idx
+                    );
+                }
+            }
         }
 
         if case.min_nonzero_pitch_frames > 0 {
@@ -5510,6 +5622,23 @@ mod tests {
                 max_bytes: 96,
                 min_nonzero_pitch_frames: 3,
                 require_pitch_changes: true,
+                expected_pitch: [430, 954, 954, 0, 528, 528],
+                expected_packet_hash: [
+                    0xd9db_cb3a,
+                    0x5e4e_25b9,
+                    0x5de8_bc73,
+                    0x3d80_f8c0,
+                    0x68d6_2f7c,
+                    0x50eb_f0b5,
+                ],
+                expected_pcm_hash: [
+                    0xba7e_fc92,
+                    0xc441_26c4,
+                    0xa582_4709,
+                    0x4d7c_01ed,
+                    0x85bb_0370,
+                    0x6911_f513,
+                ],
             },
             DecoderPostfilterCase {
                 name: "stereo_postfilter",
@@ -5518,6 +5647,23 @@ mod tests {
                 max_bytes: 180,
                 min_nonzero_pitch_frames: 0,
                 require_pitch_changes: false,
+                expected_pitch: [0, 480, 480, 480, 480, 480],
+                expected_packet_hash: [
+                    0x5cdf_3e0c,
+                    0x6fc9_dad3,
+                    0x9406_08ff,
+                    0x49c0_9e95,
+                    0xe63d_158e,
+                    0x418b_6748,
+                ],
+                expected_pcm_hash: [
+                    0x042e_972d,
+                    0x547d_2986,
+                    0x8c2e_ee5d,
+                    0x9d66_7d9a,
+                    0xbb76_e17f,
+                    0xdb24_1031,
+                ],
             },
         ];
 
