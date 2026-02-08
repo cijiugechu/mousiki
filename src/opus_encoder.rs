@@ -8,6 +8,11 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+#[cfg(test)]
+extern crate std;
+
+use libm::fmaf;
+
 #[cfg(not(feature = "fixed_point"))]
 use crate::analysis::{
     TonalityAnalysisState, run_analysis, tonality_analysis_init, tonality_analysis_reset,
@@ -51,6 +56,460 @@ const MAX_DELAY_COMPENSATION_SAMPLES: usize = 192;
 const MAX_PCM_BUF_SAMPLES: usize =
     (MAX_FRAME_SAMPLES + MAX_DELAY_COMPENSATION_SAMPLES) * MAX_CHANNELS;
 const MAX_TMP_PREFILL_SAMPLES: usize = (MAX_ENCODER_BUFFER / 4) * MAX_CHANNELS;
+
+#[cfg(test)]
+mod opus_mode_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    use crate::celt::AnalysisInfo;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
+        } else {
+            None
+        }
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("OPUS_TRACE_MODE") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("OPUS_TRACE_MODE_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                Some(TraceConfig { frame })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn dump_if_match(
+        frame_idx: usize,
+        mode: i32,
+        prev_mode: i32,
+        equiv_rate: i32,
+        bandwidth_int: i32,
+        stream_channels: i32,
+        voice_ratio: i32,
+        is_silence: bool,
+        analysis: &AnalysisInfo,
+    ) {
+        let Some(cfg) = config() else {
+            return;
+        };
+        if let Some(frame) = cfg.frame {
+            if frame != frame_idx {
+                return;
+            }
+        }
+        std::println!("opus_mode[{frame_idx}].mode={mode}");
+        std::println!("opus_mode[{frame_idx}].prev_mode={prev_mode}");
+        std::println!("opus_mode[{frame_idx}].equiv_rate={equiv_rate}");
+        std::println!("opus_mode[{frame_idx}].bandwidth={bandwidth_int}");
+        std::println!("opus_mode[{frame_idx}].stream_channels={stream_channels}");
+        std::println!("opus_mode[{frame_idx}].voice_ratio={voice_ratio}");
+        std::println!(
+            "opus_mode[{frame_idx}].is_silence={}",
+            if is_silence { 1 } else { 0 }
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.valid={}",
+            if analysis.valid { 1 } else { 0 }
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.bandwidth={}",
+            analysis.bandwidth
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.activity={:.9e}",
+            analysis.activity as f64
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.tonality={:.9e}",
+            analysis.tonality as f64
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.tonality_slope={:.9e}",
+            analysis.tonality_slope as f64
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.noisiness={:.9e}",
+            analysis.noisiness as f64
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.music_prob={:.9e}",
+            analysis.music_prob as f64
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.activity_probability={:.9e}",
+            analysis.activity_probability as f64
+        );
+        std::println!(
+            "opus_mode[{frame_idx}].analysis.max_pitch_ratio={:.9e}",
+            analysis.max_pitch_ratio as f64
+        );
+    }
+}
+
+#[cfg(test)]
+mod opus_pcm_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    use crate::celt::OpusRes;
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct TraceConfig {
+        pub frame: Option<usize>,
+        pub want_bits: bool,
+        pub start: usize,
+        pub count: usize,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    static CURRENT_FRAME: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("OPUS_TRACE_PCM_DUMP") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("OPUS_TRACE_PCM_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                let want_bits = match env::var("OPUS_TRACE_PCM_BITS") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                let start = env::var("OPUS_TRACE_PCM_START")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let count = env::var("OPUS_TRACE_PCM_COUNT")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(64);
+                Some(TraceConfig {
+                    frame,
+                    want_bits,
+                    start,
+                    count,
+                })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            let idx = FRAME_INDEX.fetch_add(1, Ordering::Relaxed);
+            CURRENT_FRAME.store(idx, Ordering::Relaxed);
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn current_frame() -> Option<usize> {
+        if config().is_some() {
+            let idx = CURRENT_FRAME.load(Ordering::Relaxed);
+            if idx == usize::MAX {
+                None
+            } else {
+                Some(idx)
+            }
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn config_copy() -> Option<TraceConfig> {
+        config().copied()
+    }
+
+    fn sample_bits(value: OpusRes) -> u32 {
+        value.to_bits()
+    }
+
+    fn sample_value(value: OpusRes) -> f64 {
+        value as f64
+    }
+
+    pub(crate) fn dump(tag: &str, frame_idx: usize, pcm: &[OpusRes], channels: usize, len: usize) {
+        let cfg = match config() {
+            Some(cfg) => cfg,
+            None => return,
+        };
+        if channels == 0 {
+            return;
+        }
+        if let Some(frame) = cfg.frame {
+            if frame != frame_idx {
+                return;
+            }
+        }
+        let max_len = pcm.len() / channels;
+        let len = len.min(max_len);
+        let start = cfg.start.min(len);
+        let end = start.saturating_add(cfg.count).min(len);
+        std::println!("opus_pcm[{frame_idx}].{tag}.len={len}");
+        for ch in 0..channels {
+            for i in start..end {
+                let idx = i * channels + ch;
+                if idx >= pcm.len() {
+                    continue;
+                }
+                let value = pcm[idx];
+                std::println!(
+                    "opus_pcm[{frame_idx}].{tag}.ch[{ch}].sample[{i}]={:.9e}",
+                    sample_value(value)
+                );
+                if cfg.want_bits {
+                    std::println!(
+                        "opus_pcm[{frame_idx}].{tag}.ch[{ch}].sample_bits[{i}]=0x{:08x}",
+                        sample_bits(value)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod opus_celt_budget_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
+        } else {
+            None
+        }
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("OPUS_TRACE_CELT_BUDGET") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("OPUS_TRACE_CELT_BUDGET_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                Some(TraceConfig { frame })
+            })
+            .as_ref()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dump_if_match(
+        frame_idx: usize,
+        mode: i32,
+        max_data_bytes: i32,
+        max_frame_bytes: i32,
+        max_payload_bytes: i32,
+        frame_size: i32,
+        frame_rate: i32,
+        equiv_rate: i32,
+        bitrate_bps: i32,
+        use_vbr: bool,
+        vbr_constraint: bool,
+        channels: i32,
+        stream_channels: i32,
+        redundancy: bool,
+        celt_to_silk: bool,
+        to_celt: bool,
+        redundancy_bytes: i32,
+        nb_compr_bytes: i32,
+        tell_pre: i32,
+        tell_frac_pre: i32,
+        tell_post: i32,
+        tell_frac_post: i32,
+    ) {
+        let Some(cfg) = config() else {
+            return;
+        };
+        if let Some(frame) = cfg.frame {
+            if frame != frame_idx {
+                return;
+            }
+        }
+        std::println!("opus_celt_budget[{frame_idx}].mode={mode}");
+        std::println!("opus_celt_budget[{frame_idx}].max_data_bytes={max_data_bytes}");
+        std::println!("opus_celt_budget[{frame_idx}].max_frame_bytes={max_frame_bytes}");
+        std::println!("opus_celt_budget[{frame_idx}].max_payload_bytes={max_payload_bytes}");
+        std::println!("opus_celt_budget[{frame_idx}].frame_size={frame_size}");
+        std::println!("opus_celt_budget[{frame_idx}].frame_rate={frame_rate}");
+        std::println!("opus_celt_budget[{frame_idx}].equiv_rate={equiv_rate}");
+        std::println!("opus_celt_budget[{frame_idx}].bitrate_bps={bitrate_bps}");
+        std::println!(
+            "opus_celt_budget[{frame_idx}].use_vbr={}",
+            if use_vbr { 1 } else { 0 }
+        );
+        std::println!(
+            "opus_celt_budget[{frame_idx}].vbr_constraint={}",
+            if vbr_constraint { 1 } else { 0 }
+        );
+        std::println!("opus_celt_budget[{frame_idx}].channels={channels}");
+        std::println!("opus_celt_budget[{frame_idx}].stream_channels={stream_channels}");
+        std::println!(
+            "opus_celt_budget[{frame_idx}].redundancy={}",
+            if redundancy { 1 } else { 0 }
+        );
+        std::println!(
+            "opus_celt_budget[{frame_idx}].celt_to_silk={}",
+            if celt_to_silk { 1 } else { 0 }
+        );
+        std::println!(
+            "opus_celt_budget[{frame_idx}].to_celt={}",
+            if to_celt { 1 } else { 0 }
+        );
+        std::println!(
+            "opus_celt_budget[{frame_idx}].redundancy_bytes={redundancy_bytes}"
+        );
+        std::println!("opus_celt_budget[{frame_idx}].nb_compr_bytes={nb_compr_bytes}");
+        std::println!("opus_celt_budget[{frame_idx}].tell_pre={tell_pre}");
+        std::println!("opus_celt_budget[{frame_idx}].tell_frac_pre={tell_frac_pre}");
+        std::println!("opus_celt_budget[{frame_idx}].tell_post={tell_post}");
+        std::println!("opus_celt_budget[{frame_idx}].tell_frac_post={tell_frac_post}");
+    }
+}
+
+#[cfg(test)]
+mod celt_pcm_trace {
+    extern crate std;
+
+    use std::env;
+    use std::sync::OnceLock;
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct TraceConfig {
+        pub frame: Option<usize>,
+        pub want_bits: bool,
+        pub start: usize,
+        pub count: usize,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+
+    pub(crate) fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("OPUS_TRACE_PCM_DUMP") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("CELT_TRACE_PCM_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                let want_bits = match env::var("CELT_TRACE_PCM_BITS") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                let start = env::var("CELT_TRACE_PCM_START")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let count = env::var("CELT_TRACE_PCM_COUNT")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(64);
+                Some(TraceConfig {
+                    frame,
+                    want_bits,
+                    start,
+                    count,
+                })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn config_copy() -> Option<TraceConfig> {
+        config().copied()
+    }
+
+    pub(crate) fn dump(
+        tag: &str,
+        pcm: &[i16],
+        frame_size: usize,
+        channels: usize,
+        start: usize,
+        count: usize,
+        want_bits: bool,
+        frame_idx: usize,
+    ) {
+        if channels == 0 {
+            return;
+        }
+        let len = frame_size;
+        let start = start.min(len);
+        let end = start.saturating_add(count).min(len);
+        std::println!("celt_pcm[{}].{}.len={}", frame_idx, tag, len);
+        for ch in 0..channels {
+            for i in start..end {
+                let idx = i * channels + ch;
+                if idx >= pcm.len() {
+                    continue;
+                }
+                let value = pcm[idx];
+                std::println!(
+                    "celt_pcm[{}].{}.ch[{}].sample[{}]={}",
+                    frame_idx, tag, ch, i, value
+                );
+                if want_bits {
+                    let bits = value as u16;
+                    std::println!(
+                        "celt_pcm[{}].{}.ch[{}].sample_bits[{}]=0x{:04x}",
+                        frame_idx, tag, ch, i, bits
+                    );
+                }
+            }
+        }
+    }
+}
 
 pub(crate) const MODE_SILK_ONLY: i32 = 1000;
 #[allow(dead_code)]
@@ -1257,6 +1716,19 @@ fn prepare_pcm_buffer(
         scratch[..delay_len].copy_from_slice(&encoder.delay_buffer[delay_start..delay_end]);
     }
 
+    #[cfg(test)]
+    if total_buffer > 0 {
+        if let Some(frame_idx) = opus_pcm_trace::current_frame() {
+            opus_pcm_trace::dump(
+                "delay_copy",
+                frame_idx,
+                &scratch[..delay_len],
+                channels,
+                total_buffer,
+            );
+        }
+    }
+
     let scale = 1.0 / CELT_SIG_SCALE;
     let pcm_len = frame_size
         .checked_mul(channels)
@@ -1269,6 +1741,22 @@ fn prepare_pcm_buffer(
         .zip(pcm.iter().take(pcm_len))
     {
         *dst = f32::from(sample) * scale;
+    }
+
+    #[cfg(test)]
+    if let Some(cfg) = celt_pcm_trace::config_copy() {
+        if cfg.frame.is_none() {
+            celt_pcm_trace::dump(
+                "prepare_pcm",
+                pcm,
+                frame_size,
+                channels,
+                cfg.start,
+                cfg.count,
+                cfg.want_bits,
+                0,
+            );
+        }
     }
 
     Ok(needed)
@@ -1341,6 +1829,17 @@ fn update_delay_buffer(
         }
 
         encoder.delay_buffer[..encoder_samples].copy_from_slice(&pcm_buf[src_start..src_end]);
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = opus_pcm_trace::current_frame() {
+        opus_pcm_trace::dump(
+            "delay_buf",
+            frame_idx,
+            &encoder.delay_buffer[..encoder_samples],
+            channels,
+            encoder_buffer,
+        );
     }
 
     Ok(())
@@ -1465,6 +1964,20 @@ fn dc_reject(
     let coef2 = 1.0 - coef;
     let scale = 1.0 / CELT_SIG_SCALE;
 
+    #[cfg(test)]
+    let trace = match (opus_pcm_trace::config_copy(), opus_pcm_trace::current_frame()) {
+        (Some(cfg), Some(frame_idx)) => {
+            if cfg.frame.map_or(false, |want| want != frame_idx) {
+                None
+            } else {
+                let start = cfg.start.min(len);
+                let end = start.saturating_add(cfg.count).min(len);
+                Some((cfg, frame_idx, start, end))
+            }
+        }
+        _ => None,
+    };
+
     if channels == 2 {
         let mut m0 = hp_mem[0];
         let mut m2 = hp_mem[2];
@@ -1472,12 +1985,98 @@ fn dc_reject(
             let idx = i * 2;
             let x0 = f32::from(input[idx]) * scale;
             let x1 = f32::from(input[idx + 1]) * scale;
+            #[cfg(test)]
+            let m0_pre = m0;
+            #[cfg(test)]
+            let m2_pre = m2;
             let out0 = x0 - m0;
             let out1 = x1 - m2;
-            m0 = coef * x0 + VERY_SMALL + coef2 * m0;
-            m2 = coef * x1 + VERY_SMALL + coef2 * m2;
+            let acc0 = fmaf(coef, x0, VERY_SMALL);
+            let acc1 = fmaf(coef, x1, VERY_SMALL);
+            m0 = fmaf(coef2, m0, acc0);
+            m2 = fmaf(coef2, m2, acc1);
             output[idx] = out0;
             output[idx + 1] = out1;
+
+            #[cfg(test)]
+            if let Some((cfg, frame_idx, start, end)) = trace {
+                if i >= start && i < end {
+                    if i == start {
+                        std::println!("opus_dc_reject[{frame_idx}].coef={coef:.9e}");
+                        if cfg.want_bits {
+                            std::println!(
+                                "opus_dc_reject[{frame_idx}].coef_bits=0x{:08x}",
+                                coef.to_bits()
+                            );
+                        }
+                        std::println!("opus_dc_reject[{frame_idx}].coef2={coef2:.9e}");
+                        if cfg.want_bits {
+                            std::println!(
+                                "opus_dc_reject[{frame_idx}].coef2_bits=0x{:08x}",
+                                coef2.to_bits()
+                            );
+                        }
+                    }
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[0].i[{i}].x={x0:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_pre={m0_pre:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[0].i[{i}].out={out0:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_post={m0:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[1].i[{i}].x={x1:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[1].i[{i}].m0_pre={m2_pre:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[1].i[{i}].out={out1:.9e}"
+                    );
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[1].i[{i}].m0_post={m2:.9e}"
+                    );
+                    if cfg.want_bits {
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].x_bits=0x{:08x}",
+                            x0.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_pre_bits=0x{:08x}",
+                            m0_pre.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].out_bits=0x{:08x}",
+                            out0.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_post_bits=0x{:08x}",
+                            m0.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[1].i[{i}].x_bits=0x{:08x}",
+                            x1.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[1].i[{i}].m0_pre_bits=0x{:08x}",
+                            m2_pre.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[1].i[{i}].out_bits=0x{:08x}",
+                            out1.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[1].i[{i}].m0_post_bits=0x{:08x}",
+                            m2.to_bits()
+                        );
+                    }
+                }
+            }
         }
         hp_mem[0] = m0;
         hp_mem[2] = m2;
@@ -1485,9 +2084,60 @@ fn dc_reject(
         let mut m0 = hp_mem[0];
         for i in 0..len {
             let x = f32::from(input[i]) * scale;
+            #[cfg(test)]
+            let m0_pre = m0;
             let y = x - m0;
-            m0 = coef * x + VERY_SMALL + coef2 * m0;
+            let acc = fmaf(coef, x, VERY_SMALL);
+            m0 = fmaf(coef2, m0, acc);
             output[i] = y;
+
+            #[cfg(test)]
+            if let Some((cfg, frame_idx, start, end)) = trace {
+                if i >= start && i < end {
+                    if i == start {
+                        std::println!("opus_dc_reject[{frame_idx}].coef={coef:.9e}");
+                        if cfg.want_bits {
+                            std::println!(
+                                "opus_dc_reject[{frame_idx}].coef_bits=0x{:08x}",
+                                coef.to_bits()
+                            );
+                        }
+                        std::println!("opus_dc_reject[{frame_idx}].coef2={coef2:.9e}");
+                        if cfg.want_bits {
+                            std::println!(
+                                "opus_dc_reject[{frame_idx}].coef2_bits=0x{:08x}",
+                                coef2.to_bits()
+                            );
+                        }
+                    }
+                    std::println!("opus_dc_reject[{frame_idx}].ch[0].i[{i}].x={x:.9e}");
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_pre={m0_pre:.9e}"
+                    );
+                    std::println!("opus_dc_reject[{frame_idx}].ch[0].i[{i}].out={y:.9e}");
+                    std::println!(
+                        "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_post={m0:.9e}"
+                    );
+                    if cfg.want_bits {
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].x_bits=0x{:08x}",
+                            x.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_pre_bits=0x{:08x}",
+                            m0_pre.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].out_bits=0x{:08x}",
+                            y.to_bits()
+                        );
+                        std::println!(
+                            "opus_dc_reject[{frame_idx}].ch[0].i[{i}].m0_post_bits=0x{:08x}",
+                            m0.to_bits()
+                        );
+                    }
+                }
+            }
         }
         hp_mem[0] = m0;
     }
@@ -1727,12 +2377,24 @@ fn encode_frame_native<'mode>(
         return Err(OpusEncodeError::BadArgument);
     }
 
+    #[cfg(test)]
+    let _trace_pcm_frame = opus_pcm_trace::begin_frame();
+    #[cfg(test)]
+    let trace_budget_frame_idx = opus_celt_budget_trace::begin_frame();
+    #[cfg(test)]
+    let trace_range_frame_idx = crate::range::begin_range_done_trace_frame();
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_range_frame_idx {
+        crate::range::set_range_done_trace_frame(frame_idx);
+    }
+
     let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
     let frame_rate = encoder
         .fs
         .checked_div(frame_size_i32)
         .ok_or(OpusEncodeError::BadArgument)?;
-    let max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    let mut max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    max_data_bytes = max_data_bytes.min(1276);
     let mut pcm_buf_storage = [OpusRes::default(); MAX_PCM_BUF_SAMPLES];
     let pcm_buf_len =
         prepare_pcm_buffer(encoder, pcm, frame_size, channels, &mut pcm_buf_storage)?;
@@ -1767,6 +2429,17 @@ fn encode_frame_native<'mode>(
             frame_size,
             channels,
             encoder.fs,
+        );
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = opus_pcm_trace::current_frame() {
+        opus_pcm_trace::dump(
+            "pcm_buf",
+            frame_idx,
+            pcm_buf,
+            channels,
+            total_buffer + frame_size,
         );
     }
 
@@ -1917,6 +2590,23 @@ fn encode_frame_native<'mode>(
                 bandwidth = Bandwidth::Wide;
             }
 
+            let end_band = match bandwidth {
+                Bandwidth::Narrow => 13,
+                Bandwidth::Medium | Bandwidth::Wide => 17,
+                Bandwidth::SuperWide => 19,
+                Bandwidth::Full => 21,
+            };
+            opus_custom_encoder_ctl(
+                encoder.celt.encoder(),
+                CeltEncoderCtlRequest::SetEndBand(end_band),
+            )
+            .map_err(|_| OpusEncodeError::InternalError)?;
+            opus_custom_encoder_ctl(
+                encoder.celt.encoder(),
+                CeltEncoderCtlRequest::SetStartBand(0),
+            )
+            .map_err(|_| OpusEncodeError::InternalError)?;
+
             opus_custom_encoder_ctl(
                 encoder.celt.encoder(),
                 CeltEncoderCtlRequest::SetLsbDepth(lsb_depth),
@@ -1946,36 +2636,76 @@ fn encode_frame_native<'mode>(
             )
             .map_err(|_| OpusEncodeError::InternalError)?;
 
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                // Keep CELT analysis in sync with Opus analysis for VBR decisions (matches C).
+                encoder.celt.encoder().analysis = encoder.analysis_info.clone();
+            }
+
             update_delay_buffer(encoder, pcm_buf, frame_size, total_buffer, channels)?;
 
             let celt_frame_size = frame_size;
             let celt_pcm = &pcm_buf[..required];
-            let mut bytes = celt_encode_with_ec(
+            let mut range_encoder = RangeEncoder::with_capacity(max_payload_bytes);
+            #[cfg(test)]
+            if let Some(frame_idx) = trace_budget_frame_idx {
+                let tell_pre = range_encoder.tell();
+                let tell_frac_pre =
+                    crate::celt::ec_tell_frac(range_encoder.encoder_mut().ctx()) as i32;
+                let nb_compr_bytes =
+                    i32::try_from(max_payload_bytes).unwrap_or(i32::MAX);
+                opus_celt_budget_trace::dump_if_match(
+                    frame_idx,
+                    mode,
+                    max_data_bytes,
+                    max_frame_bytes_i32,
+                    i32::try_from(max_payload_bytes).unwrap_or(i32::MAX),
+                    frame_size_i32,
+                    frame_rate,
+                    equiv_rate,
+                    encoder.bitrate_bps,
+                    encoder.use_vbr,
+                    encoder.vbr_constraint,
+                    encoder.channels,
+                    encoder.stream_channels,
+                    false,
+                    false,
+                    to_celt,
+                    0,
+                    nb_compr_bytes,
+                    tell_pre,
+                    tell_frac_pre,
+                    tell_pre,
+                    tell_frac_pre,
+                );
+            }
+            let bytes = celt_encode_with_ec(
                 encoder.celt.encoder(),
                 Some(celt_pcm),
                 celt_frame_size,
-                Some(&mut data[1..1 + max_payload_bytes]),
                 None,
+                Some(range_encoder.encoder_mut()),
             )
             .map_err(|err| match err {
                 CeltEncodeError::MissingOutput => OpusEncodeError::BufferTooSmall,
                 _ => OpusEncodeError::InternalError,
             })?;
+
+            let range_final = range_encoder.range_final();
+            let payload = range_encoder.finish_without_done();
+            let mut payload_len = payload.len();
+            if payload_len > max_payload_bytes {
+                return Err(OpusEncodeError::BufferTooSmall);
+            }
             if bytes == 0 {
                 if max_payload_bytes == 0 {
                     return Err(OpusEncodeError::BufferTooSmall);
                 }
                 data[1] = 0;
-                bytes = 1;
+                payload_len = 1;
+            } else {
+                data[1..1 + payload_len].copy_from_slice(&payload);
             }
-
-            let mut celt_range = 0u32;
-            opus_custom_encoder_ctl(
-                encoder.celt.encoder(),
-                CeltEncoderCtlRequest::GetFinalRange(&mut celt_range),
-            )
-            .map_err(|_| OpusEncodeError::InternalError)?;
-            let range_final = celt_range;
 
             let toc = gen_toc(mode, frame_rate, bandwidth, encoder.stream_channels) & 0xFC;
             data[0] = toc;
@@ -1983,7 +2713,7 @@ fn encode_frame_native<'mode>(
             encoder.range_final = range_final;
             finish_encode(encoder, mode, to_celt, frame_size_i32);
 
-            1 + bytes
+            1 + payload_len
         }
         MODE_HYBRID => {
             let mut redundancy = redundancy;
@@ -2194,6 +2924,15 @@ fn encode_frame_native<'mode>(
                 (max_frame_bytes_i32 - 1 - redundancy_bytes).max(0),
             )
             .map_err(|_| OpusEncodeError::BadArgument)?;
+            #[cfg(test)]
+            let (tell_pre, tell_frac_pre) = if trace_budget_frame_idx.is_some() {
+                (
+                    range_encoder.tell(),
+                    crate::celt::ec_tell_frac(range_encoder.encoder_mut().ctx()) as i32,
+                )
+            } else {
+                (0, 0)
+            };
             #[cfg(feature = "dred")]
             if encoder.dred_duration > 0 {
                 nb_compr_bytes = adjust_nb_compr_bytes_for_dred(
@@ -2207,6 +2946,38 @@ fn encode_frame_native<'mode>(
                 return Err(OpusEncodeError::BufferTooSmall);
             }
             range_encoder.shrink(nb_compr_bytes);
+            #[cfg(test)]
+            if let Some(frame_idx) = trace_budget_frame_idx {
+                let tell_post = range_encoder.tell();
+                let tell_frac_post =
+                    crate::celt::ec_tell_frac(range_encoder.encoder_mut().ctx()) as i32;
+                let nb_compr_bytes_i32 =
+                    i32::try_from(nb_compr_bytes).unwrap_or(i32::MAX);
+                opus_celt_budget_trace::dump_if_match(
+                    frame_idx,
+                    mode,
+                    max_data_bytes,
+                    max_frame_bytes_i32,
+                    i32::try_from(max_payload_bytes).unwrap_or(i32::MAX),
+                    frame_size_i32,
+                    frame_rate,
+                    equiv_rate,
+                    encoder.bitrate_bps,
+                    encoder.use_vbr,
+                    encoder.vbr_constraint,
+                    encoder.channels,
+                    encoder.stream_channels,
+                    redundancy,
+                    celt_to_silk,
+                    to_celt,
+                    redundancy_bytes,
+                    nb_compr_bytes_i32,
+                    tell_pre,
+                    tell_frac_pre,
+                    tell_post,
+                    tell_frac_post,
+                );
+            }
 
             let end_band = match bandwidth {
                 Bandwidth::Narrow => 13,
@@ -2988,6 +3759,8 @@ pub fn opus_encode(
     let frame_size_i32 = frame_size_select(frame_size_i32, encoder.variable_duration, encoder.fs)
         .ok_or(OpusEncodeError::BadArgument)?;
     let frame_size = usize::try_from(frame_size_i32).map_err(|_| OpusEncodeError::BadArgument)?;
+    #[cfg(test)]
+    let trace_frame_idx = opus_mode_trace::begin_frame();
 
     let required = channels
         .checked_mul(frame_size)
@@ -3036,7 +3809,7 @@ pub fn opus_encode(
                 frame_size,
                 frame_size,
                 0,
-                -1,
+                -2,
                 encoder.channels,
                 encoder.fs,
                 lsb_depth,
@@ -3376,6 +4149,20 @@ pub fn opus_encode(
 
     let bandwidth = Bandwidth::from_opus_int(bandwidth_int).unwrap_or(Bandwidth::Wide);
     encoder.bandwidth = bandwidth;
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_frame_idx {
+        opus_mode_trace::dump_if_match(
+            frame_idx,
+            mode,
+            encoder.prev_mode,
+            equiv_rate,
+            bandwidth_int,
+            encoder.stream_channels,
+            encoder.voice_ratio,
+            is_silence,
+            &encoder.analysis_info,
+        );
+    }
 
     let max_celt = usize::try_from(encoder.fs / 50).map_err(|_| OpusEncodeError::BadArgument)?;
     if mode == MODE_SILK_ONLY && frame_size * 2 != max_celt {
@@ -3645,6 +4432,8 @@ pub fn opus_encode_float(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use alloc::vec;
     use alloc::vec::Vec;
     use super::{
@@ -3995,6 +4784,21 @@ mod tests {
         assert!(len >= 1);
         assert_eq!(opus_packet_get_mode(&out[..len]).unwrap(), crate::packet::Mode::HYBRID);
         assert_eq!(opus_packet_get_samples_per_frame(&out[..len], 48_000).unwrap(), 960);
+    }
+
+    #[test]
+    fn celt_start_band_resets_when_switching_to_celt_only() {
+        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_HYBRID)).unwrap();
+        let pcm = [0i16; 960];
+        let mut out = [0u8; 4000];
+
+        opus_encode(&mut enc, &pcm, 960, &mut out).expect("hybrid encode");
+        assert_eq!(enc.celt.encoder().start_band, 17);
+
+        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_CELT_ONLY)).unwrap();
+        opus_encode(&mut enc, &pcm, 960, &mut out).expect("celt encode");
+        assert_eq!(enc.celt.encoder().start_band, 0);
     }
 
     #[test]
@@ -4690,5 +5494,62 @@ mod tests {
         let enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
         assert!(enc.energy_masking.is_null());
         assert!(!enc.lfe);
+    }
+
+    #[test]
+    fn opus_mode_trace_output() {
+        #[cfg(test)]
+        use crate::opus_encoder::celt_pcm_trace;
+        let path = match std::env::var("OPUS_TRACE_PCM") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let frames = std::env::var("OPUS_TRACE_FRAMES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(64);
+
+        let mut file = std::fs::File::open(&path).expect("open OPUS_TRACE_PCM");
+        let mut encoder = opus_encoder_create(48_000, 2, 2049).expect("encoder init");
+        opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetBitrate(64_000))
+            .expect("set bitrate");
+
+        let channels = 2usize;
+        let mut input_bytes = vec![0u8; 960 * channels * 2];
+        let mut input_pcm = vec![0i16; 960 * channels];
+        let mut packet = vec![0u8; 3 * 1276];
+
+        for frame_idx in 0..frames {
+            match std::io::Read::read_exact(&mut file, &mut input_bytes) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(err) => panic!("read OPUS_TRACE_PCM failed: {err}"),
+            }
+
+            #[cfg(test)]
+            if let Some(cfg) = celt_pcm_trace::config_copy()
+                && cfg.frame.map_or(true, |frame| frame == frame_idx)
+            {
+                for (sample, chunk) in input_pcm.iter_mut().zip(input_bytes.chunks_exact(2)) {
+                    *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                }
+                celt_pcm_trace::dump(
+                    "opus_trace_pcm",
+                    &input_pcm,
+                    960,
+                    channels,
+                    cfg.start,
+                    cfg.count,
+                    cfg.want_bits,
+                    frame_idx,
+                );
+            }
+
+            for (sample, chunk) in input_pcm.iter_mut().zip(input_bytes.chunks_exact(2)) {
+                *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+            }
+
+            let _ = opus_encode(&mut encoder, &input_pcm, 960, &mut packet).expect("opus_encode");
+        }
     }
 }

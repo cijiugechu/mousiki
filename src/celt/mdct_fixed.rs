@@ -385,7 +385,7 @@ pub fn clt_mdct_forward_fixed(
     let n2 = n >> 1;
     let n4 = n >> 2;
 
-    assert!(input.len() >= overlap + n);
+    assert!(input.len() >= overlap + n2);
     assert!(window.len() >= overlap);
     let required = (n2 - 1) * stride + 1;
     assert!(output.len() >= required);

@@ -161,6 +161,7 @@ fn celt_cos_pi_2(x: i16) -> i16 {
     term = add16(8_277, term);
     term = mult16_16_p15(x2, term);
     term = add16(-7_651, term);
+    term = mult16_16_p15(x2, term);
     let acc = add32(i32::from(sub16(32_767, x2)), i32::from(term));
     add16(1, min16(32_766, acc as i16))
 }

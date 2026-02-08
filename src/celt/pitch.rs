@@ -14,6 +14,9 @@ use crate::celt::{celt_autocorr, celt_lpc, celt_udiv};
 use crate::celt::{celt_autocorr_fixed, celt_lpc_fixed};
 use alloc::vec;
 use core::cmp::min;
+
+#[cfg(test)]
+extern crate std;
 #[cfg(feature = "fixed_point")]
 use core::cmp::{max, min as min_i32};
 
@@ -32,6 +35,58 @@ use crate::celt::math_fixed::{celt_maxabs16, celt_maxabs32, celt_rsqrt_norm};
 use crate::celt::types::{FixedCeltSig, FixedOpusVal16, FixedOpusVal32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::frac_div32 as frac_div32_fixed;
+
+#[cfg(test)]
+mod remove_doubling_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static TARGET_CALL: OnceLock<Option<usize>> = OnceLock::new();
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+
+    pub(crate) fn set_frame(frame_idx: Option<usize>) {
+        FRAME_INDEX.store(frame_idx.unwrap_or(usize::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn current_frame() -> Option<usize> {
+        let value = FRAME_INDEX.load(Ordering::Relaxed);
+        if value == usize::MAX {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
+    pub(crate) fn should_trace() -> bool {
+        let enabled = *ENABLED.get_or_init(|| {
+            env::var("CELT_TRACE_REMOVE_DOUBLING")
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false)
+        });
+        let target = *TARGET_CALL.get_or_init(|| {
+            env::var("CELT_TRACE_REMOVE_DOUBLING_FRAME")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+        });
+        if let Some(target) = target {
+            FRAME_INDEX.load(Ordering::Relaxed) == target
+        } else {
+            enabled
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn remove_doubling_trace_set_frame(frame_idx: Option<usize>) {
+    remove_doubling_trace::set_frame(frame_idx);
+}
+
+#[cfg(not(test))]
+pub(crate) fn remove_doubling_trace_set_frame(_frame_idx: Option<usize>) {}
 
 /// Selects the two most promising pitch lags based on normalised correlation.
 ///
@@ -114,10 +169,11 @@ pub(crate) fn celt_inner_prod(x: &[OpusVal16], y: &[OpusVal16]) -> OpusVal32 {
         "vectors provided to celt_inner_prod must have the same length",
     );
 
-    x.iter()
-        .zip(y.iter())
-        .map(|(&a, &b)| a * b)
-        .sum::<OpusVal32>()
+    let mut sum = 0.0;
+    for (&a, &b) in x.iter().zip(y.iter()) {
+        sum += a * b;
+    }
+    sum
 }
 
 #[cfg(feature = "fixed_point")]
@@ -314,13 +370,20 @@ pub(crate) fn celt_pitch_xcorr(
     );
 
     let x_head = &x[..len];
-    for (delay, slot) in xcorr.iter_mut().enumerate().take(max_pitch) {
+    let mut i = 0usize;
+    while i + 3 < max_pitch {
+        let mut sum = [0.0; 4];
+        xcorr_kernel(x_head, &y[i..], &mut sum, len);
+        xcorr[i] = sum[0];
+        xcorr[i + 1] = sum[1];
+        xcorr[i + 2] = sum[2];
+        xcorr[i + 3] = sum[3];
+        i += 4;
+    }
+
+    for delay in i..max_pitch {
         let y_window = &y[delay..delay + len];
-        *slot = x_head
-            .iter()
-            .zip(y_window.iter())
-            .map(|(&a, &b)| a * b)
-            .sum();
+        xcorr[delay] = celt_inner_prod(x_head, y_window);
     }
 }
 
@@ -726,6 +789,9 @@ pub(crate) fn remove_doubling(
     assert!(maxperiod > 0, "maxperiod must be positive");
     assert!(minperiod > 0, "minperiod must be positive");
     assert!(n > 0, "window size must be positive");
+
+    #[cfg(test)]
+    let trace = remove_doubling_trace::should_trace();
     let maxperiod_half = maxperiod >> 1;
     let n_half = n >> 1;
     assert!(
@@ -737,6 +803,13 @@ pub(crate) fn remove_doubling(
     let minperiod_half = minperiod >> 1;
     let t0_half = (*t0 >> 1).clamp(0, maxperiod_half.saturating_sub(1) as i32);
     let prev_period_half = prev_period >> 1;
+
+    #[cfg(test)]
+    if trace {
+        std::println!(
+            "celt_remove_doubling.t0_half={t0_half} minperiod_half={minperiod_half} maxperiod_half={maxperiod_half} n_half={n_half} prev_period_half={prev_period_half}"
+        );
+    }
 
     if maxperiod_half <= 1 || n_half == 0 {
         *t0 = (*t0).max(minperiod0);
@@ -760,7 +833,8 @@ pub(crate) fn remove_doubling(
     for i in 1..=maxperiod_half {
         let prev_sample = x[center - i];
         let enter_sample = x[center + n_half - i];
-        yy += prev_sample * prev_sample - enter_sample * enter_sample;
+        yy += prev_sample * prev_sample;
+        yy -= enter_sample * enter_sample;
         yy_lookup[i] = yy.max(0.0);
     }
 
@@ -769,6 +843,23 @@ pub(crate) fn remove_doubling(
     let mut best_yy = yy;
     let mut g = compute_pitch_gain(xy, xx, yy);
     let g0 = g;
+
+    #[cfg(test)]
+    if trace {
+        std::println!(
+            "celt_remove_doubling.xx={:.9e} xy={:.9e} yy={:.9e} g0={:.9e}",
+            xx, xy, yy, g0
+        );
+        if std::env::var("CELT_TRACE_REMOVE_DOUBLING_BITS")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+        {
+            std::println!("celt_remove_doubling.xx_bits=0x{:08x}", xx.to_bits());
+            std::println!("celt_remove_doubling.xy_bits=0x{:08x}", xy.to_bits());
+            std::println!("celt_remove_doubling.yy_bits=0x{:08x}", yy.to_bits());
+            std::println!("celt_remove_doubling.g0_bits=0x{:08x}", g0.to_bits());
+        }
+    }
     let max_allowed = maxperiod_half.saturating_sub(1) as i32;
     let mut t = if max_allowed >= 1 {
         t0_half.clamp(1, max_allowed)
@@ -833,6 +924,28 @@ pub(crate) fn remove_doubling(
         }
     }
 
+    #[cfg(test)]
+    if trace {
+        std::println!(
+            "celt_remove_doubling.best_xy={:.9e} best_yy={:.9e} g={:.9e} t={t}",
+            best_xy, best_yy, g
+        );
+        if std::env::var("CELT_TRACE_REMOVE_DOUBLING_BITS")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+        {
+            std::println!(
+                "celt_remove_doubling.best_xy_bits=0x{:08x}",
+                best_xy.to_bits()
+            );
+            std::println!(
+                "celt_remove_doubling.best_yy_bits=0x{:08x}",
+                best_yy.to_bits()
+            );
+            std::println!("celt_remove_doubling.g_bits=0x{:08x}", g.to_bits());
+        }
+    }
+
     best_xy = best_xy.max(0.0);
     let mut pg = if best_yy <= best_xy {
         1.0
@@ -860,6 +973,14 @@ pub(crate) fn remove_doubling(
 
     let updated = 2 * t + offset;
     *t0 = updated.max(minperiod0);
+
+    #[cfg(test)]
+    if trace {
+        std::println!(
+            "celt_remove_doubling.xcorr0={:.9e} xcorr1={:.9e} xcorr2={:.9e} offset={offset} pg={:.9e} t0={}",
+            xcorr[0], xcorr[1], xcorr[2], pg, *t0
+        );
+    }
 
     pg
 }
@@ -1038,7 +1159,12 @@ fn celt_fir5(x: &mut [OpusVal16], num: &[OpusVal16; 5]) {
 
     for sample in x.iter_mut() {
         let current = *sample;
-        let sum = current + num0 * mem0 + num1 * mem1 + num2 * mem2 + num3 * mem3 + num4 * mem4;
+        let mut sum = current;
+        sum = crate::celt::math::mul_add_f32(num0, mem0, sum);
+        sum = crate::celt::math::mul_add_f32(num1, mem1, sum);
+        sum = crate::celt::math::mul_add_f32(num2, mem2, sum);
+        sum = crate::celt::math::mul_add_f32(num3, mem3, sum);
+        sum = crate::celt::math::mul_add_f32(num4, mem4, sum);
 
         mem4 = mem3;
         mem3 = mem2;
@@ -1115,10 +1241,15 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
     x_lp.fill(0.0);
 
     for channel in x {
-        x_lp[0] += 0.25 * channel[1] + 0.5 * channel[0];
+        let mut acc0 = 0.25 * channel[1];
+        acc0 += 0.5 * channel[0];
+        x_lp[0] += acc0;
         for (i, slot) in x_lp.iter_mut().enumerate().take(half_len).skip(1) {
             let base = 2 * i;
-            *slot += 0.25 * channel[base - 1] + 0.5 * channel[base] + 0.25 * channel[base + 1];
+            let mut acc = 0.25 * channel[base - 1];
+            acc += 0.25 * channel[base + 1];
+            acc += 0.5 * channel[base];
+            *slot += acc;
         }
     }
 
@@ -1143,11 +1274,55 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
     let c1 = 0.8;
     let lpc2 = [
         lpc[0] + 0.8,
-        lpc[1] + c1 * lpc[0],
-        lpc[2] + c1 * lpc[1],
-        lpc[3] + c1 * lpc[2],
+        crate::celt::math::mul_add_f32(c1, lpc[0], lpc[1]),
+        crate::celt::math::mul_add_f32(c1, lpc[1], lpc[2]),
+        crate::celt::math::mul_add_f32(c1, lpc[2], lpc[3]),
         c1 * lpc[3],
     ];
+
+    #[cfg(test)]
+    if std::env::var("CELT_TRACE_PITCH_LPC")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+    {
+        if let Some(frame_idx) = remove_doubling_trace::current_frame() {
+            let target = std::env::var("CELT_TRACE_PITCH_LPC_FRAME")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok());
+            let want_bits = std::env::var("CELT_TRACE_PITCH_LPC_BITS")
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false);
+            if target.map_or(true, |value| value == frame_idx) {
+                for (i, value) in ac.iter().enumerate() {
+                    std::println!("celt_pitch_lpc[{frame_idx}].ac[{i}]={:.9e}", value);
+                    if want_bits {
+                        std::println!(
+                            "celt_pitch_lpc[{frame_idx}].ac_bits[{i}]=0x{:08x}",
+                            value.to_bits()
+                        );
+                    }
+                }
+                for (i, value) in lpc.iter().enumerate() {
+                    std::println!("celt_pitch_lpc[{frame_idx}].lpc[{i}]={:.9e}", value);
+                    if want_bits {
+                        std::println!(
+                            "celt_pitch_lpc[{frame_idx}].lpc_bits[{i}]=0x{:08x}",
+                            value.to_bits()
+                        );
+                    }
+                }
+                for (i, value) in lpc2.iter().enumerate() {
+                    std::println!("celt_pitch_lpc[{frame_idx}].lpc2[{i}]={:.9e}", value);
+                    if want_bits {
+                        std::println!(
+                            "celt_pitch_lpc[{frame_idx}].lpc2_bits[{i}]=0x{:08x}",
+                            value.to_bits()
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     celt_fir5(x_lp, &lpc2);
 }

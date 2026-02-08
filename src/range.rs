@@ -446,12 +446,13 @@ impl RangeEncoder {
         }
         let size = size as usize;
         let buffer = self.encoder.ctx().buffer();
+        #[cfg(test)]
+        range_done_trace::maybe_dump(&buffer[..size]);
         buffer[..size].to_vec()
     }
 
     pub(crate) fn finish_without_done(self) -> Vec<u8> {
-        let size = self.encoder.ctx().offs + self.encoder.ctx().end_offs;
-        let size = size as usize;
+        let size = self.encoder.ctx().storage as usize;
         let buffer = self.encoder.ctx().buffer();
         buffer[..size].to_vec()
     }
@@ -468,6 +469,95 @@ impl Clone for RangeEncoder {
         let snapshot = EcEncSnapshot::capture(&self.encoder);
         Self::from_snapshot(&snapshot)
     }
+}
+
+#[cfg(test)]
+mod range_done_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn set_frame(frame_idx: usize) {
+        CURRENT_FRAME.store(frame_idx as isize, Ordering::Relaxed);
+    }
+
+    fn current_frame() -> Option<usize> {
+        let value = CURRENT_FRAME.load(Ordering::Relaxed);
+        if value >= 0 {
+            Some(value as usize)
+        } else {
+            None
+        }
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("OPUS_TRACE_RANGE_DONE") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("OPUS_TRACE_RANGE_DONE_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                Some(TraceConfig { frame })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn maybe_dump(buffer: &[u8]) {
+        let cfg = match config() {
+            Some(cfg) => cfg,
+            None => return,
+        };
+        let frame_idx = match current_frame() {
+            Some(frame_idx) => frame_idx,
+            None => return,
+        };
+        if cfg.frame.map_or(true, |frame| frame == frame_idx) {
+            std::println!(
+                "opus_range_done[{frame_idx}].len={}",
+                buffer.len()
+            );
+            for (idx, value) in buffer.iter().enumerate() {
+                std::println!(
+                    "opus_range_done[{frame_idx}].byte[{idx}]=0x{value:02x}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn begin_range_done_trace_frame() -> Option<usize> {
+    range_done_trace::begin_frame()
+}
+
+#[cfg(test)]
+pub(crate) fn set_range_done_trace_frame(frame_idx: usize) {
+    range_done_trace::set_frame(frame_idx);
+    crate::celt::set_enc_done_trace_frame(frame_idx);
 }
 
 impl Drop for RangeEncoder {

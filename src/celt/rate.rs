@@ -38,6 +38,141 @@ pub(crate) const LOG2_FRAC_TABLE: [u8; 24] = [
     0, 8, 13, 16, 19, 21, 23, 24, 26, 27, 28, 29, 30, 31, 32, 32, 33, 34, 34, 35, 36, 36, 37, 37,
 ];
 
+#[cfg(test)]
+mod alloc_interp_trace {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+    use std::env;
+    use std::sync::OnceLock;
+
+    pub(crate) struct TraceConfig {
+        frame: Option<usize>,
+        band: Option<usize>,
+    }
+
+    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
+    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
+
+    pub(crate) fn begin_frame() -> Option<usize> {
+        if config().is_some() {
+            let frame = FRAME_INDEX.fetch_add(1, Ordering::Relaxed);
+            CURRENT_FRAME.store(frame as isize, Ordering::Relaxed);
+            Some(frame)
+        } else {
+            CURRENT_FRAME.store(-1, Ordering::Relaxed);
+            None
+        }
+    }
+
+    pub(crate) fn current_frame_idx() -> Option<usize> {
+        let current = CURRENT_FRAME.load(Ordering::Relaxed);
+        if current < 0 {
+            None
+        } else {
+            Some(current as usize)
+        }
+    }
+
+    fn config() -> Option<&'static TraceConfig> {
+        TRACE_CONFIG
+            .get_or_init(|| {
+                let enabled = match env::var("CELT_TRACE_ALLOC_INTERP") {
+                    Ok(value) => !value.is_empty() && value != "0",
+                    Err(_) => false,
+                };
+                if !enabled {
+                    return None;
+                }
+                let frame = env::var("CELT_TRACE_ALLOC_INTERP_FRAME")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                let band = env::var("CELT_TRACE_ALLOC_INTERP_BAND")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok());
+                Some(TraceConfig { frame, band })
+            })
+            .as_ref()
+    }
+
+    pub(crate) fn should_dump(frame_idx: usize, band: usize) -> bool {
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+                && cfg.band.map_or(true, |target_band| target_band == band)
+        })
+    }
+
+    pub(crate) fn target_band() -> Option<usize> {
+        config().and_then(|cfg| cfg.band)
+    }
+
+    pub(crate) fn dump_init_bits(
+        frame_idx: usize,
+        band: usize,
+        bits1: i32,
+        bits2: i32,
+        lo: i32,
+        tmp: i32,
+        thresh: i32,
+        cap: i32,
+        alloc_floor: i32,
+        done: bool,
+    ) {
+        if !should_dump(frame_idx, band) {
+            return;
+        }
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].stage=init_bits");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits1={bits1}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits2={bits2}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].lo={lo}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].tmp={tmp}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].thresh={thresh}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].cap={cap}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].alloc_floor={alloc_floor}");
+        std::println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].done={}",
+            done as u8
+        );
+    }
+
+    pub(crate) fn dump_post_fine(
+        frame_idx: usize,
+        band: usize,
+        bits: i32,
+        ebits: i32,
+        fine_priority: i32,
+        balance: i32,
+    ) {
+        if !should_dump(frame_idx, band) {
+            return;
+        }
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].stage=post_fine");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits={bits}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].ebits={ebits}");
+        std::println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].fine_priority={fine_priority}"
+        );
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].balance={balance}");
+    }
+
+    pub(crate) fn dump_post_skip(
+        frame_idx: usize,
+        band: usize,
+        bits: i32,
+        coded_bands: i32,
+        skip_start: usize,
+    ) {
+        if !should_dump(frame_idx, band) {
+            return;
+        }
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].stage=post_skip");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits={bits}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].coded_bands={coded_bands}");
+        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].skip_start={skip_start}");
+    }
+}
+
 /// Returns the number of pulses represented by the pseudo-pulse index `i`.
 ///
 /// This mirrors the inline helper from `celt/rate.h`.  The first eight entries
@@ -236,14 +371,16 @@ pub(crate) fn compute_pulse_cache(
     }
 
     let mut caps = vec![0u8; (lm + 1) * 2 * nb_ebands];
-    let shift = BITRES as usize;
+    let shift = BITRES as i32;
     for i in 0..=lm {
         for c in 1..=2 {
             let c_i32 = c as i32;
             for j in 0..nb_ebands {
-                let mut n0 = i32::from(e_bands[j + 1] - e_bands[j]);
-                let max_bits = if (n0 << i) == 1 {
-                    (c_i32 * (1 + MAX_FINE_BITS)) << shift
+                let band_width = i32::from(e_bands[j + 1] - e_bands[j]);
+                let mut n0 = band_width;
+                let mut max_bits: i32;
+                if (n0 << i) == 1 {
+                    max_bits = (c_i32 * (1 + MAX_FINE_BITS)) << shift;
                 } else {
                     let mut lm0 = 0i32;
                     if n0 > 2 {
@@ -258,49 +395,70 @@ pub(crate) fn compute_pulse_cache(
                     let cache_offset = index[row];
                     debug_assert!(cache_offset >= 0, "pulse cache entry should exist");
                     let cache_offset = cache_offset as usize;
-                    let entry_k = i32::from(bits[cache_offset]);
-                    let base_idx = cache_offset + entry_k as usize;
-                    let mut local_bits = i32::from(bits[base_idx]) + 1;
-                    let iterations = (i as i32 - lm0).max(0);
+                    let entry_k = bits[cache_offset] as usize;
+                    let base_idx = cache_offset + entry_k;
+                    max_bits = i32::from(bits[base_idx]) + 1;
+
                     let mut n = n0;
-                    for k_iter in 0..iterations {
-                        local_bits <<= 1;
+                    for k_iter in 0..(i as i32 - lm0) {
+                        max_bits <<= 1;
                         let offset = ((i32::from(log_n[j]) + ((lm0 + k_iter) << shift)) >> 1)
                             - QTHETA_OFFSET;
                         let two_n_minus_one = 2 * n - 1;
-                        let num = 459 * (two_n_minus_one * offset + local_bits);
+                        let num = 459 * (two_n_minus_one * offset + max_bits);
                         let den = (two_n_minus_one << 9) - 459;
-                        let mut qb = ((num + (den >> 1)) / den).min(57);
-                        debug_assert!(qb >= 0);
-                        if qb < 0 {
-                            qb = 0;
+                        let mut qb = (num + (den >> 1)) / den;
+                        if qb > 57 {
+                            qb = 57;
                         }
-                        local_bits += qb;
-                        let offset_guard = offset.max(0);
-                        local_bits = local_bits.max(c_i32 * (offset_guard + (4 << shift)));
+                        debug_assert!(qb >= 0);
+                        max_bits += qb;
                         n <<= 1;
                     }
 
-                    let ndof = (c_i32 * n0 - (c_i32 - 1)).max(1);
-                    local_bits = local_bits.min((c_i32 * n0) << shift);
-                    let pulses = get_pulses(entry_k) + 2 * (ndof - 1);
-                    let floor = c_i32 * ((pulses / (2 * ndof)) << shift);
-                    local_bits = local_bits.max(floor);
-                    if (n0 << i) == 2 {
-                        let extra = ((c_i32 * (1 + 16)) >> 1) << shift;
-                        local_bits = local_bits.max(extra);
-                    }
-                    if c == 2 && (n0 << i) >= 2 {
-                        let extra = ((2 * (1 + 24)) >> 1) << shift;
-                        local_bits = local_bits.max(extra);
+                    if c == 2 {
+                        max_bits <<= 1;
+                        let offset = ((i32::from(log_n[j]) + ((i as i32) << shift)) >> 1)
+                            - if n == 2 {
+                                QTHETA_OFFSET_TWOPHASE
+                            } else {
+                                QTHETA_OFFSET
+                            };
+                        let ndof = 2 * n - 1 - if n == 2 { 1 } else { 0 };
+                        let (scale, qb_cap) = if n == 2 { (512, 64) } else { (487, 61) };
+                        let num = scale * (max_bits + ndof * offset);
+                        let den = (ndof << 9) - scale;
+                        let mut qb = (num + (den >> 1)) / den;
+                        if qb > qb_cap {
+                            qb = qb_cap;
+                        }
+                        debug_assert!(qb >= 0);
+                        max_bits += qb;
                     }
 
-                    local_bits
-                };
+                    let ndof = c_i32 * n + if c == 2 && n > 2 { 1 } else { 0 };
+                    let mut offset =
+                        ((i32::from(log_n[j]) + ((i as i32) << shift)) >> 1) - FINE_OFFSET;
+                    if n == 2 {
+                        offset += (1 << shift) >> 2;
+                    }
+                    let num = max_bits + ndof * offset;
+                    let den = (ndof - 1) << shift;
+                    let mut qb = (num + (den >> 1)) / den;
+                    if qb > MAX_FINE_BITS {
+                        qb = MAX_FINE_BITS;
+                    }
+                    debug_assert!(qb >= 0);
+                    max_bits += (c_i32 * qb) << shift;
+                }
+
+                let denominator = c_i32 * (band_width << i);
+                max_bits = (4 * max_bits / denominator) - 64;
+                debug_assert!((0..256).contains(&max_bits));
 
                 let cap_idx = i * 2 * nb_ebands + (c - 1) * nb_ebands + j;
                 if !caps.is_empty() {
-                    caps[cap_idx] = ((max_bits >> shift).min(255)) as u8;
+                    caps[cap_idx] = max_bits as u8;
                 }
             }
         }
@@ -397,6 +555,21 @@ pub(crate) fn interp_bits2pulses(
         tmp = min(tmp, cap[j]);
         bits[j] = tmp;
         psum += tmp;
+        #[cfg(test)]
+        if let Some(frame_idx) = alloc_interp_trace::current_frame_idx() {
+            alloc_interp_trace::dump_init_bits(
+                frame_idx,
+                j,
+                bits1[j],
+                bits2[j],
+                lo,
+                tmp,
+                thresh[j],
+                cap[j],
+                alloc_floor,
+                done,
+            );
+        }
     }
 
     let mut coded_bands = end as OpusInt32;
@@ -424,13 +597,17 @@ pub(crate) fn interp_bits2pulses(
         if band_bits >= thresh_j {
             let mut skip = false;
             if let Some(enc) = encoder.as_deref_mut() {
-                let decision = if coded_bands > 17 {
-                    let depth_threshold = if j as OpusInt32 <= prev { 7 } else { 9 };
+                let decision = if coded_bands <= start as OpusInt32 + 2 {
+                    true
+                } else {
+                    let depth_threshold = if coded_bands > 17 {
+                        if (j as OpusInt32) < prev { 7 } else { 9 }
+                    } else {
+                        0
+                    };
                     let split_shift = (lm + BITRES as OpusInt32) as u32;
                     band_bits > ((depth_threshold * band_width) << split_shift) >> 4
                         && (j as OpusInt32) <= signal_bandwidth
-                } else {
-                    true
                 };
                 enc.enc_bit_logp(OpusInt32::from(decision), 1);
                 if decision {
@@ -467,6 +644,20 @@ pub(crate) fn interp_bits2pulses(
     }
 
     debug_assert!(coded_bands > start as OpusInt32);
+    #[cfg(test)]
+    if let (Some(frame_idx), Some(band)) =
+        (alloc_interp_trace::current_frame_idx(), alloc_interp_trace::target_band())
+    {
+        if band >= start && band < end {
+            alloc_interp_trace::dump_post_skip(
+                frame_idx,
+                band,
+                bits[band],
+                coded_bands,
+                skip_start,
+            );
+        }
+    }
 
     if intensity_rsv > 0 {
         if let Some(enc) = encoder.as_deref_mut() {
@@ -592,9 +783,30 @@ pub(crate) fn interp_bits2pulses(
 
         debug_assert!(*bits_entry >= 0);
         debug_assert!(ebits[band] >= 0);
+        #[cfg(test)]
+        if let Some(frame_idx) = alloc_interp_trace::current_frame_idx() {
+            alloc_interp_trace::dump_post_fine(
+                frame_idx,
+                band,
+                *bits_entry,
+                ebits[band],
+                fine_priority[band],
+                local_balance,
+            );
+        }
     }
 
     *balance = local_balance;
+
+    for band in (coded_bands as usize)..end {
+        let bit_value = bits[band];
+        let eb = bit_value >> stereo_shift >> BITRES;
+        debug_assert!((channels * eb) << BITRES == bit_value);
+        ebits[band] = eb;
+        bits[band] = 0;
+        fine_priority[band] = if eb < 1 { 1 } else { 0 };
+    }
+
     coded_bands
 }
 
@@ -627,6 +839,9 @@ pub(crate) fn clt_compute_allocation(
     debug_assert!(pulses.len() >= end);
     debug_assert!(ebits.len() >= end);
     debug_assert!(fine_priority.len() >= end);
+
+    #[cfg(test)]
+    let _trace_alloc_interp_frame = alloc_interp_trace::begin_frame();
 
     total = max(total, 0);
     let len = mode.num_ebands;

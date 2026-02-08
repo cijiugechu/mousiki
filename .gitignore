@@ -1,8 +1,15 @@
 /target
 /target-codex
 Cargo.lock
+*.wav
 *.pcm
+!testdata/ehren-paper_lights-96.pcm
 *.opus
+*.opuspkt
+opus_decode_fuzzer
 .DS_Store
 ctests/build/
+ctests/build-custom/
+ctests/build-nointr/
+ctests/build-ffp*/
 testdata/dred_vectors/

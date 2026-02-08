@@ -19,6 +19,7 @@ use crate::celt::rate::compute_pulse_cache;
 use crate::celt::types::{
     CeltCoef, MdctLookup, OpusCustomMode, OpusInt16, OpusInt32, OpusVal16, PulseCacheData,
 };
+use crate::celt::window_48000_960::WINDOW_120;
 use libm::sinf;
 
 /// Precomputed 5 ms critical band edges used by CELT's reference configuration.
@@ -385,6 +386,11 @@ pub(crate) fn compute_preemphasis(sample_rate: OpusInt32) -> [OpusVal16; 4] {
 #[must_use]
 pub(crate) fn compute_mdct_window(overlap: usize) -> Vec<CeltCoef> {
     assert!(overlap > 0, "overlap must be strictly positive");
+
+    if overlap == WINDOW_120.len() {
+        // Use the reference static table to preserve C's bit-exact coefficients for 48 kHz / 960.
+        return WINDOW_120.to_vec();
+    }
 
     let mut window = Vec::with_capacity(overlap);
     let scale = core::f32::consts::FRAC_PI_2;
