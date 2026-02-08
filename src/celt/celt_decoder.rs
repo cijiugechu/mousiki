@@ -117,6 +117,74 @@ fn sync_loge_to_fixed(dst: &mut [FixedCeltGlog], src: &[CeltGlog]) {
     }
 }
 
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn lpc_from_fixed(value: FixedOpusVal16) -> OpusVal16 {
+    value as f32 / (1 << 12) as f32
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn lpc_to_fixed(value: OpusVal16) -> FixedOpusVal16 {
+    qconst16(value as f64, 12)
+}
+
+#[cfg(feature = "fixed_point")]
+fn sync_from_fixed_primary_to_float_cache(decoder: &mut OpusCustomDecoder<'_>) {
+    debug_assert_eq!(decoder.decode_mem_fixed.len(), decoder.decode_mem.len());
+    debug_assert_eq!(decoder.lpc_fixed.len(), decoder.lpc.len());
+    debug_assert_eq!(decoder.old_ebands_fixed.len(), decoder.old_ebands.len());
+    debug_assert_eq!(decoder.old_log_e_fixed.len(), decoder.old_log_e.len());
+    debug_assert_eq!(decoder.old_log_e2_fixed.len(), decoder.old_log_e2.len());
+    debug_assert_eq!(
+        decoder.background_log_e_fixed.len(),
+        decoder.background_log_e.len()
+    );
+
+    for (dst, &src) in decoder
+        .decode_mem
+        .iter_mut()
+        .zip(decoder.decode_mem_fixed.iter())
+    {
+        *dst = fixed_sig_to_float(src);
+    }
+    for (dst, &src) in decoder.lpc.iter_mut().zip(decoder.lpc_fixed.iter()) {
+        *dst = lpc_from_fixed(src);
+    }
+    sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
+    sync_loge_from_fixed(decoder.old_log_e, decoder.old_log_e_fixed);
+    sync_loge_from_fixed(decoder.old_log_e2, decoder.old_log_e2_fixed);
+    sync_loge_from_fixed(decoder.background_log_e, decoder.background_log_e_fixed);
+}
+
+#[cfg(feature = "fixed_point")]
+fn sync_from_float_cache_to_fixed_primary(decoder: &mut OpusCustomDecoder<'_>) {
+    debug_assert_eq!(decoder.decode_mem_fixed.len(), decoder.decode_mem.len());
+    debug_assert_eq!(decoder.lpc_fixed.len(), decoder.lpc.len());
+    debug_assert_eq!(decoder.old_ebands_fixed.len(), decoder.old_ebands.len());
+    debug_assert_eq!(decoder.old_log_e_fixed.len(), decoder.old_log_e.len());
+    debug_assert_eq!(decoder.old_log_e2_fixed.len(), decoder.old_log_e2.len());
+    debug_assert_eq!(
+        decoder.background_log_e_fixed.len(),
+        decoder.background_log_e.len()
+    );
+
+    for (dst, &src) in decoder
+        .decode_mem_fixed
+        .iter_mut()
+        .zip(decoder.decode_mem.iter())
+    {
+        *dst = float2sig(src);
+    }
+    for (dst, &src) in decoder.lpc_fixed.iter_mut().zip(decoder.lpc.iter()) {
+        *dst = lpc_to_fixed(src);
+    }
+    sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
+    sync_loge_to_fixed(decoder.old_log_e_fixed, decoder.old_log_e);
+    sync_loge_to_fixed(decoder.old_log_e2_fixed, decoder.old_log_e2);
+    sync_loge_to_fixed(decoder.background_log_e_fixed, decoder.background_log_e);
+}
+
 /// Linear prediction order used by the decoder side filters.
 ///
 /// Mirrors the `LPC_ORDER` constant from the reference implementation.  The
@@ -780,6 +848,19 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
 }
 
 pub(crate) fn celt_decode_lost(
+    decoder: &mut OpusCustomDecoder<'_>,
+    n: usize,
+    lm: usize,
+    lpcnet: PlcHandle<'_>,
+) {
+    #[cfg(feature = "fixed_point")]
+    sync_from_fixed_primary_to_float_cache(decoder);
+    celt_decode_lost_impl(decoder, n, lm, lpcnet);
+    #[cfg(feature = "fixed_point")]
+    sync_from_float_cache_to_fixed_primary(decoder);
+}
+
+fn celt_decode_lost_impl(
     decoder: &mut OpusCustomDecoder<'_>,
     n: usize,
     lm: usize,
@@ -1537,7 +1618,9 @@ pub(crate) fn opus_custom_decoder_get_size(
         + {
             #[cfg(feature = "fixed_point")]
             {
-                band_history * core::mem::size_of::<FixedCeltGlog>()
+                decode_mem * core::mem::size_of::<FixedCeltSig>()
+                    + lpc * core::mem::size_of::<FixedOpusVal16>()
+                    + 4 * band_history * core::mem::size_of::<FixedCeltGlog>()
             }
             #[cfg(not(feature = "fixed_point"))]
             {
@@ -1821,6 +1904,35 @@ pub(crate) fn validate_celt_decoder(decoder: &OpusCustomDecoder<'_>) {
         (0..=2).contains(&decoder.postfilter_tapset_old),
         "previous postfilter tapset must be in the inclusive range [0, 2]",
     );
+
+    let stride = DECODE_BUFFER_SIZE + decoder.overlap;
+    debug_assert_eq!(
+        decoder.decode_mem.len(),
+        stride * decoder.channels,
+        "decode history must match channel-stride layout",
+    );
+    debug_assert_eq!(
+        decoder.lpc.len(),
+        LPC_ORDER * decoder.channels,
+        "LPC history size must match channel count",
+    );
+    let band_count = 2 * decoder.mode.num_ebands;
+    debug_assert_eq!(decoder.old_ebands.len(), band_count);
+    debug_assert_eq!(decoder.old_log_e.len(), band_count);
+    debug_assert_eq!(decoder.old_log_e2.len(), band_count);
+    debug_assert_eq!(decoder.background_log_e.len(), band_count);
+    #[cfg(feature = "fixed_point")]
+    {
+        debug_assert_eq!(decoder.decode_mem_fixed.len(), decoder.decode_mem.len());
+        debug_assert_eq!(decoder.lpc_fixed.len(), decoder.lpc.len());
+        debug_assert_eq!(decoder.old_ebands_fixed.len(), band_count);
+        debug_assert_eq!(decoder.old_log_e_fixed.len(), band_count);
+        debug_assert_eq!(decoder.old_log_e2_fixed.len(), band_count);
+        debug_assert_eq!(
+            decoder.background_log_e_fixed.len(),
+            decoder.background_log_e.len()
+        );
+    }
 }
 
 /// Metadata describing the parsed frame header and bit allocation.
@@ -2180,18 +2292,18 @@ where
 
     #[cfg(feature = "fixed_point")]
     {
-        sync_loge_to_fixed(decoder.fixed_old_ebands, decoder.old_ebands);
+        sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
         unquant_coarse_energy_fixed(
             mode,
             start,
             end,
-            decoder.fixed_old_ebands,
+            decoder.old_ebands_fixed,
             intra_ener,
             dec,
             c,
             lm,
         );
-        sync_loge_from_fixed(decoder.old_ebands, decoder.fixed_old_ebands);
+        sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -2290,12 +2402,12 @@ where
             mode,
             start,
             end,
-            decoder.fixed_old_ebands,
+            decoder.old_ebands_fixed,
             &fine_quant,
             dec,
             c,
         );
-        sync_loge_from_fixed(decoder.old_ebands, decoder.fixed_old_ebands);
+        sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -2356,6 +2468,27 @@ fn res_to_int24(sample: OpusRes) -> i32 {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn celt_decode_with_ec_dred<'mode, 'dec>(
+    decoder: &mut OpusCustomDecoder<'mode>,
+    packet: Option<&[u8]>,
+    pcm: &mut [OpusRes],
+    frame_size: usize,
+    range_decoder: Option<&'dec mut EcDec<'dec>>,
+    accum: bool,
+    plc: PlcHandle<'_>,
+) -> Result<usize, CeltDecodeError>
+where
+    'mode: 'dec,
+{
+    #[cfg(feature = "fixed_point")]
+    sync_from_fixed_primary_to_float_cache(decoder);
+    let result = celt_decode_with_ec_dred_impl(decoder, packet, pcm, frame_size, range_decoder, accum, plc);
+    #[cfg(feature = "fixed_point")]
+    sync_from_float_cache_to_fixed_primary(decoder);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn celt_decode_with_ec_dred_impl<'mode, 'dec>(
     decoder: &mut OpusCustomDecoder<'mode>,
     packet: Option<&[u8]>,
     pcm: &mut [OpusRes],
@@ -2522,14 +2655,14 @@ where
             mode,
             start,
             end,
-            decoder.fixed_old_ebands,
+            decoder.old_ebands_fixed,
             &fine_quant,
             &fine_priority,
             remaining_bits,
             dec,
             c,
         );
-        sync_loge_from_fixed(decoder.old_ebands, decoder.fixed_old_ebands);
+        sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -2570,7 +2703,7 @@ where
         decoder.old_ebands.fill(-28.0);
         #[cfg(feature = "fixed_point")]
         {
-            sync_loge_to_fixed(decoder.fixed_old_ebands, decoder.old_ebands);
+            sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
         }
     }
 
@@ -2945,14 +3078,24 @@ pub(crate) enum DecoderCtlRequest<'dec, 'req> {
 /// decoder views used during reset or PLC.
 #[derive(Debug, Default)]
 pub(crate) struct CeltDecoderAlloc {
+    #[cfg(feature = "fixed_point")]
+    decode_mem_fixed: Vec<FixedCeltSig>,
+    #[cfg(feature = "fixed_point")]
+    lpc_fixed: Vec<FixedOpusVal16>,
+    #[cfg(feature = "fixed_point")]
+    old_ebands_fixed: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    old_log_e_fixed: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    old_log_e2_fixed: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    background_log_e_fixed: Vec<FixedCeltGlog>,
     decode_mem: Vec<CeltSig>,
     lpc: Vec<OpusVal16>,
     old_ebands: Vec<CeltGlog>,
     old_log_e: Vec<CeltGlog>,
     old_log_e2: Vec<CeltGlog>,
     background_log_e: Vec<CeltGlog>,
-    #[cfg(feature = "fixed_point")]
-    fixed_old_ebands: Vec<FixedCeltGlog>,
 }
 
 impl CeltDecoderAlloc {
@@ -2972,14 +3115,24 @@ impl CeltDecoderAlloc {
         let band_count = 2 * mode.num_ebands;
 
         Self {
+            #[cfg(feature = "fixed_point")]
+            decode_mem_fixed: vec![0; decode_mem],
+            #[cfg(feature = "fixed_point")]
+            lpc_fixed: vec![0; lpc],
+            #[cfg(feature = "fixed_point")]
+            old_ebands_fixed: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            old_log_e_fixed: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            old_log_e2_fixed: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            background_log_e_fixed: vec![0; band_count],
             decode_mem: vec![0.0; decode_mem],
             lpc: vec![0.0; lpc],
             old_ebands: vec![0.0; band_count],
             old_log_e: vec![0.0; band_count],
             old_log_e2: vec![0.0; band_count],
             background_log_e: vec![0.0; band_count],
-            #[cfg(feature = "fixed_point")]
-            fixed_old_ebands: vec![0; band_count],
         }
     }
 
@@ -3005,7 +3158,12 @@ impl CeltDecoderAlloc {
         debug_assert_eq!(self.background_log_e.len(), band_history);
         #[cfg(feature = "fixed_point")]
         {
-            debug_assert_eq!(self.fixed_old_ebands.len(), band_history);
+            debug_assert_eq!(self.decode_mem_fixed.len(), decode_mem);
+            debug_assert_eq!(self.lpc_fixed.len(), self.lpc.len());
+            debug_assert_eq!(self.old_ebands_fixed.len(), band_history);
+            debug_assert_eq!(self.old_log_e_fixed.len(), band_history);
+            debug_assert_eq!(self.old_log_e2_fixed.len(), band_history);
+            debug_assert_eq!(self.background_log_e_fixed.len(), band_history);
         }
 
         DECODER_PREFIX_SIZE
@@ -3015,7 +3173,13 @@ impl CeltDecoderAlloc {
             + {
                 #[cfg(feature = "fixed_point")]
                 {
-                    band_history * core::mem::size_of::<FixedCeltGlog>()
+                    self.decode_mem_fixed.len() * core::mem::size_of::<FixedCeltSig>()
+                        + self.lpc_fixed.len() * core::mem::size_of::<FixedOpusVal16>()
+                        + (self.old_ebands_fixed.len()
+                            + self.old_log_e_fixed.len()
+                            + self.old_log_e2_fixed.len()
+                            + self.background_log_e_fixed.len())
+                            * core::mem::size_of::<FixedCeltGlog>()
                 }
                 #[cfg(not(feature = "fixed_point"))]
                 {
@@ -3043,13 +3207,18 @@ impl CeltDecoderAlloc {
                 mode,
                 channels,
                 stream_channels,
+                self.decode_mem_fixed.as_mut_slice(),
+                self.lpc_fixed.as_mut_slice(),
+                self.old_ebands_fixed.as_mut_slice(),
+                self.old_log_e_fixed.as_mut_slice(),
+                self.old_log_e2_fixed.as_mut_slice(),
+                self.background_log_e_fixed.as_mut_slice(),
                 self.decode_mem.as_mut_slice(),
                 self.lpc.as_mut_slice(),
                 self.old_ebands.as_mut_slice(),
                 self.old_log_e.as_mut_slice(),
                 self.old_log_e2.as_mut_slice(),
                 self.background_log_e.as_mut_slice(),
-                self.fixed_old_ebands.as_mut_slice(),
             )
         }
         #[cfg(not(feature = "fixed_point"))]
@@ -3090,9 +3259,12 @@ impl CeltDecoderAlloc {
         }
         #[cfg(feature = "fixed_point")]
         {
-            for history in &mut self.fixed_old_ebands {
-                *history = 0;
-            }
+            self.decode_mem_fixed.fill(0);
+            self.lpc_fixed.fill(0);
+            self.old_ebands_fixed.fill(0);
+            self.old_log_e_fixed.fill(0);
+            self.old_log_e2_fixed.fill(0);
+            self.background_log_e_fixed.fill(0);
         }
     }
 
@@ -3313,6 +3485,10 @@ mod tests {
         EncoderCtlRequest, opus_custom_encode, opus_custom_encoder_create, opus_custom_encoder_ctl,
     };
     #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::{DB_SHIFT, float2sig};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::qconst32;
+    #[cfg(feature = "fixed_point")]
     use crate::celt::float_cast::float2int16;
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
@@ -3514,7 +3690,17 @@ mod tests {
         assert_eq!(alloc.old_log_e2.len(), 2 * mode.num_ebands);
         assert_eq!(alloc.background_log_e.len(), 2 * mode.num_ebands);
         #[cfg(feature = "fixed_point")]
-        assert_eq!(alloc.fixed_old_ebands.len(), 2 * mode.num_ebands);
+        {
+            assert_eq!(
+                alloc.decode_mem_fixed.len(),
+                2 * (super::DECODE_BUFFER_SIZE + mode.overlap)
+            );
+            assert_eq!(alloc.lpc_fixed.len(), LPC_ORDER * 2);
+            assert_eq!(alloc.old_ebands_fixed.len(), 2 * mode.num_ebands);
+            assert_eq!(alloc.old_log_e_fixed.len(), 2 * mode.num_ebands);
+            assert_eq!(alloc.old_log_e2_fixed.len(), 2 * mode.num_ebands);
+            assert_eq!(alloc.background_log_e_fixed.len(), 2 * mode.num_ebands);
+        }
 
         // Ensure the reset helper clears all buffers.
         alloc.decode_mem.fill(1.0);
@@ -3524,7 +3710,14 @@ mod tests {
         alloc.old_log_e2.fill(1.0);
         alloc.background_log_e.fill(1.0);
         #[cfg(feature = "fixed_point")]
-        alloc.fixed_old_ebands.fill(7);
+        {
+            alloc.decode_mem_fixed.fill(7);
+            alloc.lpc_fixed.fill(7);
+            alloc.old_ebands_fixed.fill(7);
+            alloc.old_log_e_fixed.fill(7);
+            alloc.old_log_e2_fixed.fill(7);
+            alloc.background_log_e_fixed.fill(7);
+        }
         alloc.reset();
 
         assert!(alloc.decode_mem.iter().all(|&v| v == 0.0));
@@ -3534,7 +3727,14 @@ mod tests {
         assert!(alloc.old_log_e2.iter().all(|&v| v == 0.0));
         assert!(alloc.background_log_e.iter().all(|&v| v == 0.0));
         #[cfg(feature = "fixed_point")]
-        assert!(alloc.fixed_old_ebands.iter().all(|&v| v == 0));
+        {
+            assert!(alloc.decode_mem_fixed.iter().all(|&v| v == 0));
+            assert!(alloc.lpc_fixed.iter().all(|&v| v == 0));
+            assert!(alloc.old_ebands_fixed.iter().all(|&v| v == 0));
+            assert!(alloc.old_log_e_fixed.iter().all(|&v| v == 0));
+            assert!(alloc.old_log_e2_fixed.iter().all(|&v| v == 0));
+            assert!(alloc.background_log_e_fixed.iter().all(|&v| v == 0));
+        }
 
         let expected_size = opus_custom_decoder_get_size(&mode, 2).expect("decoder size");
         assert_eq!(alloc.size_in_bytes(), expected_size);
@@ -3888,7 +4088,14 @@ mod tests {
         decoder.old_log_e2.fill(1.5);
         decoder.background_log_e.fill(0.125);
         #[cfg(feature = "fixed_point")]
-        decoder.fixed_old_ebands.fill(7);
+        {
+            decoder.decode_mem_fixed.fill(7);
+            decoder.lpc_fixed.fill(7);
+            decoder.old_ebands_fixed.fill(7);
+            decoder.old_log_e_fixed.fill(7);
+            decoder.old_log_e2_fixed.fill(7);
+            decoder.background_log_e_fixed.fill(7);
+        }
 
         opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::ResetState).unwrap();
 
@@ -3911,7 +4118,14 @@ mod tests {
         assert!(decoder.old_log_e.iter().all(|&v| v == -28.0));
         assert!(decoder.old_log_e2.iter().all(|&v| v == -28.0));
         #[cfg(feature = "fixed_point")]
-        assert!(decoder.fixed_old_ebands.iter().all(|&v| v == 0));
+        {
+            assert!(decoder.decode_mem_fixed.iter().all(|&v| v == 0));
+            assert!(decoder.lpc_fixed.iter().all(|&v| v == 0));
+            assert!(decoder.old_ebands_fixed.iter().all(|&v| v == 0));
+            assert!(decoder.old_log_e_fixed.iter().all(|&v| v == qconst32(-28.0, DB_SHIFT)));
+            assert!(decoder.old_log_e2_fixed.iter().all(|&v| v == qconst32(-28.0, DB_SHIFT)));
+            assert!(decoder.background_log_e_fixed.iter().all(|&v| v == 0));
+        }
         assert!(decoder.background_log_e.iter().all(|&v| v == 0.0));
     }
 
@@ -4229,6 +4443,11 @@ mod tests {
         decoder.rng = 0x1234_5678;
         decoder.background_log_e.fill(-8.0);
         decoder.old_ebands.fill(-4.0);
+        #[cfg(feature = "fixed_point")]
+        {
+            decoder.background_log_e_fixed.fill(qconst32(-8.0, DB_SHIFT));
+            decoder.old_ebands_fixed.fill(qconst32(-4.0, DB_SHIFT));
+        }
 
         let n = mode.short_mdct_size;
         #[cfg(feature = "deep_plc")]
@@ -4259,7 +4478,12 @@ mod tests {
 
         let _stride = DECODE_BUFFER_SIZE + mode.overlap;
         for (idx, sample) in decoder.decode_mem.iter_mut().enumerate() {
-            *sample = (idx % 23) as f32 * 0.001;
+            let value = (idx % 23) as f32 * 0.001;
+            *sample = value;
+            #[cfg(feature = "fixed_point")]
+            {
+                decoder.decode_mem_fixed[idx] = float2sig(value);
+            }
         }
 
         let n = mode.short_mdct_size;
@@ -4490,6 +4714,243 @@ mod tests {
             "{}: tiny packet decode should fail",
             case.name
         );
+    }
+
+    #[cfg(feature = "fixed_point")]
+    const DECODER_STATE_WARM_FRAMES: usize = 8;
+    #[cfg(feature = "fixed_point")]
+    const DECODER_STATE_LOSS_FRAMES: usize = 6;
+
+    #[cfg(feature = "fixed_point")]
+    fn fill_decoder_state_pcm(pcm: &mut [i16], frame_size: usize, phase: usize) {
+        let period = 96usize;
+        let half = period / 2;
+        let amp = 13_000i32;
+        for (i, slot) in pcm.iter_mut().take(frame_size).enumerate() {
+            let pos = (i + phase) % period;
+            let tri = if pos < half { pos } else { period - pos };
+            let centered = (tri as i32 * 2) - half as i32;
+            let mut shaped = centered * amp / half as i32;
+            shaped += if (i % 9) == 0 { 1200 } else { -300 };
+            *slot = shaped as i16;
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn pcm_energy_i64(samples: &[i16]) -> i64 {
+        samples.iter().fold(0i64, |acc, &sample| {
+            acc + i64::from(sample) * i64::from(sample)
+        })
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn count_hash_changes(hashes: &[u32]) -> usize {
+        hashes
+            .windows(2)
+            .filter(|pair| pair[0] != pair[1])
+            .count()
+    }
+
+    #[cfg(feature = "fixed_point")]
+    fn count_energy_drops(energies: &[i64]) -> usize {
+        energies
+            .windows(2)
+            .filter(|pair| pair[1] < pair[0])
+            .count()
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn decoder_state_transitions_match_ctest_vectors() {
+        let strict_ctest_vectors = std::env::var_os("RUST_CTEST_STRICT_HASHES").is_some();
+        let expected_warm_packet_hashes: [u32; DECODER_STATE_WARM_FRAMES] = [
+            0x1204_0bb9,
+            0xfa16_704e,
+            0xc40f_7772,
+            0x7c72_6ef3,
+            0x3ec0_1bf0,
+            0x108e_4248,
+            0x0341_cfd7,
+            0x8419_87b6,
+        ];
+        let expected_warm_pcm_hashes: [u32; DECODER_STATE_WARM_FRAMES] = [
+            0x7025_93e3,
+            0xe891_961f,
+            0xb876_40ee,
+            0xd9ab_f25c,
+            0x0d59_b40f,
+            0xa453_23c0,
+            0x387e_b7e3,
+            0xde85_f2a0,
+        ];
+        let expected_loss_hashes: [u32; DECODER_STATE_LOSS_FRAMES] = [
+            0x88e9_15a8,
+            0xca42_f30e,
+            0x657c_aa87,
+            0x746d_415b,
+            0x2e3e_688f,
+            0xdd03_0e3b,
+        ];
+        let expected_recover_hash_after_loss = 0x948f_f204u32;
+        let expected_recover_hash_without_loss = 0x7456_1161u32;
+        let expected_reset_loss_hash = 0x9811_584du32;
+
+        let owned_mode = opus_custom_mode_create(48_000, 960).expect("mode creation should succeed");
+        let mode = owned_mode.mode();
+        let mut encoder = opus_custom_encoder_create(&mode, 48_000, 1, 0)
+            .expect("encoder creation should succeed");
+        let mut decoder_a =
+            opus_custom_decoder_create(&mode, 1).expect("decoder A creation should succeed");
+        let mut decoder_b =
+            opus_custom_decoder_create(&mode, 1).expect("decoder B creation should succeed");
+
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(18_000))
+            .expect("set bitrate should succeed");
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetVbr(false))
+            .expect("set vbr should succeed");
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(10))
+            .expect("set complexity should succeed");
+        opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(16))
+            .expect("set lsb depth should succeed");
+        opus_custom_decoder_ctl(&mut decoder_a, DecoderCtlRequest::SetComplexity(10))
+            .expect("decoder A complexity should succeed");
+        opus_custom_decoder_ctl(&mut decoder_b, DecoderCtlRequest::SetComplexity(10))
+            .expect("decoder B complexity should succeed");
+
+        let mut packet = vec![0u8; POSTFILTER_MAX_PACKET_SIZE];
+        let mut pcm = vec![0i16; POSTFILTER_FRAME_SIZE];
+        let mut out_a = vec![0i16; POSTFILTER_FRAME_SIZE];
+        let mut out_b = vec![0i16; POSTFILTER_FRAME_SIZE];
+
+        assert_eq!(
+            opus_custom_decoder_ctl(&mut decoder_a, DecoderCtlRequest::SetComplexity(11))
+                .expect_err("invalid complexity must fail"),
+            CeltDecoderCtlError::InvalidArgument
+        );
+        assert!(
+            opus_custom_decode(&mut decoder_a, None, &mut out_a, POSTFILTER_FRAME_SIZE - 1)
+                .is_err(),
+            "decode with invalid frame size should fail",
+        );
+        assert!(
+            opus_custom_decode(&mut decoder_a, Some(&[0]), &mut out_a, POSTFILTER_FRAME_SIZE)
+                .is_err(),
+            "tiny packet decode should fail",
+        );
+        #[cfg(feature = "deep_plc")]
+        let plc = None;
+        #[cfg(not(feature = "deep_plc"))]
+        let plc = ();
+        let mut tiny_pcm: [f32; 0] = [];
+        assert!(
+            super::celt_decode_with_ec_dred(
+                &mut decoder_a,
+                None,
+                &mut tiny_pcm,
+                POSTFILTER_FRAME_SIZE,
+                None,
+                false,
+                plc
+            )
+                .is_err(),
+            "decode with empty PCM output should fail",
+        );
+
+        let mut warm_packet_hashes = [0u32; DECODER_STATE_WARM_FRAMES];
+        let mut warm_pcm_hashes = [0u32; DECODER_STATE_WARM_FRAMES];
+        for frame in 0..DECODER_STATE_WARM_FRAMES {
+            fill_decoder_state_pcm(&mut pcm, POSTFILTER_FRAME_SIZE, frame * 7);
+            let packet_len =
+                opus_custom_encode(&mut encoder, &pcm, POSTFILTER_FRAME_SIZE, &mut packet, POSTFILTER_MAX_PACKET_SIZE)
+                    .expect("warmup encode should succeed");
+            let decoded_a = opus_custom_decode(
+                &mut decoder_a,
+                Some(&packet[..packet_len]),
+                &mut out_a,
+                POSTFILTER_FRAME_SIZE,
+            )
+            .expect("decoder A warmup decode should succeed");
+            let decoded_b = opus_custom_decode(
+                &mut decoder_b,
+                Some(&packet[..packet_len]),
+                &mut out_b,
+                POSTFILTER_FRAME_SIZE,
+            )
+            .expect("decoder B warmup decode should succeed");
+            assert_eq!(decoded_a, POSTFILTER_FRAME_SIZE);
+            assert_eq!(decoded_b, POSTFILTER_FRAME_SIZE);
+
+            warm_packet_hashes[frame] = fnv1a_bytes(&packet[..packet_len]);
+            warm_pcm_hashes[frame] = fnv1a_pcm_le(&out_a[..POSTFILTER_FRAME_SIZE]);
+            let warm_pcm_hash_b = fnv1a_pcm_le(&out_b[..POSTFILTER_FRAME_SIZE]);
+            assert_eq!(warm_pcm_hashes[frame], warm_pcm_hash_b);
+        }
+        assert!(count_hash_changes(&warm_packet_hashes) > 0);
+        assert!(count_hash_changes(&warm_pcm_hashes) > 0);
+        if strict_ctest_vectors {
+            assert_eq!(warm_packet_hashes, expected_warm_packet_hashes);
+            assert_eq!(warm_pcm_hashes, expected_warm_pcm_hashes);
+        }
+
+        let mut loss_hashes = [0u32; DECODER_STATE_LOSS_FRAMES];
+        let mut loss_energies = [0i64; DECODER_STATE_LOSS_FRAMES];
+        for i in 0..DECODER_STATE_LOSS_FRAMES {
+            let decoded =
+                opus_custom_decode(&mut decoder_a, None, &mut out_a, POSTFILTER_FRAME_SIZE)
+                    .expect("loss decode should succeed");
+            assert_eq!(decoded, POSTFILTER_FRAME_SIZE);
+            loss_hashes[i] = fnv1a_pcm_le(&out_a[..POSTFILTER_FRAME_SIZE]);
+            loss_energies[i] = pcm_energy_i64(&out_a[..POSTFILTER_FRAME_SIZE]);
+        }
+        assert!(
+            decoder_a.decode_mem.iter().any(|&sample| sample != 0.0),
+            "decoder history should carry non-zero PLC state"
+        );
+        if strict_ctest_vectors {
+            assert_eq!(loss_hashes, expected_loss_hashes);
+        }
+
+        fill_decoder_state_pcm(&mut pcm, POSTFILTER_FRAME_SIZE, 93);
+        let recover_packet_len =
+            opus_custom_encode(&mut encoder, &pcm, POSTFILTER_FRAME_SIZE, &mut packet, POSTFILTER_MAX_PACKET_SIZE)
+                .expect("recovery encode should succeed");
+        opus_custom_decode(
+            &mut decoder_a,
+            Some(&packet[..recover_packet_len]),
+            &mut out_a,
+            POSTFILTER_FRAME_SIZE,
+        )
+        .expect("decoder A recovery decode should succeed");
+        opus_custom_decode(
+            &mut decoder_b,
+            Some(&packet[..recover_packet_len]),
+            &mut out_b,
+            POSTFILTER_FRAME_SIZE,
+        )
+        .expect("decoder B recovery decode should succeed");
+        let recover_hash_after_loss = fnv1a_pcm_le(&out_a[..POSTFILTER_FRAME_SIZE]);
+        let recover_hash_without_loss = fnv1a_pcm_le(&out_b[..POSTFILTER_FRAME_SIZE]);
+        if strict_ctest_vectors {
+            assert_eq!(recover_hash_after_loss, expected_recover_hash_after_loss);
+            assert_eq!(recover_hash_without_loss, expected_recover_hash_without_loss);
+        }
+
+        opus_custom_decoder_ctl(&mut decoder_a, DecoderCtlRequest::ResetState)
+            .expect("decoder A reset should succeed");
+        opus_custom_decoder_ctl(&mut decoder_b, DecoderCtlRequest::ResetState)
+            .expect("decoder B reset should succeed");
+        opus_custom_decode(&mut decoder_a, None, &mut out_a, POSTFILTER_FRAME_SIZE)
+            .expect("decoder A post-reset loss decode should succeed");
+        opus_custom_decode(&mut decoder_b, None, &mut out_b, POSTFILTER_FRAME_SIZE)
+            .expect("decoder B post-reset loss decode should succeed");
+        let reset_hash_a = fnv1a_pcm_le(&out_a[..POSTFILTER_FRAME_SIZE]);
+        let reset_hash_b = fnv1a_pcm_le(&out_b[..POSTFILTER_FRAME_SIZE]);
+        assert_eq!(reset_hash_a, reset_hash_b);
+        assert_ne!(reset_hash_a, 0);
+        if strict_ctest_vectors {
+            assert_eq!(reset_hash_a, expected_reset_loss_hash);
+            assert_eq!(reset_hash_b, expected_reset_loss_hash);
+        }
     }
 
     #[cfg(feature = "fixed_point")]

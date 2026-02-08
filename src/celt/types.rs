@@ -623,14 +623,24 @@ pub struct OpusCustomDecoder<'a> {
     pub plc_fill: OpusInt32,
     #[cfg(feature = "deep_plc")]
     pub plc_preemphasis_mem: f32,
+    #[cfg(feature = "fixed_point")]
+    pub decode_mem_fixed: &'a mut [FixedCeltSig],
+    #[cfg(feature = "fixed_point")]
+    pub lpc_fixed: &'a mut [FixedOpusVal16],
+    #[cfg(feature = "fixed_point")]
+    pub old_ebands_fixed: &'a mut [FixedCeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub old_log_e_fixed: &'a mut [FixedCeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub old_log_e2_fixed: &'a mut [FixedCeltGlog],
+    #[cfg(feature = "fixed_point")]
+    pub background_log_e_fixed: &'a mut [FixedCeltGlog],
     pub decode_mem: &'a mut [CeltSig],
     pub lpc: &'a mut [OpusVal16],
     pub old_ebands: &'a mut [CeltGlog],
     pub old_log_e: &'a mut [CeltGlog],
     pub old_log_e2: &'a mut [CeltGlog],
     pub background_log_e: &'a mut [CeltGlog],
-    #[cfg(feature = "fixed_point")]
-    pub fixed_old_ebands: &'a mut [FixedCeltGlog],
     #[cfg(feature = "fixed_point")]
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
@@ -643,13 +653,18 @@ impl<'a> OpusCustomDecoder<'a> {
         mode: &'a OpusCustomMode<'a>,
         channels: usize,
         stream_channels: usize,
+        #[cfg(feature = "fixed_point")] decode_mem_fixed: &'a mut [FixedCeltSig],
+        #[cfg(feature = "fixed_point")] lpc_fixed: &'a mut [FixedOpusVal16],
+        #[cfg(feature = "fixed_point")] old_ebands_fixed: &'a mut [FixedCeltGlog],
+        #[cfg(feature = "fixed_point")] old_log_e_fixed: &'a mut [FixedCeltGlog],
+        #[cfg(feature = "fixed_point")] old_log_e2_fixed: &'a mut [FixedCeltGlog],
+        #[cfg(feature = "fixed_point")] background_log_e_fixed: &'a mut [FixedCeltGlog],
         decode_mem: &'a mut [CeltSig],
         lpc: &'a mut [OpusVal16],
         old_ebands: &'a mut [CeltGlog],
         old_log_e: &'a mut [CeltGlog],
         old_log_e2: &'a mut [CeltGlog],
         background_log_e: &'a mut [CeltGlog],
-        #[cfg(feature = "fixed_point")] fixed_old_ebands: &'a mut [FixedCeltGlog],
     ) -> Self {
         let overlap = mode.overlap;
         let decode_stride = if channels > 0 {
@@ -666,7 +681,12 @@ impl<'a> OpusCustomDecoder<'a> {
         debug_assert_eq!(background_log_e.len(), band_count);
         #[cfg(feature = "fixed_point")]
         {
-            debug_assert_eq!(fixed_old_ebands.len(), band_count);
+            debug_assert_eq!(decode_mem_fixed.len(), decode_mem.len());
+            debug_assert_eq!(lpc_fixed.len(), lpc.len());
+            debug_assert_eq!(old_ebands_fixed.len(), band_count);
+            debug_assert_eq!(old_log_e_fixed.len(), band_count);
+            debug_assert_eq!(old_log_e2_fixed.len(), band_count);
+            debug_assert_eq!(background_log_e_fixed.len(), band_count);
         }
         #[cfg(feature = "fixed_point")]
         let fixed_mdct = FixedMdctLookup::new(mode.mdct.len(), mode.mdct.max_shift());
@@ -707,14 +727,24 @@ impl<'a> OpusCustomDecoder<'a> {
             plc_fill: 0,
             #[cfg(feature = "deep_plc")]
             plc_preemphasis_mem: 0.0,
+            #[cfg(feature = "fixed_point")]
+            decode_mem_fixed,
+            #[cfg(feature = "fixed_point")]
+            lpc_fixed,
+            #[cfg(feature = "fixed_point")]
+            old_ebands_fixed,
+            #[cfg(feature = "fixed_point")]
+            old_log_e_fixed,
+            #[cfg(feature = "fixed_point")]
+            old_log_e2_fixed,
+            #[cfg(feature = "fixed_point")]
+            background_log_e_fixed,
             decode_mem,
             lpc,
             old_ebands,
             old_log_e,
             old_log_e2,
             background_log_e,
-            #[cfg(feature = "fixed_point")]
-            fixed_old_ebands,
             #[cfg(feature = "fixed_point")]
             fixed_mdct,
             #[cfg(feature = "fixed_point")]
@@ -732,6 +762,8 @@ impl<'a> OpusCustomDecoder<'a> {
     /// synthesis history.
     pub fn reset_runtime_state(&mut self) {
         const RESET_LOG_ENERGY: CeltGlog = -28.0;
+        #[cfg(feature = "fixed_point")]
+        let reset_log_energy_fixed = qconst32(-28.0, DB_SHIFT);
 
         self.rng = 0;
         self.error = 0;
@@ -753,15 +785,20 @@ impl<'a> OpusCustomDecoder<'a> {
             self.plc_preemphasis_mem = 0.0;
         }
 
+        #[cfg(feature = "fixed_point")]
+        {
+            self.decode_mem_fixed.fill(0);
+            self.lpc_fixed.fill(0);
+            self.old_ebands_fixed.fill(0);
+            self.old_log_e_fixed.fill(reset_log_energy_fixed);
+            self.old_log_e2_fixed.fill(reset_log_energy_fixed);
+            self.background_log_e_fixed.fill(0);
+        }
         self.decode_mem.fill(0.0);
         self.lpc.fill(0.0);
         self.old_ebands.fill(0.0);
         self.old_log_e.fill(RESET_LOG_ENERGY);
         self.old_log_e2.fill(RESET_LOG_ENERGY);
         self.background_log_e.fill(0.0);
-        #[cfg(feature = "fixed_point")]
-        {
-            self.fixed_old_ebands.fill(0);
-        }
     }
 }
