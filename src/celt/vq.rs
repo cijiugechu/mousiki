@@ -748,6 +748,50 @@ pub(crate) fn stereo_itheta(
     floorf(0.5 + 16_384.0 * FRAC_2_PI * angle) as i32
 }
 
+/// Fixed-point version of `stereo_itheta()`.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn stereo_itheta_fixed(
+    x: &[FixedOpusVal16],
+    y: &[FixedOpusVal16],
+    stereo: bool,
+    n: usize,
+    _arch: i32,
+) -> i32 {
+    assert!(x.len() >= n, "mid channel shorter than requested length");
+    assert!(y.len() >= n, "side channel shorter than requested length");
+
+    let len = n.min(x.len()).min(y.len());
+    let mut emid: FixedOpusVal32 = 1; // EPSILON in fixed-point
+    let mut eside: FixedOpusVal32 = 1;
+
+    if stereo {
+        for i in 0..len {
+            // m = (x[i] + y[i]) / 2 => SHR16(x[i] + y[i], 1)
+            // s = (x[i] - y[i]) / 2 => SHR16(x[i] - y[i], 1)
+            let m = shr16(x[i].wrapping_add(y[i]), 1);
+            let s = shr16(x[i].wrapping_sub(y[i]), 1);
+            emid = emid.wrapping_add((i32::from(m) * i32::from(m)) >> 15);
+            eside = eside.wrapping_add((i32::from(s) * i32::from(s)) >> 15);
+        }
+    } else {
+        for i in 0..len {
+            let xval = i32::from(x[i]);
+            let yval = i32::from(y[i]);
+            emid = emid.wrapping_add((xval * xval) >> 15);
+            eside = eside.wrapping_add((yval * yval) >> 15);
+        }
+    }
+
+    let mid = celt_sqrt_fixed(emid) as i16;
+    let side = celt_sqrt_fixed(eside) as i16;
+    
+    // 0.63662 = 2/pi in Q15 format
+    const TWO_OVER_PI_Q15: i16 = 20_861; // floor(0.63662 * 32768 + 0.5)
+    let itheta = mult16_16_q15(TWO_OVER_PI_Q15, celt_atan2p(side, mid));
+    
+    i32::from(itheta)
+}
+
 /// Mirrors `extract_collapse_mask()` from `celt/vq.c`.
 ///
 /// The helper inspects the quantised PVQ pulses and determines which of the
@@ -795,7 +839,7 @@ mod tests {
         normalise_residual, renormalise_vector, stereo_itheta,
     };
     #[cfg(feature = "fixed_point")]
-    use super::normalise_residual_fixed;
+    use super::{normalise_residual_fixed, renormalise_vector_fixed, stereo_itheta_fixed};
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
 
