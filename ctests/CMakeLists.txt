@@ -106,6 +106,7 @@ if (OPUS_CTESTS_FIXED_POINT)
   add_executable(celt_decoder_noise_renorm_test celt_decoder_noise_renorm_test.c)
   add_executable(celt_decoder_postfilter_test celt_decoder_postfilter_test.c)
   add_executable(celt_decoder_plc_test celt_decoder_plc_test.c)
+  add_executable(celt_decoder_plc_iir_test celt_decoder_plc_iir_test.c)
   add_executable(celt_decoder_state_test celt_decoder_state_test.c)
   add_executable(celt_fixed_encode_test celt_fixed_encode_test.c)
   add_executable(celt_mathops_test mathops_test.c)
@@ -166,6 +167,12 @@ if (OPUS_CTESTS_FIXED_POINT)
       "${OPUS_ROOT}/src"
   )
   target_include_directories(celt_decoder_plc_test
+    PRIVATE
+      "${OPUS_ROOT}/celt"
+      "${OPUS_ROOT}/include"
+      "${OPUS_ROOT}/src"
+  )
+  target_include_directories(celt_decoder_plc_iir_test
     PRIVATE
       "${OPUS_ROOT}/celt"
       "${OPUS_ROOT}/include"
@@ -264,6 +271,7 @@ if (OPUS_CTESTS_FIXED_POINT)
   target_link_libraries(celt_decoder_noise_renorm_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_decoder_postfilter_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_decoder_plc_test PRIVATE celt_custom_ctest_support)
+  target_link_libraries(celt_decoder_plc_iir_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_decoder_state_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_fixed_encode_test PRIVATE celt_custom_ctest_support)
   target_link_libraries(celt_mathops_test PRIVATE celt_fixedpoint_ctest_support)
@@ -437,6 +445,7 @@ if (OPUS_CTESTS_FIXED_POINT)
   add_test(NAME celt_decoder_noise_renorm_test COMMAND celt_decoder_noise_renorm_test)
   add_test(NAME celt_decoder_postfilter_test COMMAND celt_decoder_postfilter_test)
   add_test(NAME celt_decoder_plc_test COMMAND celt_decoder_plc_test)
+  add_test(NAME celt_decoder_plc_iir_test COMMAND celt_decoder_plc_iir_test)
   add_test(NAME celt_decoder_state_test COMMAND celt_decoder_state_test)
   add_test(NAME celt_fixed_encode_test COMMAND celt_fixed_encode_test)
   add_test(NAME celt_mathops_test COMMAND celt_mathops_test)
