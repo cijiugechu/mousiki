@@ -261,6 +261,24 @@ pub(crate) fn decode_pulses(
     cwrsi(n, k, index, y, &mut workspace)
 }
 
+#[cfg(test)]
+pub(crate) fn decode_pulses_debug(
+    y: &mut [OpusInt32],
+    n: usize,
+    k: usize,
+    dec: &mut EcDec<'_>,
+) -> (OpusUint32, OpusUint32, OpusVal32) {
+    debug_assert!(k > 0);
+    debug_assert!(n >= 2);
+    debug_assert!(y.len() >= n);
+
+    let mut workspace = vec![0u32; k + 2];
+    let total = ncwrs_urow(n, k, &mut workspace);
+    let index = dec.dec_uint(total);
+    let energy = cwrsi(n, k, index, y, &mut workspace);
+    (index, total, energy)
+}
+
 /// Computes the number of fractional bits required to represent each pulse count.
 ///
 /// Mirrors `get_required_bits()` from `celt/cwrs.c` in the reference

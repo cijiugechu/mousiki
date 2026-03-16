@@ -998,6 +998,17 @@ mod tests {
         }
 
         #[test]
+        fn fixed_normalise_and_rotation_match_band0_decoder_reference_case() {
+            let pulses = [-1, 1, 0, -1, 0, 1, 0, -1];
+            let mut output = [0i16; 8];
+            normalise_residual_fixed(&pulses, &mut output, pulses.len(), 5, Q31_ONE);
+            let len = output.len();
+            exp_rotation_fixed(&mut output, len, -1, 8, 5, SPREAD_NORMAL);
+            let expected = [-7327, 7327, 0, -7327, 0, 7327, 0, -7327];
+            assert_i16_slice("band0_decode_case", &output, &expected);
+        }
+
+        #[test]
         fn fixed_exp_rotation_coefficients_match_reference_case() {
             let len = 8i32;
             let k = 3i32;
@@ -1253,6 +1264,42 @@ mod tests {
                 assert_eq!(umask, 3);
                 assert_i16_slice("alg_case5_q", &x, &expected);
                 assert_i16_slice("alg_case5_u", &xu, &expected);
+            }
+
+            {
+                let mut buffer = [0u8; 256];
+                let mut x = [
+                    5000, -4000, 3000, -2000, 1000, -500, 250, -125, 6000, -5000, 4000, -3000,
+                    2000, -1000, 500, -250,
+                ];
+                let expected = [
+                    9416, 897, 0, 0, 0, 0, 0, 0, 10314, -8518, 0, 0, 0, 0, 0, 0,
+                ];
+                let mask;
+                {
+                    let n = x.len();
+                    let mut enc = EcEnc::new(&mut buffer);
+                    mask = alg_quant_fixed(
+                        &mut x,
+                        n,
+                        3,
+                        SPREAD_NORMAL,
+                        8,
+                        &mut enc,
+                        Q31_ONE,
+                        true,
+                        0,
+                    );
+                    enc.enc_done();
+                }
+                let mut xu = [0i16; 16];
+                let n = xu.len();
+                let mut dec = EcDec::new(&mut buffer);
+                let umask = alg_unquant_fixed(&mut xu, n, 3, SPREAD_NORMAL, 8, &mut dec, Q31_ONE);
+                assert_eq!(mask, 17);
+                assert_eq!(umask, 17);
+                assert_i16_slice("alg_case_b8_q", &x, &expected);
+                assert_i16_slice("alg_case_b8_u", &xu, &expected);
             }
 
             {

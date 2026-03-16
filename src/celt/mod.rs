@@ -19,6 +19,8 @@ mod entcode;
 mod entdec;
 mod entenc;
 mod fft_bitrev_480;
+#[cfg(feature = "fixed_point")]
+mod fft_twiddles_fixed_48000_960;
 mod fft_twiddles_48000_960;
 mod mdct_twiddles_48000_960;
 mod window_48000_960;

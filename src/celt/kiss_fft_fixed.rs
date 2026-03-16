@@ -6,12 +6,17 @@ use alloc::vec::Vec;
 
 use core::f64::consts::FRAC_1_SQRT_2;
 
+use crate::celt::fft_twiddles_fixed_48000_960::FFT_TWIDDLES_FIXED_48000_960;
+
 use super::fixed_arch::Q15_ONE;
 use super::fixed_ops::{add32_ovflw, neg32_ovflw, pshr32, qconst16, shl32, shr32, sub32_ovflw};
 use super::fixed_ops::{mult16_32_q15, mult16_32_q16};
 use super::math::celt_ilog2;
 use super::math_fixed::celt_cos_norm;
 use super::types::{FixedOpusVal16, FixedOpusVal32};
+
+#[cfg(test)]
+extern crate std;
 
 const MAXFACTORS: usize = 32;
 
@@ -104,7 +109,15 @@ impl FixedKissFftState {
             );
             (Arc::clone(&base_state.twiddles), Some(shift))
         } else {
-            (Arc::<[FixedKissTwiddleCpx]>::from(compute_twiddles(nfft)), None)
+            let twiddles = if nfft == FFT_TWIDDLES_FIXED_48000_960.len() {
+                FFT_TWIDDLES_FIXED_48000_960
+                    .iter()
+                    .map(|&(r, i)| FixedKissTwiddleCpx { r, i })
+                    .collect()
+            } else {
+                compute_twiddles(nfft)
+            };
+            (Arc::<[FixedKissTwiddleCpx]>::from(twiddles), None)
         };
 
         let factors = kf_factor(nfft);
@@ -206,6 +219,24 @@ impl FixedKissFftState {
     }
 
     fn fft_impl(&self, fout: &mut [FixedKissFftCpx], mut downshift: i32) {
+        #[cfg(test)]
+        let trace_stage = std::env::var("CELT_TRACE_KFFT_FIXED")
+            .map(|value| value != "0")
+            .unwrap_or(false);
+        #[cfg(test)]
+        let trace_call_target = std::env::var("CELT_TRACE_KFFT_FIXED_CALL")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        #[cfg(test)]
+        static FFT_CALL_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        #[cfg(test)]
+        let trace_this_call = if trace_stage {
+            FFT_CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == trace_call_target
+        } else {
+            false
+        };
         let mut fstride = [0usize; MAXFACTORS + 1];
         fstride[0] = 1;
         let mut stages = 0usize;
@@ -246,6 +277,27 @@ impl FixedKissFftState {
                     kf_bfly5(fout, fstride[stage] << shift, self, m, fstride[stage], m2);
                 }
                 _ => panic!("unsupported radix {p} in factorisation"),
+            }
+            #[cfg(test)]
+            if trace_this_call {
+                let mut hash = 0x811c9dc5u32;
+                for value in fout.iter() {
+                    hash ^= value.r as u32;
+                    hash = hash.wrapping_mul(0x0100_0193);
+                    hash ^= value.i as u32;
+                    hash = hash.wrapping_mul(0x0100_0193);
+                }
+                let preview: Vec<(i32, i32)> =
+                    fout.iter().take(8).map(|value| (value.r, value.i)).collect();
+                std::println!(
+                    "kffixed stage={} p={} m={} n={} mm={} downshift={} hash=0x{hash:08x} first8={preview:?}",
+                    stages - 1 - stage,
+                    p,
+                    m,
+                    fstride[stage],
+                    m2,
+                    downshift
+                );
             }
             m = m2;
         }

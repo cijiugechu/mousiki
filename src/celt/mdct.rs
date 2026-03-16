@@ -380,7 +380,6 @@ pub fn clt_mdct_backward(
     assert!(stride > 0);
 
     let twiddles = lookup.twiddles(shift);
-    output.fill(0.0);
     let pre = pre_rotate_backward(input, twiddles, stride);
     let mut fft_out = vec![KissFftCpx::default(); n4];
     lookup.inverse_plan(shift).ifft(&pre, &mut fft_out);

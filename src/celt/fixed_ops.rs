@@ -12,6 +12,13 @@ pub(crate) fn qconst16(value: f64, bits: u32) -> FixedOpusVal16 {
 }
 
 #[inline]
+pub(crate) fn qconst16_clamped(value: f64, bits: u32) -> FixedOpusVal16 {
+    let scale = (1i64 << bits) as f64;
+    let raw = trunc(value * scale + 0.5) as i32;
+    raw.clamp(-32_767, 32_767) as FixedOpusVal16
+}
+
+#[inline]
 pub(crate) fn qconst32(value: f64, bits: u32) -> FixedOpusVal32 {
     let scale = (1i64 << bits) as f64;
     trunc(value * scale + 0.5) as FixedOpusVal32

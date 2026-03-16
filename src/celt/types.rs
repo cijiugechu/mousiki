@@ -9,7 +9,7 @@ use super::deep_plc::PLC_UPDATE_SAMPLES;
 #[cfg(feature = "fixed_point")]
 use super::fixed_arch::DB_SHIFT;
 #[cfg(feature = "fixed_point")]
-use super::fixed_ops::{qconst16, qconst32};
+use super::fixed_ops::{qconst16, qconst16_clamped, qconst32};
 #[cfg(feature = "fixed_point")]
 use super::mdct_fixed::FixedMdctLookup;
 use crate::celt::mdct_twiddles_48000_960::MDCT_TWIDDLES_960;
@@ -458,7 +458,7 @@ impl<'a> OpusCustomEncoder<'a> {
         let fixed_window = mode
             .window
             .iter()
-            .map(|&value| qconst16(f64::from(value), 15))
+            .map(|&value| qconst16_clamped(f64::from(value), 15))
             .collect();
         Self {
             mode,
@@ -617,6 +617,8 @@ pub struct OpusCustomDecoder<'a> {
     pub postfilter_tapset_old: i32,
     pub prefilter_and_fold: bool,
     pub preemph_mem_decoder: [CeltSig; 2],
+    #[cfg(feature = "fixed_point")]
+    pub fixed_preemph_mem_decoder: [FixedCeltSig; 2],
     #[cfg(feature = "deep_plc")]
     pub plc_pcm: [OpusInt16; PLC_UPDATE_SAMPLES],
     #[cfg(feature = "deep_plc")]
@@ -694,7 +696,7 @@ impl<'a> OpusCustomDecoder<'a> {
         let fixed_window = mode
             .window
             .iter()
-            .map(|&value| qconst16(f64::from(value), 15))
+            .map(|&value| qconst16_clamped(f64::from(value), 15))
             .collect();
         Self {
             mode,
@@ -721,6 +723,8 @@ impl<'a> OpusCustomDecoder<'a> {
             postfilter_tapset_old: 0,
             prefilter_and_fold: false,
             preemph_mem_decoder: [0.0; 2],
+            #[cfg(feature = "fixed_point")]
+            fixed_preemph_mem_decoder: [0; 2],
             #[cfg(feature = "deep_plc")]
             plc_pcm: [0; PLC_UPDATE_SAMPLES],
             #[cfg(feature = "deep_plc")]
@@ -778,6 +782,10 @@ impl<'a> OpusCustomDecoder<'a> {
         self.postfilter_tapset_old = 0;
         self.prefilter_and_fold = false;
         self.preemph_mem_decoder = [0.0; 2];
+        #[cfg(feature = "fixed_point")]
+        {
+            self.fixed_preemph_mem_decoder = [0; 2];
+        }
         #[cfg(feature = "deep_plc")]
         {
             self.plc_pcm.fill(0);

@@ -149,13 +149,13 @@ pub(crate) fn celt_sqrt(mut x: i32) -> i32 {
 
 fn celt_cos_pi_2(x: i16) -> i16 {
     let x2 = mult16_16_p15(x, x);
-    let mut term = mult16_16_p15(-626, x2);
-    term = add16(8_277, term);
-    term = mult16_16_p15(x2, term);
-    term = add16(-7_651, term);
-    term = mult16_16_p15(x2, term);
-    let acc = add32(i32::from(sub16(32_767, x2)), i32::from(term));
-    add16(1, min16(32_766, acc as i16))
+    let inner = add32(8_277, i32::from(mult16_16_p15(-626, x2)));
+    let mid = mult16_16_p15(x2, inner as i16);
+    let outer = add32(-7_651, i32::from(mid));
+    let poly = mult16_16_p15(x2, outer as i16);
+    let acc = add32(i32::from(sub16(32_767, x2)), i32::from(poly));
+    let clipped = if acc > 32_766 { 32_766 } else { acc };
+    add16(1, clipped as i16)
 }
 
 /// Fixed-point cosine helper used by the MDCT window generation code.

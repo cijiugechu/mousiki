@@ -803,7 +803,6 @@ impl<'mode> OpusDecoder<'mode> {
                         }
                     }
                 }
-
                 if packet.is_some() && packet_len > 1 && (mode == MODE_SILK_ONLY || decode_fec) {
                     range_final = Some(range_dec.range_final());
                 }
@@ -1883,6 +1882,8 @@ pub fn opus_decoder_ctl<'req>(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::MODE_HYBRID;
     use super::{
         DecControl, MODE_CELT_ONLY, MODE_SILK_ONLY, OpusDecodeError, OpusDecoderCtlError,
@@ -1894,13 +1895,29 @@ mod tests {
     use crate::celt::{
         OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     };
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::{DecoderCtlRequest as CeltDecoderCtlRequest, EcDec, opus_custom_decoder_ctl};
+    #[cfg(feature = "fixed_point")]
     use crate::packet::{
-        Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_nb_channels,
+        Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_mode,
+        opus_packet_get_nb_channels, opus_packet_get_samples_per_frame,
     };
     use crate::silk::dec_api::Decoder as SilkDecoder;
+    #[cfg(feature = "fixed_point")]
+    use crate::silk::dec_api::silk_decode;
+    #[cfg(feature = "fixed_point")]
+    use crate::silk::decode_frame::DecodeFlag;
+    #[cfg(feature = "fixed_point")]
+    use crate::silk::range_decoder::SilkRangeDecoder;
     use crate::silk::get_decoder_size::get_decoder_size;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    #[cfg(feature = "fixed_point")]
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/hybrid_decode_vectors.rs"
+    ));
 
     fn simple_packet(toc: u8, payload_len: usize) -> Vec<u8> {
         let mut packet = Vec::with_capacity(payload_len + 1);

@@ -19,8 +19,10 @@ use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::entcode::ec_ilog;
 #[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::SIG_SHIFT;
+#[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
-    add32, div32, extract16, mult16_16, mult16_16_q15, mult32_32_32, mult32_32_q16,
+    add32, div32, extract16, mac16_16, mult16_16, mult16_16_q15, mult32_32_32, mult32_32_q16,
     mult32_32_q31, pshr32, qconst32, shl32, shr32,
 };
 #[cfg(feature = "fixed_point")]
@@ -33,6 +35,96 @@ use crate::celt::pitch::celt_pitch_xcorr_fixed;
 use crate::celt::types::{FixedCeltCoef, FixedOpusVal16, FixedOpusVal32};
 #[cfg(feature = "fixed_point")]
 use core::cmp::min;
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn sround16_fixed(x: FixedOpusVal32, shift: u32) -> FixedOpusVal16 {
+    let rounded = pshr32(x, shift);
+    rounded.clamp(-32_767, 32_767) as FixedOpusVal16
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn xcorr_kernel_fixed(x: &[FixedOpusVal16], y: &[FixedOpusVal16], sum: &mut [FixedOpusVal32; 4]) {
+    let len = x.len();
+    assert!(len >= 3, "xcorr_kernel requires at least three samples");
+    assert!(y.len() >= len + 3, "xcorr_kernel needs len + 3 samples from y");
+
+    let mut y_idx = 0usize;
+    let mut y0 = y[y_idx];
+    y_idx += 1;
+    let mut y1 = y[y_idx];
+    y_idx += 1;
+    let mut y2 = y[y_idx];
+    y_idx += 1;
+    let mut y3 = 0i16;
+
+    let mut j = 0usize;
+    while j + 3 < len {
+        let tmp0 = x[j];
+        y3 = y[y_idx];
+        y_idx += 1;
+        sum[0] = mac16_16(sum[0], tmp0, y0);
+        sum[1] = mac16_16(sum[1], tmp0, y1);
+        sum[2] = mac16_16(sum[2], tmp0, y2);
+        sum[3] = mac16_16(sum[3], tmp0, y3);
+
+        let tmp1 = x[j + 1];
+        y0 = y[y_idx];
+        y_idx += 1;
+        sum[0] = mac16_16(sum[0], tmp1, y1);
+        sum[1] = mac16_16(sum[1], tmp1, y2);
+        sum[2] = mac16_16(sum[2], tmp1, y3);
+        sum[3] = mac16_16(sum[3], tmp1, y0);
+
+        let tmp2 = x[j + 2];
+        y1 = y[y_idx];
+        y_idx += 1;
+        sum[0] = mac16_16(sum[0], tmp2, y2);
+        sum[1] = mac16_16(sum[1], tmp2, y3);
+        sum[2] = mac16_16(sum[2], tmp2, y0);
+        sum[3] = mac16_16(sum[3], tmp2, y1);
+
+        let tmp3 = x[j + 3];
+        y2 = y[y_idx];
+        y_idx += 1;
+        sum[0] = mac16_16(sum[0], tmp3, y3);
+        sum[1] = mac16_16(sum[1], tmp3, y0);
+        sum[2] = mac16_16(sum[2], tmp3, y1);
+        sum[3] = mac16_16(sum[3], tmp3, y2);
+
+        j += 4;
+    }
+
+    if j < len {
+        let tmp = x[j];
+        y3 = y[y_idx];
+        y_idx += 1;
+        sum[0] = mac16_16(sum[0], tmp, y0);
+        sum[1] = mac16_16(sum[1], tmp, y1);
+        sum[2] = mac16_16(sum[2], tmp, y2);
+        sum[3] = mac16_16(sum[3], tmp, y3);
+        j += 1;
+    }
+    if j < len {
+        let tmp = x[j];
+        y0 = y[y_idx];
+        y_idx += 1;
+        sum[0] = mac16_16(sum[0], tmp, y1);
+        sum[1] = mac16_16(sum[1], tmp, y2);
+        sum[2] = mac16_16(sum[2], tmp, y3);
+        sum[3] = mac16_16(sum[3], tmp, y0);
+        j += 1;
+    }
+    if j < len {
+        let tmp = x[j];
+        y1 = y[y_idx];
+        sum[0] = mac16_16(sum[0], tmp, y2);
+        sum[1] = mac16_16(sum[1], tmp, y3);
+        sum[2] = mac16_16(sum[2], tmp, y0);
+        sum[3] = mac16_16(sum[3], tmp, y1);
+    }
+}
 
 /// Computes LPC coefficients from the autocorrelation sequence using the
 /// Levinson-Durbin recursion.
@@ -117,10 +209,11 @@ pub(crate) fn celt_lpc_fixed(lpc: &mut [FixedOpusVal16], ac: &[FixedOpusVal32]) 
     let mut error = ac[0];
 
     for i in 0..order {
-        let mut rr = 0i32;
+        let mut acc = 0i64;
         for j in 0..i {
-            rr = rr.wrapping_add(mult32_32_q31(lpc32[j], ac[i - j]));
+            acc += i64::from(lpc32[j]) * i64::from(ac[i - j]);
         }
+        let mut rr = (acc >> 31) as i32;
         rr = rr.wrapping_add(shr32(ac[i + 1], 6));
         let r = -frac_div32_fixed(shl32(rr, 6), error);
         lpc32[i] = shr32(r, 6);
@@ -213,6 +306,31 @@ pub(crate) fn celt_fir(x: &[OpusVal16], num: &[OpusVal16], y: &mut [OpusVal16]) 
     }
 }
 
+/// Fixed-point FIR used by CELT PLC in `FIXED_POINT` builds.
+///
+/// Mirrors the scalar semantics of `celt_fir_c()` from `celt/celt_lpc.c`.
+/// The input slice stores `ord` history samples followed by `N` current
+/// samples, where `N == y.len()`.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_fir_fixed(
+    x: &[FixedOpusVal16],
+    num: &[FixedOpusVal16],
+    y: &mut [FixedOpusVal16],
+) {
+    let ord = num.len();
+    let n = y.len();
+    assert!(x.len() >= ord + n, "input must provide ord history samples");
+
+    for i in 0..n {
+        let mut acc = shl32(i32::from(x[ord + i]), SIG_SHIFT);
+        for tap in 0..ord {
+            let coeff = num[ord - 1 - tap];
+            acc = mac16_16(acc, coeff, x[i + tap]);
+        }
+        y[i] = sround16_fixed(acc, SIG_SHIFT);
+    }
+}
+
 /// Applies an all-pole IIR filter and updates the provided memory buffer.
 ///
 /// Mirrors the small-footprint implementation of `celt_iir()` in
@@ -250,6 +368,83 @@ pub(crate) fn celt_iir(
             mem[idx] = mem[idx - 1];
         }
         mem[0] = acc as OpusVal16;
+    }
+}
+
+/// Fixed-point all-pole IIR used by CELT PLC in `FIXED_POINT` builds.
+///
+/// Mirrors the scalar semantics of the non-`SMALL_FOOTPRINT` implementation
+/// of `celt_iir()` from `celt/celt_lpc.c`.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn celt_iir_fixed(
+    x: &[FixedOpusVal32],
+    den: &[FixedOpusVal16],
+    y: &mut [FixedOpusVal32],
+    mem: &mut [FixedOpusVal16],
+) {
+    let ord = den.len();
+    assert_eq!(mem.len(), ord, "IIR memory must match denominator order");
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "input and output must have the same length"
+    );
+
+    if ord == 0 {
+        y.copy_from_slice(x);
+        return;
+    }
+
+    debug_assert_eq!(ord & 3, 0, "celt_iir_fixed expects order divisible by 4");
+
+    let mut rden = vec![0i16; ord];
+    for (idx, slot) in rden.iter_mut().enumerate() {
+        *slot = den[ord - 1 - idx];
+    }
+
+    let mut hist = vec![0i16; x.len() + ord];
+    for i in 0..ord {
+        hist[i] = mem[ord - 1 - i].wrapping_neg();
+    }
+
+    let mut i = 0usize;
+    while i + 3 < x.len() {
+        let mut sum = [x[i], x[i + 1], x[i + 2], x[i + 3]];
+        xcorr_kernel_fixed(&rden, &hist[i..], &mut sum);
+
+        hist[i + ord] = sround16_fixed(sum[0], SIG_SHIFT).wrapping_neg();
+        y[i] = sum[0];
+
+        sum[1] = mac16_16(sum[1], hist[i + ord], den[0]);
+        hist[i + ord + 1] = sround16_fixed(sum[1], SIG_SHIFT).wrapping_neg();
+        y[i + 1] = sum[1];
+
+        sum[2] = mac16_16(sum[2], hist[i + ord + 1], den[0]);
+        sum[2] = mac16_16(sum[2], hist[i + ord], den[1]);
+        hist[i + ord + 2] = sround16_fixed(sum[2], SIG_SHIFT).wrapping_neg();
+        y[i + 2] = sum[2];
+
+        sum[3] = mac16_16(sum[3], hist[i + ord + 2], den[0]);
+        sum[3] = mac16_16(sum[3], hist[i + ord + 1], den[1]);
+        sum[3] = mac16_16(sum[3], hist[i + ord], den[2]);
+        hist[i + ord + 3] = sround16_fixed(sum[3], SIG_SHIFT).wrapping_neg();
+        y[i + 3] = sum[3];
+
+        i += 4;
+    }
+
+    while i < x.len() {
+        let mut sum = x[i];
+        for j in 0..ord {
+            sum = sum.wrapping_sub(mult16_16(rden[j], hist[i + j]));
+        }
+        hist[i + ord] = sround16_fixed(sum, SIG_SHIFT);
+        y[i] = sum;
+        i += 1;
+    }
+
+    for i in 0..ord {
+        mem[i] = extract16(y[x.len() - 1 - i]);
     }
 }
 
@@ -436,7 +631,15 @@ pub(crate) fn celt_autocorr_fixed(
 #[cfg(test)]
 mod tests {
     use super::{celt_autocorr, celt_fir, celt_iir, celt_lpc};
+    #[cfg(feature = "fixed_point")]
+    use super::{celt_fir_fixed, celt_iir_fixed, sround16_fixed, xcorr_kernel_fixed};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::{int16tosig, SIG_SHIFT};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::{mac16_16, mult16_16, pshr32, shl32};
     use crate::celt::types::{OpusVal16, OpusVal32};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -669,5 +872,103 @@ mod tests {
                 "mem {idx}: got {got}, want {want}"
             );
         }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn fir_fixed_matches_reference_response() {
+        let taps: [FixedOpusVal16; 4] = [768, -512, 256, 128];
+        let history: [FixedOpusVal16; 4] = [3000, -2500, 1700, -900];
+        let input: [FixedOpusVal16; 6] = [2100, -1800, 1400, -1100, 700, 400];
+
+        let mut buffer = history.to_vec();
+        buffer.extend_from_slice(&input);
+
+        let mut output = vec![0i16; input.len()];
+        celt_fir_fixed(&buffer, &taps, &mut output);
+
+        for i in 0..input.len() {
+            let mut acc = shl32(i32::from(buffer[taps.len() + i]), SIG_SHIFT);
+            for tap in 0..taps.len() {
+                let coeff = taps[taps.len() - 1 - tap];
+                acc = mac16_16(acc, coeff, buffer[i + tap]);
+            }
+            let expected = sround16_fixed(acc, SIG_SHIFT);
+            assert_eq!(output[i], expected, "idx {i}");
+        }
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn iir_fixed_matches_reference_response() {
+        let den: [FixedOpusVal16; 4] = [1536, -896, 320, -192];
+        let input: [FixedOpusVal32; 8] = [
+            int16tosig(2400),
+            int16tosig(1200),
+            int16tosig(-1800),
+            int16tosig(900),
+            int16tosig(0),
+            int16tosig(-700),
+            int16tosig(1600),
+            int16tosig(-500),
+        ];
+
+        let mut mem: Vec<FixedOpusVal16> = vec![180, -240, 75, -120];
+        let mut output = vec![0i32; input.len()];
+        celt_iir_fixed(&input, &den, &mut output, &mut mem);
+
+        let mut rden = vec![0i16; den.len()];
+        for (idx, slot) in rden.iter_mut().enumerate() {
+            *slot = den[den.len() - 1 - idx];
+        }
+        let mut ref_mem: Vec<FixedOpusVal16> = vec![180, -240, 75, -120];
+        let mut expected = vec![0i32; input.len()];
+        let mut hist = vec![0i16; input.len() + den.len()];
+        for i in 0..den.len() {
+            hist[i] = ref_mem[den.len() - 1 - i].wrapping_neg();
+        }
+
+        let mut i = 0usize;
+        while i + 3 < input.len() {
+            let mut sum = [input[i], input[i + 1], input[i + 2], input[i + 3]];
+            xcorr_kernel_fixed(&rden, &hist[i..], &mut sum);
+
+            hist[i + den.len()] = sround16_fixed(sum[0], SIG_SHIFT).wrapping_neg();
+            expected[i] = sum[0];
+
+            sum[1] = mac16_16(sum[1], hist[i + den.len()], den[0]);
+            hist[i + den.len() + 1] = sround16_fixed(sum[1], SIG_SHIFT).wrapping_neg();
+            expected[i + 1] = sum[1];
+
+            sum[2] = mac16_16(sum[2], hist[i + den.len() + 1], den[0]);
+            sum[2] = mac16_16(sum[2], hist[i + den.len()], den[1]);
+            hist[i + den.len() + 2] = sround16_fixed(sum[2], SIG_SHIFT).wrapping_neg();
+            expected[i + 2] = sum[2];
+
+            sum[3] = mac16_16(sum[3], hist[i + den.len() + 2], den[0]);
+            sum[3] = mac16_16(sum[3], hist[i + den.len() + 1], den[1]);
+            sum[3] = mac16_16(sum[3], hist[i + den.len()], den[2]);
+            hist[i + den.len() + 3] = sround16_fixed(sum[3], SIG_SHIFT).wrapping_neg();
+            expected[i + 3] = sum[3];
+
+            i += 4;
+        }
+
+        while i < input.len() {
+            let mut sum = input[i];
+            for j in 0..den.len() {
+                sum = sum.wrapping_sub(mult16_16(rden[j], hist[i + j]));
+            }
+            hist[i + den.len()] = sround16_fixed(sum, SIG_SHIFT);
+            expected[i] = sum;
+            i += 1;
+        }
+
+        for i in 0..den.len() {
+            ref_mem[i] = expected[input.len() - 1 - i] as FixedOpusVal16;
+        }
+
+        assert_eq!(output, expected);
+        assert_eq!(mem, ref_mem);
     }
 }

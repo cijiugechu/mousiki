@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(test)]
+extern crate std;
+
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -9,7 +12,6 @@ use super::fixed_ops::{
 use super::fixed_ops::{mult16_32_q15, mult16_32_q16};
 use super::kiss_fft_fixed::{FixedKissFftCpx, FixedKissFftState};
 use super::math::{celt_ilog2, celt_zlog2};
-use super::math_fixed::celt_cos_norm;
 use super::types::{FixedCeltCoef, FixedCeltSig};
 
 #[derive(Debug, Clone)]
@@ -61,9 +63,9 @@ impl FixedMdctLookup {
         let mut n2 = n >> 1;
         for _ in 0..=max_shift {
             for i in 0..n2 {
-                let phase =
-                    shl32(i as i32, 17).wrapping_add(n2 as i32 + 16_384) / n as i32;
-                twiddle.push(celt_cos_norm(phase));
+                let angle = 2.0f64 * core::f64::consts::PI * ((i as f64) + 0.125f64) / (n as f64);
+                let value = libm::floor(0.5f64 + 32_768.0f64 * libm::cos(angle));
+                twiddle.push(value.clamp(-32_767.0, 32_767.0) as FixedCeltCoef);
             }
             offsets.push(twiddle.len());
             n2 >>= 1;
@@ -418,7 +420,6 @@ pub fn clt_mdct_backward_fixed(
     assert!(stride > 0);
 
     let twiddles = lookup.twiddles(shift);
-    output.fill(0);
 
     let mut sumval = n2 as i32;
     let mut maxval = 0i32;
@@ -432,11 +433,114 @@ pub fn clt_mdct_backward_fixed(
     let mut post_shift = (19 - celt_ilog2(abs32(sumval))).max(0);
     post_shift = post_shift.min(pre_shift);
     let fft_shift = pre_shift - post_shift;
+    #[cfg(test)]
+    if std::env::var("CELT_DUMP_MDCT_SHIFTS").is_ok() {
+        static SHIFT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        if SHIFT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            std::println!(
+                "mdctcmp shifts maxval={} sumval={} pre_shift={} post_shift={} fft_shift={}",
+                maxval, sumval, pre_shift, post_shift, fft_shift
+            );
+        }
+    }
 
     let fft = lookup.inverse_plan(shift);
+    #[cfg(test)]
+    if std::env::var("CELT_DUMP_MDCT_INPUT").is_ok() {
+        static INPUT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        if INPUT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            std::println!("mdctcmp input_len={}", input.len());
+            for (idx, value) in input.iter().enumerate() {
+                std::println!("mdctcmp input[{idx}]={value}");
+            }
+        }
+    }
     let mut pre = pre_rotate_backward(input, twiddles, stride, fft, pre_shift);
+    #[cfg(test)]
+    if std::env::var("CELT_DUMP_PRE_ARRAY").is_ok() {
+        static PRE_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        if PRE_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            std::println!("mdctcmp pre_array_len={}", pre.len());
+            for (idx, value) in pre.iter().enumerate() {
+                std::println!("mdctcmp pre_array[{idx}]={},{}", value.r, value.i);
+            }
+        }
+    }
+    #[cfg(test)]
+    if std::env::var("CELT_TRACE_MDCT_RUST").is_ok() {
+        let mut hash = 2166136261u32;
+        for value in pre.iter() {
+            for &part in [value.r as u32, value.i as u32].iter() {
+                hash = (hash ^ (part & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 8) & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 16) & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 24) & 0xFF)).wrapping_mul(16777619);
+            }
+        }
+        let mut first8 = [0i32; 8];
+        let mut idx = 0usize;
+        for value in pre.iter() {
+            if idx < 8 { first8[idx] = value.r; idx += 1; }
+            if idx < 8 { first8[idx] = value.i; idx += 1; }
+            if idx >= 8 { break; }
+        }
+        std::println!("mdctcmp pre_hash=0x{:08x} first=({}, {}) last=({}, {}) first8={:?}", hash, pre[0].r, pre[0].i, pre[pre.len()-1].r, pre[pre.len()-1].i, first8);
+    }
     fft.process(&mut pre, fft_shift);
+    #[cfg(test)]
+    if std::env::var("CELT_DUMP_FFT_ARRAY").is_ok() {
+        static FFT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        if FFT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            std::println!("mdctcmp fft_array_len={}", pre.len());
+            for (idx, value) in pre.iter().enumerate() {
+                std::println!("mdctcmp fft_array[{idx}]={},{}", value.r, value.i);
+            }
+        }
+    }
+    #[cfg(test)]
+    if std::env::var("CELT_TRACE_MDCT_RUST").is_ok() {
+        let mut hash = 2166136261u32;
+        for value in pre.iter() {
+            for &part in [value.r as u32, value.i as u32].iter() {
+                hash = (hash ^ (part & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 8) & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 16) & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 24) & 0xFF)).wrapping_mul(16777619);
+            }
+        }
+        let mut first8 = [0i32; 8];
+        let mut idx = 0usize;
+        for value in pre.iter() {
+            if idx < 8 { first8[idx] = value.r; idx += 1; }
+            if idx < 8 { first8[idx] = value.i; idx += 1; }
+            if idx >= 8 { break; }
+        }
+        std::println!("mdctcmp fft_hash=0x{:08x} first=({}, {}) last=({}, {}) first8={:?}", hash, pre[0].r, pre[0].i, pre[pre.len()-1].r, pre[pre.len()-1].i, first8);
+    }
     post_rotate_backward(&pre, twiddles, output, window, overlap, post_shift);
+    #[cfg(test)]
+    if std::env::var("CELT_DUMP_MDCT_OUTPUT").is_ok() {
+        static OUTPUT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        if OUTPUT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            let mut hash = 2166136261u32;
+            for &value in output.iter() {
+                let part = value as u32;
+                hash = (hash ^ (part & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 8) & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 16) & 0xFF)).wrapping_mul(16777619);
+                hash = (hash ^ ((part >> 24) & 0xFF)).wrapping_mul(16777619);
+            }
+            std::println!("mdctcmp output_len={} hash=0x{hash:08x}", output.len());
+            for (idx, value) in output.iter().enumerate() {
+                std::println!("mdctcmp output[{idx}]={value}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
