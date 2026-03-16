@@ -127,8 +127,8 @@ pub fn silk_decode_signs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{vec, vec::Vec};
     use crate::celt::EcDec;
+    use alloc::{vec, vec::Vec};
 
     fn sums_for_blocks(pulses: &[i8]) -> Vec<i32> {
         let num_blocks = number_of_shell_blocks(pulses.len());

@@ -2,14 +2,14 @@ use mousiki::opus_decoder::{
     OpusDecoderCtlRequest, opus_decode, opus_decoder_create, opus_decoder_ctl,
 };
 use mousiki::opus_encoder::{
-    OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, opus_encode,
-    opus_encoder_create, opus_encoder_ctl,
+    OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, opus_encode, opus_encoder_create,
+    opus_encoder_ctl,
 };
 use mousiki::opus_multistream::{
-    OpusMultistreamDecoderCtlRequest, OpusMultistreamEncoderCtlRequest, OpusMultistreamEncoderError,
-    opus_multistream_decode, opus_multistream_decoder_create, opus_multistream_decoder_ctl,
-    opus_multistream_encode, opus_multistream_encoder_create, opus_multistream_encoder_ctl,
-    opus_multistream_encoder_get_encoder_state,
+    OpusMultistreamDecoderCtlRequest, OpusMultistreamEncoderCtlRequest,
+    OpusMultistreamEncoderError, opus_multistream_decode, opus_multistream_decoder_create,
+    opus_multistream_decoder_ctl, opus_multistream_encode, opus_multistream_encoder_create,
+    opus_multistream_encoder_ctl, opus_multistream_encoder_get_encoder_state,
 };
 use mousiki::packet::{
     Mode, opus_packet_get_mode, opus_packet_get_nb_frames, opus_packet_get_samples_per_frame,
@@ -137,8 +137,8 @@ fn generate_music(buf: &mut [i16], len: usize, rng: &mut FastRand) {
     }
 
     for i in silence..samples {
-        let mut v1 = (((j * ((j >> 12) ^ ((j >> 10 | j >> 12) & 26 & (j >> 7)))) & 128) + 128)
-            << 15;
+        let mut v1 =
+            (((j * ((j >> 12) ^ ((j >> 10 | j >> 12) & 26 & (j >> 7)))) & 128) + 128) << 15;
         let mut v2 = v1;
         let r = rng.next();
         v1 += (r & 65_535) as i32;
@@ -240,8 +240,13 @@ fn test_encode(
             return Err("input buffer too small".to_string());
         }
 
-        let len = opus_encode(enc, &inbuf[start..end], frame_size, &mut packet[..MAX_PACKET])
-            .map_err(|err| format!("opus_encode failed: {err:?}"))?;
+        let len = opus_encode(
+            enc,
+            &inbuf[start..end],
+            frame_size,
+            &mut packet[..MAX_PACKET],
+        )
+        .map_err(|err| format!("opus_encode failed: {err:?}"))?;
         if len > MAX_PACKET {
             return Err("opus_encode returned oversized packet".to_string());
         }
@@ -259,8 +264,8 @@ fn test_encode(
                 let mut fs = 0i32;
                 let _ = opus_decoder_ctl(dec, OpusDecoderCtlRequest::GetSampleRate(&mut fs));
                 let fs_u32 = fs.max(0) as u32;
-                let frame_samples = opus_packet_get_samples_per_frame(&packet[..len], fs_u32)
-                    .unwrap_or_default();
+                let frame_samples =
+                    opus_packet_get_samples_per_frame(&packet[..len], fs_u32).unwrap_or_default();
                 let nb_frames = opus_packet_get_nb_frames(&packet[..len], len).unwrap_or_default();
                 let mode = opus_packet_get_mode(&packet[..len]).ok();
                 return Err(format!(
@@ -273,8 +278,8 @@ fn test_encode(
             let mut fs = 0i32;
             let _ = opus_decoder_ctl(dec, OpusDecoderCtlRequest::GetSampleRate(&mut fs));
             let fs_u32 = fs.max(0) as u32;
-            let frame_samples = opus_packet_get_samples_per_frame(&packet[..len], fs_u32)
-                .unwrap_or_default();
+            let frame_samples =
+                opus_packet_get_samples_per_frame(&packet[..len], fs_u32).unwrap_or_default();
             let nb_frames = opus_packet_get_nb_frames(&packet[..len], len).unwrap_or_default();
             let mode = opus_packet_get_mode(&packet[..len]).ok();
             return Err(format!(
@@ -386,11 +391,8 @@ fn fuzz_encoder_settings(
                 .map_err(|err| format!("set signal failed: {err:?}"))?;
             opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetInbandFec(inband_fec))
                 .map_err(|err| format!("set inband fec failed: {err:?}"))?;
-            opus_encoder_ctl(
-                &mut enc,
-                OpusEncoderCtlRequest::SetPacketLossPerc(pkt_loss),
-            )
-            .map_err(|err| format!("set packet loss failed: {err:?}"))?;
+            opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetPacketLossPerc(pkt_loss))
+                .map_err(|err| format!("set packet loss failed: {err:?}"))?;
             opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetLsbDepth(lsb_depth))
                 .map_err(|err| format!("set lsb depth failed: {err:?}"))?;
             opus_encoder_ctl(
@@ -406,7 +408,8 @@ fn fuzz_encoder_settings(
             )
             .map_err(|err| format!("set frame duration failed: {err:?}"))?;
 
-            if let Err(msg) = test_encode(&mut enc, num_channels as usize, frame_size, &mut dec, rng)
+            if let Err(msg) =
+                test_encode(&mut enc, num_channels as usize, frame_size, &mut dec, rng)
             {
                 return Err(format!(
                     "fuzz_encoder_settings failed: {msg}, fs={}k, ch={}, app={}, bitrate={}, \
@@ -462,7 +465,8 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
     if !matches!(invalid, Err(ref err) if is_bad_arg_multistream_create(err)) {
         return Err("invalid multistream create should fail".to_string());
     }
-    let invalid = opus_multistream_encoder_create(8000, 2, usize::MAX, 0, &mapping, OPUS_APPLICATION_VOIP);
+    let invalid =
+        opus_multistream_encoder_create(8000, 2, usize::MAX, 0, &mapping, OPUS_APPLICATION_VOIP);
     if !matches!(invalid, Err(ref err) if is_bad_arg_multistream_create(err)) {
         return Err("invalid multistream create should fail".to_string());
     }
@@ -471,14 +475,21 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         return Err("invalid multistream create should fail".to_string());
     }
 
-    let mut ms_enc = opus_multistream_encoder_create(8000, 2, 2, 0, &mapping, OPUS_APPLICATION_AUDIO)
-        .map_err(|err| format!("multistream encoder create failed: {err:?}"))?;
+    let mut ms_enc =
+        opus_multistream_encoder_create(8000, 2, 2, 0, &mapping, OPUS_APPLICATION_AUDIO)
+            .map_err(|err| format!("multistream encoder create failed: {err:?}"))?;
 
     let mut lsb = 0;
-    opus_multistream_encoder_ctl(&mut ms_enc, OpusMultistreamEncoderCtlRequest::GetBitrate(&mut lsb))
-        .map_err(|err| format!("get bitrate failed: {err:?}"))?;
-    opus_multistream_encoder_ctl(&mut ms_enc, OpusMultistreamEncoderCtlRequest::GetLsbDepth(&mut lsb))
-        .map_err(|err| format!("get lsb depth failed: {err:?}"))?;
+    opus_multistream_encoder_ctl(
+        &mut ms_enc,
+        OpusMultistreamEncoderCtlRequest::GetBitrate(&mut lsb),
+    )
+    .map_err(|err| format!("get bitrate failed: {err:?}"))?;
+    opus_multistream_encoder_ctl(
+        &mut ms_enc,
+        OpusMultistreamEncoderCtlRequest::GetLsbDepth(&mut lsb),
+    )
+    .map_err(|err| format!("get lsb depth failed: {err:?}"))?;
     if lsb < 16 {
         return Err("lsb depth below expected minimum".to_string());
     }
@@ -486,8 +497,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
     let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut ms_enc, 1)
         .map_err(|err| format!("get encoder state failed: {err:?}"))?;
     let mut stream_lsb = 0;
-    opus_encoder_ctl(stream_encoder, OpusEncoderCtlRequest::GetLsbDepth(&mut stream_lsb))
-        .map_err(|err| format!("get stream lsb depth failed: {err:?}"))?;
+    opus_encoder_ctl(
+        stream_encoder,
+        OpusEncoderCtlRequest::GetLsbDepth(&mut stream_lsb),
+    )
+    .map_err(|err| format!("get stream lsb depth failed: {err:?}"))?;
     if lsb != stream_lsb {
         return Err("lsb depth mismatch between multistream and stream".to_string());
     }
@@ -496,24 +510,44 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         return Err("invalid stream id should fail".to_string());
     }
 
-    let mut dec = opus_decoder_create(48_000, 2)
-        .map_err(|err| format!("decoder create failed: {err:?}"))?;
+    let mut dec =
+        opus_decoder_create(48_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?;
     let mut ms_dec = opus_multistream_decoder_create(48_000, 2, 2, 0, &mapping)
         .map_err(|err| format!("multistream decoder create failed: {err:?}"))?;
     let mut ms_dec_err = opus_multistream_decoder_create(48_000, 3, 2, 0, &mapping)
         .map_err(|err| format!("multistream decoder create failed: {err:?}"))?;
 
     let mut dec_err = Vec::with_capacity(10);
-    dec_err.push(opus_decoder_create(48_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(48_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(24_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(24_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(16_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(16_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(12_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(12_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(8000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?);
-    dec_err.push(opus_decoder_create(8000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?);
+    dec_err.push(
+        opus_decoder_create(48_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(48_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(24_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(24_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(16_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(16_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(12_000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(12_000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(8000, 2).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
+    dec_err.push(
+        opus_decoder_create(8000, 1).map_err(|err| format!("decoder create failed: {err:?}"))?,
+    );
 
     let mut inbuf = vec![0i16; SAMPLES * 2];
     let mut outbuf = vec![0i16; SAMPLES * 2];
@@ -548,10 +582,24 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         for j in 0..13 {
             let modes = [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2];
             let rates = [
-                6000, 12_000, 48_000, 16_000, 32_000, 48_000, 64_000, 512_000, 13_000,
-                24_000, 48_000, 64_000, 96_000,
+                6000, 12_000, 48_000, 16_000, 32_000, 48_000, 64_000, 512_000, 13_000, 24_000,
+                48_000, 64_000, 96_000,
             ];
-            let frame = [960 * 2, 960, 480, 960, 960, 960, 480, 960 * 3, 960 * 3, 960, 480, 240, 120];
+            let frame = [
+                960 * 2,
+                960,
+                480,
+                960,
+                960,
+                960,
+                480,
+                960 * 3,
+                960 * 3,
+                960,
+                480,
+                240,
+                120,
+            ];
 
             let rate = rates[j] + (rng.next() % rates[j] as u32) as i32;
             let mut i = 0usize;
@@ -564,13 +612,19 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                     opus_decoder_ctl(&mut dec, OpusDecoderCtlRequest::ResetState)
                         .map_err(|err| format!("reset decoder failed: {err:?}"))?;
                     if rng.next() & 1 != 0 {
-                        opus_decoder_ctl(&mut dec_err[(rng.next() & 1) as usize], OpusDecoderCtlRequest::ResetState)
-                            .map_err(|err| format!("reset decoder failed: {err:?}"))?;
+                        opus_decoder_ctl(
+                            &mut dec_err[(rng.next() & 1) as usize],
+                            OpusDecoderCtlRequest::ResetState,
+                        )
+                        .map_err(|err| format!("reset decoder failed: {err:?}"))?;
                     }
                 }
                 if rng.next() & 127 == 0 {
-                    opus_decoder_ctl(&mut dec_err[(rng.next() & 1) as usize], OpusDecoderCtlRequest::ResetState)
-                        .map_err(|err| format!("reset decoder failed: {err:?}"))?;
+                    opus_decoder_ctl(
+                        &mut dec_err[(rng.next() & 1) as usize],
+                        OpusDecoderCtlRequest::ResetState,
+                    )
+                    .map_err(|err| format!("reset decoder failed: {err:?}"))?;
                 }
                 if rng.next() % 10 == 0 {
                     let complex = (rng.next() % 11) as i32;
@@ -585,14 +639,17 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                     .map_err(|err| format!("set inband fec failed: {err:?}"))?;
                 let mode = MODE_SILK_ONLY + modes[j];
                 opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(mode))
-                .map_err(|err| format!("set force mode failed: {err:?}"))?;
+                    .map_err(|err| format!("set force mode failed: {err:?}"))?;
                 opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetDtx(rng.next() & 1 != 0))
                     .map_err(|err| format!("set dtx failed: {err:?}"))?;
                 opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(rate))
                     .map_err(|err| format!("set bitrate failed: {err:?}"))?;
                 let forced_channels = if rates[j] >= 64_000 { 2 } else { 1 };
-                opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceChannels(forced_channels))
-                    .map_err(|err| format!("set force channels failed: {err:?}"))?;
+                opus_encoder_ctl(
+                    &mut enc,
+                    OpusEncoderCtlRequest::SetForceChannels(forced_channels),
+                )
+                .map_err(|err| format!("set force channels failed: {err:?}"))?;
                 opus_encoder_ctl(
                     &mut enc,
                     OpusEncoderCtlRequest::SetComplexity((count >> 2) % 11),
@@ -635,8 +692,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                     return Err("encoded packet too large".to_string());
                 }
                 let mut enc_final_range = 0u32;
-                opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::GetFinalRange(&mut enc_final_range))
-                    .map_err(|err| format!("get final range failed: {err:?}"))?;
+                opus_encoder_ctl(
+                    &mut enc,
+                    OpusEncoderCtlRequest::GetFinalRange(&mut enc_final_range),
+                )
+                .map_err(|err| format!("get final range failed: {err:?}"))?;
 
                 let mut len = len;
                 if rng.next() & 3 == 0 {
@@ -680,8 +740,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                 }
 
                 let mut dec_final_range = 0u32;
-                opus_decoder_ctl(&mut dec, OpusDecoderCtlRequest::GetFinalRange(&mut dec_final_range))
-                    .map_err(|err| format!("get final range failed: {err:?}"))?;
+                opus_decoder_ctl(
+                    &mut dec,
+                    OpusDecoderCtlRequest::GetFinalRange(&mut dec_final_range),
+                )
+                .map_err(|err| format!("get final range failed: {err:?}"))?;
                 if allow_silk_final_range
                     && modes[j] == 0
                     && frame_size <= silk_range_limit
@@ -777,8 +840,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         .map_err(|err| format!("set dtx failed: {err:?}"))?;
 
     for rc in 0..3 {
-        opus_multistream_encoder_ctl(&mut ms_enc, OpusMultistreamEncoderCtlRequest::SetVbr(rc < 2))
-            .map_err(|err| format!("set vbr failed: {err:?}"))?;
+        opus_multistream_encoder_ctl(
+            &mut ms_enc,
+            OpusMultistreamEncoderCtlRequest::SetVbr(rc < 2),
+        )
+        .map_err(|err| format!("set vbr failed: {err:?}"))?;
         opus_multistream_encoder_ctl(
             &mut ms_enc,
             OpusMultistreamEncoderCtlRequest::SetVbrConstraint(rc == 1),
@@ -798,10 +864,12 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         for j in 0..16 {
             let modes = [0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2];
             let rates = [
-                4000, 12_000, 32_000, 8000, 16_000, 32_000, 48_000, 88_000, 4000, 12_000,
-                32_000, 8000, 16_000, 32_000, 48_000, 88_000,
+                4000, 12_000, 32_000, 8000, 16_000, 32_000, 48_000, 88_000, 4000, 12_000, 32_000,
+                8000, 16_000, 32_000, 48_000, 88_000,
             ];
-            let frame = [160, 160, 80, 160, 160, 80, 40, 20, 160, 160, 80, 160, 160, 80, 40, 20];
+            let frame = [
+                160, 160, 80, 160, 160, 80, 40, 20, 160, 160, 80, 160, 160, 80, 40, 20,
+            ];
             opus_multistream_encoder_ctl(
                 &mut ms_enc,
                 OpusMultistreamEncoderCtlRequest::SetInbandFec(rc == 0 && j == 1),
@@ -851,10 +919,16 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                 )
                 .map_err(|err| format!("set packet loss failed: {err:?}"))?;
                 if rng.next() & 255 == 0 {
-                    opus_multistream_encoder_ctl(&mut ms_enc, OpusMultistreamEncoderCtlRequest::ResetState)
-                        .map_err(|err| format!("reset encoder failed: {err:?}"))?;
-                    opus_multistream_decoder_ctl(&mut ms_dec, OpusMultistreamDecoderCtlRequest::ResetState)
-                        .map_err(|err| format!("reset decoder failed: {err:?}"))?;
+                    opus_multistream_encoder_ctl(
+                        &mut ms_enc,
+                        OpusMultistreamEncoderCtlRequest::ResetState,
+                    )
+                    .map_err(|err| format!("reset encoder failed: {err:?}"))?;
+                    opus_multistream_decoder_ctl(
+                        &mut ms_dec,
+                        OpusMultistreamDecoderCtlRequest::ResetState,
+                    )
+                    .map_err(|err| format!("reset decoder failed: {err:?}"))?;
                     if rng.next() & 3 != 0 {
                         opus_multistream_decoder_ctl(
                             &mut ms_dec_err,
@@ -872,13 +946,9 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                 }
 
                 let offset = i * 2;
-                let len = opus_multistream_encode(
-                    &mut ms_enc,
-                    &inbuf[offset..],
-                    frame_size,
-                    &mut packet,
-                )
-                .map_err(|err| format!("multistream encode failed: {err:?}"))?;
+                let len =
+                    opus_multistream_encode(&mut ms_enc, &inbuf[offset..], frame_size, &mut packet)
+                        .map_err(|err| format!("multistream encode failed: {err:?}"))?;
                 if len > MAX_PACKET {
                     return Err("multistream packet too large".to_string());
                 }
@@ -979,8 +1049,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         }
 
         let mut enc_final_range = 0u32;
-        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::GetFinalRange(&mut enc_final_range))
-            .map_err(|err| format!("get final range failed: {err:?}"))?;
+        opus_encoder_ctl(
+            &mut enc,
+            OpusEncoderCtlRequest::GetFinalRange(&mut enc_final_range),
+        )
+        .map_err(|err| format!("get final range failed: {err:?}"))?;
 
         let out_samples = opus_decode(
             &mut dec,
@@ -996,8 +1069,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         }
 
         let mut dec_final_range = 0u32;
-        opus_decoder_ctl(&mut dec, OpusDecoderCtlRequest::GetFinalRange(&mut dec_final_range))
-            .map_err(|err| format!("get final range failed: {err:?}"))?;
+        opus_decoder_ctl(
+            &mut dec,
+            OpusDecoderCtlRequest::GetFinalRange(&mut dec_final_range),
+        )
+        .map_err(|err| format!("get final range failed: {err:?}"))?;
         let compare_range = allow_silk_final_range
             && matches!(
                 opus_packet_get_mode(&packet[..len]),
@@ -1036,16 +1112,26 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
             )
             .map_err(|err| format!("decode failed: {err:?}"))?
         } else {
-            opus_decode(&mut dec_err[0], None, 0, &mut out2buf, MAX_FRAME_SAMP, false)
-                .map_err(|err| format!("decode failed: {err:?}"))?
+            opus_decode(
+                &mut dec_err[0],
+                None,
+                0,
+                &mut out2buf,
+                MAX_FRAME_SAMP,
+                false,
+            )
+            .map_err(|err| format!("decode failed: {err:?}"))?
         };
         if len > 0 && out_samples != frame_size {
             return Err("decoded sample count mismatch".to_string());
         }
 
         let mut dec_final_range = 0u32;
-        opus_decoder_ctl(&mut dec_err[0], OpusDecoderCtlRequest::GetFinalRange(&mut dec_final_range))
-            .map_err(|err| format!("get final range failed: {err:?}"))?;
+        opus_decoder_ctl(
+            &mut dec_err[0],
+            OpusDecoderCtlRequest::GetFinalRange(&mut dec_final_range),
+        )
+        .map_err(|err| format!("get final range failed: {err:?}"))?;
 
         let dec2 = (rng.next() % 9 + 1) as usize;
         let out_samples = if len > 0 {
@@ -1109,8 +1195,11 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         .map_err(|err| format!("reset decoder failed: {err:?}"))?;
     opus_multistream_decoder_ctl(&mut ms_dec, OpusMultistreamDecoderCtlRequest::ResetState)
         .map_err(|err| format!("reset decoder failed: {err:?}"))?;
-    opus_multistream_decoder_ctl(&mut ms_dec_err, OpusMultistreamDecoderCtlRequest::ResetState)
-        .map_err(|err| format!("reset decoder failed: {err:?}"))?;
+    opus_multistream_decoder_ctl(
+        &mut ms_dec_err,
+        OpusMultistreamDecoderCtlRequest::ResetState,
+    )
+    .map_err(|err| format!("reset decoder failed: {err:?}"))?;
 
     Ok(())
 }
@@ -1122,8 +1211,12 @@ fn opus_encode_decode_smoke() {
     let frame_size = sampling_rate / 50;
     let frame_enum = get_frame_size_enum(frame_size, sampling_rate);
 
-    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
-        .expect("encoder");
+    let mut enc = opus_encoder_create(
+        sampling_rate as i32,
+        channels as i32,
+        OPUS_APPLICATION_AUDIO,
+    )
+    .expect("encoder");
     opus_encoder_ctl(
         &mut enc,
         OpusEncoderCtlRequest::SetExpertFrameDuration(frame_enum),
@@ -1144,8 +1237,8 @@ fn opus_encode_decode_smoke() {
     for frame_idx in 0..total_frames {
         let start = frame_idx * frame_size * channels;
         let end = start + frame_size * channels;
-        let len = opus_encode(&mut enc, &inbuf[start..end], frame_size, &mut packet)
-            .expect("encode");
+        let len =
+            opus_encode(&mut enc, &inbuf[start..end], frame_size, &mut packet).expect("encode");
         assert!(len <= MAX_PACKET);
 
         let decoded = opus_decode(
@@ -1167,10 +1260,17 @@ fn opus_encode_silk_10ms_round_trip() {
     let channels = 2usize;
     let frame_size = sampling_rate / 100;
 
-    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
-        .expect("encoder");
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_SILK_ONLY))
-        .expect("force silk");
+    let mut enc = opus_encoder_create(
+        sampling_rate as i32,
+        channels as i32,
+        OPUS_APPLICATION_AUDIO,
+    )
+    .expect("encoder");
+    opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetForceMode(MODE_SILK_ONLY),
+    )
+    .expect("force silk");
     opus_encoder_ctl(
         &mut enc,
         OpusEncoderCtlRequest::SetExpertFrameDuration(OPUS_FRAMESIZE_10_MS),
@@ -1204,10 +1304,17 @@ fn opus_encode_celt_60ms_multiframe_round_trip() {
     let channels = 2usize;
     let frame_size = 3 * sampling_rate / 50;
 
-    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
-        .expect("encoder");
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_CELT_ONLY))
-        .expect("force celt");
+    let mut enc = opus_encoder_create(
+        sampling_rate as i32,
+        channels as i32,
+        OPUS_APPLICATION_AUDIO,
+    )
+    .expect("encoder");
+    opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetForceMode(MODE_CELT_ONLY),
+    )
+    .expect("force celt");
     opus_encoder_ctl(
         &mut enc,
         OpusEncoderCtlRequest::SetExpertFrameDuration(OPUS_FRAMESIZE_60_MS),
@@ -1241,8 +1348,12 @@ fn opus_encode_hybrid_round_trip() {
     let channels = 2usize;
     let frame_size = sampling_rate / 50;
 
-    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
-        .expect("encoder");
+    let mut enc = opus_encoder_create(
+        sampling_rate as i32,
+        channels as i32,
+        OPUS_APPLICATION_AUDIO,
+    )
+    .expect("encoder");
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_HYBRID))
         .expect("force hybrid");
     opus_encoder_ctl(
@@ -1278,8 +1389,12 @@ fn opus_encode_hybrid_multiframe_round_trip() {
     let channels = 1usize;
     let frame_size = 2 * sampling_rate / 50;
 
-    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
-        .expect("encoder");
+    let mut enc = opus_encoder_create(
+        sampling_rate as i32,
+        channels as i32,
+        OPUS_APPLICATION_AUDIO,
+    )
+    .expect("encoder");
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetForceMode(MODE_HYBRID))
         .expect("force hybrid");
     opus_encoder_ctl(
@@ -1322,8 +1437,12 @@ fn opus_encode_hybrid_to_celt_transition_emits_bridge_frame() {
     let channels = 1usize;
     let frame_size = sampling_rate / 50;
 
-    let mut enc = opus_encoder_create(sampling_rate as i32, channels as i32, OPUS_APPLICATION_AUDIO)
-        .expect("encoder");
+    let mut enc = opus_encoder_create(
+        sampling_rate as i32,
+        channels as i32,
+        OPUS_APPLICATION_AUDIO,
+    )
+    .expect("encoder");
     opus_encoder_ctl(
         &mut enc,
         OpusEncoderCtlRequest::SetBandwidth(OPUS_BANDWIDTH_FULLBAND),
@@ -1334,8 +1453,7 @@ fn opus_encode_hybrid_to_celt_transition_emits_bridge_frame() {
     let mut packet = vec![0u8; MAX_PACKET];
     let mut inbuf = vec![0i16; frame_size * channels];
 
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(12_000))
-        .expect("set low bitrate");
+    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(12_000)).expect("set low bitrate");
     generate_music(&mut inbuf, frame_size, &mut rng);
     let len = opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode hybrid");
     assert_eq!(opus_packet_get_mode(&packet[..len]).unwrap(), Mode::HYBRID);
@@ -1343,8 +1461,7 @@ fn opus_encode_hybrid_to_celt_transition_emits_bridge_frame() {
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(256_000))
         .expect("set high bitrate");
     generate_music(&mut inbuf, frame_size, &mut rng);
-    let len =
-        opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode transition");
+    let len = opus_encode(&mut enc, &inbuf, frame_size, &mut packet).expect("encode transition");
     assert_eq!(opus_packet_get_mode(&packet[..len]).unwrap(), Mode::HYBRID);
 
     generate_music(&mut inbuf, frame_size, &mut rng);

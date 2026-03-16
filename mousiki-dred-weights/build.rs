@@ -87,16 +87,13 @@ pitchdnn_data.c, or a tarball from Xiph.",
 
 fn download_and_extract(work_dir: &Path) -> io::Result<PathBuf> {
     let url = env::var("DRED_WEIGHTS_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
-    let expected_sha =
-        env::var("DRED_WEIGHTS_SHA256").unwrap_or_else(|_| MODEL_SHA256.to_string());
+    let expected_sha = env::var("DRED_WEIGHTS_SHA256").unwrap_or_else(|_| MODEL_SHA256.to_string());
 
     let tar_path = work_dir.join(MODEL_TARBALL);
     let extract_root = work_dir.join("extracted");
     let stamp_path = work_dir.join("model.stamp");
 
-    if stamp_matches(&stamp_path, &expected_sha)
-        && extracted_files_exist(&extract_root)
-    {
+    if stamp_matches(&stamp_path, &expected_sha) && extracted_files_exist(&extract_root) {
         return Ok(extract_root);
     }
 
@@ -260,9 +257,9 @@ fn strip_comments(input: &str) -> String {
 
 fn parse_header(header: &str) -> io::Result<(String, String, usize)> {
     let header = header.replace(['\n', '\r'], " ");
-    let open = header.find('[').ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "Missing '[' in array header")
-    })?;
+    let open = header
+        .find('[')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing '[' in array header"))?;
     let close = header[open + 1..]
         .find(']')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing ']' in array header"))?;
@@ -370,11 +367,7 @@ fn generate_rust(source_path: &Path, out_path: &Path) -> io::Result<()> {
     let content = strip_comments(&content);
 
     let mut out = BufWriter::new(File::create(out_path)?);
-    writeln!(
-        out,
-        "// Auto-generated from {}",
-        source_path.display()
-    )?;
+    writeln!(out, "// Auto-generated from {}", source_path.display())?;
 
     let marker = "const ";
     let mut cursor = 0usize;
@@ -395,18 +388,16 @@ fn generate_rust(source_path: &Path, out_path: &Path) -> io::Result<()> {
             cursor = start + brace_pos + 1;
             continue;
         }
-        let end_pos = after[brace_pos + 1..]
-            .find("};")
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Missing array terminator in {}. The file may be truncated \
+        let end_pos = after[brace_pos + 1..].find("};").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Missing array terminator in {}. The file may be truncated \
 or incompatible; try re-downloading or setting DRED_WEIGHTS_PATH.",
-                        source_path.display()
-                    ),
-                )
-            })?;
+                    source_path.display()
+                ),
+            )
+        })?;
         let values_str = &after[brace_pos + 1..brace_pos + 1 + end_pos];
 
         let (c_type, name, len) = match parse_header(header) {

@@ -128,9 +128,9 @@ pub fn silk_shell_decoder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
     use crate::celt::EcDec;
     use crate::range::RangeDecoder;
+    use alloc::vec::Vec;
 
     #[test]
     fn round_trip_shell_coder() {

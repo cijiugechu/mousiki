@@ -4,11 +4,12 @@
 //! - Creation argument validation for all channel counts
 //! - Full encode/decode pipeline with generated audio
 
-use mousiki::projection::{
-    opus_projection_ambisonics_encoder_create, opus_projection_decode, opus_projection_decoder_create,
-    opus_projection_encode, opus_projection_encoder_ctl, OpusProjectionEncoderCtlRequest,
-};
 use mousiki::opus_multistream::OpusMultistreamEncoderCtlRequest;
+use mousiki::projection::{
+    OpusProjectionEncoderCtlRequest, opus_projection_ambisonics_encoder_create,
+    opus_projection_decode, opus_projection_decoder_create, opus_projection_encode,
+    opus_projection_encoder_ctl,
+};
 
 const BUFFER_SIZE: usize = 960;
 const MAX_DATA_BYTES: usize = 32768;
@@ -113,16 +114,16 @@ fn generate_music(buf: &mut [i16], channels: usize, rng: &mut FastRand) {
 
     for i in 0..frame_count {
         for k in 0..channels {
-            let v_base = (((j.wrapping_mul(
-                (j >> 12) ^ ((j >> 10 | j >> 12) & 26 & j >> 7),
-            )) & 128)
+            let v_base = (((j.wrapping_mul((j >> 12) ^ ((j >> 10 | j >> 12) & 26 & j >> 7))) & 128)
                 .wrapping_add(128) as i32)
                 << 15;
             let r = rng.next();
             let mut v = v_base.wrapping_add((r & 65535) as i32);
             v = v.wrapping_sub((r >> 16) as i32);
 
-            b[k] = v.wrapping_sub(a[k]).wrapping_add((b[k].wrapping_mul(61).wrapping_add(32)) >> 6);
+            b[k] = v
+                .wrapping_sub(a[k])
+                .wrapping_add((b[k].wrapping_mul(61).wrapping_add(32)) >> 6);
             a[k] = v;
             c[k] = (30i32
                 .wrapping_mul(c[k].wrapping_add(b[k]).wrapping_add(d[k]))
@@ -175,9 +176,8 @@ fn encode_decode_pipeline() {
     .expect("GetDemixingMatrix");
 
     // Create decoder
-    let mut decoder =
-        opus_projection_decoder_create(48000, channels, streams, coupled, &matrix)
-            .expect("decoder creation");
+    let mut decoder = opus_projection_decoder_create(48000, channels, streams, coupled, &matrix)
+        .expect("decoder creation");
 
     // Generate test audio
     let mut buffer_in = vec![0i16; BUFFER_SIZE * channels];
@@ -186,15 +186,21 @@ fn encode_decode_pipeline() {
 
     // Encode
     let mut data = vec![0u8; MAX_DATA_BYTES];
-    let len = opus_projection_encode(&mut encoder, &buffer_in, BUFFER_SIZE, &mut data)
-        .expect("encode");
+    let len =
+        opus_projection_encode(&mut encoder, &buffer_in, BUFFER_SIZE, &mut data).expect("encode");
     assert!(len > 0 && len <= MAX_DATA_BYTES);
 
     // Decode
     let mut buffer_out = vec![0i16; BUFFER_SIZE * channels];
-    let out_samples =
-        opus_projection_decode(&mut decoder, &data, len, &mut buffer_out, BUFFER_SIZE, false)
-            .expect("decode");
+    let out_samples = opus_projection_decode(
+        &mut decoder,
+        &data,
+        len,
+        &mut buffer_out,
+        BUFFER_SIZE,
+        false,
+    )
+    .expect("decode");
     assert_eq!(out_samples, BUFFER_SIZE);
 }
 
@@ -259,10 +265,15 @@ fn encode_decode_various_orders() {
         assert!(len > 0, "Encode returned 0 bytes for {}", desc);
 
         let mut buffer_out = vec![0i16; BUFFER_SIZE * channels];
-        let out_samples =
-            opus_projection_decode(&mut decoder, &data, len, &mut buffer_out, BUFFER_SIZE, false)
-                .unwrap_or_else(|e| panic!("Failed to decode for {}: {:?}", desc, e));
+        let out_samples = opus_projection_decode(
+            &mut decoder,
+            &data,
+            len,
+            &mut buffer_out,
+            BUFFER_SIZE,
+            false,
+        )
+        .unwrap_or_else(|e| panic!("Failed to decode for {}: {:?}", desc, e));
         assert_eq!(out_samples, BUFFER_SIZE, "Wrong output size for {}", desc);
     }
 }
-

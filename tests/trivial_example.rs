@@ -1,9 +1,9 @@
 use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
+use mousiki::opus_encoder::{
+    OpusEncoderCtlRequest, opus_encode, opus_encoder_create, opus_encoder_ctl,
+};
 #[cfg(not(feature = "fixed_point"))]
 use sha2::{Digest, Sha256};
-use mousiki::opus_encoder::{
-    opus_encode, opus_encoder_create, opus_encoder_ctl, OpusEncoderCtlRequest,
-};
 
 const FRAME_SIZE: usize = 960;
 const SAMPLE_RATE: i32 = 48_000;
@@ -44,7 +44,6 @@ fn trivial_example_round_trip() {
     assert!(decoded > 0);
     assert!(decoded <= MAX_FRAME_SIZE);
 }
-
 
 #[cfg(not(feature = "fixed_point"))]
 #[test]

@@ -4,36 +4,35 @@
 //! and PLC/FEC integration. Remaining gaps are primarily external test vectors
 //! and automated validation coverage.
 
-use alloc::vec;
-use alloc::vec::Vec;
-use crate::celt::{ec_laplace_decode_p0, ec_tell, EcDec, OpusRes};
 use crate::celt::opus_select_arch;
 use crate::celt::select_celt_float2int16_impl;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::{CELT_SIG_SCALE, float2int};
+use crate::celt::{EcDec, OpusRes, ec_laplace_decode_p0, ec_tell};
 use crate::dred_constants::{
     DRED_LATENT_DIM, DRED_MAX_DATA_SIZE, DRED_NUM_FEATURES, DRED_NUM_REDUNDANCY_FRAMES,
     DRED_STATE_DIM,
+};
+#[cfg(feature = "dred")]
+use crate::dred_rdovae_dec::{
+    DEC_OUTPUT_OUT_SIZE, RdovaeDec, RdovaeDecState, rdovae_dec_init_states, rdovae_decode_all,
+    rdovae_decode_qframe,
 };
 use crate::dred_stats_data::{
     DRED_LATENT_P0_Q8, DRED_LATENT_QUANT_SCALES_Q8, DRED_LATENT_R_Q8, DRED_STATE_P0_Q8,
     DRED_STATE_QUANT_SCALES_Q8, DRED_STATE_R_Q8,
 };
-#[cfg(feature = "dred")]
-use crate::dred_rdovae_dec::{
-    rdovae_dec_init_states, rdovae_decode_all, rdovae_decode_qframe, RdovaeDec, RdovaeDecState,
-    DEC_OUTPUT_OUT_SIZE,
-};
 use crate::extensions::{ExtensionError, OpusExtensionIterator};
 use crate::opus_decoder::{OpusDecodeError, OpusDecoder, opus_decode_native};
-use crate::packet::{opus_packet_get_samples_per_frame, opus_packet_parse_impl, PacketError};
+use crate::packet::{PacketError, opus_packet_get_samples_per_frame, opus_packet_parse_impl};
+use alloc::vec;
+use alloc::vec::Vec;
 
 const DRED_EXTENSION_ID: u8 = 126;
 const DRED_EXPERIMENTAL_VERSION: u8 = 10;
 const DRED_EXPERIMENTAL_BYTES: usize = 2;
 const DRED_FRAME_OFFSET_DIVISOR: i32 = 120;
-const DRED_FEC_FEATURES_LEN: usize =
-    2 * DRED_NUM_REDUNDANCY_FRAMES * DRED_NUM_FEATURES;
+const DRED_FEC_FEATURES_LEN: usize = 2 * DRED_NUM_REDUNDANCY_FRAMES * DRED_NUM_FEATURES;
 const DRED_LATENTS_LEN: usize = (DRED_NUM_REDUNDANCY_FRAMES / 2) * DRED_LATENT_DIM;
 
 /// Errors surfaced by the DRED helpers.
@@ -157,9 +156,7 @@ impl DredVectorDecoder {
         if nb_chunks % 2 != 0 {
             return Err(OpusDredError::BadArgument);
         }
-        let frames = nb_chunks
-            .checked_mul(2)
-            .ok_or(OpusDredError::BadArgument)?;
+        let frames = nb_chunks.checked_mul(2).ok_or(OpusDredError::BadArgument)?;
         let required = frames
             .checked_mul(DRED_NUM_FEATURES)
             .ok_or(OpusDredError::BadArgument)?;
@@ -206,7 +203,13 @@ impl DredVectorDecoder {
                 &DRED_LATENT_R_Q8[latent_offset..latent_offset + DRED_LATENT_DIM],
                 &DRED_LATENT_P0_Q8[latent_offset..latent_offset + DRED_LATENT_DIM],
             );
-            rdovae_decode_qframe(&mut dec_state, &self.model, &mut dec_tmp, &latent, self.arch);
+            rdovae_decode_qframe(
+                &mut dec_state,
+                &self.model,
+                &mut dec_tmp,
+                &latent,
+                self.arch,
+            );
 
             let base = 2 * i - 2;
             if base < 0 {
@@ -232,13 +235,7 @@ struct DredPayload<'a> {
     dred_frame_offset: i32,
 }
 
-fn dred_decode_latents(
-    dec: &mut EcDec<'_>,
-    output: &mut [f32],
-    scale: &[u8],
-    r: &[u8],
-    p0: &[u8],
-) {
+fn dred_decode_latents(dec: &mut EcDec<'_>, output: &mut [f32], scale: &[u8], r: &[u8], p0: &[u8]) {
     debug_assert_eq!(output.len(), scale.len());
     debug_assert_eq!(output.len(), r.len());
     debug_assert_eq!(output.len(), p0.len());
@@ -247,11 +244,7 @@ fn dred_decode_latents(
         let q = if r[idx] == 0 || p0[idx] == 255 {
             0
         } else {
-            ec_laplace_decode_p0(
-                dec,
-                u16::from(p0[idx]) << 7,
-                u16::from(r[idx]) << 7,
-            )
+            ec_laplace_decode_p0(dec, u16::from(p0[idx]) << 7, u16::from(r[idx]) << 7)
         };
         let denom = if scale[idx] == 0 { 1 } else { scale[idx] };
         *out = (q as f32) * 256.0 / f32::from(denom);
@@ -317,8 +310,8 @@ fn dred_ec_decode(
         &DRED_STATE_P0_Q8[state_qoffset..state_qoffset + DRED_STATE_DIM],
     );
 
-    let max_frames = ((min_feature_frames + 1) / 2)
-        .clamp(0, DRED_NUM_REDUNDANCY_FRAMES as i32) as usize;
+    let max_frames =
+        ((min_feature_frames + 1) / 2).clamp(0, DRED_NUM_REDUNDANCY_FRAMES as i32) as usize;
     let mut i = 0usize;
     while i < max_frames {
         if 8 * bytes.len() as i32 - ec_tell(ec.ctx()) <= 7 {
@@ -345,8 +338,7 @@ fn dred_ec_decode(
 fn dred_find_payload<'a>(data: &'a [u8]) -> Result<Option<DredPayload<'a>>, OpusDredError> {
     let parsed = opus_packet_parse_impl(data, data.len(), false)?;
     let frame_size = opus_packet_get_samples_per_frame(data, 48_000)?;
-    let frame_size =
-        i32::try_from(frame_size).map_err(|_| OpusDredError::InvalidPacket)?;
+    let frame_size = i32::try_from(frame_size).map_err(|_| OpusDredError::InvalidPacket)?;
     let mut iter = OpusExtensionIterator::new(parsed.padding, parsed.frame_count);
 
     loop {
@@ -429,7 +421,8 @@ pub fn opus_dred_decoder_ctl(
             }
             #[cfg(feature = "dred")]
             {
-                let model = RdovaeDec::from_weights(data).map_err(|_| OpusDredError::BadArgument)?;
+                let model =
+                    RdovaeDec::from_weights(data).map_err(|_| OpusDredError::BadArgument)?;
                 decoder.model = model;
                 decoder.loaded = true;
             }
@@ -487,8 +480,7 @@ pub fn opus_dred_parse(
             dred_frame_offset,
         } = payload;
         let offset = 100 * max_dred_samples / sampling_rate;
-        let min_feature_frames = (2 + offset)
-            .min((2 * DRED_NUM_REDUNDANCY_FRAMES) as i32);
+        let min_feature_frames = (2 + offset).min((2 * DRED_NUM_REDUNDANCY_FRAMES) as i32);
         dred_ec_decode(dred, dred_payload, min_feature_frames, dred_frame_offset)?;
         if !defer_processing {
             let src = dred.clone();
@@ -498,9 +490,7 @@ pub fn opus_dred_parse(
             *out = (-(dred.dred_offset) * sampling_rate / 400).max(0);
         }
         return Ok(
-            (dred.nb_latents * sampling_rate / 25
-                - dred.dred_offset * sampling_rate / 400)
-                .max(0),
+            (dred.nb_latents * sampling_rate / 25 - dred.dred_offset * sampling_rate / 400).max(0),
         );
     }
 
@@ -644,15 +634,7 @@ pub fn opus_decoder_dred_decode(
 
     let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
     let decoded = opus_decode_native(
-        decoder,
-        None,
-        0,
-        &mut out,
-        frame_size,
-        false,
-        false,
-        None,
-        true,
+        decoder, None, 0, &mut out, frame_size, false, false, None, true,
     )?;
 
     let decoded_samples = decoded
@@ -705,15 +687,7 @@ pub fn opus_decoder_dred_decode24(
 
     let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
     let decoded = opus_decode_native(
-        decoder,
-        None,
-        0,
-        &mut out,
-        frame_size,
-        false,
-        false,
-        None,
-        true,
+        decoder, None, 0, &mut out, frame_size, false, false, None, true,
     )?;
 
     let decoded_samples = decoded
@@ -760,18 +734,17 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::extensions::{opus_packet_extensions_generate, OpusExtensionData};
+    use crate::extensions::{OpusExtensionData, opus_packet_extensions_generate};
     use crate::opus_decoder::opus_decoder_create;
-    use alloc::vec::Vec;
     use alloc::vec;
+    use alloc::vec::Vec;
     use std::env;
 
     fn build_packet_with_padding(frame_count: usize, frame_len: usize, padding: &[u8]) -> Vec<u8> {
         assert!(frame_count > 0 && frame_count < 64);
         assert!(padding.len() > 0 && padding.len() < 255);
 
-        let mut packet =
-            Vec::with_capacity(3 + frame_count * frame_len + padding.len());
+        let mut packet = Vec::with_capacity(3 + frame_count * frame_len + padding.len());
         packet.push(0x03);
         packet.push(0x40 | frame_count as u8);
         packet.push(padding.len() as u8);
@@ -861,9 +834,16 @@ mod tests {
         let mut dred = opus_dred_alloc().expect("dred alloc");
         let data = [0u8; 4];
         let mut dred_end = -1;
-        let decoded =
-            opus_dred_parse(&decoder, &mut dred, &data, 48000, 48000, Some(&mut dred_end), false)
-                .expect("parse");
+        let decoded = opus_dred_parse(
+            &decoder,
+            &mut dred,
+            &data,
+            48000,
+            48000,
+            Some(&mut dred_end),
+            false,
+        )
+        .expect("parse");
         assert_eq!(decoded, 0);
         assert_eq!(dred_end, 0);
         opus_dred_free(dred);
@@ -883,12 +863,10 @@ mod tests {
         let padding = build_dred_padding(2, 1, &payload_bytes);
         let packet = build_packet_with_padding(2, 1, &padding);
 
-        let payload = dred_find_payload(&packet)
-            .expect("parse")
-            .expect("payload");
+        let payload = dred_find_payload(&packet).expect("parse").expect("payload");
         assert_eq!(payload.payload, payload_bytes);
-        let frame_size = opus_packet_get_samples_per_frame(&packet, 48_000)
-            .expect("frame size") as i32;
+        let frame_size =
+            opus_packet_get_samples_per_frame(&packet, 48_000).expect("frame size") as i32;
         let expected_offset = frame_size / DRED_FRAME_OFFSET_DIVISOR;
         assert_eq!(payload.dred_frame_offset, expected_offset);
     }
@@ -978,9 +956,8 @@ mod tests {
         let frame_size = 480;
         let mut pcm = vec![1i16; frame_size];
 
-        let decoded =
-            opus_decoder_dred_decode(&mut decoder, &dred, 0, &mut pcm, frame_size)
-                .expect("dred decode");
+        let decoded = opus_decoder_dred_decode(&mut decoder, &dred, 0, &mut pcm, frame_size)
+            .expect("dred decode");
         assert_eq!(decoded, frame_size);
         assert!(pcm.iter().all(|&value| value == 0));
     }
@@ -996,9 +973,8 @@ mod tests {
         let frame_size = 480;
         let mut pcm = vec![1i32; frame_size];
 
-        let decoded =
-            opus_decoder_dred_decode24(&mut decoder, &dred, 0, &mut pcm, frame_size)
-                .expect("dred decode");
+        let decoded = opus_decoder_dred_decode24(&mut decoder, &dred, 0, &mut pcm, frame_size)
+            .expect("dred decode");
         assert_eq!(decoded, frame_size);
         assert!(pcm.iter().all(|&value| value == 0));
     }
@@ -1014,9 +990,8 @@ mod tests {
         let frame_size = 480;
         let mut pcm = vec![1.0f32; frame_size];
 
-        let decoded =
-            opus_decoder_dred_decode_float(&mut decoder, &dred, 0, &mut pcm, frame_size)
-                .expect("dred decode");
+        let decoded = opus_decoder_dred_decode_float(&mut decoder, &dred, 0, &mut pcm, frame_size)
+            .expect("dred decode");
         assert_eq!(decoded, frame_size);
         assert!(pcm.iter().all(|&value| value == 0.0));
     }

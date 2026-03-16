@@ -1,9 +1,9 @@
 use mousiki::opus_decoder::{
-    opus_decode, opus_decoder_create, OpusDecodeError, OpusDecoderInitError,
+    OpusDecodeError, OpusDecoderInitError, opus_decode, opus_decoder_create,
 };
 use mousiki::opus_encoder::{
-    opus_encode, opus_encoder_create, opus_encoder_ctl, OpusEncodeError, OpusEncoderCtlError,
-    OpusEncoderCtlRequest, OpusEncoderInitError,
+    OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode,
+    opus_encoder_create, opus_encoder_ctl,
 };
 use std::env;
 use std::fs::File;
@@ -43,8 +43,8 @@ fn run() -> Result<(), ExampleError> {
     let mut output_file =
         File::create(output_path).map_err(|err| ExampleError::Io("create output", err.kind()))?;
 
-    let mut encoder =
-        opus_encoder_create(SAMPLE_RATE, CHANNELS, APPLICATION).map_err(ExampleError::EncoderInit)?;
+    let mut encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, APPLICATION)
+        .map_err(ExampleError::EncoderInit)?;
     opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetBitrate(BITRATE))
         .map_err(ExampleError::EncoderCtl)?;
     let mut decoder =
@@ -68,10 +68,8 @@ fn run() -> Result<(), ExampleError> {
             *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
         }
 
-        let packet_len =
-            opus_encode(&mut encoder, &input_pcm, FRAME_SIZE, &mut packet).map_err(
-                ExampleError::Encode,
-            )?;
+        let packet_len = opus_encode(&mut encoder, &input_pcm, FRAME_SIZE, &mut packet)
+            .map_err(ExampleError::Encode)?;
 
         let decoded = opus_decode(
             &mut decoder,

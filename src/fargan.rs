@@ -5,8 +5,8 @@ use crate::dnn_utils::linear_layer_from_blob;
 use crate::dnn_weights::{WeightBlob, WeightError};
 use crate::dred_constants::DRED_NUM_FEATURES;
 use crate::nnet::{
-    compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu, LinearLayer,
-    ACTIVATION_LINEAR, ACTIVATION_SIGMOID, ACTIVATION_TANH,
+    ACTIVATION_LINEAR, ACTIVATION_SIGMOID, ACTIVATION_TANH, LinearLayer, compute_generic_conv1d,
+    compute_generic_dense, compute_generic_gru, compute_glu,
 };
 use crate::pitchdnn::PITCH_MAX_PERIOD;
 use alloc::vec;
@@ -129,7 +129,11 @@ impl FarganState {
         let cond_size = self.cond_size();
         for i in 0..FARGAN_NB_SUBFRAMES {
             let start = i * cond_size;
-            self.run_fargan_subframe(&mut dummy, &cond[start..start + cond_size], self.last_period);
+            self.run_fargan_subframe(
+                &mut dummy,
+                &cond[start..start + cond_size],
+                self.last_period,
+            );
             let src_start = FARGAN_FRAME_SIZE + i * FARGAN_SUBFRAME_SIZE;
             let dst_start = PITCH_MAX_PERIOD - FARGAN_SUBFRAME_SIZE;
             self.pitch_buf[dst_start..dst_start + FARGAN_SUBFRAME_SIZE]
@@ -205,7 +209,8 @@ impl FarganState {
             .resize(self.model.cond_net_fdense1.nb_outputs, 0.0);
         self.fdense2_in
             .resize(self.model.cond_net_fconv1.nb_outputs, 0.0);
-        self.cond.resize(self.model.cond_net_fdense2.nb_outputs, 0.0);
+        self.cond
+            .resize(self.model.cond_net_fdense2.nb_outputs, 0.0);
 
         self.fwc0_in.resize(sig_net_input_size, 0.0);
         self.gru1_in.resize(
@@ -240,12 +245,18 @@ impl FarganState {
             .max(self.model.sig_net_skip_glu_gate.nb_outputs);
         self.glu_in.resize(max_glu, 0.0);
 
-        let cond_state_len = self.model.cond_net_fconv1.nb_inputs
+        let cond_state_len = self
+            .model
+            .cond_net_fconv1
+            .nb_inputs
             .checked_sub(self.model.cond_net_fdense1.nb_outputs)
             .ok_or(WeightError::InvalidBlob)?;
         self.cond_conv1_state.resize(cond_state_len, 0.0);
 
-        let fwc0_state_len = self.model.sig_net_fwc0_conv.nb_inputs
+        let fwc0_state_len = self
+            .model
+            .sig_net_fwc0_conv
+            .nb_inputs
             .checked_sub(sig_net_input_size)
             .ok_or(WeightError::InvalidBlob)?;
         self.fwc0_mem.resize(fwc0_state_len, 0.0);
@@ -422,7 +433,8 @@ impl FarganState {
             + self.model.sig_net_gru2_recurrent.nb_inputs;
         compute_glu(
             &self.model.sig_net_gru3_glu_gate,
-            &mut self.skip_cat[skip_offset..skip_offset + self.model.sig_net_gru3_recurrent.nb_inputs],
+            &mut self.skip_cat
+                [skip_offset..skip_offset + self.model.sig_net_gru3_recurrent.nb_inputs],
             &self.gru3_state,
             self.arch,
         );
@@ -432,7 +444,8 @@ impl FarganState {
         let offset = self.model.sig_net_gru1_recurrent.nb_inputs;
         self.skip_cat[offset..offset + self.model.sig_net_gru2_recurrent.nb_inputs]
             .copy_from_slice(&self.gru3_in[..self.model.sig_net_gru2_recurrent.nb_inputs]);
-        let offset = offset + self.model.sig_net_gru2_recurrent.nb_inputs
+        let offset = offset
+            + self.model.sig_net_gru2_recurrent.nb_inputs
             + self.model.sig_net_gru3_recurrent.nb_inputs;
         self.skip_cat[offset..offset + self.model.sig_net_fwc0_conv.nb_outputs]
             .copy_from_slice(&self.gru1_in[..self.model.sig_net_fwc0_conv.nb_outputs]);
@@ -470,8 +483,7 @@ impl FarganState {
             *sample *= gain;
         }
 
-        self.pitch_buf
-            .copy_within(FARGAN_SUBFRAME_SIZE.., 0);
+        self.pitch_buf.copy_within(FARGAN_SUBFRAME_SIZE.., 0);
         let start = PITCH_MAX_PERIOD - FARGAN_SUBFRAME_SIZE;
         self.pitch_buf[start..start + FARGAN_SUBFRAME_SIZE].copy_from_slice(pcm);
         self.fargan_deemphasis(pcm);

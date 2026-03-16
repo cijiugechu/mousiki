@@ -3,7 +3,6 @@
 use alloc::vec::Vec;
 
 use super::KissFftState;
-use super::vq::SPREAD_NORMAL;
 #[cfg(feature = "deep_plc")]
 use super::deep_plc::PLC_UPDATE_SAMPLES;
 #[cfg(feature = "fixed_point")]
@@ -12,6 +11,7 @@ use super::fixed_arch::DB_SHIFT;
 use super::fixed_ops::{qconst16, qconst16_clamped, qconst32};
 #[cfg(feature = "fixed_point")]
 use super::mdct_fixed::FixedMdctLookup;
+use super::vq::SPREAD_NORMAL;
 use crate::celt::mdct_twiddles_48000_960::MDCT_TWIDDLES_960;
 use libm::cosf;
 

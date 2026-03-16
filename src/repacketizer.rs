@@ -497,8 +497,15 @@ pub(crate) fn opus_packet_pad_with_extensions(
 
     let mut rp = OpusRepacketizer::new();
     rp.opus_repacketizer_cat(&copy, len)?;
-    let written =
-        rp.opus_repacketizer_out_range_impl(0, rp.nb_frames, data, new_len, false, pad, extensions)?;
+    let written = rp.opus_repacketizer_out_range_impl(
+        0,
+        rp.nb_frames,
+        data,
+        new_len,
+        false,
+        pad,
+        extensions,
+    )?;
 
     if written > 0 {
         Ok(written)

@@ -75,10 +75,7 @@ fn strict_final_range() -> bool {
     std::env::var_os("TEST_OPUS_STRICT_FINAL_RANGE").is_some()
 }
 
-fn set_random_complexity(
-    decoder: &mut OpusDecoder<'_>,
-    rng: &mut FastRand,
-) -> Result<(), String> {
+fn set_random_complexity(decoder: &mut OpusDecoder<'_>, rng: &mut FastRand) -> Result<(), String> {
     let complexity = (rng.next() % 11) as i32;
     opus_decoder_ctl(decoder, OpusDecoderCtlRequest::SetComplexity(complexity))
         .map_err(|err| format!("set complexity failed: {err:?}"))
@@ -99,8 +96,11 @@ fn decode_i16(
 
 fn last_packet_duration(decoder: &mut OpusDecoder<'_>) -> Result<i32, String> {
     let mut dur = 0i32;
-    opus_decoder_ctl(decoder, OpusDecoderCtlRequest::GetLastPacketDuration(&mut dur))
-        .map_err(|err| format!("get last packet duration failed: {err:?}"))?;
+    opus_decoder_ctl(
+        decoder,
+        OpusDecoderCtlRequest::GetLastPacketDuration(&mut dur),
+    )
+    .map_err(|err| format!("get last packet duration failed: {err:?}"))?;
     Ok(dur)
 }
 
@@ -138,8 +138,7 @@ fn test_decoder_code0(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
             for &fec in &[false, true] {
                 set_random_complexity(&mut decs[t], rng)?;
 
-                let out_samples =
-                    decode_i16(&mut decs[t], None, 0, outbuf, plc_size, fec, "plc")?;
+                let out_samples = decode_i16(&mut decs[t], None, 0, outbuf, plc_size, fec, "plc")?;
                 if out_samples != plc_size {
                     return Err("plc returned unexpected sample count".to_string());
                 }
@@ -271,15 +270,8 @@ fn test_decoder_code0(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
                 let factor = 48_000 / fsv[t / 2];
                 for _ in 0..6 {
                     set_random_complexity(&mut decs[t], rng)?;
-                    let out_samples = decode_i16(
-                        &mut decs[t],
-                        None,
-                        0,
-                        outbuf,
-                        expected[t],
-                        false,
-                        "plc",
-                    )?;
+                    let out_samples =
+                        decode_i16(&mut decs[t], None, 0, outbuf, expected[t], false, "plc")?;
                     if out_samples != expected[t] {
                         return Err("plc returned unexpected sample count".to_string());
                     }
@@ -446,8 +438,15 @@ fn test_decoder_code0(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
 
                 opus_decoder_ctl(&mut decbak, OpusDecoderCtlRequest::ResetState)
                     .map_err(|err| format!("reset decoder failed: {err:?}"))?;
-                let out_samples =
-                    decode_i16(&mut decbak, None, 0, outbuf, MAX_FRAME_SAMP, true, "fec plc")?;
+                let out_samples = decode_i16(
+                    &mut decbak,
+                    None,
+                    0,
+                    outbuf,
+                    MAX_FRAME_SAMP,
+                    true,
+                    "fec plc",
+                )?;
                 if out_samples < 20 {
                     return Err("fec plc returned too few samples".to_string());
                 }
@@ -551,8 +550,7 @@ fn test_decoder_code0(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
 fn opus_decode_code0() {
     let seed = seed_from_env();
     let mut rng = FastRand::new(seed);
-    test_decoder_code0(no_fuzz(), &mut rng)
-        .unwrap_or_else(|err| panic!("{err} (seed={seed})"));
+    test_decoder_code0(no_fuzz(), &mut rng).unwrap_or_else(|err| panic!("{err} (seed={seed})"));
 }
 
 #[test]

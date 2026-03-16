@@ -9,18 +9,18 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::CELT_SIG_SCALE;
 use crate::celt::CeltDecodeError;
-use crate::celt::celt_decode_with_ec_dred;
-use crate::celt::{CeltCoef, OpusCustomMode};
-use crate::celt::{
-    CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, OpusRes, OwnedCeltDecoder,
-    EcDec, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
-    opus_custom_decoder_ctl, opus_select_arch, resampling_factor,
-};
 #[cfg(feature = "deep_plc")]
 use crate::celt::LpcNetPlcState;
+use crate::celt::celt_decode_with_ec_dred;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::float2int;
 use crate::celt::select_celt_float2int16_impl;
+use crate::celt::{CeltCoef, OpusCustomMode};
+use crate::celt::{
+    CeltDecoderCtlError, DecoderCtlRequest as CeltDecoderCtlRequest, EcDec, OpusRes,
+    OwnedCeltDecoder, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
+    opus_custom_decoder_ctl, opus_select_arch, resampling_factor,
+};
 #[cfg(not(feature = "fixed_point"))]
 use crate::opus::opus_pcm_soft_clip_impl;
 use crate::packet::{
@@ -28,6 +28,7 @@ use crate::packet::{
     opus_packet_get_nb_channels, opus_packet_get_nb_samples, opus_packet_get_samples_per_frame,
     opus_packet_parse_impl,
 };
+use crate::silk::SilkRangeDecoder;
 use crate::silk::dec_api::{
     DECODER_NUM_CHANNELS, DecControl, Decoder as SilkDecoder, reset_decoder as silk_reset_decoder,
     silk_decode,
@@ -38,7 +39,6 @@ use crate::silk::errors::SilkError;
 use crate::silk::get_decoder_size::get_decoder_size;
 use crate::silk::init_decoder::init_decoder as silk_init_channel;
 use crate::silk::load_osce_models::load_osce_models;
-use crate::silk::SilkRangeDecoder;
 
 #[cfg(feature = "deep_plc")]
 type PlcHandle<'a> = Option<&'a mut LpcNetPlcState>;
@@ -388,11 +388,8 @@ impl<'mode> OpusDecoder<'mode> {
             return Err(OpusDecoderInitError::BadArgument);
         }
         self.celt.decoder().downsample = downsample as i32;
-        opus_custom_decoder_ctl(
-            self.celt.decoder(),
-            CeltDecoderCtlRequest::SetSignalling(0),
-        )
-        .map_err(|_| OpusDecoderInitError::CeltInit)?;
+        opus_custom_decoder_ctl(self.celt.decoder(), CeltDecoderCtlRequest::SetSignalling(0))
+            .map_err(|_| OpusDecoderInitError::CeltInit)?;
 
         self.arch = opus_select_arch();
         self.reset_runtime_fields();
@@ -566,9 +563,7 @@ impl<'mode> OpusDecoder<'mode> {
             celt_only
         };
 
-        if celt_only
-            && let Some(packet) = packet
-        {
+        if celt_only && let Some(packet) = packet {
             let storage = range_storage.get_or_insert_with(|| packet.to_vec());
             range_decoder = Some(EcDec::new(storage.as_mut_slice()));
         }
@@ -576,9 +571,7 @@ impl<'mode> OpusDecoder<'mode> {
         let prev_celt_only = decode_as_celt_only(self.prev_mode);
         if packet.is_some()
             && self.prev_mode > 0
-            && ((celt_only
-                && !prev_celt_only
-                && self.prev_redundancy == 0)
+            && ((celt_only && !prev_celt_only && self.prev_redundancy == 0)
                 || (!celt_only && prev_celt_only))
         {
             transition = true;
@@ -722,8 +715,7 @@ impl<'mode> OpusDecoder<'mode> {
                     if temp.len() < silk_samples {
                         return Err(OpusDecodeError::BufferTooSmall);
                     }
-                    for (dst, &src) in temp.iter_mut().zip(silk_output.iter().take(silk_samples))
-                    {
+                    for (dst, &src) in temp.iter_mut().zip(silk_output.iter().take(silk_samples)) {
                         *dst = silk_int16_to_res(src);
                     }
                 } else {
@@ -822,7 +814,6 @@ impl<'mode> OpusDecoder<'mode> {
                 }
                 pcm_transition = Some(buffer);
             }
-
         }
 
         if let Some(data) = packet {
@@ -1701,7 +1692,10 @@ pub fn opus_decode(
         return Err(OpusDecodeError::BufferTooSmall);
     }
 
-    select_celt_float2int16_impl(decoder.arch)(&out[..decoded_samples], &mut pcm[..decoded_samples]);
+    select_celt_float2int16_impl(decoder.arch)(
+        &out[..decoded_samples],
+        &mut pcm[..decoded_samples],
+    );
 
     Ok(decoded)
 }
@@ -1890,13 +1884,11 @@ mod tests {
         OpusDecoderCtlRequest, opus_decode, opus_decode_float, opus_decode_native, opus_decode24,
         opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size, smooth_fade,
     };
-    #[cfg(feature = "deep_plc_weights")]
-    use mousiki_deep_plc_weights::DNN_BLOB;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::{DecoderCtlRequest as CeltDecoderCtlRequest, EcDec, opus_custom_decoder_ctl};
     use crate::celt::{
         OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     };
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::{DecoderCtlRequest as CeltDecoderCtlRequest, EcDec, opus_custom_decoder_ctl};
     #[cfg(feature = "fixed_point")]
     use crate::packet::{
         Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_mode,
@@ -1907,11 +1899,13 @@ mod tests {
     use crate::silk::dec_api::silk_decode;
     #[cfg(feature = "fixed_point")]
     use crate::silk::decode_frame::DecodeFlag;
+    use crate::silk::get_decoder_size::get_decoder_size;
     #[cfg(feature = "fixed_point")]
     use crate::silk::range_decoder::SilkRangeDecoder;
-    use crate::silk::get_decoder_size::get_decoder_size;
     use alloc::vec;
     use alloc::vec::Vec;
+    #[cfg(feature = "deep_plc_weights")]
+    use mousiki_deep_plc_weights::DNN_BLOB;
 
     #[cfg(feature = "fixed_point")]
     include!(concat!(
@@ -1928,9 +1922,7 @@ mod tests {
 
     fn read_be_u32(bytes: &[u8]) -> Option<u32> {
         let chunk = bytes.get(..4)?;
-        Some(u32::from_be_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3],
-        ]))
+        Some(u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
     }
 
     #[test]
@@ -2578,8 +2570,8 @@ mod tests {
         const MAX_FRAME_SAMP: usize = 5760;
         const MAX_PACKET: usize = 1500;
         const FUZZ_CRASH_INPUT: [u8; 23] = [
-            0x00, 0x00, 0x00, 0x0f, 0x00, 0x08, 0x00, 0x00, 0xb8, 0x7c, 0x35, 0x21, 0x75,
-            0xe5, 0x67, 0xd5, 0x1c, 0xac, 0xa2, 0x54, 0xfa, 0xff, 0xbf,
+            0x00, 0x00, 0x00, 0x0f, 0x00, 0x08, 0x00, 0x00, 0xb8, 0x7c, 0x35, 0x21, 0x75, 0xe5,
+            0x67, 0xd5, 0x1c, 0xac, 0xa2, 0x54, 0xfa, 0xff, 0xbf,
         ];
 
         let data = &FUZZ_CRASH_INPUT[..];
@@ -2604,6 +2596,13 @@ mod tests {
         let packet = &data[packet_offset..end];
         let mut pcm = vec![0i16; MAX_FRAME_SAMP.saturating_mul(channels)];
 
-        let _ = opus_decode(&mut decoder, Some(packet), len, &mut pcm, MAX_FRAME_SAMP, false);
+        let _ = opus_decode(
+            &mut decoder,
+            Some(packet),
+            len,
+            &mut pcm,
+            MAX_FRAME_SAMP,
+            false,
+        );
     }
 }

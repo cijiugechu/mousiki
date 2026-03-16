@@ -252,7 +252,9 @@ impl<'a> OpusExtensionIterator<'a> {
             return Err(ExtensionError::InvalidPacket);
         }
 
-        if self.repeat_frame > 0 && let Some(ext) = self.next_repeat()? {
+        if self.repeat_frame > 0
+            && let Some(ext) = self.next_repeat()?
+        {
             return Ok(Some(ext));
         }
 

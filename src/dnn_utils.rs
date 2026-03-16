@@ -1,9 +1,9 @@
 #![cfg(feature = "deep_plc")]
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::dnn_weights::{WeightArray, WeightBlob, WeightError};
 use crate::nnet::LinearLayer;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 fn find_array<'a>(
     blob: &'a WeightBlob<'a>,

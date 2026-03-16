@@ -10,8 +10,9 @@ use crate::opus_decoder::{
     opus_decode_native, opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
 };
 use crate::opus_encoder::{
-    OpusEncodeError, OpusEncoder, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError,
-    OPUS_FRAMESIZE_ARG, opus_encode, opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
+    OPUS_FRAMESIZE_ARG, OpusEncodeError, OpusEncoder, OpusEncoderCtlError, OpusEncoderCtlRequest,
+    OpusEncoderInitError, opus_encode, opus_encoder_create, opus_encoder_ctl,
+    opus_encoder_get_size,
 };
 use crate::packet::{PacketError, opus_packet_get_nb_samples, opus_packet_parse_impl};
 
@@ -1218,8 +1219,8 @@ fn build_encoder_layout(
     coupled_streams: usize,
     mapping: &[u8],
 ) -> Result<ChannelLayout, OpusMultistreamEncoderError> {
-    let layout = build_layout(channels, streams, coupled_streams, mapping)
-        .map_err(|err| match err {
+    let layout =
+        build_layout(channels, streams, coupled_streams, mapping).map_err(|err| match err {
             OpusMultistreamDecoderError::BadArgument => OpusMultistreamEncoderError::BadArgument,
             _ => OpusMultistreamEncoderError::InternalError,
         })?;
@@ -1309,8 +1310,8 @@ pub fn opus_multistream_encoder_ctl<'req>(
             let clamped = if value == OPUS_AUTO || value == OPUS_BITRATE_MAX {
                 value
             } else {
-                let channels =
-                    i32::try_from(encoder.layout.nb_channels).map_err(|_| OpusMultistreamEncoderError::BadArgument)?;
+                let channels = i32::try_from(encoder.layout.nb_channels)
+                    .map_err(|_| OpusMultistreamEncoderError::BadArgument)?;
                 let min_rate = 500i32.saturating_mul(channels);
                 let max_rate = 300_000i32.saturating_mul(channels);
                 value.clamp(min_rate, max_rate)
@@ -1502,10 +1503,7 @@ pub fn opus_multistream_encoder_ctl<'req>(
         }
         OpusMultistreamEncoderCtlRequest::SetPhaseInversionDisabled(value) => {
             for enc in &mut encoder.encoders {
-                opus_encoder_ctl(
-                    enc,
-                    OpusEncoderCtlRequest::SetPhaseInversionDisabled(value),
-                )?;
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetPhaseInversionDisabled(value))?;
             }
         }
         OpusMultistreamEncoderCtlRequest::GetPhaseInversionDisabled(out) => {
@@ -1592,9 +1590,14 @@ fn extract_i16_channel(
             .and_then(|base| base.checked_add(channel))
             .ok_or(OpusMultistreamEncoderError::BadArgument)?;
         let dst = output_offset
-            .checked_add(i.checked_mul(output_stride).ok_or(OpusMultistreamEncoderError::BadArgument)?)
+            .checked_add(
+                i.checked_mul(output_stride)
+                    .ok_or(OpusMultistreamEncoderError::BadArgument)?,
+            )
             .ok_or(OpusMultistreamEncoderError::BadArgument)?;
-        output[dst] = *input.get(src).ok_or(OpusMultistreamEncoderError::BadArgument)?;
+        output[dst] = *input
+            .get(src)
+            .ok_or(OpusMultistreamEncoderError::BadArgument)?;
     }
     Ok(())
 }
@@ -1691,8 +1694,9 @@ pub fn opus_multistream_encode(
                 &mut tmp,
             )?;
 
-            let written = write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
-                .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
+            let written =
+                write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
+                    .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
             total_written += written;
         } else {
             let chan = get_mono_channel(&encoder.layout, stream, None)
@@ -1710,8 +1714,9 @@ pub fn opus_multistream_encode(
                 &mut tmp,
             )?;
 
-            let written = write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
-                .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
+            let written =
+                write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
+                    .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
             total_written += written;
         }
     }
@@ -1719,7 +1724,11 @@ pub fn opus_multistream_encode(
     Ok(total_written)
 }
 
-fn write_stream_packet(stream_packet: &[u8], self_delimited: bool, out: &mut [u8]) -> Option<usize> {
+fn write_stream_packet(
+    stream_packet: &[u8],
+    self_delimited: bool,
+    out: &mut [u8],
+) -> Option<usize> {
     if !self_delimited {
         if out.len() < stream_packet.len() {
             return None;
@@ -1802,12 +1811,11 @@ pub fn opus_multistream_surround_encoder_get_size(
     let mut size = opus_multistream_encoder_get_size(streams, coupled_streams)?;
     if channels > 2 {
         size = size.checked_add(
-            channels
-                .checked_mul(
-                    120usize
-                        .checked_mul(core::mem::size_of::<crate::celt::OpusVal32>())?
-                        .checked_add(core::mem::size_of::<crate::celt::OpusVal32>())?,
-                )?,
+            channels.checked_mul(
+                120usize
+                    .checked_mul(core::mem::size_of::<crate::celt::OpusVal32>())?
+                    .checked_add(core::mem::size_of::<crate::celt::OpusVal32>())?,
+            )?,
         )?;
     }
     Some(size)
@@ -1818,8 +1826,13 @@ pub fn opus_multistream_surround_encoder_create(
     channels: usize,
     mapping_family: u8,
     application: i32,
-) -> Result<(OpusMultistreamEncoder<'static>, OpusMultistreamSurroundLayout), OpusMultistreamEncoderError>
-{
+) -> Result<
+    (
+        OpusMultistreamEncoder<'static>,
+        OpusMultistreamSurroundLayout,
+    ),
+    OpusMultistreamEncoderError,
+> {
     let (streams, coupled_streams, mapping) = surround_layout(channels, mapping_family)?;
     let mut encoder = opus_multistream_encoder_create(
         sample_rate,
@@ -1925,8 +1938,8 @@ fn surround_layout(
             Ok((channels, 0, mapping))
         }
         2 => {
-            let (streams, coupled_streams) = validate_ambisonics(channels)
-                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+            let (streams, coupled_streams) =
+                validate_ambisonics(channels).ok_or(OpusMultistreamEncoderError::BadArgument)?;
             let uncoupled_streams = streams - coupled_streams;
             for i in 0..uncoupled_streams {
                 mapping.push((i + coupled_streams * 2) as u8);
@@ -1943,8 +1956,8 @@ fn surround_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::opus_decoder::{opus_decode, opus_decoder_create};
+    use alloc::vec;
 
     fn layout_from_mapping(
         nb_channels: usize,
@@ -2217,9 +2230,15 @@ mod tests {
         let ms_decoded =
             opus_multistream_decode(&mut ms_decoder, &packet, len, &mut ms_out, 960, false)
                 .expect("ms decode");
-        let single_decoded =
-            opus_decode(&mut single, Some(&packet[..len]), len, &mut single_out, 960, false)
-                .expect("single decode");
+        let single_decoded = opus_decode(
+            &mut single,
+            Some(&packet[..len]),
+            len,
+            &mut single_out,
+            960,
+            false,
+        )
+        .expect("single decode");
         assert_eq!(ms_decoded, single_decoded);
         assert_eq!(ms_out[..ms_decoded * 2], single_out[..single_decoded * 2]);
     }
@@ -2231,14 +2250,16 @@ mod tests {
             opus_multistream_encoder_create(48_000, 4, 2, 2, &mapping, 2048).expect("ms encoder");
         let pcm_in = vec![0i16; 4 * 960];
         let mut packet = vec![0u8; 4000];
-        let len = opus_multistream_encode(&mut ms_encoder, &pcm_in, 960, &mut packet).expect("encode");
+        let len =
+            opus_multistream_encode(&mut ms_encoder, &pcm_in, 960, &mut packet).expect("encode");
 
         let mut ms_decoder =
             opus_multistream_decoder_create(48_000, 4, 2, 2, &mapping).expect("ms decoder");
 
         let mut ms_out = vec![0i16; 4 * 960];
-        let decoded = opus_multistream_decode(&mut ms_decoder, &packet, len, &mut ms_out, 960, false)
-            .expect("ms decode");
+        let decoded =
+            opus_multistream_decode(&mut ms_decoder, &packet, len, &mut ms_out, 960, false)
+                .expect("ms decode");
         assert!(decoded > 0);
 
         let mut offset = 0usize;
@@ -2246,7 +2267,8 @@ mod tests {
         let mut expected = vec![0i16; 4 * decoded];
         for stream in 0..2 {
             let self_delimited = stream == 0;
-            let parsed = opus_packet_parse_impl(&packet[offset..], remaining, self_delimited).expect("parse");
+            let parsed = opus_packet_parse_impl(&packet[offset..], remaining, self_delimited)
+                .expect("parse");
             let packet_offset = parsed.packet_offset;
             let mut dec = opus_decoder_create(48_000, 2).expect("decoder");
             let mut stream_out = vec![0i16; 2 * decoded];
@@ -2426,8 +2448,9 @@ mod tests {
     fn surround_encoder_get_size_matches_reference_overhead() {
         let size = opus_multistream_surround_encoder_get_size(6, 1).expect("size");
         let base = opus_multistream_encoder_get_size(4, 2).expect("base");
-        let overhead = 6 * (120 * core::mem::size_of::<crate::celt::OpusVal32>()
-            + core::mem::size_of::<crate::celt::OpusVal32>());
+        let overhead = 6
+            * (120 * core::mem::size_of::<crate::celt::OpusVal32>()
+                + core::mem::size_of::<crate::celt::OpusVal32>());
         assert_eq!(size, base + overhead);
     }
 }

@@ -1,11 +1,11 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use crate::dnn_weights::{optional_bytes, require_bytes, WeightBlob, WeightError};
+use crate::dnn_weights::{WeightBlob, WeightError, optional_bytes, require_bytes};
 use crate::nnet::{
-    compute_conv2d, compute_generic_dense, compute_generic_gru, Conv2dLayer, LinearLayer,
-    ACTIVATION_LINEAR, ACTIVATION_TANH,
+    ACTIVATION_LINEAR, ACTIVATION_TANH, Conv2dLayer, LinearLayer, compute_conv2d,
+    compute_generic_dense, compute_generic_gru,
 };
 use crate::pitchdnn_data::*;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 pub(crate) const PITCH_MIN_PERIOD: usize = 32;
 pub(crate) const PITCH_MAX_PERIOD: usize = 256;
@@ -110,8 +110,8 @@ pub(crate) fn compute_pitchdnn(
     );
     compute_generic_dense(
         &state.model.dense_if_upsampler_2,
-        &mut downsampler_in[NB_XCORR_FEATURES
-            ..NB_XCORR_FEATURES + state.model.dense_if_upsampler_2.nb_outputs],
+        &mut downsampler_in
+            [NB_XCORR_FEATURES..NB_XCORR_FEATURES + state.model.dense_if_upsampler_2.nb_outputs],
         &if1_out[..state.model.dense_if_upsampler_1.nb_outputs],
         ACTIVATION_TANH,
         arch,
@@ -244,8 +244,7 @@ fn init_pitchdnn(model: &mut PitchDnn) {
     );
 
     let dense_final_outputs = DENSE_FINAL_UPSAMPLER_BIAS.len();
-    let dense_final_inputs =
-        DENSE_FINAL_UPSAMPLER_WEIGHTS_FLOAT.len() / dense_final_outputs;
+    let dense_final_inputs = DENSE_FINAL_UPSAMPLER_WEIGHTS_FLOAT.len() / dense_final_outputs;
     model.dense_final_upsampler = linear_layer(
         Some(&DENSE_FINAL_UPSAMPLER_BIAS),
         Some(&DENSE_FINAL_UPSAMPLER_SUBIAS),
@@ -282,8 +281,7 @@ fn init_pitchdnn(model: &mut PitchDnn) {
     );
 
     let conv2d_1_out = CONV2D_1_BIAS.len();
-    let conv2d_1_in = CONV2D_1_WEIGHT_FLOAT.len()
-        / (conv2d_1_out * CONV_KERNEL * CONV_KERNEL);
+    let conv2d_1_in = CONV2D_1_WEIGHT_FLOAT.len() / (conv2d_1_out * CONV_KERNEL * CONV_KERNEL);
     model.conv2d_1 = Conv2dLayer {
         bias: Some(&CONV2D_1_BIAS),
         float_weights: Some(&CONV2D_1_WEIGHT_FLOAT),
@@ -294,8 +292,7 @@ fn init_pitchdnn(model: &mut PitchDnn) {
     };
 
     let conv2d_2_out = CONV2D_2_BIAS.len();
-    let conv2d_2_in = CONV2D_2_WEIGHT_FLOAT.len()
-        / (conv2d_2_out * CONV_KERNEL * CONV_KERNEL);
+    let conv2d_2_in = CONV2D_2_WEIGHT_FLOAT.len() / (conv2d_2_out * CONV_KERNEL * CONV_KERNEL);
     model.conv2d_2 = Conv2dLayer {
         bias: Some(&CONV2D_2_BIAS),
         float_weights: Some(&CONV2D_2_WEIGHT_FLOAT),
@@ -359,8 +356,7 @@ fn init_pitchdnn_from_weights(
     )?;
 
     let dense_final_outputs = DENSE_FINAL_UPSAMPLER_BIAS.len();
-    let dense_final_inputs =
-        DENSE_FINAL_UPSAMPLER_WEIGHTS_FLOAT.len() / dense_final_outputs;
+    let dense_final_inputs = DENSE_FINAL_UPSAMPLER_WEIGHTS_FLOAT.len() / dense_final_outputs;
     model.dense_final_upsampler = linear_layer_from_weights(
         blob,
         Some("dense_final_upsampler_bias"),
@@ -400,8 +396,7 @@ fn init_pitchdnn_from_weights(
     )?;
 
     let conv2d_1_out = CONV2D_1_BIAS.len();
-    let conv2d_1_in = CONV2D_1_WEIGHT_FLOAT.len()
-        / (conv2d_1_out * CONV_KERNEL * CONV_KERNEL);
+    let conv2d_1_in = CONV2D_1_WEIGHT_FLOAT.len() / (conv2d_1_out * CONV_KERNEL * CONV_KERNEL);
     model.conv2d_1 = conv2d_layer_from_weights(
         blob,
         Some("conv2d_1_bias"),
@@ -413,8 +408,7 @@ fn init_pitchdnn_from_weights(
     )?;
 
     let conv2d_2_out = CONV2D_2_BIAS.len();
-    let conv2d_2_in = CONV2D_2_WEIGHT_FLOAT.len()
-        / (conv2d_2_out * CONV_KERNEL * CONV_KERNEL);
+    let conv2d_2_in = CONV2D_2_WEIGHT_FLOAT.len() / (conv2d_2_out * CONV_KERNEL * CONV_KERNEL);
     model.conv2d_2 = conv2d_layer_from_weights(
         blob,
         Some("conv2d_2_bias"),

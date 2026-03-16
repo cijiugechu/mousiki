@@ -9,20 +9,20 @@
 //! module focuses on the state update helper so that future ports can integrate
 //! the remaining neural components incrementally.
 
-use alloc::vec::Vec;
-#[cfg(feature = "deep_plc_weights")]
-use mousiki_deep_plc_weights::DNN_BLOB;
 use crate::celt::celt_decoder::DECODE_BUFFER_SIZE;
-use crate::celt::opus_select_arch;
 use crate::celt::float_cast::float2int;
+use crate::celt::opus_select_arch;
 use crate::celt::types::CeltSig;
 use crate::celt::{KissFftCpx, KissFftState};
 use crate::dred_constants::DRED_NUM_FEATURES;
-use crate::fargan::{FarganState, FARGAN_CONT_SAMPLES};
-use crate::lpcnet_enc::{lpcnet_compute_single_frame_features_float, LpcNetEncState};
-use crate::nnet::{compute_generic_dense, compute_generic_gru, ACTIVATION_LINEAR, ACTIVATION_TANH};
+use crate::fargan::{FARGAN_CONT_SAMPLES, FarganState};
+use crate::lpcnet_enc::{LpcNetEncState, lpcnet_compute_single_frame_features_float};
+use crate::nnet::{ACTIVATION_LINEAR, ACTIVATION_TANH, compute_generic_dense, compute_generic_gru};
 use crate::plc_model::PlcModel;
+use alloc::vec::Vec;
 use libm::{cosf, log10f, powf, sqrt, sqrtf};
+#[cfg(feature = "deep_plc_weights")]
+use mousiki_deep_plc_weights::DNN_BLOB;
 
 /// Number of 16 kHz samples produced per neural PLC update.
 pub(crate) const PLC_FRAME_SIZE: usize = 160;
@@ -451,7 +451,11 @@ impl LpcNetPlcState {
         self.cont_features[start..start + NB_FEATURES].copy_from_slice(&features[..NB_FEATURES]);
     }
 
-    fn burg_cepstral_analysis(&self, cepstrum: &mut [f32; 2 * NB_BANDS], x: &[f32; PLC_FRAME_SIZE]) {
+    fn burg_cepstral_analysis(
+        &self,
+        cepstrum: &mut [f32; 2 * NB_BANDS],
+        x: &[f32; PLC_FRAME_SIZE],
+    ) {
         let (first, second) = cepstrum.split_at_mut(NB_BANDS);
         compute_burg_cepstrum(
             first,
@@ -679,10 +683,7 @@ fn forward_transform(
     output.copy_from_slice(&y[..FREQ_SIZE]);
 }
 
-fn compute_band_energy_inverse(
-    band_energy: &mut [f32; NB_BANDS],
-    freq: &[KissFftCpx; FREQ_SIZE],
-) {
+fn compute_band_energy_inverse(band_energy: &mut [f32; NB_BANDS], freq: &[KissFftCpx; FREQ_SIZE]) {
     let mut sum = [0.0f32; NB_BANDS];
     for i in 0..NB_BANDS - 1 {
         let band_size = (EBAND_5MS[i + 1] - EBAND_5MS[i]) as usize * WINDOW_SIZE_5MS;
@@ -812,8 +813,8 @@ fn silk_burg_analysis(
 
             for k in 0..n {
                 c_first_row[k] -= frame[n] as f64 * frame[n - k - 1] as f64;
-                c_last_row[k] -= frame[subfr_length - n - 1] as f64
-                    * frame[subfr_length - n + k] as f64;
+                c_last_row[k] -=
+                    frame[subfr_length - n - 1] as f64 * frame[subfr_length - n + k] as f64;
                 let atmp = a_f[k];
                 tmp1 += frame[n - k - 1] as f64 * atmp;
                 tmp2 += frame[subfr_length - n + k] as f64 * atmp;
@@ -906,7 +907,9 @@ fn silk_burg_analysis(
 }
 
 fn silk_energy(data: &[f32]) -> f64 {
-    data.iter().map(|&value| (value as f64) * (value as f64)).sum()
+    data.iter()
+        .map(|&value| (value as f64) * (value as f64))
+        .sum()
 }
 
 fn silk_inner_product(data1: &[f32], data2: &[f32], len: usize) -> f64 {

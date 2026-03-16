@@ -97,8 +97,7 @@ dred_rdovae_dec_data.c, or a tarball from Xiph.",
 
 fn download_and_extract(work_dir: &Path) -> io::Result<PathBuf> {
     let url = env::var("DNN_WEIGHTS_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
-    let expected_sha =
-        env::var("DNN_WEIGHTS_SHA256").unwrap_or_else(|_| MODEL_SHA256.to_string());
+    let expected_sha = env::var("DNN_WEIGHTS_SHA256").unwrap_or_else(|_| MODEL_SHA256.to_string());
 
     let tar_path = work_dir.join(MODEL_TARBALL);
     let extract_root = work_dir.join("extracted");
@@ -364,9 +363,9 @@ fn clean_value(raw: &str, rust_type: &str) -> String {
 
 fn parse_header(header: &str) -> io::Result<(String, String, usize)> {
     let header = header.replace(['\n', '\r'], " ");
-    let open = header.find('[').ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "Missing '[' in array header")
-    })?;
+    let open = header
+        .find('[')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing '[' in array header"))?;
     let close = header[open + 1..]
         .find(']')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing ']' in array header"))?;
@@ -392,32 +391,41 @@ fn parse_header(header: &str) -> io::Result<(String, String, usize)> {
 
 fn parse_int_signed(value: &str) -> io::Result<i64> {
     let value = value.trim();
-    if let Some(hex) = value.strip_prefix("-0x").or_else(|| value.strip_prefix("-0X")) {
+    if let Some(hex) = value
+        .strip_prefix("-0x")
+        .or_else(|| value.strip_prefix("-0X"))
+    {
         let parsed = i64::from_str_radix(hex, 16).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}"))
         })?;
         return Ok(-parsed);
     }
-    if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
         return i64::from_str_radix(hex, 16).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}"))
         });
     }
-    value.parse::<i64>().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}"))
-    })
+    value
+        .parse::<i64>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}")))
 }
 
 fn parse_int_unsigned(value: &str) -> io::Result<u64> {
     let value = value.trim();
-    if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
         return u64::from_str_radix(hex, 16).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}"))
         });
     }
-    value.parse::<u64>().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}"))
-    })
+    value
+        .parse::<u64>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid int: {value}")))
 }
 
 fn parse_values(values_str: &str, array_type: ArrayType, len: usize) -> io::Result<Vec<u8>> {
@@ -543,14 +551,12 @@ fn parse_arrays(content: &str) -> io::Result<HashMap<String, ArrayData>> {
             cursor = start + brace_pos + 1;
             continue;
         }
-        let end_pos = after[brace_pos + 1..]
-            .find("};")
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Missing array terminator; the file may be truncated or incompatible.",
-                )
-            })?;
+        let end_pos = after[brace_pos + 1..].find("};").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Missing array terminator; the file may be truncated or incompatible.",
+            )
+        })?;
         let values_str = &after[brace_pos + 1..brace_pos + 1 + end_pos];
 
         let (c_type, name, len) = match parse_header(header) {
@@ -568,10 +574,7 @@ fn parse_arrays(content: &str) -> io::Result<HashMap<String, ArrayData>> {
             }
         };
         let bytes = parse_values(values_str, array_type, len).map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!("Failed to parse array {name}: {err}"),
-            )
+            io::Error::new(err.kind(), format!("Failed to parse array {name}: {err}"))
         })?;
 
         arrays.insert(name, ArrayData { bytes });
@@ -638,7 +641,10 @@ fn parse_weight_type_value(value: &str) -> io::Result<i32> {
 }
 
 fn resolve_weight_type(value: &str, defines: &HashMap<String, String>) -> io::Result<i32> {
-    let mut current = value.trim().trim_matches(|c| c == '(' || c == ')').to_string();
+    let mut current = value
+        .trim()
+        .trim_matches(|c| c == '(' || c == ')')
+        .to_string();
     for _ in 0..16 {
         let Some(next) = defines.get(&current) else {
             break;
@@ -836,7 +842,10 @@ fn normalize_array_ref(value: &str) -> String {
         current = &current[..idx];
     }
 
-    current.trim_matches(|c: char| c == '(' || c == ')').trim().to_string()
+    current
+        .trim_matches(|c: char| c == '(' || c == ')')
+        .trim()
+        .to_string()
 }
 
 fn parse_size_expr(expr: &str, arrays: &HashMap<String, ArrayData>) -> io::Result<usize> {
@@ -845,10 +854,16 @@ fn parse_size_expr(expr: &str, arrays: &HashMap<String, ArrayData>) -> io::Resul
         let part = part.trim();
         if part.starts_with("sizeof") {
             let open = part.find('(').ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("Invalid sizeof: {part}"))
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid sizeof: {part}"),
+                )
             })?;
             let close = part.rfind(')').ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("Invalid sizeof: {part}"))
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid sizeof: {part}"),
+                )
             })?;
             let inner = part[open + 1..close].trim();
             let inner = inner.split('[').next().unwrap_or(inner).trim();
@@ -959,7 +974,10 @@ fn write_weight_entry(
     let name_bytes = entry.name.as_bytes();
     let copy_len = name_bytes.len().min(WEIGHT_NAME_LEN - 1);
     if name_bytes.len() >= WEIGHT_NAME_LEN {
-        eprintln!("[mousiki-deep-plc-weights] warning: name {} truncated", entry.name);
+        eprintln!(
+            "[mousiki-deep-plc-weights] warning: name {} truncated",
+            entry.name
+        );
     }
     header[20..20 + copy_len].copy_from_slice(&name_bytes[..copy_len]);
 

@@ -7,12 +7,12 @@
 //! decoder state so they can be exercised in isolation while larger control
 //! flow is still being translated.
 
-use crate::celt::math::mul_add_f32;
-use crate::celt::types::{CeltCoef, OpusCustomMode, OpusInt32, OpusVal16, OpusVal32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::{Q15_ONE, SIG_SAT};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{add32, mult16_16_p15, mult16_16_q15, mult16_32_q15, sub32};
+use crate::celt::math::mul_add_f32;
+use crate::celt::types::{CeltCoef, OpusCustomMode, OpusInt32, OpusVal16, OpusVal32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{FixedCeltCoef, FixedCeltSig, FixedOpusVal16};
 
@@ -28,11 +28,8 @@ const TAPSET_GAINS: [[OpusVal16; 3]; 3] = [
 
 /// Tapset gains for the fixed-point comb filter (Q15).
 #[cfg(feature = "fixed_point")]
-const TAPSET_GAINS_FIXED: [[FixedOpusVal16; 3]; 3] = [
-    [10048, 7112, 4248],
-    [15200, 8784, 0],
-    [26208, 3280, 0],
-];
+const TAPSET_GAINS_FIXED: [[FixedOpusVal16; 3]; 3] =
+    [[10048, 7112, 4248], [15200, 8784, 0], [26208, 3280, 0]];
 
 /// TF change table mirroring `tf_select_table` from `celt/celt.c`.
 ///
@@ -445,15 +442,7 @@ pub(crate) fn comb_filter_fixed(
     }
 
     if overlap < n {
-        comb_filter_const_fixed(
-            &mut y[overlap..n],
-            x,
-            x_start + overlap,
-            t1,
-            g10,
-            g11,
-            g12,
-        );
+        comb_filter_const_fixed(&mut y[overlap..n], x, x_start + overlap, t1, g10, g11, g12);
     }
 }
 
@@ -514,9 +503,6 @@ mod tests {
         OPUS_VERSION_STRING, TF_SELECT_TABLE, comb_filter, comb_filter_const, init_caps,
         opus_get_version_string, opus_strerror, resampling_factor,
     };
-    use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
-    use alloc::vec::Vec;
-    use alloc::{format, vec};
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::{Q15_ONE, SIG_SAT};
     #[cfg(feature = "fixed_point")]
@@ -525,6 +511,9 @@ mod tests {
     };
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::{FixedCeltCoef, FixedCeltSig, FixedOpusVal16};
+    use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
+    use alloc::vec::Vec;
+    use alloc::{format, vec};
 
     const EPSILON: f32 = 1e-6;
 
@@ -848,11 +837,8 @@ mod tests {
         window: &[FixedCeltCoef],
         overlap: usize,
     ) {
-        const TAPSET_GAINS_FIXED: [[FixedOpusVal16; 3]; 3] = [
-            [10048, 7112, 4248],
-            [15200, 8784, 0],
-            [26208, 3280, 0],
-        ];
+        const TAPSET_GAINS_FIXED: [[FixedOpusVal16; 3]; 3] =
+            [[10048, 7112, 4248], [15200, 8784, 0], [26208, 3280, 0]];
 
         if g0 == 0 && g1 == 0 {
             y[..n].copy_from_slice(&x[x_start..x_start + n]);

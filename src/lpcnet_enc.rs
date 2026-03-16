@@ -1,8 +1,10 @@
-use crate::celt::{celt_fir, celt_inner_prod, celt_log2, celt_pitch_xcorr, KissFftCpx, KissFftState};
+use crate::celt::{
+    KissFftCpx, KissFftState, celt_fir, celt_inner_prod, celt_log2, celt_pitch_xcorr,
+};
 use crate::dnn_weights::WeightError;
 use crate::pitchdnn::{
-    compute_pitchdnn, PitchDnnState, NB_XCORR_FEATURES, PITCH_IF_FEATURES, PITCH_IF_MAX_FREQ,
-    PITCH_MAX_PERIOD, PITCH_MIN_PERIOD,
+    NB_XCORR_FEATURES, PITCH_IF_FEATURES, PITCH_IF_MAX_FREQ, PITCH_MAX_PERIOD, PITCH_MIN_PERIOD,
+    PitchDnnState, compute_pitchdnn,
 };
 use core::f32::consts::PI;
 use libm::{cosf, expf, floorf, logf, powf, sinf, sqrtf};
@@ -28,24 +30,8 @@ const PITCH_FRAME_SIZE: usize = 320;
 const PITCH_BUF_SIZE: usize = PITCH_MAX_PERIOD + PITCH_FRAME_SIZE;
 
 const LPC_COMPENSATION: [f32; NB_BANDS] = [
-    0.8,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    0.666_667,
-    0.5,
-    0.5,
-    0.5,
-    0.333_333,
-    0.25,
-    0.25,
-    0.2,
-    0.166_667,
-    0.173_913,
+    0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.666_667, 0.5, 0.5, 0.5, 0.333_333, 0.25, 0.25, 0.2,
+    0.166_667, 0.173_913,
 ];
 
 const EBAND_5MS: [i16; NB_BANDS] = [
@@ -220,7 +206,9 @@ fn frame_analysis(
     let mut x = [0.0f32; WINDOW_SIZE];
     x[..OVERLAP_SIZE].copy_from_slice(&state.analysis_mem);
     x[OVERLAP_SIZE..OVERLAP_SIZE + FRAME_SIZE].copy_from_slice(input);
-    state.analysis_mem.copy_from_slice(&input[FRAME_SIZE - OVERLAP_SIZE..]);
+    state
+        .analysis_mem
+        .copy_from_slice(&input[FRAME_SIZE - OVERLAP_SIZE..]);
     apply_window(&mut x, &state.half_window);
     forward_transform(&state.kfft, xfreq, &x);
     lpcn_compute_band_energy(band_energy, xfreq);
@@ -250,7 +238,11 @@ fn forward_transform(
     out.copy_from_slice(&y[..FREQ_SIZE]);
 }
 
-fn inverse_transform(fft: &KissFftState, out: &mut [f32; WINDOW_SIZE], input: &[KissFftCpx; FREQ_SIZE]) {
+fn inverse_transform(
+    fft: &KissFftState,
+    out: &mut [f32; WINDOW_SIZE],
+    input: &[KissFftCpx; FREQ_SIZE],
+) {
     let mut x = [KissFftCpx::default(); WINDOW_SIZE];
     let mut y = [KissFftCpx::default(); WINDOW_SIZE];
     for i in 0..FREQ_SIZE {
@@ -271,8 +263,7 @@ fn inverse_transform(fft: &KissFftState, out: &mut [f32; WINDOW_SIZE], input: &[
 fn lpcn_compute_band_energy(band_energy: &mut [f32; NB_BANDS], xfreq: &[KissFftCpx; FREQ_SIZE]) {
     let mut sum = [0.0f32; NB_BANDS];
     for i in 0..NB_BANDS - 1 {
-        let band_size =
-            (EBAND_5MS[i + 1] - EBAND_5MS[i]) as usize * WINDOW_SIZE_5MS;
+        let band_size = (EBAND_5MS[i + 1] - EBAND_5MS[i]) as usize * WINDOW_SIZE_5MS;
         let band_start = EBAND_5MS[i] as usize * WINDOW_SIZE_5MS;
         for j in 0..band_size {
             let frac = j as f32 / band_size as f32;
@@ -298,7 +289,11 @@ fn dct(out: &mut [f32; NB_BANDS], input: &[f32; NB_BANDS], dct_table: &[f32; NB_
     }
 }
 
-fn idct(out: &mut [f32; NB_BANDS], input: &[f32; NB_BANDS], dct_table: &[f32; NB_BANDS * NB_BANDS]) {
+fn idct(
+    out: &mut [f32; NB_BANDS],
+    input: &[f32; NB_BANDS],
+    dct_table: &[f32; NB_BANDS * NB_BANDS],
+) {
     let scale = sqrtf(2.0 / NB_BANDS as f32);
     for i in 0..NB_BANDS {
         let mut sum = 0.0f32;
@@ -312,8 +307,7 @@ fn idct(out: &mut [f32; NB_BANDS], input: &[f32; NB_BANDS], dct_table: &[f32; NB
 fn interp_band_gain(output: &mut [f32; FREQ_SIZE], band_energy: &[f32; NB_BANDS]) {
     output.fill(0.0);
     for i in 0..NB_BANDS - 1 {
-        let band_size =
-            (EBAND_5MS[i + 1] - EBAND_5MS[i]) as usize * WINDOW_SIZE_5MS;
+        let band_size = (EBAND_5MS[i + 1] - EBAND_5MS[i]) as usize * WINDOW_SIZE_5MS;
         let band_start = EBAND_5MS[i] as usize * WINDOW_SIZE_5MS;
         for j in 0..band_size {
             let frac = j as f32 / band_size as f32;
@@ -434,8 +428,7 @@ fn compute_frame_features(state: &mut LpcNetEncState, input: &[f32; FRAME_SIZE],
     frame_analysis(state, &mut xfreq, &mut ex, input);
 
     let mag0 = xfreq[0].r * xfreq[0].r;
-    state.if_features[0] = ((10.0 * celt_log10(1.0e-15 + mag0) - 6.0) / 64.0)
-        .clamp(-1.0, 1.0);
+    state.if_features[0] = ((10.0 * celt_log10(1.0e-15 + mag0) - 6.0) / 64.0).clamp(-1.0, 1.0);
     for i in 1..PITCH_IF_MAX_FREQ {
         let prev = state.prev_if[i];
         let curr = xfreq[i];
@@ -448,8 +441,8 @@ fn compute_frame_features(state: &mut LpcNetEncState, input: &[f32; FRAME_SIZE],
         state.if_features[3 * i - 2] = prod.r;
         state.if_features[3 * i - 1] = prod.i;
         let mag = curr.r * curr.r + curr.i * curr.i;
-        state.if_features[3 * i] = ((10.0 * celt_log10(1.0e-15 + mag) - 6.0) / 64.0)
-            .clamp(-1.0, 1.0);
+        state.if_features[3 * i] =
+            ((10.0 * celt_log10(1.0e-15 + mag) - 6.0) / 64.0).clamp(-1.0, 1.0);
     }
     state.prev_if.copy_from_slice(&xfreq[..PITCH_IF_MAX_FREQ]);
 
@@ -464,14 +457,18 @@ fn compute_frame_features(state: &mut LpcNetEncState, input: &[f32; FRAME_SIZE],
     }
 
     dct(
-        (&mut state.features[..NB_BANDS]).try_into().expect("slice length"),
+        (&mut state.features[..NB_BANDS])
+            .try_into()
+            .expect("slice length"),
         &ly,
         &state.dct_table,
     );
     state.features[0] -= 4.0;
     lpc_from_cepstrum(
         &mut state.lpc,
-        (&state.features[..NB_BANDS]).try_into().expect("slice length"),
+        (&state.features[..NB_BANDS])
+            .try_into()
+            .expect("slice length"),
         &state.kfft,
         &state.dct_table,
     );
@@ -489,7 +486,9 @@ fn compute_frame_features(state: &mut LpcNetEncState, input: &[f32; FRAME_SIZE],
     aligned_in[TRAINING_OFFSET..].copy_from_slice(&input[..FRAME_SIZE - TRAINING_OFFSET]);
     x[..LPC_ORDER].copy_from_slice(&state.pitch_mem);
     x[LPC_ORDER..LPC_ORDER + FRAME_SIZE].copy_from_slice(&aligned_in);
-    state.pitch_mem.copy_from_slice(&aligned_in[FRAME_SIZE - LPC_ORDER..]);
+    state
+        .pitch_mem
+        .copy_from_slice(&aligned_in[FRAME_SIZE - LPC_ORDER..]);
 
     let lp_out = &mut state.lp_buf[PITCH_MAX_PERIOD..PITCH_MAX_PERIOD + FRAME_SIZE];
     celt_fir(&x, &state.lpc, lp_out);
@@ -540,7 +539,9 @@ fn compute_frame_features(state: &mut LpcNetEncState, input: &[f32; FRAME_SIZE],
 
 #[cfg(test)]
 mod tests {
-    use super::{lpcnet_compute_single_frame_features_float, LpcNetEncState, FRAME_SIZE, NB_TOTAL_FEATURES};
+    use super::{
+        FRAME_SIZE, LpcNetEncState, NB_TOTAL_FEATURES, lpcnet_compute_single_frame_features_float,
+    };
 
     #[test]
     fn lpcnet_features_are_finite_for_silence() {

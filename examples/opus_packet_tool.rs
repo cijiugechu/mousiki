@@ -1,9 +1,9 @@
 use mousiki::opus_decoder::{
-    opus_decode, opus_decoder_create, OpusDecodeError, OpusDecoderInitError,
+    OpusDecodeError, OpusDecoderInitError, opus_decode, opus_decoder_create,
 };
 use mousiki::opus_encoder::{
-    opus_encode, opus_encoder_create, opus_encoder_ctl, OpusEncodeError, OpusEncoderCtlError,
-    OpusEncoderCtlRequest, OpusEncoderInitError,
+    OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode,
+    opus_encoder_create, opus_encoder_ctl,
 };
 use std::env;
 use std::fs::File;
@@ -76,10 +76,8 @@ fn encode_packets(input_path: &Path, output_path: &Path) -> Result<(), ToolError
             *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
         }
 
-        let packet_len =
-            opus_encode(&mut encoder, &input_pcm, FRAME_SIZE, &mut packet).map_err(
-                ToolError::Encode,
-            )?;
+        let packet_len = opus_encode(&mut encoder, &input_pcm, FRAME_SIZE, &mut packet)
+            .map_err(ToolError::Encode)?;
         if packet_len > u16::MAX as usize {
             return Err(ToolError::PacketTooLarge(packet_len));
         }
@@ -102,8 +100,7 @@ fn decode_packets(input_path: &Path, output_path: &Path) -> Result<(), ToolError
         File::create(output_path).map_err(|err| ToolError::Io("create output", err.kind()))?;
 
     read_header(&mut input_file)?;
-    let mut decoder =
-        opus_decoder_create(SAMPLE_RATE, CHANNELS).map_err(ToolError::DecoderInit)?;
+    let mut decoder = opus_decoder_create(SAMPLE_RATE, CHANNELS).map_err(ToolError::DecoderInit)?;
 
     let channels = CHANNELS as usize;
     let mut output_pcm = vec![0i16; MAX_FRAME_SIZE * channels];

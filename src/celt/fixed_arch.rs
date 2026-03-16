@@ -13,10 +13,10 @@
 //! reuse these constants and integer conversion helpers to stay aligned with
 //! the reference semantics.
 
-use super::float_cast::{float2int, CELT_SIG_SCALE};
-use super::types::{FixedCeltSig, FixedOpusRes, FixedOpusVal16, FixedOpusVal32};
 #[cfg(not(feature = "enable_res24"))]
 use super::float_cast::float2int16;
+use super::float_cast::{CELT_SIG_SCALE, float2int};
+use super::types::{FixedCeltSig, FixedOpusRes, FixedOpusVal16, FixedOpusVal32};
 
 /// Number of fractional bits in the fixed-point `celt_sig` representation.
 ///
@@ -339,14 +339,30 @@ mod tests {
         assert_eq!(float2sig(unit), int16tosig(1));
         assert_eq!(float2sig(-unit), int16tosig(-1));
 
-        for &value in &[-8_388_608i32, -1_234_432, -256, 0, 256, 1_234_432, 8_388_352] {
+        for &value in &[
+            -8_388_608i32,
+            -1_234_432,
+            -256,
+            0,
+            256,
+            1_234_432,
+            8_388_352,
+        ] {
             assert_eq!(int24tosig(value), res2sig(int24tores(value)));
         }
     }
 
     #[test]
     fn int24_conversions_roundtrip_for_byte_aligned_values() {
-        for &value in &[-8_388_608i32, -1_234_432, -256, 0, 256, 1_234_432, 8_388_352] {
+        for &value in &[
+            -8_388_608i32,
+            -1_234_432,
+            -256,
+            0,
+            256,
+            1_234_432,
+            8_388_352,
+        ] {
             let res = int24tores(value);
             let back = res2int24(res);
             assert_eq!(back, value);

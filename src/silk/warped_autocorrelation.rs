@@ -18,10 +18,7 @@ const CORR_SHIFT_QC: i32 = 2 * QS - QC; // equals 16 in the reference code
 /// The `order` must be even and no larger than [`MAX_SHAPE_LPC_ORDER`]. The
 /// `corr` slice must provide room for `order + 1` values. The function returns
 /// the scaling factor that the C version writes to `scale`.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap
-)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub fn warped_autocorrelation(
     corr: &mut [i32],
     input: &[i16],

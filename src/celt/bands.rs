@@ -1415,13 +1415,8 @@ fn quant_band_fixed_decode(
         );
     }
 
-    #[cfg(test)]
-    dump_fixed_stage("post_deinterleave", &x[..n]);
-
     let mut cm =
         quant_partition_fixed_decode(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
-    #[cfg(test)]
-    dump_fixed_stage("post_partition", &x[..n]);
     if ctx.resynth {
         if b0 > 1 {
             interleave_hadamard_fixed(x, n_b >> recombine, (b0 << recombine) as usize, long_blocks);
@@ -1455,8 +1450,6 @@ fn quant_band_fixed_decode(
         }
         cm &= mask_from_bits(b_blocks);
     }
-    #[cfg(test)]
-    dump_fixed_stage("post_final", &x[..n]);
     cm
 }
 
@@ -2032,9 +2025,7 @@ fn quant_partition(
     let encode = ctx.encode;
     let spread = ctx.spread;
 
-        #[cfg(test)]
-    let pvq_depth = pvq_depth_guard.depth();
-        let cache_index = i32::from(mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band]);
+    let cache_index = i32::from(mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band]);
     let cache_slice = if cache_index >= 0 {
         &mode.cache.bits[cache_index as usize..]
     } else {

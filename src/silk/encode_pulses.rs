@@ -243,9 +243,9 @@ mod tests {
     use alloc::{vec, vec::Vec};
 
     use crate::celt::EcDec;
+    use crate::silk::SilkRangeDecoder;
     use crate::silk::code_signs::silk_decode_signs;
     use crate::silk::shell_coder::silk_shell_decoder;
-    use crate::silk::SilkRangeDecoder;
 
     fn decode_reference(
         encoded: &[u8],

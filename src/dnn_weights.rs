@@ -86,9 +86,7 @@ pub(crate) fn require_bytes<'a>(
     name: &'static str,
     expected: usize,
 ) -> Result<&'a [u8], WeightError> {
-    let array = blob
-        .find(name)
-        .ok_or(WeightError::MissingArray(name))?;
+    let array = blob.find(name).ok_or(WeightError::MissingArray(name))?;
     if array.size != expected {
         return Err(WeightError::SizeMismatch(name));
     }
@@ -110,9 +108,7 @@ pub(crate) fn optional_bytes<'a>(
 }
 
 fn read_i32(data: &[u8], offset: usize) -> Result<i32, WeightError> {
-    let end = offset
-        .checked_add(4)
-        .ok_or(WeightError::InvalidBlob)?;
+    let end = offset.checked_add(4).ok_or(WeightError::InvalidBlob)?;
     if end > data.len() {
         return Err(WeightError::InvalidBlob);
     }
@@ -124,7 +120,7 @@ fn read_i32(data: &[u8], offset: usize) -> Result<i32, WeightError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WeightBlob, WeightError, WEIGHT_BLOCK_SIZE, WEIGHT_NAME_LEN};
+    use super::{WEIGHT_BLOCK_SIZE, WEIGHT_NAME_LEN, WeightBlob, WeightError};
     use alloc::vec;
     use alloc::vec::Vec;
 

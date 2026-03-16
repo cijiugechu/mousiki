@@ -182,9 +182,12 @@ fn conv2d_3x3_float(
                     + weights[weight_base + 3] * input[input_base + in_channels * in_stride + 0]
                     + weights[weight_base + 4] * input[input_base + in_channels * in_stride + 1]
                     + weights[weight_base + 5] * input[input_base + in_channels * in_stride + 2]
-                    + weights[weight_base + 6] * input[input_base + 2 * in_channels * in_stride + 0]
-                    + weights[weight_base + 7] * input[input_base + 2 * in_channels * in_stride + 1]
-                    + weights[weight_base + 8] * input[input_base + 2 * in_channels * in_stride + 2];
+                    + weights[weight_base + 6]
+                        * input[input_base + 2 * in_channels * in_stride + 0]
+                    + weights[weight_base + 7]
+                        * input[input_base + 2 * in_channels * in_stride + 1]
+                    + weights[weight_base + 8]
+                        * input[input_base + 2 * in_channels * in_stride + 2];
             }
         }
     }
@@ -283,13 +286,7 @@ fn sgemv(out: &mut [f32], weights: &[f32], rows: usize, cols: usize, input: &[f3
     }
 }
 
-fn sparse_sgemv8x4(
-    out: &mut [f32],
-    weights: &[f32],
-    idx: &[i32],
-    rows: usize,
-    input: &[f32],
-) {
+fn sparse_sgemv8x4(out: &mut [f32], weights: &[f32], idx: &[i32], rows: usize, input: &[f32]) {
     out.fill(0.0);
     debug_assert!(rows % 8 == 0);
 
@@ -505,13 +502,26 @@ fn compute_linear(layer: &LinearLayer, out: &mut [f32], input: &[f32]) {
             sgemv(out, float_weights, layer.nb_outputs, layer.nb_inputs, input);
         }
     } else if let Some(weights) = layer.weights {
-        let scale = layer
-            .scale
-            .expect("quantized weights require scale values");
+        let scale = layer.scale.expect("quantized weights require scale values");
         if let Some(weights_idx) = layer.weights_idx {
-            sparse_cgemv8x4(out, weights, weights_idx, scale, layer.nb_outputs, layer.nb_inputs, input);
+            sparse_cgemv8x4(
+                out,
+                weights,
+                weights_idx,
+                scale,
+                layer.nb_outputs,
+                layer.nb_inputs,
+                input,
+            );
         } else {
-            cgemv8x4(out, weights, scale, layer.nb_outputs, layer.nb_inputs, input);
+            cgemv8x4(
+                out,
+                weights,
+                scale,
+                layer.nb_outputs,
+                layer.nb_inputs,
+                input,
+            );
         }
     } else {
         out.fill(0.0);
@@ -578,12 +588,7 @@ pub(crate) fn compute_generic_gru(
     }
 }
 
-pub(crate) fn compute_glu(
-    layer: &LinearLayer,
-    output: &mut [f32],
-    input: &[f32],
-    _arch: i32,
-) {
+pub(crate) fn compute_glu(layer: &LinearLayer, output: &mut [f32], input: &[f32], _arch: i32) {
     debug_assert_eq!(layer.nb_inputs, layer.nb_outputs);
     let mut act2 = [0.0f32; MAX_INPUTS];
     let count = layer.nb_outputs;
@@ -654,8 +659,7 @@ pub(crate) fn compute_generic_conv1d_dilation(
     } else {
         for i in 0..ksize - 1 {
             let src = i * input_size * dilation;
-            tmp[i * input_size..(i + 1) * input_size]
-                .copy_from_slice(&mem[src..src + input_size]);
+            tmp[i * input_size..(i + 1) * input_size].copy_from_slice(&mem[src..src + input_size]);
         }
     }
 

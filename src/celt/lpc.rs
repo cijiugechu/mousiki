@@ -13,9 +13,6 @@ use alloc::vec;
 #[cfg(feature = "fixed_point")]
 use alloc::vec::Vec;
 
-use crate::celt::math::{frac_div32, mul_add_f32};
-use crate::celt::pitch::celt_pitch_xcorr;
-use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::entcode::ec_ilog;
 #[cfg(feature = "fixed_point")]
@@ -27,10 +24,13 @@ use crate::celt::fixed_ops::{
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
+use crate::celt::math::{frac_div32, mul_add_f32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::frac_div32 as frac_div32_fixed;
+use crate::celt::pitch::celt_pitch_xcorr;
 #[cfg(feature = "fixed_point")]
 use crate::celt::pitch::celt_pitch_xcorr_fixed;
+use crate::celt::types::{CeltCoef, OpusVal16, OpusVal32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{FixedCeltCoef, FixedOpusVal16, FixedOpusVal32};
 #[cfg(feature = "fixed_point")]
@@ -48,7 +48,10 @@ fn sround16_fixed(x: FixedOpusVal32, shift: u32) -> FixedOpusVal16 {
 fn xcorr_kernel_fixed(x: &[FixedOpusVal16], y: &[FixedOpusVal16], sum: &mut [FixedOpusVal32; 4]) {
     let len = x.len();
     assert!(len >= 3, "xcorr_kernel requires at least three samples");
-    assert!(y.len() >= len + 3, "xcorr_kernel needs len + 3 samples from y");
+    assert!(
+        y.len() >= len + 3,
+        "xcorr_kernel needs len + 3 samples from y"
+    );
 
     let mut y_idx = 0usize;
     let mut y0 = y[y_idx];
@@ -256,10 +259,8 @@ pub(crate) fn celt_lpc_fixed(lpc: &mut [FixedOpusVal16], ac: &[FixedOpusVal32]) 
 
         for i in 0..order.saturating_sub(1) {
             lpc32[i] = mult32_32_q16(chirp_q16, lpc32[i]);
-            chirp_q16 = chirp_q16.wrapping_add(pshr32(
-                mult32_32_32(chirp_q16, chirp_minus_one_q16),
-                16,
-            ));
+            chirp_q16 =
+                chirp_q16.wrapping_add(pshr32(mult32_32_32(chirp_q16, chirp_minus_one_q16), 16));
         }
         if let Some(last) = lpc32.last_mut() {
             *last = mult32_32_q16(chirp_q16, *last);
@@ -634,12 +635,12 @@ mod tests {
     #[cfg(feature = "fixed_point")]
     use super::{celt_fir_fixed, celt_iir_fixed, sround16_fixed, xcorr_kernel_fixed};
     #[cfg(feature = "fixed_point")]
-    use crate::celt::fixed_arch::{int16tosig, SIG_SHIFT};
+    use crate::celt::fixed_arch::{SIG_SHIFT, int16tosig};
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_ops::{mac16_16, mult16_16, pshr32, shl32};
-    use crate::celt::types::{OpusVal16, OpusVal32};
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
+    use crate::celt::types::{OpusVal16, OpusVal32};
     use alloc::vec;
     use alloc::vec::Vec;
 

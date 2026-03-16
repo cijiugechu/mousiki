@@ -8,8 +8,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::celt::isqrt32;
 use crate::celt::float2int16;
+use crate::celt::isqrt32;
 use crate::mapping_matrix::{
     MAPPING_MATRIX_FIFTHOA_DEMIXING, MAPPING_MATRIX_FIFTHOA_MIXING, MAPPING_MATRIX_FOA_DEMIXING,
     MAPPING_MATRIX_FOA_MIXING, MAPPING_MATRIX_FOURTHOA_DEMIXING, MAPPING_MATRIX_FOURTHOA_MIXING,
@@ -243,7 +243,10 @@ impl<'mode> OpusProjectionEncoder<'mode> {
 
 /// Returns the number of bytes required to allocate a projection encoder.
 #[must_use]
-pub fn opus_projection_ambisonics_encoder_get_size(channels: usize, mapping_family: u8) -> Option<usize> {
+pub fn opus_projection_ambisonics_encoder_get_size(
+    channels: usize,
+    mapping_family: u8,
+) -> Option<usize> {
     let layout = projection_layout(channels, mapping_family).ok()?;
     let ms_size = opus_multistream_encoder_get_size(layout.streams, layout.coupled_streams)?;
     align(core::mem::size_of::<OpusProjectionEncoderLayout>())
@@ -321,7 +324,8 @@ pub fn opus_projection_encoder_ctl<'req>(
             *out = encoder.layout.demixing.gain_db;
         }
         OpusProjectionEncoderCtlRequest::GetDemixingMatrix(out) => {
-            write_demixing_matrix_subset(&encoder.layout, out).map_err(OpusProjectionEncoderError::from)?;
+            write_demixing_matrix_subset(&encoder.layout, out)
+                .map_err(OpusProjectionEncoderError::from)?;
         }
         OpusProjectionEncoderCtlRequest::Multistream(req) => {
             opus_multistream_encoder_ctl(&mut encoder.ms_encoder, req)?;
@@ -422,7 +426,12 @@ pub fn opus_projection_encode(
         return Err(OpusProjectionEncoderError::BadArgument);
     }
 
-    let mixed = mix_i16(encoder.layout.mixing, channels, &pcm[..required], frame_size);
+    let mixed = mix_i16(
+        encoder.layout.mixing,
+        channels,
+        &pcm[..required],
+        frame_size,
+    );
     Ok(opus_multistream_encode(
         &mut encoder.ms_encoder,
         &mixed,
@@ -445,7 +454,12 @@ pub fn opus_projection_encode_float(
         return Err(OpusProjectionEncoderError::BadArgument);
     }
 
-    let mixed = mix_float(encoder.layout.mixing, channels, &pcm[..required], frame_size);
+    let mixed = mix_float(
+        encoder.layout.mixing,
+        channels,
+        &pcm[..required],
+        frame_size,
+    );
     Ok(opus_multistream_encode(
         &mut encoder.ms_encoder,
         &mixed,
@@ -468,7 +482,12 @@ pub fn opus_projection_encode24(
         return Err(OpusProjectionEncoderError::BadArgument);
     }
 
-    let mixed = mix_int24(encoder.layout.mixing, channels, &pcm[..required], frame_size);
+    let mixed = mix_int24(
+        encoder.layout.mixing,
+        channels,
+        &pcm[..required],
+        frame_size,
+    );
     Ok(opus_multistream_encode(
         &mut encoder.ms_encoder,
         &mixed,
@@ -919,9 +938,8 @@ mod tests {
         assert!(len > 0);
 
         let mut pcm_out = vec![0i16; 4 * 960];
-        let decoded =
-            opus_projection_decode(&mut decoder, &packet, len, &mut pcm_out, 960, false)
-                .expect("decode");
+        let decoded = opus_projection_decode(&mut decoder, &packet, len, &mut pcm_out, 960, false)
+            .expect("decode");
         assert_eq!(decoded, 960);
 
         let mapping = [0u8, 1, 2, 3];

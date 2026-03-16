@@ -1,11 +1,11 @@
 //! RDOVAE decoder model and inference helpers.
 
+use crate::dnn_weights::{WeightBlob, WeightError, optional_bytes, require_bytes};
 use crate::dred_constants::{DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_STATE_DIM};
 use crate::dred_rdovae_dec_data::*;
-use crate::dnn_weights::{optional_bytes, require_bytes, WeightBlob, WeightError};
 use crate::nnet::{
-    compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu,
-    LinearLayer, ACTIVATION_LINEAR, ACTIVATION_TANH,
+    ACTIVATION_LINEAR, ACTIVATION_TANH, LinearLayer, compute_generic_conv1d, compute_generic_dense,
+    compute_generic_gru, compute_glu,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -992,18 +992,40 @@ pub(crate) fn rdovae_dec_init_states(
 ) {
     let mut hidden = [0.0f32; DEC_HIDDEN_INIT_OUT_SIZE];
     let mut state_init = [0.0f32; DEC_GRU_INIT_OUT_SIZE];
-    compute_generic_dense(&model.dec_hidden_init, &mut hidden, initial_state, ACTIVATION_TANH, arch);
-    compute_generic_dense(&model.dec_gru_init, &mut state_init, &hidden, ACTIVATION_TANH, arch);
+    compute_generic_dense(
+        &model.dec_hidden_init,
+        &mut hidden,
+        initial_state,
+        ACTIVATION_TANH,
+        arch,
+    );
+    compute_generic_dense(
+        &model.dec_gru_init,
+        &mut state_init,
+        &hidden,
+        ACTIVATION_TANH,
+        arch,
+    );
     let mut counter = 0usize;
-    state.gru1_state.copy_from_slice(&state_init[counter..counter + DEC_GRU1_STATE_SIZE]);
+    state
+        .gru1_state
+        .copy_from_slice(&state_init[counter..counter + DEC_GRU1_STATE_SIZE]);
     counter += DEC_GRU1_STATE_SIZE;
-    state.gru2_state.copy_from_slice(&state_init[counter..counter + DEC_GRU2_STATE_SIZE]);
+    state
+        .gru2_state
+        .copy_from_slice(&state_init[counter..counter + DEC_GRU2_STATE_SIZE]);
     counter += DEC_GRU2_STATE_SIZE;
-    state.gru3_state.copy_from_slice(&state_init[counter..counter + DEC_GRU3_STATE_SIZE]);
+    state
+        .gru3_state
+        .copy_from_slice(&state_init[counter..counter + DEC_GRU3_STATE_SIZE]);
     counter += DEC_GRU3_STATE_SIZE;
-    state.gru4_state.copy_from_slice(&state_init[counter..counter + DEC_GRU4_STATE_SIZE]);
+    state
+        .gru4_state
+        .copy_from_slice(&state_init[counter..counter + DEC_GRU4_STATE_SIZE]);
     counter += DEC_GRU4_STATE_SIZE;
-    state.gru5_state.copy_from_slice(&state_init[counter..counter + DEC_GRU5_STATE_SIZE]);
+    state
+        .gru5_state
+        .copy_from_slice(&state_init[counter..counter + DEC_GRU5_STATE_SIZE]);
     state.initialized = 0;
 }
 
@@ -1043,7 +1065,12 @@ pub(crate) fn rdovae_decode_qframe(
     );
     output_index += DEC_GRU1_OUT_SIZE;
     debug_assert_eq!(output_index, DEC_CONV1_IN_SIZE);
-    conv1_cond_init(&mut dec_state.conv1_state, output_index, 1, &mut dec_state.initialized);
+    conv1_cond_init(
+        &mut dec_state.conv1_state,
+        output_index,
+        1,
+        &mut dec_state.initialized,
+    );
     let (conv1_in, conv1_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d(
         &model.dec_conv1,
@@ -1071,7 +1098,12 @@ pub(crate) fn rdovae_decode_qframe(
     );
     output_index += DEC_GRU2_OUT_SIZE;
     debug_assert_eq!(output_index, DEC_CONV2_IN_SIZE);
-    conv1_cond_init(&mut dec_state.conv2_state, output_index, 1, &mut dec_state.initialized);
+    conv1_cond_init(
+        &mut dec_state.conv2_state,
+        output_index,
+        1,
+        &mut dec_state.initialized,
+    );
     let (conv2_in, conv2_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d(
         &model.dec_conv2,
@@ -1099,7 +1131,12 @@ pub(crate) fn rdovae_decode_qframe(
     );
     output_index += DEC_GRU3_OUT_SIZE;
     debug_assert_eq!(output_index, DEC_CONV3_IN_SIZE);
-    conv1_cond_init(&mut dec_state.conv3_state, output_index, 1, &mut dec_state.initialized);
+    conv1_cond_init(
+        &mut dec_state.conv3_state,
+        output_index,
+        1,
+        &mut dec_state.initialized,
+    );
     let (conv3_in, conv3_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d(
         &model.dec_conv3,
@@ -1127,7 +1164,12 @@ pub(crate) fn rdovae_decode_qframe(
     );
     output_index += DEC_GRU4_OUT_SIZE;
     debug_assert_eq!(output_index, DEC_CONV4_IN_SIZE);
-    conv1_cond_init(&mut dec_state.conv4_state, output_index, 1, &mut dec_state.initialized);
+    conv1_cond_init(
+        &mut dec_state.conv4_state,
+        output_index,
+        1,
+        &mut dec_state.initialized,
+    );
     let (conv4_in, conv4_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d(
         &model.dec_conv4,
@@ -1155,7 +1197,12 @@ pub(crate) fn rdovae_decode_qframe(
     );
     output_index += DEC_GRU5_OUT_SIZE;
     debug_assert_eq!(output_index, DEC_CONV5_IN_SIZE);
-    conv1_cond_init(&mut dec_state.conv5_state, output_index, 1, &mut dec_state.initialized);
+    conv1_cond_init(
+        &mut dec_state.conv5_state,
+        output_index,
+        1,
+        &mut dec_state.initialized,
+    );
     let (conv5_in, conv5_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d(
         &model.dec_conv5,

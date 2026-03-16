@@ -2,7 +2,9 @@
 
 mod opus_encode_regressions_data;
 
-use mousiki::opus_encoder::{OpusEncoderCtlRequest, opus_encode, opus_encoder_create, opus_encoder_ctl};
+use mousiki::opus_encoder::{
+    OpusEncoderCtlRequest, opus_encode, opus_encoder_create, opus_encoder_ctl,
+};
 use mousiki::opus_multistream::{
     OpusMultistreamEncoderCtlRequest, opus_multistream_encode, opus_multistream_encoder_create,
     opus_multistream_encoder_ctl, opus_multistream_surround_encoder_create,
@@ -33,8 +35,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(false));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(false),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(true),
@@ -50,8 +54,10 @@ fn celt_ec_internal_error() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_NARROWBAND),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO),
+    );
     let _ =
         opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetLsbDepth(8));
     let _ = opus_multistream_encoder_ctl(
@@ -75,8 +81,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(true),
@@ -86,8 +94,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetPhaseInversionDisabled(false),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetDtx(true));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetComplexity(10));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetComplexity(10),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_FULLBAND),
@@ -119,8 +129,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(true),
@@ -130,8 +142,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetPhaseInversionDisabled(false),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetDtx(true));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetComplexity(10));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetComplexity(10),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_FULLBAND),
@@ -163,8 +177,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(true),
@@ -174,8 +190,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetPhaseInversionDisabled(false),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetDtx(true));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetComplexity(10));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetComplexity(10),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_FULLBAND),
@@ -207,8 +225,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(true),
@@ -218,8 +238,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetPhaseInversionDisabled(false),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetDtx(true));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetComplexity(10));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetComplexity(10),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_FULLBAND),
@@ -252,8 +274,10 @@ fn celt_ec_internal_error() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(true),
@@ -269,8 +293,10 @@ fn celt_ec_internal_error() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_NARROWBAND),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO),
+    );
     let _ =
         opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetLsbDepth(12));
     let _ = opus_multistream_encoder_ctl(
@@ -281,8 +307,10 @@ fn celt_ec_internal_error() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPacketLossPerc(41),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBitrate(21_425));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBitrate(21_425),
+    );
     let len = opus_multistream_encode(&mut enc, &CELT_EC_INTERNAL_ERROR_PCM5, 40, &mut data)
         .expect("encode");
     assert!(len > 0);
@@ -305,8 +333,10 @@ fn mscbr_encode_fail10() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(false));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(false),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(false),
@@ -326,8 +356,10 @@ fn mscbr_encode_fail10() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_NARROWBAND),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO),
+    );
     let _ =
         opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetLsbDepth(14));
     let _ = opus_multistream_encoder_ctl(
@@ -338,8 +370,10 @@ fn mscbr_encode_fail10() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPacketLossPerc(57),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBitrate(3_642_675));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBitrate(3_642_675),
+    );
 
     let pcm = [0i16; 20 * 255];
     let mut data = vec![0u8; 627_300];
@@ -364,8 +398,10 @@ fn mscbr_encode_fail() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(false));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(false));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(false),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(false),
@@ -385,8 +421,10 @@ fn mscbr_encode_fail() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_MEDIUMBAND),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO),
+    );
     let _ =
         opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetLsbDepth(8));
     let _ = opus_multistream_encoder_ctl(
@@ -397,8 +435,10 @@ fn mscbr_encode_fail() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPacketLossPerc(0),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBitrate(15_360));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBitrate(15_360),
+    );
 
     let pcm = [0i16; 20 * 192];
     let mut data = vec![0u8; 472_320];
@@ -417,8 +457,10 @@ fn surround_analysis_uninit() {
         OpusMultistreamEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE),
     );
     let _ = opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbr(true));
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetVbrConstraint(true),
+    );
     let _ = opus_multistream_encoder_ctl(
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPredictionDisabled(false),
@@ -448,8 +490,10 @@ fn surround_analysis_uninit() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetInbandFec(true),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBitrate(84_315));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBitrate(84_315),
+    );
     let len = opus_multistream_encode(&mut enc, &SURROUND_ANALYSIS_UNINIT_PCM0, 960, &mut data)
         .expect("encode");
     assert!(len > 0);
@@ -482,8 +526,10 @@ fn surround_analysis_uninit() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetMaxBandwidth(OPUS_BANDWIDTH_NARROWBAND),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBandwidth(OPUS_AUTO),
+    );
     let _ =
         opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetLsbDepth(9));
     let _ = opus_multistream_encoder_ctl(
@@ -494,8 +540,10 @@ fn surround_analysis_uninit() {
         &mut enc,
         OpusMultistreamEncoderCtlRequest::SetPacketLossPerc(5),
     );
-    let _ =
-        opus_multistream_encoder_ctl(&mut enc, OpusMultistreamEncoderCtlRequest::SetBitrate(775_410));
+    let _ = opus_multistream_encoder_ctl(
+        &mut enc,
+        OpusMultistreamEncoderCtlRequest::SetBitrate(775_410),
+    );
     let mut pcm = [0i16; SURROUND_ANALYSIS_UNINIT_PCM1_LEN];
     pcm[..SURROUND_ANALYSIS_UNINIT_PCM1.len()].copy_from_slice(&SURROUND_ANALYSIS_UNINIT_PCM1);
     let len = opus_multistream_encode(&mut enc, &pcm, 1440, &mut data).expect("encode");
@@ -515,7 +563,10 @@ fn ec_enc_shrink_assert() {
     let len = opus_encode(&mut enc, &pcm1, 960, &mut data).expect("encode");
     assert!(len > 0);
 
-    let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE));
+    let _ = opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE),
+    );
     let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetPredictionDisabled(true));
     let _ = opus_encoder_ctl(
         &mut enc,
@@ -529,7 +580,10 @@ fn ec_enc_shrink_assert() {
     let len = opus_encode(&mut enc, &pcm2, 2880, &mut data[..122]).expect("encode");
     assert!(len > 0);
 
-    let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC));
+    let _ = opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
+    );
     let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(27_000));
 
     let pcm3 = [0i16; 2880];
@@ -542,9 +596,14 @@ fn ec_enc_shrink_assert2() {
     let mut data = [0u8; 2000];
 
     let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetComplexity(6));
-    let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE));
-    let _ =
-        opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBandwidth(OPUS_BANDWIDTH_FULLBAND));
+    let _ = opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE),
+    );
+    let _ = opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetBandwidth(OPUS_BANDWIDTH_FULLBAND),
+    );
     let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetPacketLossPerc(26));
     let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(27_000));
 
@@ -552,7 +611,10 @@ fn ec_enc_shrink_assert2() {
     let len = opus_encode(&mut enc, &pcm, 960, &mut data).expect("encode");
     assert!(len > 0);
 
-    let _ = opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC));
+    let _ = opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
+    );
 
     let mut pcm = [0i16; EC_ENC_SHRINK_ASSERT2_PCM0_LEN];
     pcm[..EC_ENC_SHRINK_ASSERT2_PCM0.len()].copy_from_slice(&EC_ENC_SHRINK_ASSERT2_PCM0);

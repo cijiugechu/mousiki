@@ -528,14 +528,10 @@ mod tests {
 
         // Test dimensions matching the C test's pn[] table (non-CUSTOM_MODES variant)
         // Reduced set for reasonable test time
-        const PN: &[usize] = &[
-            2, 3, 4, 6, 8, 9, 11, 12, 16, 18, 22, 24, 32, 36, 44, 48,
-        ];
+        const PN: &[usize] = &[2, 3, 4, 6, 8, 9, 11, 12, 16, 18, 22, 24, 32, 36, 44, 48];
 
         // Maximum k values for each n (from C test's pkmax[])
-        const PKMAX: &[usize] = &[
-            128, 128, 128, 88, 36, 26, 18, 16, 12, 11, 9, 9, 7, 7, 6, 6,
-        ];
+        const PKMAX: &[usize] = &[128, 128, 128, 88, 36, 26, 18, 16, 12, 11, 9, 9, 7, 7, 6, 6];
 
         for (t, &n) in PN.iter().enumerate() {
             // Test up to the maximum k value for this n

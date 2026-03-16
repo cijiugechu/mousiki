@@ -1,19 +1,19 @@
-use crate::celt::{ec_tell, float2int16, EcEnc, EcEncSnapshot};
+use crate::celt::{EcEnc, EcEncSnapshot, ec_tell, float2int16};
+use crate::dnn_weights::WeightError;
 use crate::dred_constants::{
     DRED_DFRAME_SIZE, DRED_FRAME_SIZE, DRED_LATENT_DIM, DRED_MAX_FRAMES, DRED_NUM_FEATURES,
     DRED_NUM_REDUNDANCY_FRAMES, DRED_SILK_ENCODER_DELAY, DRED_STATE_DIM,
 };
-use crate::dred_rdovae_enc::{dred_rdovae_encode_dframe, RdovaeEnc, RdovaeEncState};
+use crate::dred_rdovae_enc::{RdovaeEnc, RdovaeEncState, dred_rdovae_encode_dframe};
 use crate::dred_stats_data::{
     DRED_LATENT_DEAD_ZONE_Q8, DRED_LATENT_P0_Q8, DRED_LATENT_QUANT_SCALES_Q8, DRED_LATENT_R_Q8,
     DRED_STATE_DEAD_ZONE_Q8, DRED_STATE_P0_Q8, DRED_STATE_QUANT_SCALES_Q8, DRED_STATE_R_Q8,
 };
-use crate::dnn_weights::WeightError;
 use crate::lpcnet_enc::{
-    lpcnet_compute_single_frame_features_float, lpcnet_encoder_init, lpcnet_encoder_load_model,
-    LpcNetEncState,
+    LpcNetEncState, lpcnet_compute_single_frame_features_float, lpcnet_encoder_init,
+    lpcnet_encoder_load_model,
 };
-use crate::nnet::{compute_activation, ACTIVATION_TANH};
+use crate::nnet::{ACTIVATION_TANH, compute_activation};
 use libm::floorf;
 
 const RESAMPLING_ORDER: usize = 8;
@@ -95,14 +95,7 @@ pub(crate) fn dred_encoder_load_model(enc: &mut DredEnc, data: &[u8]) -> Result<
     Ok(())
 }
 
-fn filter_df2t(
-    samples: &mut [f32],
-    b0: f32,
-    b: &[f32],
-    a: &[f32],
-    order: usize,
-    mem: &mut [f32],
-) {
+fn filter_df2t(samples: &mut [f32], b0: f32, b: &[f32], a: &[f32], order: usize, mem: &mut [f32]) {
     for i in 0..samples.len() {
         let xi = samples[i];
         let yi = xi * b0 + mem[0];
@@ -288,10 +281,10 @@ fn dred_process_frame(enc: &mut DredEnc, arch: i32) {
         arch,
     );
 
-    input_buffer[..DRED_NUM_FEATURES]
-        .copy_from_slice(&feature_buffer[..DRED_NUM_FEATURES]);
-    input_buffer[DRED_NUM_FEATURES..]
-        .copy_from_slice(&feature_buffer[LPCNET_TOTAL_FEATURES..LPCNET_TOTAL_FEATURES + DRED_NUM_FEATURES]);
+    input_buffer[..DRED_NUM_FEATURES].copy_from_slice(&feature_buffer[..DRED_NUM_FEATURES]);
+    input_buffer[DRED_NUM_FEATURES..].copy_from_slice(
+        &feature_buffer[LPCNET_TOTAL_FEATURES..LPCNET_TOTAL_FEATURES + DRED_NUM_FEATURES],
+    );
 
     dred_rdovae_encode_dframe(
         &mut enc.rdovae_enc,
@@ -301,8 +294,7 @@ fn dred_process_frame(enc: &mut DredEnc, arch: i32) {
         &input_buffer,
         arch,
     );
-    enc.latents_buffer_fill =
-        (enc.latents_buffer_fill + 1).min(DRED_NUM_REDUNDANCY_FRAMES as i32);
+    enc.latents_buffer_fill = (enc.latents_buffer_fill + 1).min(DRED_NUM_REDUNDANCY_FRAMES as i32);
 }
 
 pub(crate) fn dred_compute_latents(
@@ -313,8 +305,7 @@ pub(crate) fn dred_compute_latents(
     arch: i32,
 ) {
     let frame_size16k = (frame_size as i32 * 16_000) / enc.fs;
-    let mut _curr_offset16k =
-        40 + extra_delay * 16_000 / enc.fs - enc.input_buffer_fill;
+    let mut _curr_offset16k = 40 + extra_delay * 16_000 / enc.fs - enc.input_buffer_fill;
     debug_assert!(enc.loaded);
     enc.dred_offset = floorf((_curr_offset16k as f32 + 20.0) / 40.0) as i32;
     enc.latent_offset = 0;
@@ -472,8 +463,7 @@ pub(crate) fn dred_encode_silk_frame(
         delayed_dred = 1;
         enc.last_extra_dred_offset = 0;
     }
-    while latent_offset < enc.latents_buffer_fill
-        && !dred_voice_active(activity_mem, latent_offset)
+    while latent_offset < enc.latents_buffer_fill && !dred_voice_active(activity_mem, latent_offset)
     {
         latent_offset += 1;
         extra_dred_offset += 1;
@@ -505,11 +495,7 @@ pub(crate) fn dred_encode_silk_frame(
         } else {
             nvals + qmax - (q0 + 1)
         };
-        let high = if qmax >= 15 {
-            nvals
-        } else {
-            nvals + qmax - q0
-        };
+        let high = if qmax >= 15 { nvals } else { nvals + qmax - q0 };
         ec_encoder.encode(low as u32, high as u32, (2 * nvals) as u32);
     }
 
@@ -581,7 +567,7 @@ fn compute_quantizer(q0: i32, d_q: i32, qmax: i32, index: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{dred_encode_silk_frame, DredEnc};
+    use super::{DredEnc, dred_encode_silk_frame};
     use crate::dred_constants::{DRED_LATENT_DIM, DRED_STATE_DIM};
 
     #[test]

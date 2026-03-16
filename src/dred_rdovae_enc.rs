@@ -1,14 +1,14 @@
 //! RDOVAE encoder model and inference helpers.
 
+use crate::dnn_weights::{WeightBlob, WeightError, optional_bytes, require_bytes};
 use crate::dred_constants::{
     DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_PADDED_LATENT_DIM, DRED_PADDED_STATE_DIM,
     DRED_STATE_DIM,
 };
 use crate::dred_rdovae_enc_data::*;
-use crate::dnn_weights::{optional_bytes, require_bytes, WeightBlob, WeightError};
 use crate::nnet::{
-    compute_generic_conv1d, compute_generic_conv1d_dilation, compute_generic_dense,
-    compute_generic_gru, LinearLayer, ACTIVATION_LINEAR, ACTIVATION_TANH,
+    ACTIVATION_LINEAR, ACTIVATION_TANH, LinearLayer, compute_generic_conv1d,
+    compute_generic_conv1d_dilation, compute_generic_dense, compute_generic_gru,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -176,10 +176,14 @@ pub(crate) fn dred_rdovae_encode_dframe(
         &buffer[..output_index],
         arch,
     );
-    buffer[output_index..output_index + ENC_GRU1_OUT_SIZE]
-        .copy_from_slice(&enc_state.gru1_state);
+    buffer[output_index..output_index + ENC_GRU1_OUT_SIZE].copy_from_slice(&enc_state.gru1_state);
     output_index += ENC_GRU1_OUT_SIZE;
-    conv1_cond_init(&mut enc_state.conv1_state, output_index, 1, &mut enc_state.initialized);
+    conv1_cond_init(
+        &mut enc_state.conv1_state,
+        output_index,
+        1,
+        &mut enc_state.initialized,
+    );
     let (buffer_in, buffer_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d(
         &model.enc_conv1,
@@ -199,10 +203,14 @@ pub(crate) fn dred_rdovae_encode_dframe(
         &buffer[..output_index],
         arch,
     );
-    buffer[output_index..output_index + ENC_GRU2_OUT_SIZE]
-        .copy_from_slice(&enc_state.gru2_state);
+    buffer[output_index..output_index + ENC_GRU2_OUT_SIZE].copy_from_slice(&enc_state.gru2_state);
     output_index += ENC_GRU2_OUT_SIZE;
-    conv1_cond_init(&mut enc_state.conv2_state, output_index, 2, &mut enc_state.initialized);
+    conv1_cond_init(
+        &mut enc_state.conv2_state,
+        output_index,
+        2,
+        &mut enc_state.initialized,
+    );
     let (buffer_in, buffer_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d_dilation(
         &model.enc_conv2,
@@ -223,10 +231,14 @@ pub(crate) fn dred_rdovae_encode_dframe(
         &buffer[..output_index],
         arch,
     );
-    buffer[output_index..output_index + ENC_GRU3_OUT_SIZE]
-        .copy_from_slice(&enc_state.gru3_state);
+    buffer[output_index..output_index + ENC_GRU3_OUT_SIZE].copy_from_slice(&enc_state.gru3_state);
     output_index += ENC_GRU3_OUT_SIZE;
-    conv1_cond_init(&mut enc_state.conv3_state, output_index, 2, &mut enc_state.initialized);
+    conv1_cond_init(
+        &mut enc_state.conv3_state,
+        output_index,
+        2,
+        &mut enc_state.initialized,
+    );
     let (buffer_in, buffer_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d_dilation(
         &model.enc_conv3,
@@ -247,10 +259,14 @@ pub(crate) fn dred_rdovae_encode_dframe(
         &buffer[..output_index],
         arch,
     );
-    buffer[output_index..output_index + ENC_GRU4_OUT_SIZE]
-        .copy_from_slice(&enc_state.gru4_state);
+    buffer[output_index..output_index + ENC_GRU4_OUT_SIZE].copy_from_slice(&enc_state.gru4_state);
     output_index += ENC_GRU4_OUT_SIZE;
-    conv1_cond_init(&mut enc_state.conv4_state, output_index, 2, &mut enc_state.initialized);
+    conv1_cond_init(
+        &mut enc_state.conv4_state,
+        output_index,
+        2,
+        &mut enc_state.initialized,
+    );
     let (buffer_in, buffer_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d_dilation(
         &model.enc_conv4,
@@ -271,10 +287,14 @@ pub(crate) fn dred_rdovae_encode_dframe(
         &buffer[..output_index],
         arch,
     );
-    buffer[output_index..output_index + ENC_GRU5_OUT_SIZE]
-        .copy_from_slice(&enc_state.gru5_state);
+    buffer[output_index..output_index + ENC_GRU5_OUT_SIZE].copy_from_slice(&enc_state.gru5_state);
     output_index += ENC_GRU5_OUT_SIZE;
-    conv1_cond_init(&mut enc_state.conv5_state, output_index, 2, &mut enc_state.initialized);
+    conv1_cond_init(
+        &mut enc_state.conv5_state,
+        output_index,
+        2,
+        &mut enc_state.initialized,
+    );
     let (buffer_in, buffer_out) = buffer.split_at_mut(output_index);
     compute_generic_conv1d_dilation(
         &model.enc_conv5,
@@ -788,7 +808,10 @@ fn linear_layer_from_weights(
     })
 }
 
-fn init_rdovaeenc_from_weights(model: &mut RdovaeEnc, blob: &WeightBlob<'_>) -> Result<(), WeightError> {
+fn init_rdovaeenc_from_weights(
+    model: &mut RdovaeEnc,
+    blob: &WeightBlob<'_>,
+) -> Result<(), WeightError> {
     model.enc_dense1 = linear_layer_from_weights(
         blob,
         Some("enc_dense1_bias"),

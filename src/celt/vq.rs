@@ -13,14 +13,12 @@ use core::f32::consts::FRAC_2_PI;
 
 use crate::celt::cwrs::{decode_pulses, encode_pulses};
 use crate::celt::entcode::celt_udiv;
+#[cfg(feature = "fixed_point")]
+use crate::celt::entcode::ec_ilog;
 use crate::celt::entdec::EcDec;
 use crate::celt::entenc::EcEnc;
-use crate::celt::math::{
-    celt_cos_norm, celt_div, celt_rcp, celt_rsqrt_norm, celt_sqrt, fast_atan2f,
-};
-use crate::celt::pitch::celt_inner_prod;
-use crate::celt::types::{OpusInt32, OpusVal16, OpusVal32};
-use libm::floorf;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::{EPSILON as FIXED_EPSILON, Q15_ONE as Q15_ONE_FIXED};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
     add32, extract16, mac16_16, mult16_16, mult16_16_q15, mult16_32_q16, mult32_32_q31, pshr32,
@@ -28,16 +26,21 @@ use crate::celt::fixed_ops::{
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
+use crate::celt::math::{
+    celt_cos_norm, celt_div, celt_rcp, celt_rsqrt_norm, celt_sqrt, fast_atan2f,
+};
 #[cfg(feature = "fixed_point")]
-use crate::celt::entcode::ec_ilog;
-#[cfg(feature = "fixed_point")]
-use crate::celt::math_fixed::{celt_cos_norm as celt_cos_norm_fixed, celt_rcp as celt_rcp_fixed, celt_rsqrt_norm as celt_rsqrt_norm_fixed};
-#[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
-#[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::{EPSILON as FIXED_EPSILON, Q15_ONE as Q15_ONE_FIXED};
+use crate::celt::math_fixed::{
+    celt_cos_norm as celt_cos_norm_fixed, celt_rcp as celt_rcp_fixed,
+    celt_rsqrt_norm as celt_rsqrt_norm_fixed,
+};
+use crate::celt::pitch::celt_inner_prod;
 #[cfg(feature = "fixed_point")]
 use crate::celt::pitch::celt_inner_prod_fixed;
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
+use crate::celt::types::{OpusInt32, OpusVal16, OpusVal32};
+use libm::floorf;
 
 /// Spread decisions mirrored from `celt/bands.h`.
 pub(crate) const SPREAD_NONE: i32 = 0;
@@ -456,7 +459,11 @@ pub(crate) fn op_pvq_search_fixed(
     for j in 0..n {
         let value = x[j];
         signx[j] = i32::from(value < 0);
-        x[j] = if value < 0 { value.wrapping_neg() } else { value };
+        x[j] = if value < 0 {
+            value.wrapping_neg()
+        } else {
+            value
+        };
         pulses[j] = 0;
         y[j] = 0;
     }
@@ -790,12 +797,12 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    #[cfg(feature = "fixed_point")]
+    use super::normalise_residual_fixed;
     use super::{
         SPREAD_NORMAL, alg_quant, alg_unquant, exp_rotation, extract_collapse_mask,
         normalise_residual, renormalise_vector, stereo_itheta,
     };
-    #[cfg(feature = "fixed_point")]
-    use super::normalise_residual_fixed;
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
 
@@ -962,17 +969,19 @@ mod tests {
 
     #[cfg(feature = "fixed_point")]
     mod fixed_tests {
+        use crate::celt::entdec::EcDec;
+        use crate::celt::entenc::EcEnc;
+        use crate::celt::fixed_arch::Q15_ONE as Q15_ONE_FIXED;
+        use crate::celt::fixed_arch::Q31_ONE;
+        use crate::celt::fixed_ops::{extract16, mult16_16, mult16_16_q15, mult32_32_q31};
+        use crate::celt::math_fixed::{
+            celt_cos_norm as celt_cos_norm_fixed, celt_rcp as celt_rcp_fixed,
+        };
+        use crate::celt::vq::normalise_residual_fixed;
         use crate::celt::vq::{
             SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL, alg_quant_fixed,
             alg_unquant_fixed, exp_rotation_fixed, op_pvq_search_fixed, renormalise_vector_fixed,
         };
-        use crate::celt::entdec::EcDec;
-        use crate::celt::entenc::EcEnc;
-        use crate::celt::fixed_arch::Q31_ONE;
-        use crate::celt::fixed_ops::{extract16, mult16_16, mult16_16_q15, mult32_32_q31};
-        use crate::celt::math_fixed::{celt_cos_norm as celt_cos_norm_fixed, celt_rcp as celt_rcp_fixed};
-        use crate::celt::fixed_arch::Q15_ONE as Q15_ONE_FIXED;
-        use crate::celt::vq::normalise_residual_fixed;
 
         fn assert_i16_slice(label: &str, got: &[i16], expected: &[i16]) {
             assert_eq!(got.len(), expected.len(), "{label} length mismatch");
@@ -1081,17 +1090,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        3,
-                        SPREAD_NORMAL,
-                        2,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 3, SPREAD_NORMAL, 2, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 8];
@@ -1144,17 +1144,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        3,
-                        SPREAD_NONE,
-                        5,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 3, SPREAD_NONE, 5, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 10];
@@ -1175,17 +1166,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        2,
-                        SPREAD_NORMAL,
-                        1,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 2, SPREAD_NORMAL, 1, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 4];
@@ -1222,7 +1204,8 @@ mod tests {
                 let mut xu = [0i16; 2];
                 let n = xu.len();
                 let mut dec = EcDec::new(&mut buffer);
-                let umask = alg_unquant_fixed(&mut xu, n, 1, SPREAD_AGGRESSIVE, 1, &mut dec, Q31_ONE);
+                let umask =
+                    alg_unquant_fixed(&mut xu, n, 1, SPREAD_AGGRESSIVE, 1, &mut dec, Q31_ONE);
                 assert_eq!(mask, 1);
                 assert_eq!(umask, 1);
                 assert_i16_slice("alg_case4_q", &x, &expected);
@@ -1243,17 +1226,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        3,
-                        SPREAD_LIGHT,
-                        2,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 3, SPREAD_LIGHT, 2, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 16];
@@ -1272,24 +1246,13 @@ mod tests {
                     5000, -4000, 3000, -2000, 1000, -500, 250, -125, 6000, -5000, 4000, -3000,
                     2000, -1000, 500, -250,
                 ];
-                let expected = [
-                    9416, 897, 0, 0, 0, 0, 0, 0, 10314, -8518, 0, 0, 0, 0, 0, 0,
-                ];
+                let expected = [9416, 897, 0, 0, 0, 0, 0, 0, 10314, -8518, 0, 0, 0, 0, 0, 0];
                 let mask;
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        3,
-                        SPREAD_NORMAL,
-                        8,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 3, SPREAD_NORMAL, 8, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 16];
@@ -1305,8 +1268,8 @@ mod tests {
             {
                 let mut buffer = [0u8; 256];
                 let mut x = [
-                    0, 10000, -9000, 8000, -7000, 6000, -5000, 4000, -3000, 2000, -1000, 500,
-                    -250, 125, -60, 30,
+                    0, 10000, -9000, 8000, -7000, 6000, -5000, 4000, -3000, 2000, -1000, 500, -250,
+                    125, -60, 30,
                 ];
                 let expected = [
                     -1153, 6368, -3849, 2819, 157, 1165, -687, 805, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1347,17 +1310,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        6,
-                        SPREAD_NONE,
-                        2,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 6, SPREAD_NONE, 2, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 8];
@@ -1378,17 +1332,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        8,
-                        SPREAD_NONE,
-                        4,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 8, SPREAD_NONE, 4, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 8];
@@ -1409,17 +1354,8 @@ mod tests {
                 {
                     let n = x.len();
                     let mut enc = EcEnc::new(&mut buffer);
-                    mask = alg_quant_fixed(
-                        &mut x,
-                        n,
-                        3,
-                        SPREAD_NONE,
-                        4,
-                        &mut enc,
-                        Q31_ONE,
-                        true,
-                        0,
-                    );
+                    mask =
+                        alg_quant_fixed(&mut x, n, 3, SPREAD_NONE, 4, &mut enc, Q31_ONE, true, 0);
                     enc.enc_done();
                 }
                 let mut xu = [0i16; 8];

@@ -1,5 +1,5 @@
 use mousiki::opus_decoder::{
-    opus_decode_float, opus_decoder_create, opus_decoder_ctl, OpusDecoderCtlRequest,
+    OpusDecoderCtlRequest, opus_decode_float, opus_decoder_create, opus_decoder_ctl,
 };
 use mousiki::packet::{
     Bandwidth, Mode, opus_packet_get_bandwidth, opus_packet_get_mode,
@@ -31,7 +31,11 @@ fn hybrid_packet_metadata_matches_reference() {
         FRAME_SIZE
     );
 
-    for packet in [&TRANSITION_HYBRID_PACKET[..], &FEC_PREV_PACKET[..], &FEC_PACKET[..]] {
+    for packet in [
+        &TRANSITION_HYBRID_PACKET[..],
+        &FEC_PREV_PACKET[..],
+        &FEC_PACKET[..],
+    ] {
         assert_eq!(
             opus_packet_get_mode(packet).expect("packet mode"),
             Mode::HYBRID

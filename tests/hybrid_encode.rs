@@ -53,19 +53,26 @@ fn hybrid_encode_hp_filter_and_delay_vectors_match_reference() {
         OpusEncoderCtlRequest::SetBandwidth(OPUS_BANDWIDTH_FULLBAND),
     )
     .expect("set bandwidth");
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(20_000))
-        .expect("set bitrate");
+    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(20_000)).expect("set bitrate");
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetVbr(false)).expect("disable vbr");
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetDtx(false)).expect("disable dtx");
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE))
-        .expect("set signal");
+    opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_VOICE),
+    )
+    .expect("set signal");
 
     let mut pcm = vec![0i16; FRAME_SIZE * CHANNELS * 2];
     fill_test_pcm(&mut pcm, CHANNELS, 0);
     let mut packet = vec![0u8; MAX_PACKET];
 
-    let len0 = opus_encode(&mut enc, &pcm[..FRAME_SIZE * CHANNELS], FRAME_SIZE, &mut packet)
-        .expect("encode frame 0");
+    let len0 = opus_encode(
+        &mut enc,
+        &pcm[..FRAME_SIZE * CHANNELS],
+        FRAME_SIZE,
+        &mut packet,
+    )
+    .expect("encode frame 0");
     assert_eq!(&packet[..len0], &HP_DELAY_PACKET0[..]);
     assert_eq!(opus_packet_get_mode(&packet[..len0]), Ok(Mode::HYBRID));
     let mut range0 = 0u32;
@@ -99,12 +106,14 @@ fn hybrid_encode_stereo_width_vectors_match_reference() {
         OpusEncoderCtlRequest::SetBandwidth(OPUS_BANDWIDTH_FULLBAND),
     )
     .expect("set bandwidth");
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(12_000))
-        .expect("set bitrate");
+    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetBitrate(12_000)).expect("set bitrate");
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetVbr(false)).expect("disable vbr");
     opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetDtx(false)).expect("disable dtx");
-    opus_encoder_ctl(&mut enc, OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC))
-        .expect("set signal");
+    opus_encoder_ctl(
+        &mut enc,
+        OpusEncoderCtlRequest::SetSignal(OPUS_SIGNAL_MUSIC),
+    )
+    .expect("set signal");
 
     let mut pcm = vec![0i16; FRAME_SIZE * CHANNELS];
     fill_test_pcm(&mut pcm, CHANNELS, 42);

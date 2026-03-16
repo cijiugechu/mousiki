@@ -2,9 +2,9 @@ mod nomarlize;
 
 use super::icdf::{FRAME_TYPE_VAD_ACTIVE, FRAME_TYPE_VAD_INACTIVE};
 use super::{FrameQuantizationOffsetType, FrameSignalType};
+use crate::celt::EcDec;
 use crate::math::{ilog, sign};
 use crate::packet::Bandwidth;
-use crate::celt::EcDec;
 #[cfg(test)]
 use crate::range::RangeDecoder;
 use crate::silk::SilkRangeDecoder;

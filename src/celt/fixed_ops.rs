@@ -51,11 +51,7 @@ pub(crate) fn neg32_ovflw(a: FixedOpusVal32) -> FixedOpusVal32 {
 
 #[inline]
 pub(crate) fn abs32(a: FixedOpusVal32) -> FixedOpusVal32 {
-    if a < 0 {
-        a.wrapping_neg()
-    } else {
-        a
-    }
+    if a < 0 { a.wrapping_neg() } else { a }
 }
 
 #[inline]

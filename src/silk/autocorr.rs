@@ -23,10 +23,7 @@ pub fn autocorr(
     arch: i32,
     scratch: &mut [i16],
 ) -> i32 {
-    assert!(
-        correlation_count > 0,
-        "correlation_count must be positive"
-    );
+    assert!(correlation_count > 0, "correlation_count must be positive");
     assert!(!input.is_empty(), "input must contain at least one sample");
     let corr_count = correlation_count.min(input.len());
     assert!(
