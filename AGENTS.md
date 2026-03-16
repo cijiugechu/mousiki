@@ -17,6 +17,13 @@ The directory where the C version is located is `/opus-c`(Which is a git submodu
 - When using constants for mathematical operations, give priority to whether rust core provides them.
 
 - Run `cargo check --all-features`, `TEST_OPUS_NOFUZZ=1 cargo test --all-features --release`, `cargo test --all-features --lib`, and `cargo clippy --all-features` after code changes; all must pass.
+- Also run `cargo test --test trivial_example trivial_example_default_build_golden_hash` before committing changes that touch shared CELT/decoder hot paths such as `src/celt/celt_decoder.rs`, `src/celt/bands.rs`, or `src/celt/mdct.rs`.
+
+## Commit discipline
+
+- One commit must contain exactly one semantic intent.
+- Do not mix fixed-only behaviour changes, shared-path refactors, unrelated cleanup, or test-basis updates in the same commit.
+- For shared decoder hot paths, default-build parity must be checked before commit with `cargo test --test trivial_example trivial_example_default_build_golden_hash`.
 
 ## Invariants and assertions
 

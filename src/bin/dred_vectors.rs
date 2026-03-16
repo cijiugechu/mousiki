@@ -1,29 +1,43 @@
 extern crate alloc;
 
+#[cfg(feature = "deep_plc")]
 use std::env;
+#[cfg(feature = "deep_plc")]
 use std::fs;
+#[cfg(feature = "deep_plc")]
 use std::io::{self, Read};
+#[cfg(feature = "deep_plc")]
 use std::path::{Path, PathBuf};
 use std::process;
+#[cfg(feature = "deep_plc")]
 use std::borrow::Cow;
 
+#[cfg(feature = "deep_plc")]
 use libm::{cosf, powf, sqrtf};
+#[cfg(feature = "deep_plc")]
 use mousiki::dred::DredVectorDecoder;
+#[cfg(feature = "deep_plc")]
 use mousiki::fargan::{FarganState, FARGAN_CONT_SAMPLES, FARGAN_FRAME_SIZE};
+#[cfg(feature = "deep_plc")]
 use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
 #[cfg(feature = "deep_plc_weights")]
 use mousiki_deep_plc_weights::DNN_BLOB;
 
+#[cfg(feature = "deep_plc")]
 #[path = "../celt/mini_kfft.rs"]
 pub mod celt_mini_kfft;
+#[cfg(feature = "deep_plc")]
 #[path = "../celt/fft_twiddles_48000_960.rs"]
 pub mod celt_fft_twiddles_48000_960;
+#[cfg(feature = "deep_plc")]
 #[path = "../celt/fft_bitrev_480.rs"]
 pub mod celt_fft_bitrev_480;
+#[cfg(feature = "deep_plc")]
 pub mod celt_types {
     pub type OpusInt16 = i16;
 }
 
+#[cfg(feature = "deep_plc")]
 mod celt {
     pub use crate::celt_mini_kfft as mini_kfft;
     pub use crate::celt_fft_twiddles_48000_960 as fft_twiddles_48000_960;
@@ -31,23 +45,37 @@ mod celt {
     pub use crate::celt_types as types;
 }
 
+#[cfg(feature = "deep_plc")]
 use celt::mini_kfft::{KissFftCpx, MiniKissFftr};
 
+#[cfg(feature = "deep_plc")]
 const NB_FEATURES: usize = 20;
+#[cfg(feature = "deep_plc")]
 const NBANDS: usize = 17;
+#[cfg(feature = "deep_plc")]
 const NFREQS: usize = 320;
+#[cfg(feature = "deep_plc")]
 const TEST_WIN_SIZE: usize = 640;
+#[cfg(feature = "deep_plc")]
 const TEST_WIN_STEP: usize = 160;
+#[cfg(feature = "deep_plc")]
 const BANDS: [usize; NBANDS + 1] = [
     0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 272, 320,
 ];
+#[cfg(feature = "deep_plc")]
 const PITCH_MIN: usize = 32;
+#[cfg(feature = "deep_plc")]
 const PITCH_MAX: usize = 256;
+#[cfg(feature = "deep_plc")]
 const PITCH_FRAME: usize = 320;
+#[cfg(feature = "deep_plc")]
 const LOUDNESS: f32 = 0.2;
 
+#[cfg(feature = "deep_plc")]
 const DRED_DECODE_THRESHOLDS: (f32, f32, f32) = (0.5, 0.15, 0.02);
+#[cfg(feature = "deep_plc")]
 const FARGAN_THRESHOLDS: (f32, f32, f32) = (0.25, 1.0, 0.15);
+#[cfg(feature = "deep_plc")]
 const OPUS_THRESHOLDS: (f32, f32, f32) = (0.5, 1.5, 0.25);
 
 #[cfg(feature = "deep_plc_weights")]

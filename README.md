@@ -56,6 +56,13 @@ ffmpeg -y -f s16le -ar 48000 -ac 2 \
 cargo test --all-features
 ```
 
+- Default-build golden regression check for the README `trivial_example` round-trip path:
+
+```bash
+cargo test --test trivial_example trivial_example_default_build_golden_hash
+```
+
+
 - Decode integration test (ported from `opus-c/tests/test_opus_decode.c`):
 
 ```bash

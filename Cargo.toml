@@ -50,3 +50,6 @@ manual_let_else = "warn"
 manual_midpoint = "warn"
 needless_pass_by_value = "warn"
 redundant_else = "warn"
+
+[dev-dependencies]
+sha2 = "0.10"
