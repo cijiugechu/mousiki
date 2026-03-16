@@ -122,15 +122,25 @@ mod alloc_interp_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].stage=init_bits");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits1={bits1}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits2={bits2}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].lo={lo}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].tmp={tmp}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].thresh={thresh}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].cap={cap}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].alloc_floor={alloc_floor}");
-        std::println!(
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].stage=init_bits"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].bits1={bits1}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].bits2={bits2}"
+        );
+        crate::test_trace::trace_println!("celt_alloc_interp[{frame_idx}].band[{band}].lo={lo}");
+        crate::test_trace::trace_println!("celt_alloc_interp[{frame_idx}].band[{band}].tmp={tmp}");
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].thresh={thresh}"
+        );
+        crate::test_trace::trace_println!("celt_alloc_interp[{frame_idx}].band[{band}].cap={cap}");
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].alloc_floor={alloc_floor}"
+        );
+        crate::test_trace::trace_println!(
             "celt_alloc_interp[{frame_idx}].band[{band}].done={}",
             done as u8
         );
@@ -147,13 +157,21 @@ mod alloc_interp_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].stage=post_fine");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits={bits}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].ebits={ebits}");
-        std::println!(
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].stage=post_fine"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].bits={bits}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].ebits={ebits}"
+        );
+        crate::test_trace::trace_println!(
             "celt_alloc_interp[{frame_idx}].band[{band}].fine_priority={fine_priority}"
         );
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].balance={balance}");
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].balance={balance}"
+        );
     }
 
     pub(crate) fn dump_post_skip(
@@ -166,10 +184,18 @@ mod alloc_interp_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].stage=post_skip");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].bits={bits}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].coded_bands={coded_bands}");
-        std::println!("celt_alloc_interp[{frame_idx}].band[{band}].skip_start={skip_start}");
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].stage=post_skip"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].bits={bits}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].coded_bands={coded_bands}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_alloc_interp[{frame_idx}].band[{band}].skip_start={skip_start}"
+        );
     }
 }
 
@@ -645,9 +671,10 @@ pub(crate) fn interp_bits2pulses(
 
     debug_assert!(coded_bands > start as OpusInt32);
     #[cfg(test)]
-    if let (Some(frame_idx), Some(band)) =
-        (alloc_interp_trace::current_frame_idx(), alloc_interp_trace::target_band())
-    {
+    if let (Some(frame_idx), Some(band)) = (
+        alloc_interp_trace::current_frame_idx(),
+        alloc_interp_trace::target_band(),
+    ) {
         if band >= start && band < end {
             alloc_interp_trace::dump_post_skip(
                 frame_idx,

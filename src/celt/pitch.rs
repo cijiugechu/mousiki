@@ -24,17 +24,17 @@ use core::cmp::{max, min as min_i32};
 use crate::celt::fixed_arch::{Q15_ONE, SIG_SHIFT};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
-    extract16, mac16_16, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, qconst16, shl32,
-    shr32, vshr32,
+    extract16, mac16_16, mult16_16, mult16_16_q15, mult16_32_q15, pshr32, qconst16, shl32, shr32,
+    vshr32,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 #[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::frac_div32 as frac_div32_fixed;
+#[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::{celt_maxabs16, celt_maxabs32, celt_rsqrt_norm};
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{FixedCeltSig, FixedOpusVal16, FixedOpusVal32};
-#[cfg(feature = "fixed_point")]
-use crate::celt::math_fixed::frac_div32 as frac_div32_fixed;
 
 #[cfg(test)]
 mod remove_doubling_trace {
@@ -632,7 +632,10 @@ pub(crate) fn pitch_search_fixed(
     max_pitch: usize,
     _arch: i32,
 ) -> i32 {
-    assert!(len > 0, "pitch_search_fixed requires a non-empty target length");
+    assert!(
+        len > 0,
+        "pitch_search_fixed requires a non-empty target length"
+    );
     assert!(
         max_pitch > 0,
         "pitch_search_fixed requires a positive search span"
@@ -674,13 +677,8 @@ pub(crate) fn pitch_search_fixed(
         }
 
         let mut xcorr = vec![0i32; max_pitch_quarter];
-        let maxcorr = celt_pitch_xcorr_fixed(
-            &x_lp4,
-            &y_lp4,
-            len_quarter,
-            max_pitch_quarter,
-            &mut xcorr,
-        );
+        let maxcorr =
+            celt_pitch_xcorr_fixed(&x_lp4, &y_lp4, len_quarter, max_pitch_quarter, &mut xcorr);
         find_best_pitch_fixed(
             &xcorr,
             &y_lp4,
@@ -702,8 +700,7 @@ pub(crate) fn pitch_search_fixed(
     if len_half > 0 {
         let mut maxcorr = 1i32;
         for (i, slot) in xcorr.iter_mut().enumerate() {
-            if (i as i32 - 2 * best_pitch[0]).abs() > 2
-                && (i as i32 - 2 * best_pitch[1]).abs() > 2
+            if (i as i32 - 2 * best_pitch[0]).abs() > 2 && (i as i32 - 2 * best_pitch[1]).abs() > 2
             {
                 continue;
             }
@@ -806,7 +803,7 @@ pub(crate) fn remove_doubling(
 
     #[cfg(test)]
     if trace {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_remove_doubling.t0_half={t0_half} minperiod_half={minperiod_half} maxperiod_half={maxperiod_half} n_half={n_half} prev_period_half={prev_period_half}"
         );
     }
@@ -846,18 +843,33 @@ pub(crate) fn remove_doubling(
 
     #[cfg(test)]
     if trace {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_remove_doubling.xx={:.9e} xy={:.9e} yy={:.9e} g0={:.9e}",
-            xx, xy, yy, g0
+            xx,
+            xy,
+            yy,
+            g0
         );
         if std::env::var("CELT_TRACE_REMOVE_DOUBLING_BITS")
             .map(|value| !value.is_empty() && value != "0")
             .unwrap_or(false)
         {
-            std::println!("celt_remove_doubling.xx_bits=0x{:08x}", xx.to_bits());
-            std::println!("celt_remove_doubling.xy_bits=0x{:08x}", xy.to_bits());
-            std::println!("celt_remove_doubling.yy_bits=0x{:08x}", yy.to_bits());
-            std::println!("celt_remove_doubling.g0_bits=0x{:08x}", g0.to_bits());
+            crate::test_trace::trace_println!(
+                "celt_remove_doubling.xx_bits=0x{:08x}",
+                xx.to_bits()
+            );
+            crate::test_trace::trace_println!(
+                "celt_remove_doubling.xy_bits=0x{:08x}",
+                xy.to_bits()
+            );
+            crate::test_trace::trace_println!(
+                "celt_remove_doubling.yy_bits=0x{:08x}",
+                yy.to_bits()
+            );
+            crate::test_trace::trace_println!(
+                "celt_remove_doubling.g0_bits=0x{:08x}",
+                g0.to_bits()
+            );
         }
     }
     let max_allowed = maxperiod_half.saturating_sub(1) as i32;
@@ -926,23 +938,25 @@ pub(crate) fn remove_doubling(
 
     #[cfg(test)]
     if trace {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_remove_doubling.best_xy={:.9e} best_yy={:.9e} g={:.9e} t={t}",
-            best_xy, best_yy, g
+            best_xy,
+            best_yy,
+            g
         );
         if std::env::var("CELT_TRACE_REMOVE_DOUBLING_BITS")
             .map(|value| !value.is_empty() && value != "0")
             .unwrap_or(false)
         {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_remove_doubling.best_xy_bits=0x{:08x}",
                 best_xy.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_remove_doubling.best_yy_bits=0x{:08x}",
                 best_yy.to_bits()
             );
-            std::println!("celt_remove_doubling.g_bits=0x{:08x}", g.to_bits());
+            crate::test_trace::trace_println!("celt_remove_doubling.g_bits=0x{:08x}", g.to_bits());
         }
     }
 
@@ -976,9 +990,13 @@ pub(crate) fn remove_doubling(
 
     #[cfg(test)]
     if trace {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_remove_doubling.xcorr0={:.9e} xcorr1={:.9e} xcorr2={:.9e} offset={offset} pg={:.9e} t0={}",
-            xcorr[0], xcorr[1], xcorr[2], pg, *t0
+            xcorr[0],
+            xcorr[1],
+            xcorr[2],
+            pg,
+            *t0
         );
     }
 
@@ -1294,27 +1312,36 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
                 .unwrap_or(false);
             if target.map_or(true, |value| value == frame_idx) {
                 for (i, value) in ac.iter().enumerate() {
-                    std::println!("celt_pitch_lpc[{frame_idx}].ac[{i}]={:.9e}", value);
+                    crate::test_trace::trace_println!(
+                        "celt_pitch_lpc[{frame_idx}].ac[{i}]={:.9e}",
+                        value
+                    );
                     if want_bits {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_pitch_lpc[{frame_idx}].ac_bits[{i}]=0x{:08x}",
                             value.to_bits()
                         );
                     }
                 }
                 for (i, value) in lpc.iter().enumerate() {
-                    std::println!("celt_pitch_lpc[{frame_idx}].lpc[{i}]={:.9e}", value);
+                    crate::test_trace::trace_println!(
+                        "celt_pitch_lpc[{frame_idx}].lpc[{i}]={:.9e}",
+                        value
+                    );
                     if want_bits {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_pitch_lpc[{frame_idx}].lpc_bits[{i}]=0x{:08x}",
                             value.to_bits()
                         );
                     }
                 }
                 for (i, value) in lpc2.iter().enumerate() {
-                    std::println!("celt_pitch_lpc[{frame_idx}].lpc2[{i}]={:.9e}", value);
+                    crate::test_trace::trace_println!(
+                        "celt_pitch_lpc[{frame_idx}].lpc2[{i}]={:.9e}",
+                        value
+                    );
                     if want_bits {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_pitch_lpc[{frame_idx}].lpc2_bits[{i}]=0x{:08x}",
                             value.to_bits()
                         );
@@ -1395,8 +1422,8 @@ pub(crate) fn pitch_downsample_fixed(
         x_lp[i] = sum as FixedOpusVal16;
     }
 
-    let mut head = shr32(x[0][1], (shift + 2) as u32)
-        .wrapping_add(shr32(x[0][0], (shift + 1) as u32));
+    let mut head =
+        shr32(x[0][1], (shift + 2) as u32).wrapping_add(shr32(x[0][0], (shift + 1) as u32));
     if x.len() == 2 {
         head = head
             .wrapping_add(shr32(x[1][1], (shift + 2) as u32))
@@ -1442,12 +1469,6 @@ mod tests {
         dual_inner_prod, find_best_pitch, pitch_downsample, pitch_search, remove_doubling,
         xcorr_kernel,
     };
-    use crate::celt::math::celt_sqrt;
-    use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
-    use crate::celt::{celt_autocorr, celt_lpc, celt_udiv, frac_div32};
-    use alloc::vec;
-    use alloc::vec::Vec;
-    use core::f32::consts::PI;
     #[cfg(feature = "fixed_point")]
     use super::{
         celt_pitch_xcorr_fixed, find_best_pitch_fixed, pitch_downsample_fixed, pitch_search_fixed,
@@ -1455,8 +1476,14 @@ mod tests {
     };
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::float2sig;
+    use crate::celt::math::celt_sqrt;
+    use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::{FixedCeltSig, FixedOpusVal16};
+    use crate::celt::{celt_autocorr, celt_lpc, celt_udiv, frac_div32};
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::f32::consts::PI;
 
     fn generate_sequence(len: usize, seed: u32) -> Vec<OpusVal16> {
         let mut state = seed;
@@ -2030,7 +2057,10 @@ mod tests {
         let denom = scale * scale;
         for (fixed, float) in xcorr_fixed.iter().zip(xcorr_float.iter()) {
             let fixed_float = *fixed as f32 / denom;
-            assert!((fixed_float - float).abs() < 1e-3, "{fixed_float} vs {float}");
+            assert!(
+                (fixed_float - float).abs() < 1e-3,
+                "{fixed_float} vs {float}"
+            );
         }
     }
 
@@ -2047,13 +2077,8 @@ mod tests {
         let scale = 8192.0;
         let y_fixed: Vec<FixedOpusVal16> = y.iter().map(|&v| (v * scale).round() as i16).collect();
         let mut xcorr_fixed = vec![0i32; max_pitch];
-        let maxcorr = celt_pitch_xcorr_fixed(
-            &y_fixed[..len],
-            &y_fixed,
-            len,
-            max_pitch,
-            &mut xcorr_fixed,
-        );
+        let maxcorr =
+            celt_pitch_xcorr_fixed(&y_fixed[..len], &y_fixed, len, max_pitch, &mut xcorr_fixed);
         let mut best_fixed = [0i32; 2];
         find_best_pitch_fixed(
             &xcorr_fixed,
@@ -2098,8 +2123,7 @@ mod tests {
         let scale = 32_768.0;
         let x_fixed: Vec<FixedOpusVal16> =
             x_lp.iter().map(|&v| (v * scale).round() as i16).collect();
-        let y_fixed: Vec<FixedOpusVal16> =
-            y.iter().map(|&v| (v * scale).round() as i16).collect();
+        let y_fixed: Vec<FixedOpusVal16> = y.iter().map(|&v| (v * scale).round() as i16).collect();
 
         let fixed = pitch_search_fixed(&x_fixed, &y_fixed, len, max_pitch, 0);
 
@@ -2137,8 +2161,7 @@ mod tests {
         );
 
         let scale = 32_768.0;
-        let x_fixed: Vec<FixedOpusVal16> =
-            x.iter().map(|&v| (v * scale).round() as i16).collect();
+        let x_fixed: Vec<FixedOpusVal16> = x.iter().map(|&v| (v * scale).round() as i16).collect();
         let mut t0_fixed = (2 * fundamental) as i32;
         let fixed_gain = remove_doubling_fixed(
             &x_fixed,
@@ -2184,7 +2207,11 @@ mod tests {
             dot += f * r;
             dot_fixed += f * f;
         }
-        let scale = if dot_fixed > 0.0 { dot / dot_fixed } else { 0.0 };
+        let scale = if dot_fixed > 0.0 {
+            dot / dot_fixed
+        } else {
+            0.0
+        };
 
         let mut err = 0.0;
         let mut ref_energy = 0.0;
@@ -2193,7 +2220,11 @@ mod tests {
             err += diff * diff;
             ref_energy += r * r;
         }
-        let nmse = if ref_energy > 0.0 { err / ref_energy } else { 0.0 };
+        let nmse = if ref_energy > 0.0 {
+            err / ref_energy
+        } else {
+            0.0
+        };
         assert!(nmse < 1e-2);
     }
 }

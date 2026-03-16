@@ -20,52 +20,47 @@ extern crate std;
 
 use crate::celt::BandCodingState;
 #[cfg(not(feature = "fixed_point"))]
-use crate::celt::bands::denormalise_bands;
-#[cfg(feature = "fixed_point")]
-use crate::celt::bands::{denormalise_bands_fixed, denormalise_bands_fixed_native};
+use crate::celt::bands::anti_collapse;
 use crate::celt::bands::celt_lcg_rand;
 #[cfg(not(feature = "fixed_point"))]
-use crate::celt::bands::anti_collapse;
+use crate::celt::bands::denormalise_bands;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::bands::quant_all_bands;
 #[cfg(feature = "fixed_point")]
 use crate::celt::bands::{anti_collapse_fixed, quant_all_bands_decode_fixed};
-use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
+#[cfg(feature = "fixed_point")]
+use crate::celt::bands::{denormalise_bands_fixed, denormalise_bands_fixed_native};
 #[cfg(any(not(feature = "fixed_point"), test))]
 use crate::celt::celt::comb_filter;
 #[cfg(feature = "fixed_point")]
 use crate::celt::celt::comb_filter_fixed;
+use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
-use crate::celt::float_cast::CELT_SIG_SCALE;
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::float_cast::float2int;
-use crate::celt::float_cast::float2int16;
-#[cfg(feature = "deep_plc")]
-use crate::celt::{
-    LpcNetPlcState, PLC_FRAME_SIZE, PLC_UPDATE_SAMPLES, PREEMPHASIS, SINC_FILTER, SINC_ORDER,
-    update_plc_state,
-};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::{
     DB_SHIFT, Q15_ONE, SIG_SHIFT, float2res as float_to_fixed_res, int16tosig,
-    res2float as fixed_res_to_float, res2int16 as fixed_res_to_int16,
-    sig2res as fixed_sig_to_res, sig2word16,
+    res2float as fixed_res_to_float, res2int16 as fixed_res_to_int16, sig2res as fixed_sig_to_res,
+    sig2word16,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
     add32_ovflw, mult16_16_q15, mult16_32_q15, pshr32, qconst16, qconst16_clamped, qconst32,
     shl32 as shl32_fixed,
 };
+use crate::celt::float_cast::CELT_SIG_SCALE;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::float_cast::float2int;
+use crate::celt::float_cast::float2int16;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::lpc::{celt_autocorr, celt_iir, celt_lpc};
 #[cfg(feature = "fixed_point")]
 use crate::celt::lpc::{celt_autocorr_fixed, celt_fir_fixed, celt_iir_fixed, celt_lpc_fixed};
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::math::{celt_sqrt, frac_div32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_zlog2;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::math::{celt_sqrt, frac_div32};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::{
     celt_maxabs16, celt_sqrt as celt_sqrt_fixed, frac_div32 as frac_div32_fixed,
@@ -73,7 +68,7 @@ use crate::celt::math_fixed::{
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::mdct::clt_mdct_backward;
 #[cfg(feature = "fixed_point")]
-use crate::celt::mdct_fixed::{clt_mdct_backward_fixed, FixedMdctLookup};
+use crate::celt::mdct_fixed::{FixedMdctLookup, clt_mdct_backward_fixed};
 use crate::celt::modes::opus_custom_mode_find_static;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::pitch::{pitch_downsample, pitch_search};
@@ -88,19 +83,26 @@ use crate::celt::quant_bands::{
     unquant_coarse_energy_fixed, unquant_energy_finalise_fixed, unquant_fine_energy_fixed,
 };
 use crate::celt::rate::clt_compute_allocation;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::types::OpusVal32;
 use crate::celt::types::{
     CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
     OpusUint32, OpusVal16,
 };
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::types::OpusVal32;
 #[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltCoef, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16};
+use crate::celt::types::{
+    FixedCeltCoef, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16,
+};
 use crate::celt::vq::SPREAD_NORMAL;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::vq::renormalise_vector;
 #[cfg(feature = "fixed_point")]
 use crate::celt::vq::renormalise_vector_fixed;
+#[cfg(feature = "deep_plc")]
+use crate::celt::{
+    LpcNetPlcState, PLC_FRAME_SIZE, PLC_UPDATE_SAMPLES, PREEMPHASIS, SINC_FILTER, SINC_ORDER,
+    update_plc_state,
+};
 use core::cell::UnsafeCell;
 #[cfg(not(feature = "fixed_point"))]
 use core::cmp::Ordering;
@@ -282,8 +284,8 @@ fn fixed_sig_to_float(value: FixedCeltSig) -> f32 {
 #[cfg(feature = "fixed_point")]
 #[inline]
 fn celt_sig_to_fixed(value: CeltSig) -> FixedCeltSig {
-    libm::rintf(value * (1u32 << SIG_SHIFT) as f32)
-        .clamp(i32::MIN as f32, i32::MAX as f32) as FixedCeltSig
+    libm::rintf(value * (1u32 << SIG_SHIFT) as f32).clamp(i32::MIN as f32, i32::MAX as f32)
+        as FixedCeltSig
 }
 
 #[cfg(feature = "fixed_point")]
@@ -365,30 +367,38 @@ fn plc_decay_terms_fixed(exc_sig: &[CeltSig], exc_length: usize) -> (i32, i32, F
         "excitation length exceeds history"
     );
 
-    let exc_i16: Vec<OpusInt16> = exc_sig.iter().map(|&sample| fixed_sig_to_word16(sample)).collect();
+    let exc_i16: Vec<OpusInt16> = exc_sig
+        .iter()
+        .map(|&sample| fixed_sig_to_word16(sample))
+        .collect();
     plc_decay_terms_fixed_native(&exc_i16, exc_length)
 }
 
 #[cfg(feature = "fixed_point")]
 #[inline]
 fn plc_ratio_from_energies_fixed(s1: i32, s2: i32) -> FixedOpusVal16 {
-    celt_sqrt_fixed(frac_div32_fixed((s1 >> 1).wrapping_add(1), s2.wrapping_add(1)))
-        as FixedOpusVal16
+    celt_sqrt_fixed(frac_div32_fixed(
+        (s1 >> 1).wrapping_add(1),
+        s2.wrapping_add(1),
+    )) as FixedOpusVal16
 }
 
 #[cfg(feature = "fixed_point")]
-fn plc_ratio_terms_fixed(
-    old_sig: &[CeltSig],
-    new_sig: &[CeltSig],
-) -> (i32, i32, FixedOpusVal16) {
+fn plc_ratio_terms_fixed(old_sig: &[CeltSig], new_sig: &[CeltSig]) -> (i32, i32, FixedOpusVal16) {
     debug_assert_eq!(
         old_sig.len(),
         new_sig.len(),
         "energy windows must have equal length"
     );
 
-    let old_fixed: Vec<FixedCeltSig> = old_sig.iter().map(|&sample| celt_sig_to_fixed(sample)).collect();
-    let new_fixed: Vec<FixedCeltSig> = new_sig.iter().map(|&sample| celt_sig_to_fixed(sample)).collect();
+    let old_fixed: Vec<FixedCeltSig> = old_sig
+        .iter()
+        .map(|&sample| celt_sig_to_fixed(sample))
+        .collect();
+    let new_fixed: Vec<FixedCeltSig> = new_sig
+        .iter()
+        .map(|&sample| celt_sig_to_fixed(sample))
+        .collect();
     plc_ratio_terms_fixed_native(&old_fixed, &new_fixed)
 }
 
@@ -544,15 +554,7 @@ fn apply_inverse_mdct_fixed_native(
         }
 
         let start = band * nb;
-        clt_mdct_backward_fixed(
-            mdct,
-            &temp,
-            &mut output[start..],
-            window,
-            overlap,
-            shift,
-            1,
-        );
+        clt_mdct_backward_fixed(mdct, &temp, &mut output[start..], window, overlap, shift, 1);
     }
 }
 
@@ -751,15 +753,7 @@ pub(crate) fn celt_synthesis(
                 #[cfg(not(feature = "fixed_point"))]
                 {
                     denormalise_bands(
-                        mode,
-                        spectrum,
-                        &mut freq,
-                        energy,
-                        start,
-                        eff_end,
-                        m,
-                        downsample,
-                        silence,
+                        mode, spectrum, &mut freq, energy, start, eff_end, m, downsample, silence,
                     );
 
                     let output = &mut *out_syn[channel];
@@ -768,15 +762,7 @@ pub(crate) fn celt_synthesis(
                 #[cfg(feature = "fixed_point")]
                 {
                     denormalise_bands_fixed(
-                        mode,
-                        spectrum,
-                        &mut freq,
-                        energy,
-                        start,
-                        eff_end,
-                        m,
-                        downsample,
-                        silence,
+                        mode, spectrum, &mut freq, energy, start, eff_end, m, downsample, silence,
                     );
 
                     let output = &mut *out_syn[channel];
@@ -933,15 +919,7 @@ fn celt_synthesis_fixed_native(
                 let spectrum = &x[channel * n..(channel + 1) * n];
                 let energy = &old_band_e[channel * nb_ebands..(channel + 1) * nb_ebands];
                 denormalise_bands_fixed_native(
-                    mode,
-                    spectrum,
-                    &mut freq,
-                    energy,
-                    start,
-                    eff_end,
-                    m,
-                    downsample,
-                    silence,
+                    mode, spectrum, &mut freq, energy, start, eff_end, m, downsample, silence,
                 );
 
                 let output = &mut *out_syn[channel];
@@ -1000,8 +978,13 @@ fn celt_plc_pitch_search(decode_mem: &[&[CeltSig]], channels: usize, arch: i32) 
         if offset >= lp_pitch_buf.len() {
             return PLC_PITCH_LAG_MAX;
         }
-        let pitch_index =
-            pitch_search(&lp_pitch_buf[offset..], &lp_pitch_buf, target_len, max_pitch, arch);
+        let pitch_index = pitch_search(
+            &lp_pitch_buf[offset..],
+            &lp_pitch_buf,
+            target_len,
+            max_pitch,
+            arch,
+        );
         PLC_PITCH_LAG_MAX - pitch_index
     }
     #[cfg(feature = "fixed_point")]
@@ -1139,17 +1122,17 @@ fn celt_decode_lost_pitch_fixed(
                 *entry = entry.wrapping_sub(mult16_32_q15((2 * i * i) as i16, *entry));
             }
             let lpc = &mut lpc_fixed[lpc_base..lpc_base + LPC_ORDER];
-#[cfg(test)]
+            #[cfg(test)]
             if ch == 0 {
-                std::println!("rust exc_first8={:?}", &input[..8]);
+                crate::test_trace::trace_println!("rust exc_first8={:?}", &input[..8]);
                 for (idx, value) in ac.iter().enumerate() {
-                    std::println!("rust ac[{idx}]={value}");
+                    crate::test_trace::trace_println!("rust ac[{idx}]={value}");
                 }
             }
             celt_lpc_fixed(lpc, &ac);
-#[cfg(test)]
+            #[cfg(test)]
             if ch == 0 {
-                std::println!("rust lpc_after_solver={:?}", &lpc[..]);
+                crate::test_trace::trace_println!("rust lpc_after_solver={:?}", &lpc[..]);
             }
             plc_bandwidth_expand_for_iir(lpc);
         }
@@ -1160,10 +1143,20 @@ fn celt_decode_lost_pitch_fixed(
         #[cfg(test)]
         if ch == 0 {
             let mut h = 2166136261u32;
-            for &v in &exc { let x = v as u16; h = (h ^ u32::from(x & 0xFF)).wrapping_mul(16777619); h = (h ^ u32::from(x >> 8)).wrapping_mul(16777619); }
-            std::println!("rust raw_exc_hash=0x{h:08x}");
-            std::println!("rust fir_hist_first24={:?}", &exc[fir_start..fir_start + LPC_ORDER]);
-            std::println!("rust fir_cur_first16={:?}", &exc[fir_start + LPC_ORDER..fir_start + LPC_ORDER + 16]);
+            for &v in &exc {
+                let x = v as u16;
+                h = (h ^ u32::from(x & 0xFF)).wrapping_mul(16777619);
+                h = (h ^ u32::from(x >> 8)).wrapping_mul(16777619);
+            }
+            crate::test_trace::trace_println!("rust raw_exc_hash=0x{h:08x}");
+            crate::test_trace::trace_println!(
+                "rust fir_hist_first24={:?}",
+                &exc[fir_start..fir_start + LPC_ORDER]
+            );
+            crate::test_trace::trace_println!(
+                "rust fir_cur_first16={:?}",
+                &exc[fir_start + LPC_ORDER..fir_start + LPC_ORDER + 16]
+            );
         }
         celt_fir_fixed(
             &exc[fir_start..fir_start + LPC_ORDER + exc_length],
@@ -1174,9 +1167,18 @@ fn celt_decode_lost_pitch_fixed(
         #[cfg(test)]
         if ch == 0 {
             let mut h = 2166136261u32;
-            for &v in &exc { let x = v as u16; h = (h ^ u32::from(x & 0xFF)).wrapping_mul(16777619); h = (h ^ u32::from(x >> 8)).wrapping_mul(16777619); }
-            std::println!("rust postfir_exc_hash=0x{h:08x}");
-            for i in 0..16 { std::println!("rust postfir[{i}]={}", exc[LPC_ORDER + fir_start + i]); }
+            for &v in &exc {
+                let x = v as u16;
+                h = (h ^ u32::from(x & 0xFF)).wrapping_mul(16777619);
+                h = (h ^ u32::from(x >> 8)).wrapping_mul(16777619);
+            }
+            crate::test_trace::trace_println!("rust postfir_exc_hash=0x{h:08x}");
+            for i in 0..16 {
+                crate::test_trace::trace_println!(
+                    "rust postfir[{i}]={}",
+                    exc[LPC_ORDER + fir_start + i]
+                );
+            }
         }
 
         let (_, _, decay) =
@@ -1188,8 +1190,14 @@ fn celt_decode_lost_pitch_fixed(
         let extrapolation_offset = max_period - pitch_index_usize;
         #[cfg(test)]
         if ch == 0 {
-            std::println!("rust extrap_src_with_ord={:?}", &exc[LPC_ORDER + extrapolation_offset..LPC_ORDER + extrapolation_offset + 16]);
-            std::println!("rust extrap_src_raw={:?}", &exc[extrapolation_offset..extrapolation_offset + 16]);
+            crate::test_trace::trace_println!(
+                "rust extrap_src_with_ord={:?}",
+                &exc[LPC_ORDER + extrapolation_offset..LPC_ORDER + extrapolation_offset + 16]
+            );
+            crate::test_trace::trace_println!(
+                "rust extrap_src_raw={:?}",
+                &exc[extrapolation_offset..extrapolation_offset + 16]
+            );
         }
         let reference_base = DECODE_BUFFER_SIZE - max_period - n + extrapolation_offset;
         let mut attenuation = mult16_16_q15(fade, decay);
@@ -1210,9 +1218,19 @@ fn celt_decode_lost_pitch_fixed(
         #[cfg(test)]
         if ch == 0 {
             let mut h = 2166136261u32;
-            for &v in &channel_mem[start_index..start_index + extrapolation_len] { let x = v as u32; for b in [x as u8, (x>>8) as u8, (x>>16) as u8, (x>>24) as u8] { h = (h ^ u32::from(b)).wrapping_mul(16777619); } }
-            std::println!("rust preiir_hash=0x{h:08x} s1={s1} decay={decay}");
-            for i in 0..16 { std::println!("rust preiir[{i}]={}", sig2word16(channel_mem[start_index + i])); }
+            for &v in &channel_mem[start_index..start_index + extrapolation_len] {
+                let x = v as u32;
+                for b in [x as u8, (x >> 8) as u8, (x >> 16) as u8, (x >> 24) as u8] {
+                    h = (h ^ u32::from(b)).wrapping_mul(16777619);
+                }
+            }
+            crate::test_trace::trace_println!("rust preiir_hash=0x{h:08x} s1={s1} decay={decay}");
+            for i in 0..16 {
+                crate::test_trace::trace_println!(
+                    "rust preiir[{i}]={}",
+                    sig2word16(channel_mem[start_index + i])
+                );
+            }
         }
         let mut lpc_mem = vec![0i16; LPC_ORDER];
         for (idx, mem) in lpc_mem.iter_mut().enumerate() {
@@ -1221,8 +1239,12 @@ fn celt_decode_lost_pitch_fixed(
         #[cfg(test)]
         if ch == 0 {
             let mut h = 2166136261u32;
-            for &v in &lpc_mem { let x = v as u16; h = (h ^ u32::from(x & 0xFF)).wrapping_mul(16777619); h = (h ^ u32::from(x >> 8)).wrapping_mul(16777619); }
-            std::println!("rust lpc_mem_hash=0x{h:08x}");
+            for &v in &lpc_mem {
+                let x = v as u16;
+                h = (h ^ u32::from(x & 0xFF)).wrapping_mul(16777619);
+                h = (h ^ u32::from(x >> 8)).wrapping_mul(16777619);
+            }
+            crate::test_trace::trace_println!("rust lpc_mem_hash=0x{h:08x}");
         }
 
         let input = channel_mem[start_index..start_index + extrapolation_len].to_vec();
@@ -1237,11 +1259,27 @@ fn celt_decode_lost_pitch_fixed(
         #[cfg(test)]
         if ch == 0 {
             let mut h = 2166136261u32;
-            for &v in &channel_mem[start_index..start_index + extrapolation_len] { let x = v as u32; for b in [x as u8, (x>>8) as u8, (x>>16) as u8, (x>>24) as u8] { h = (h ^ u32::from(b)).wrapping_mul(16777619); } }
+            for &v in &channel_mem[start_index..start_index + extrapolation_len] {
+                let x = v as u32;
+                for b in [x as u8, (x >> 8) as u8, (x >> 16) as u8, (x >> 24) as u8] {
+                    h = (h ^ u32::from(b)).wrapping_mul(16777619);
+                }
+            }
             let mut hm = 2166136261u32;
-            for &v in &lpc_mem { let x = v as u16; hm = (hm ^ u32::from(x & 0xFF)).wrapping_mul(16777619); hm = (hm ^ u32::from(x >> 8)).wrapping_mul(16777619); }
-            std::println!("rust postiir_hash=0x{h:08x} lpc_mem_after=0x{hm:08x}");
-            for i in 0..16 { std::println!("rust postiir[{i}]={}", sig2word16(channel_mem[start_index + i])); }
+            for &v in &lpc_mem {
+                let x = v as u16;
+                hm = (hm ^ u32::from(x & 0xFF)).wrapping_mul(16777619);
+                hm = (hm ^ u32::from(x >> 8)).wrapping_mul(16777619);
+            }
+            crate::test_trace::trace_println!(
+                "rust postiir_hash=0x{h:08x} lpc_mem_after=0x{hm:08x}"
+            );
+            for i in 0..16 {
+                crate::test_trace::trace_println!(
+                    "rust postiir[{i}]={}",
+                    sig2word16(channel_mem[start_index + i])
+                );
+            }
         }
 
         let mut s2 = 0i32;
@@ -1252,7 +1290,7 @@ fn celt_decode_lost_pitch_fixed(
 
         #[cfg(test)]
         if ch == 0 {
-            std::println!("rust s2={s2}");
+            crate::test_trace::trace_println!("rust s2={s2}");
         }
         if s1 <= (s2 >> 2) {
             for value in &mut channel_mem[start_index..start_index + extrapolation_len] {
@@ -1261,15 +1299,12 @@ fn celt_decode_lost_pitch_fixed(
         } else if s1 < s2 {
             let ratio = plc_ratio_from_energies_fixed(s1, s2);
             for i in 0..overlap {
-                let gain = Q15_ONE.wrapping_sub(mult16_16_q15(
-                    fixed_window[i],
-                    Q15_ONE.wrapping_sub(ratio),
-                ));
+                let gain = Q15_ONE
+                    .wrapping_sub(mult16_16_q15(fixed_window[i], Q15_ONE.wrapping_sub(ratio)));
                 channel_mem[start_index + i] = mult16_32_q15(gain, channel_mem[start_index + i]);
             }
             for i in overlap..extrapolation_len {
-                channel_mem[start_index + i] =
-                    mult16_32_q15(ratio, channel_mem[start_index + i]);
+                channel_mem[start_index + i] = mult16_32_q15(ratio, channel_mem[start_index + i]);
             }
         }
     }
@@ -1369,10 +1404,8 @@ fn prefilter_and_fold(decoder: &mut OpusCustomDecoder<'_>, n: usize) {
             );
 
             for i in 0..(overlap / 2) {
-                let forward =
-                    mult16_32_q15(decoder.fixed_window[i], fixed_etmp[overlap - 1 - i]);
-                let reverse =
-                    mult16_32_q15(decoder.fixed_window[overlap - 1 - i], fixed_etmp[i]);
+                let forward = mult16_32_q15(decoder.fixed_window[i], fixed_etmp[overlap - 1 - i]);
+                let reverse = mult16_32_q15(decoder.fixed_window[overlap - 1 - i], fixed_etmp[i]);
                 let folded = add32_ovflw(forward, reverse);
                 let idx = start + i;
                 channel_mem_fixed[idx] = folded;
@@ -1433,8 +1466,7 @@ fn celt_decode_lost_impl(
     let loss_duration = decoder.loss_duration;
     #[cfg(feature = "deep_plc")]
     let noise_based = if let Some(lpcnet) = lpcnet.as_ref() {
-        start_band != 0
-            || (lpcnet.fec_fill_pos == 0 && (decoder.skip_plc || loss_duration >= 80))
+        start_band != 0 || (lpcnet.fec_fill_pos == 0 && (decoder.skip_plc || loss_duration >= 80))
     } else {
         loss_duration >= 40 || start_band != 0 || decoder.skip_plc
     };
@@ -1715,7 +1747,8 @@ fn celt_decode_lost_impl(
             if lpcnet.loaded && (decoder.complexity >= 5 || lpcnet.fec_fill_pos > 0) {
                 let start_index = DECODE_BUFFER_SIZE - n;
                 let mut buf_copy = vec![0.0f32; channels * overlap];
-                for (ch, channel_slice) in decoder.decode_mem.chunks(stride).take(channels).enumerate()
+                for (ch, channel_slice) in
+                    decoder.decode_mem.chunks(stride).take(channels).enumerate()
                 {
                     let src = &channel_slice[start_index..start_index + overlap];
                     let base = ch * overlap;
@@ -1785,16 +1818,14 @@ fn celt_decode_lost_impl(
                 }
 
                 if loss_duration == 0 {
-                    for (ch, channel_slice) in decode_mem
-                        .chunks_mut(stride)
-                        .take(channels)
-                        .enumerate()
+                    for (ch, channel_slice) in
+                        decode_mem.chunks_mut(stride).take(channels).enumerate()
                     {
                         let base = ch * overlap;
                         for i in 0..overlap {
-                            channel_slice[start_index + i] =
-                                (1.0 - mode.window[i]) * buf_copy[base + i]
-                                    + mode.window[i] * channel_slice[start_index + i];
+                            channel_slice[start_index + i] = (1.0 - mode.window[i])
+                                * buf_copy[base + i]
+                                + mode.window[i] * channel_slice[start_index + i];
                         }
                     }
                 }
@@ -1878,8 +1909,7 @@ const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 const POSTFILTER_GAIN_SCALE: OpusVal16 = 0.09375;
 
 const FROM_OPUS_TABLE: [u8; 16] = [
-    0x80, 0x88, 0x90, 0x98, 0x40, 0x48, 0x50, 0x58, 0x20, 0x28, 0x30, 0x38, 0x00, 0x08,
-    0x10, 0x18,
+    0x80, 0x88, 0x90, 0x98, 0x40, 0x48, 0x50, 0x58, 0x20, 0x28, 0x30, 0x38, 0x00, 0x08, 0x10, 0x18,
 ];
 
 fn from_opus(value: u8) -> Option<u8> {
@@ -1887,7 +1917,9 @@ fn from_opus(value: u8) -> Option<u8> {
         None
     } else {
         let idx = ((value >> 3) as usize).saturating_sub(16);
-        FROM_OPUS_TABLE.get(idx).map(|mapped| mapped | (value & 0x7))
+        FROM_OPUS_TABLE
+            .get(idx)
+            .map(|mapped| mapped | (value & 0x7))
     }
 }
 
@@ -1964,9 +1996,18 @@ fn deemphasis_fixed(
     }
 
     debug_assert!(downsample > 0, "downsample factor must be non-zero");
-    debug_assert!(input.len() >= channels, "input must expose one slice per channel");
-    debug_assert!(mem.len() >= channels, "memory buffer must expose one value per channel");
-    debug_assert!(!coef.is_empty(), "pre-emphasis coefficients must not be empty");
+    debug_assert!(
+        input.len() >= channels,
+        "input must expose one slice per channel"
+    );
+    debug_assert!(
+        mem.len() >= channels,
+        "memory buffer must expose one value per channel"
+    );
+    debug_assert!(
+        !coef.is_empty(),
+        "pre-emphasis coefficients must not be empty"
+    );
 
     let expected_samples = if downsample > 1 { n / downsample } else { n };
     debug_assert!(
@@ -2069,8 +2110,14 @@ fn deemphasis_fixed_to_int16(
     }
 
     debug_assert!(downsample > 0, "downsample factor must be non-zero");
-    debug_assert!(input.len() >= channels, "input must expose one slice per channel");
-    debug_assert!(mem.len() >= channels, "memory buffer must expose one value per channel");
+    debug_assert!(
+        input.len() >= channels,
+        "input must expose one slice per channel"
+    );
+    debug_assert!(
+        mem.len() >= channels,
+        "memory buffer must expose one value per channel"
+    );
 
     let expected_samples = if downsample > 1 { n / downsample } else { n };
     debug_assert!(
@@ -2846,7 +2893,11 @@ where
         if mode.sample_rate == 48_000 && mode.short_mdct_size == 120 {
             data0 = from_opus(data0).ok_or(CeltDecodeError::InvalidPacket)?;
         }
-        end = max(1, mode.effective_ebands.saturating_sub(2 * (data0 as usize >> 5)));
+        end = max(
+            1,
+            mode.effective_ebands
+                .saturating_sub(2 * (data0 as usize >> 5)),
+        );
         decoder.end_band = end as i32;
         c = 1 + ((data0 >> 2) & 0x1) as usize;
         header_lm = Some(((data0 >> 3) & 0x3) as usize);
@@ -3223,7 +3274,8 @@ where
 {
     #[cfg(feature = "fixed_point")]
     sync_from_fixed_primary_to_float_cache(decoder);
-    let result = celt_decode_with_ec_dred_impl(decoder, packet, pcm, frame_size, range_decoder, accum, plc);
+    let result =
+        celt_decode_with_ec_dred_impl(decoder, packet, pcm, frame_size, range_decoder, accum, plc);
     #[cfg(feature = "fixed_point")]
     if matches!(packet, Some(data) if data.len() > 1) {
         sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
@@ -3374,7 +3426,6 @@ where
         packet_loss: _,
     } = frame;
 
-
     let move_len = DECODE_BUFFER_SIZE
         .checked_sub(n)
         .ok_or(CeltDecodeError::BadArgument)?
@@ -3512,14 +3563,17 @@ where
     let remaining_bits = payload_len_bits - entcode::ec_tell(dec.ctx());
     #[cfg(all(test, feature = "fixed_point"))]
     if std::env::var("CELT_TRACE_POST_BANDS").is_ok() {
-        let pre_final_hash = decoder.old_ebands_fixed[..mode.num_ebands].iter().fold(2166136261u32, |hash, &value| {
-            let v = value as u32;
-            let hash = (hash ^ (v & 0xFF)).wrapping_mul(16777619);
-            let hash = (hash ^ ((v >> 8) & 0xFF)).wrapping_mul(16777619);
-            let hash = (hash ^ ((v >> 16) & 0xFF)).wrapping_mul(16777619);
-            (hash ^ ((v >> 24) & 0xFF)).wrapping_mul(16777619)
-        });
-        std::println!(
+        let pre_final_hash = decoder.old_ebands_fixed[..mode.num_ebands].iter().fold(
+            2166136261u32,
+            |hash, &value| {
+                let v = value as u32;
+                let hash = (hash ^ (v & 0xFF)).wrapping_mul(16777619);
+                let hash = (hash ^ ((v >> 8) & 0xFF)).wrapping_mul(16777619);
+                let hash = (hash ^ ((v >> 16) & 0xFF)).wrapping_mul(16777619);
+                (hash ^ ((v >> 24) & 0xFF)).wrapping_mul(16777619)
+            },
+        );
+        crate::test_trace::trace_println!(
             "pre_finalise.eb_hash=0x{:08x}.eb_values={:?}.remaining_bits={} fine_quant={:?} fine_priority={:?}",
             pre_final_hash,
             &decoder.old_ebands_fixed[..mode.num_ebands],
@@ -3560,9 +3614,13 @@ where
 
     #[cfg(all(test, feature = "fixed_point"))]
     if std::env::var("CELT_TRACE_POST_BANDS").is_ok() && spectrum_fixed.len() >= 232 {
-        std::println!(
+        crate::test_trace::trace_println!(
             "actual_band15.stage=pre_anti.on={anti_collapse_on}.hash=0x{:08x}.coeffs={:?}",
-            spectrum_fixed.iter().fold(2166136261u32, |hash, &value| { let v = value as u16; let hash = (hash ^ u32::from(v & 0xFF)).wrapping_mul(16777619); (hash ^ u32::from(v >> 8)).wrapping_mul(16777619) }),
+            spectrum_fixed.iter().fold(2166136261u32, |hash, &value| {
+                let v = value as u16;
+                let hash = (hash ^ u32::from(v & 0xFF)).wrapping_mul(16777619);
+                (hash ^ u32::from(v >> 8)).wrapping_mul(16777619)
+            }),
             &spectrum_fixed[224..272]
         );
     }
@@ -3617,14 +3675,17 @@ where
             let hash = (hash ^ u32::from(v & 0xFF)).wrapping_mul(16777619);
             (hash ^ u32::from(v >> 8)).wrapping_mul(16777619)
         });
-        let eb_hash = decoder.old_ebands_fixed[..mode.num_ebands].iter().fold(2166136261u32, |hash, &value| {
-            let v = value as u32;
-            let hash = (hash ^ (v & 0xFF)).wrapping_mul(16777619);
-            let hash = (hash ^ ((v >> 8) & 0xFF)).wrapping_mul(16777619);
-            let hash = (hash ^ ((v >> 16) & 0xFF)).wrapping_mul(16777619);
-            (hash ^ ((v >> 24) & 0xFF)).wrapping_mul(16777619)
-        });
-        std::println!(
+        let eb_hash = decoder.old_ebands_fixed[..mode.num_ebands].iter().fold(
+            2166136261u32,
+            |hash, &value| {
+                let v = value as u32;
+                let hash = (hash ^ (v & 0xFF)).wrapping_mul(16777619);
+                let hash = (hash ^ ((v >> 8) & 0xFF)).wrapping_mul(16777619);
+                let hash = (hash ^ ((v >> 16) & 0xFF)).wrapping_mul(16777619);
+                (hash ^ ((v >> 24) & 0xFF)).wrapping_mul(16777619)
+            },
+        );
+        crate::test_trace::trace_println!(
             "actual_band15.stage=post_anti.on={anti_collapse_on}.hash=0x{:08x}.eb_hash=0x{:08x}.eb_values={:?}.coeffs={:?}",
             spectrum_hash,
             eb_hash,
@@ -3634,12 +3695,15 @@ where
         for band_hash in 0..mode.num_ebands {
             let band_start = (mode.e_bands[band_hash] as usize) << lm;
             let band_end = (mode.e_bands[band_hash + 1] as usize) << lm;
-            let hash = spectrum_fixed[band_start..band_end].iter().fold(2166136261u32, |hash, &value| {
-                let v = value as u16;
-                let hash = (hash ^ u32::from(v & 0xFF)).wrapping_mul(16777619);
-                (hash ^ u32::from(v >> 8)).wrapping_mul(16777619)
-            });
-            std::println!("post_anti_band_hash[{}]=0x{:08x}", band_hash, hash);
+            let hash =
+                spectrum_fixed[band_start..band_end]
+                    .iter()
+                    .fold(2166136261u32, |hash, &value| {
+                        let v = value as u16;
+                        let hash = (hash ^ u32::from(v & 0xFF)).wrapping_mul(16777619);
+                        (hash ^ u32::from(v >> 8)).wrapping_mul(16777619)
+                    });
+            crate::test_trace::trace_println!("post_anti_band_hash[{}]=0x{:08x}", band_hash, hash);
         }
     }
 
@@ -3681,7 +3745,11 @@ where
                 lm,
                 downsample,
                 silence,
-                (&decoder.fixed_mdct, decoder.fixed_window.as_slice(), decoder.overlap),
+                (
+                    &decoder.fixed_mdct,
+                    decoder.fixed_window.as_slice(),
+                    decoder.overlap,
+                ),
             );
             for channel in 0..cc {
                 let float_base = channel * stride + start_idx;
@@ -3758,11 +3826,14 @@ where
                 hash_freq_bridge = (hash_freq_bridge ^ ((v >> 16) & 0xFF)).wrapping_mul(16777619);
                 hash_freq_bridge = (hash_freq_bridge ^ ((v >> 24) & 0xFF)).wrapping_mul(16777619);
             }
-            std::println!(
+            crate::test_trace::trace_println!(
                 "freqcmp native=0x{:08x} bridge=0x{:08x} first_diff={:?}",
                 hash_freq_native,
                 hash_freq_bridge,
-                freq_native.iter().zip(freq_bridge.iter()).position(|(lhs, rhs)| lhs != rhs)
+                freq_native
+                    .iter()
+                    .zip(freq_bridge.iter())
+                    .position(|(lhs, rhs)| lhs != rhs)
             );
             let mut bridge_out = vec![0.0f32; n + overlap];
             let mut bridge_views: Vec<&mut [CeltSig]> = vec![bridge_out.as_mut_slice()];
@@ -3807,15 +3878,18 @@ where
                 hash_bridge = (hash_bridge ^ ((v >> 16) & 0xFF)).wrapping_mul(16777619);
                 hash_bridge = (hash_bridge ^ ((v >> 24) & 0xFF)).wrapping_mul(16777619);
             }
-            let first_diff = actual.iter().zip(bridge_fixed.iter()).position(|(lhs, rhs)| lhs != rhs);
-            std::println!(
+            let first_diff = actual
+                .iter()
+                .zip(bridge_fixed.iter())
+                .position(|(lhs, rhs)| lhs != rhs);
+            crate::test_trace::trace_println!(
                 "synthcmp actual=0x{:08x} bridge=0x{:08x} first_diff={:?}",
                 hash_actual,
                 hash_bridge,
                 first_diff
             );
             if let Some(idx) = first_diff {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "synthcmp coeff[{idx}] actual={} bridge={} tail_actual=0x{:08x} tail_bridge=0x{:08x}",
                     actual[idx],
                     bridge_fixed[idx],
@@ -3934,12 +4008,14 @@ where
                 std::sync::atomic::AtomicUsize::new(0);
             if POSTFILTER_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
                 let synth = &decoder.decode_mem_fixed[output_start..output_start + n];
-                std::println!(
+                crate::test_trace::trace_println!(
                     "postfilter_input len={} first_len={} overlap={} old_period={} cur_period={} next_period={} g0={} g1={} g_next={} tap0={} tap1={} tap_next={}",
                     n,
                     mode.short_mdct_size.min(n),
                     overlap,
-                    decoder.postfilter_period_old.max(COMBFILTER_MINPERIOD as i32),
+                    decoder
+                        .postfilter_period_old
+                        .max(COMBFILTER_MINPERIOD as i32),
                     decoder.postfilter_period.max(COMBFILTER_MINPERIOD as i32),
                     postfilter_pitch,
                     g0,
@@ -3950,7 +4026,7 @@ where
                     postfilter_tapset.max(0),
                 );
                 for (idx, value) in synth.iter().enumerate() {
-                    std::println!("postfilter_input[{idx}]={value}");
+                    crate::test_trace::trace_println!("postfilter_input[{idx}]={value}");
                 }
             }
         }
@@ -3999,12 +4075,7 @@ where
                 }
             }
         }
-        sync_fixed_output_window_to_float_cache(
-            decoder,
-            cc,
-            output_start,
-            n + (overlap >> 1),
-        );
+        sync_fixed_output_window_to_float_cache(decoder, cc, output_start, n + (overlap >> 1));
     }
 
     decoder.postfilter_period_old = decoder.postfilter_period;
@@ -4144,15 +4215,7 @@ where
     let plc = None;
     #[cfg(not(feature = "deep_plc"))]
     let plc = ();
-    celt_decode_with_ec_dred(
-        decoder,
-        packet,
-        pcm,
-        frame_size,
-        range_decoder,
-        accum,
-        plc,
-    )
+    celt_decode_with_ec_dred(decoder, packet, pcm, frame_size, range_decoder, accum, plc)
 }
 
 pub(crate) fn opus_custom_decode(
@@ -4176,7 +4239,7 @@ pub(crate) fn opus_custom_decode(
     #[cfg(all(test, feature = "fixed_point"))]
     if channels == 1 && samples >= 891 {
         for &idx in &[208usize, 680, 890] {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_custom_decode temp[{idx}]={} scaled={}",
                 temp[idx],
                 temp[idx] * CELT_SIG_SCALE
@@ -4681,13 +4744,17 @@ pub(crate) fn opus_custom_decoder_ctl<'dec, 'req>(
 mod tests {
     extern crate std;
 
+    #[cfg(feature = "fixed_point")]
+    use super::FIXED_SIG_SAT;
     use super::celt_decode_lost;
     use super::celt_plc_pitch_search;
     #[cfg(feature = "fixed_point")]
     use super::celt_plc_pitch_search_fixed;
+    #[cfg(feature = "fixed_point")]
+    use super::decoder_noise_renormalise_runtime;
     use super::deemphasis;
     #[cfg(feature = "fixed_point")]
-    use super::FIXED_SIG_SAT;
+    use super::opus_custom_decode;
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
         DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState,
@@ -4697,37 +4764,35 @@ mod tests {
         validate_channel_layout,
     };
     #[cfg(feature = "fixed_point")]
-    use super::decoder_noise_renormalise_runtime;
-    #[cfg(feature = "fixed_point")]
-    use super::opus_custom_decode;
+    use crate::celt::bands::BandCodingState;
     #[cfg(feature = "fixed_point")]
     use crate::celt::celt_encoder::{
         EncoderCtlRequest, opus_custom_encode, opus_custom_encoder_create, opus_custom_encoder_ctl,
     };
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::fixed_arch::{DB_SHIFT, float2sig, sig2word16};
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::fixed_ops::{mult16_32_q15, qconst16_clamped, qconst32};
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::float_cast::float2int16;
-    use crate::celt::float_cast::CELT_SIG_SCALE;
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::bands::BandCodingState;
     #[cfg(feature = "fixed_point")]
     use crate::celt::cwrs::decode_pulses_debug;
     #[cfg(feature = "fixed_point")]
     use crate::celt::entcode;
     #[cfg(feature = "fixed_point")]
     use crate::celt::entcode::celt_sudiv;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_arch::{DB_SHIFT, float2sig, sig2word16};
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::fixed_ops::{mult16_32_q15, qconst16_clamped, qconst32};
+    use crate::celt::float_cast::CELT_SIG_SCALE;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::float_cast::float2int16;
     use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
     use crate::celt::opus_select_arch;
     #[cfg(feature = "fixed_point")]
     use crate::celt::rate::{bits2pulses, get_pulses};
-    use crate::celt::types::{CeltGlog, CeltNorm, CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::FixedCeltSig;
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::OpusCustomEncoder;
+    use crate::celt::types::{
+        CeltGlog, CeltNorm, CeltSig, MdctLookup, OpusCustomMode, PulseCacheData,
+    };
     use alloc::vec;
     use alloc::vec::Vec;
     use core::f32::consts::PI;
@@ -5071,10 +5136,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(debug_assertions),
-        ignore = "debug_assertions disabled in release"
-    )]
+    #[cfg_attr(not(debug_assertions), ignore = "debug_assertions disabled in release")]
     #[should_panic]
     fn validate_celt_decoder_rejects_invalid_channel_count() {
         let e_bands = [0, 2, 5];
@@ -5377,8 +5439,18 @@ mod tests {
             assert!(decoder.decode_mem_fixed.iter().all(|&v| v == 0));
             assert!(decoder.lpc_fixed.iter().all(|&v| v == 0));
             assert!(decoder.old_ebands_fixed.iter().all(|&v| v == 0));
-            assert!(decoder.old_log_e_fixed.iter().all(|&v| v == qconst32(-28.0, DB_SHIFT)));
-            assert!(decoder.old_log_e2_fixed.iter().all(|&v| v == qconst32(-28.0, DB_SHIFT)));
+            assert!(
+                decoder
+                    .old_log_e_fixed
+                    .iter()
+                    .all(|&v| v == qconst32(-28.0, DB_SHIFT))
+            );
+            assert!(
+                decoder
+                    .old_log_e2_fixed
+                    .iter()
+                    .all(|&v| v == qconst32(-28.0, DB_SHIFT))
+            );
             assert!(decoder.background_log_e_fixed.iter().all(|&v| v == 0));
         }
         assert!(decoder.background_log_e.iter().all(|&v| v == 0.0));
@@ -5479,7 +5551,11 @@ mod tests {
             *sample = (idx as f32) * 0.0002;
         }
         #[cfg(feature = "fixed_point")]
-        for (dst, &src) in decoder.decode_mem_fixed.iter_mut().zip(decoder.decode_mem.iter()) {
+        for (dst, &src) in decoder
+            .decode_mem_fixed
+            .iter_mut()
+            .zip(decoder.decode_mem.iter())
+        {
             *dst = super::celt_sig_to_fixed(src);
         }
 
@@ -5553,7 +5629,11 @@ mod tests {
             *sample = (idx as f32) * 0.0002;
         }
         #[cfg(feature = "fixed_point")]
-        for (dst, &src) in decoder.decode_mem_fixed.iter_mut().zip(decoder.decode_mem.iter()) {
+        for (dst, &src) in decoder
+            .decode_mem_fixed
+            .iter_mut()
+            .zip(decoder.decode_mem.iter())
+        {
             *dst = super::celt_sig_to_fixed(src);
         }
 
@@ -5603,8 +5683,7 @@ mod tests {
             );
             #[cfg(feature = "fixed_point")]
             assert!(
-                (decoder.decode_mem_fixed[start + i] - super::celt_sig_to_fixed(actual)).abs()
-                    <= 1,
+                (decoder.decode_mem_fixed[start + i] - super::celt_sig_to_fixed(actual)).abs() <= 1,
                 "fixed cache mismatch for filtered fold {i}: fixed={}, float2sig={}",
                 decoder.decode_mem_fixed[start + i],
                 super::celt_sig_to_fixed(actual),
@@ -5650,7 +5729,11 @@ mod tests {
             decoder.decode_mem[stride + i] = -0.3 + (i as f32) * 0.00025;
         }
         #[cfg(feature = "fixed_point")]
-        for (dst, &src) in decoder.decode_mem_fixed.iter_mut().zip(decoder.decode_mem.iter()) {
+        for (dst, &src) in decoder
+            .decode_mem_fixed
+            .iter_mut()
+            .zip(decoder.decode_mem.iter())
+        {
             *dst = super::celt_sig_to_fixed(src);
         }
 
@@ -5736,7 +5819,9 @@ mod tests {
         decoder.old_ebands.fill(-4.0);
         #[cfg(feature = "fixed_point")]
         {
-            decoder.background_log_e_fixed.fill(qconst32(-8.0, DB_SHIFT));
+            decoder
+                .background_log_e_fixed
+                .fill(qconst32(-8.0, DB_SHIFT));
             decoder.old_ebands_fixed.fill(qconst32(-4.0, DB_SHIFT));
         }
 
@@ -5828,7 +5913,8 @@ mod tests {
 
     #[cfg(feature = "fixed_point")]
     fn fnv1a_bytes(data: &[u8]) -> u32 {
-        data.iter().fold(2_166_136_261, |hash, byte| fnv1a_update(hash, *byte))
+        data.iter()
+            .fold(2_166_136_261, |hash, byte| fnv1a_update(hash, *byte))
     }
 
     #[cfg(feature = "fixed_point")]
@@ -5866,8 +5952,9 @@ mod tests {
     #[cfg(feature = "fixed_point")]
     fn run_decoder_postfilter_case(mode: &OpusCustomMode<'_>, case: &DecoderPostfilterCase) {
         let strict_ctest_vectors = std::env::var_os("RUST_CTEST_STRICT_HASHES").is_some();
-        let mut encoder = opus_custom_encoder_create(mode, POSTFILTER_SAMPLE_RATE, case.channels, 0)
-            .unwrap_or_else(|err| panic!("{}: encoder create failed: {err:?}", case.name));
+        let mut encoder =
+            opus_custom_encoder_create(mode, POSTFILTER_SAMPLE_RATE, case.channels, 0)
+                .unwrap_or_else(|err| panic!("{}: encoder create failed: {err:?}", case.name));
         let mut decoder = opus_custom_decoder_create(mode, case.channels)
             .unwrap_or_else(|err| panic!("{}: decoder create failed: {err:?}", case.name));
 
@@ -6096,18 +6183,12 @@ mod tests {
 
     #[cfg(feature = "fixed_point")]
     fn count_hash_changes(hashes: &[u32]) -> usize {
-        hashes
-            .windows(2)
-            .filter(|pair| pair[0] != pair[1])
-            .count()
+        hashes.windows(2).filter(|pair| pair[0] != pair[1]).count()
     }
 
     #[cfg(feature = "fixed_point")]
     fn count_energy_drops(energies: &[i64]) -> usize {
-        energies
-            .windows(2)
-            .filter(|pair| pair[1] < pair[0])
-            .count()
+        energies.windows(2).filter(|pair| pair[1] < pair[0]).count()
     }
 
     #[cfg(feature = "fixed_point")]
@@ -6147,7 +6228,11 @@ mod tests {
 
     #[cfg(feature = "fixed_point")]
     fn parse_hex_packet(hex: &str) -> Vec<u8> {
-        assert_eq!(hex.len() % 2, 0, "hex packet strings must have an even length");
+        assert_eq!(
+            hex.len() % 2,
+            0,
+            "hex packet strings must have an even length"
+        );
         let mut packet = Vec::with_capacity(hex.len() / 2);
         for idx in (0..hex.len()).step_by(2) {
             let byte = u8::from_str_radix(&hex[idx..idx + 2], 16)
@@ -6166,20 +6251,16 @@ mod tests {
         let mut pitch = 0;
         for packet_hex in packets.iter() {
             let packet = parse_hex_packet(packet_hex);
-            let decoded_len = opus_custom_decode(
-                decoder,
-                Some(&packet),
-                decoded,
-                POSTFILTER_FRAME_SIZE,
-            )
-            .expect("PLC/IIR priming decode should succeed");
+            let decoded_len =
+                opus_custom_decode(decoder, Some(&packet), decoded, POSTFILTER_FRAME_SIZE)
+                    .expect("PLC/IIR priming decode should succeed");
             assert_eq!(decoded_len, POSTFILTER_FRAME_SIZE);
             opus_custom_decoder_ctl(decoder, DecoderCtlRequest::GetPitch(&mut pitch))
                 .expect("get pitch should succeed");
             let mut final_range = 0u32;
             opus_custom_decoder_ctl(decoder, DecoderCtlRequest::GetFinalRange(&mut final_range))
                 .expect("get final range should succeed");
-            std::println!(
+            crate::test_trace::trace_println!(
                 "prime decoded={} pitch={} range=0x{:08x} pcm=0x{:08x} tail=0x{:08x} lpc=0x{:08x} eb=0x{:08x}",
                 decoded_len,
                 pitch,
@@ -6193,7 +6274,10 @@ mod tests {
                 return pitch;
             }
         }
-        panic!("failed to prime decoder pitch after {} frames", packets.len());
+        panic!(
+            "failed to prime decoder pitch after {} frames",
+            packets.len()
+        );
     }
 
     #[cfg(feature = "fixed_point")]
@@ -6324,9 +6408,7 @@ mod tests {
             lm,
             ..
         } = frame;
-        let mut range_state = range_decoder
-            .take()
-            .expect("range decoder must exist");
+        let mut range_state = range_decoder.take().expect("range decoder must exist");
         let dec = range_state.decoder();
 
         let band = start;
@@ -6347,7 +6429,8 @@ mod tests {
         let n = ((mode.e_bands[band + 1] - mode.e_bands[band]) as usize) << (lm as usize);
         let mut pulse_vec = vec![0i32; n];
         let (index, total, _) = decode_pulses_debug(&mut pulse_vec, n, k, dec);
-        let collapse_mask = crate::celt::vq::extract_collapse_mask(&pulse_vec, n, 1usize << (lm as usize));
+        let collapse_mask =
+            crate::celt::vq::extract_collapse_mask(&pulse_vec, n, 1usize << (lm as usize));
         (n, q, index, total, pulse_vec, collapse_mask)
     }
 
@@ -6380,18 +6463,27 @@ mod tests {
             let first_packet = parse_hex_packet(mono_prime_packets[0]);
             let mut decoder_tf =
                 opus_custom_decoder_create(&mode, 1).expect("tf decoder creation should succeed");
-            let mut decoder_native =
-                opus_custom_decoder_create(&mode, 1).expect("native decoder creation should succeed");
-            let mut decoder_bridge =
-                opus_custom_decoder_create(&mode, 1).expect("bridge decoder creation should succeed");
-            let tf_frame = prepare_frame(&mut decoder_tf, &first_packet, POSTFILTER_FRAME_SIZE, None)
-                .expect("frame preparation should succeed");
-            std::println!("frame0 tf_res_first4={:?}", &tf_frame.tf_res[..4.min(tf_frame.tf_res.len())]);
+            let mut decoder_native = opus_custom_decoder_create(&mode, 1)
+                .expect("native decoder creation should succeed");
+            let mut decoder_bridge = opus_custom_decoder_create(&mode, 1)
+                .expect("bridge decoder creation should succeed");
+            let tf_frame =
+                prepare_frame(&mut decoder_tf, &first_packet, POSTFILTER_FRAME_SIZE, None)
+                    .expect("frame preparation should succeed");
+            crate::test_trace::trace_println!(
+                "frame0 tf_res_first4={:?}",
+                &tf_frame.tf_res[..4.min(tf_frame.tf_res.len())]
+            );
             let (band0_n, band0_q, band0_index, band0_total, band0_pulses, band0_mask) =
                 debug_first_band_pulses(&mut decoder_native, &first_packet);
-            std::println!(
+            crate::test_trace::trace_println!(
                 "band0 pulses n={} q={} index={} total={} mask=0x{:02x} pulses={:?}",
-                band0_n, band0_q, band0_index, band0_total, band0_mask, band0_pulses
+                band0_n,
+                band0_q,
+                band0_index,
+                band0_total,
+                band0_mask,
+                band0_pulses
             );
             let (native_spectrum, native_masks) =
                 decode_packet_band_spectrum(&mut decoder_native, &first_packet, true);
@@ -6401,7 +6493,7 @@ mod tests {
                 .iter()
                 .zip(bridge_spectrum.iter())
                 .position(|(lhs, rhs)| lhs != rhs);
-            std::println!(
+            crate::test_trace::trace_println!(
                 "bandcmp frame0 native=0x{:08x} bridge=0x{:08x} masks_native=0x{:08x} masks_bridge=0x{:08x} first_diff={:?}",
                 fnv1a_pcm_le(&native_spectrum),
                 fnv1a_pcm_le(&bridge_spectrum),
@@ -6409,7 +6501,7 @@ mod tests {
                 fnv1a_bytes(&bridge_masks),
                 first_diff
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "bandcmp frame0 masks_native_full={:?}",
                 native_masks
             );
@@ -6418,7 +6510,7 @@ mod tests {
                 let band_start = (mode.e_bands[band_hash] as usize) << lm_dbg;
                 let band_end = (mode.e_bands[band_hash + 1] as usize) << lm_dbg;
                 let native_hash = fnv1a_pcm_le(&native_spectrum[band_start..band_end]);
-                std::println!(
+                crate::test_trace::trace_println!(
                     "bandcmp frame0 native_band_hash[{}]=0x{:08x}",
                     band_hash,
                     native_hash
@@ -6433,7 +6525,7 @@ mod tests {
                     band_idx += 1;
                 }
                 let band_start = (mode.e_bands[band_idx] as usize) << lm_dbg;
-                std::println!(
+                crate::test_trace::trace_println!(
                     "bandcmp frame0 coeff[{idx}] band={} band_off={} native={} bridge={}",
                     band_idx,
                     idx - band_start,
@@ -6445,10 +6537,10 @@ mod tests {
 
         {
             let first_packet = parse_hex_packet(stereo_prime_packets[0]);
-            let mut decoder_native =
-                opus_custom_decoder_create(&mode, 2).expect("stereo native decoder creation should succeed");
-            let mut decoder_bridge =
-                opus_custom_decoder_create(&mode, 2).expect("stereo bridge decoder creation should succeed");
+            let mut decoder_native = opus_custom_decoder_create(&mode, 2)
+                .expect("stereo native decoder creation should succeed");
+            let mut decoder_bridge = opus_custom_decoder_create(&mode, 2)
+                .expect("stereo bridge decoder creation should succeed");
             let (native_spectrum, native_masks) =
                 decode_packet_band_spectrum(&mut decoder_native, &first_packet, true);
             let (bridge_spectrum, bridge_masks) =
@@ -6457,7 +6549,7 @@ mod tests {
                 .iter()
                 .zip(bridge_spectrum.iter())
                 .position(|(lhs, rhs)| lhs != rhs);
-            std::println!(
+            crate::test_trace::trace_println!(
                 "stereo bandcmp frame0 native=0x{:08x} bridge=0x{:08x} masks_native=0x{:08x} masks_bridge=0x{:08x} first_diff={:?}",
                 fnv1a_pcm_le(&native_spectrum),
                 fnv1a_pcm_le(&bridge_spectrum),
@@ -6465,7 +6557,7 @@ mod tests {
                 fnv1a_bytes(&bridge_masks),
                 first_diff
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "stereo bandcmp frame0 first8 native={:?} bridge={:?}",
                 &native_spectrum[..8],
                 &bridge_spectrum[..8]
@@ -6486,25 +6578,33 @@ mod tests {
             let primed_pitch =
                 prime_decoder_plc_iir(&mut decoder, &mut decoded, &mono_prime_packets);
             assert!(primed_pitch > 0);
-            std::println!("mono primed_pitch={primed_pitch}");
+            crate::test_trace::trace_println!("mono primed_pitch={primed_pitch}");
             {
                 let stride = DECODE_BUFFER_SIZE + decoder.overlap;
-                let float_views: Vec<&[CeltSig]> =
-                    decoder.decode_mem.chunks(stride).take(decoder.channels).collect();
+                let float_views: Vec<&[CeltSig]> = decoder
+                    .decode_mem
+                    .chunks(stride)
+                    .take(decoder.channels)
+                    .collect();
                 let fixed_views: Vec<&[FixedCeltSig]> = decoder
                     .decode_mem_fixed
                     .chunks(stride)
                     .take(decoder.channels)
                     .collect();
-                let float_pitch = celt_plc_pitch_search(&float_views, decoder.channels, decoder.arch);
+                let float_pitch =
+                    celt_plc_pitch_search(&float_views, decoder.channels, decoder.arch);
                 let fixed_pitch =
                     celt_plc_pitch_search_fixed(&fixed_views, decoder.channels, decoder.arch);
-                std::println!("mono search float={float_pitch} fixed={fixed_pitch}");
+                crate::test_trace::trace_println!(
+                    "mono search float={float_pitch} fixed={fixed_pitch}"
+                );
             }
 
             let baseline_lpc = decoder_plc_iir_lpc_hash(&decoder);
             let baseline_tail = decoder_plc_iir_tail_hash(&decoder, POSTFILTER_FRAME_SIZE);
-            std::println!("mono baseline_lpc=0x{baseline_lpc:08x} tail=0x{baseline_tail:08x}");
+            crate::test_trace::trace_println!(
+                "mono baseline_lpc=0x{baseline_lpc:08x} tail=0x{baseline_tail:08x}"
+            );
             let tiny_packet = [0u8];
 
             assert!(
@@ -6546,39 +6646,58 @@ mod tests {
                 lpc_hashes[loss] = decoder_plc_iir_lpc_hash(&decoder);
                 tail_hashes[loss] = decoder_plc_iir_tail_hash(&decoder, POSTFILTER_FRAME_SIZE);
                 pcm_hashes[loss] = fnv1a_pcm_le(&decoded);
-                std::println!(
+                crate::test_trace::trace_println!(
                     "mono loss{loss} pitch={} lpc=0x{:08x} tail=0x{:08x} pcm=0x{:08x}",
                     decoder.last_pitch_index,
                     lpc_hashes[loss],
                     tail_hashes[loss],
                     pcm_hashes[loss]
                 );
-                std::println!("mono loss{loss} pcm_first16={:?}", &decoded[..16]);
-                std::println!("mono loss{loss} pcm_last16={:?}", &decoded[POSTFILTER_FRAME_SIZE - 16..]);
-                std::println!(
+                crate::test_trace::trace_println!(
+                    "mono loss{loss} pcm_first16={:?}",
+                    &decoded[..16]
+                );
+                crate::test_trace::trace_println!(
+                    "mono loss{loss} pcm_last16={:?}",
+                    &decoded[POSTFILTER_FRAME_SIZE - 16..]
+                );
+                crate::test_trace::trace_println!(
                     "mono loss{loss} pcm_hash_halves=0x{:08x}/0x{:08x}",
                     fnv1a_pcm_le(&decoded[..POSTFILTER_FRAME_SIZE / 2]),
                     fnv1a_pcm_le(&decoded[POSTFILTER_FRAME_SIZE / 2..]),
                 );
                 for block in 0..(POSTFILTER_FRAME_SIZE / 64) {
                     let start = block * 64;
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "mono loss{loss} block{block:02}=0x{:08x}",
                         fnv1a_pcm_le(&decoded[start..start + 64])
                     );
                 }
                 if loss == 0 {
-                    std::println!("mono loss0 block03_samples={:?}", &decoded[192..256]);
-                    std::println!("mono loss0 block10_samples={:?}", &decoded[640..704]);
+                    crate::test_trace::trace_println!(
+                        "mono loss0 block03_samples={:?}",
+                        &decoded[192..256]
+                    );
+                    crate::test_trace::trace_println!(
+                        "mono loss0 block10_samples={:?}",
+                        &decoded[640..704]
+                    );
                 } else {
-                    std::println!("mono loss1 block13_samples={:?}", &decoded[832..896]);
+                    crate::test_trace::trace_println!(
+                        "mono loss1 block13_samples={:?}",
+                        &decoded[832..896]
+                    );
                 }
                 if loss == 0 {
-                    std::println!("mono loss0 lpc_coeffs={:?}", &decoder.lpc_fixed[..LPC_ORDER]);
+                    crate::test_trace::trace_println!(
+                        "mono loss0 lpc_coeffs={:?}",
+                        &decoder.lpc_fixed[..LPC_ORDER]
+                    );
                 }
                 let stride = DECODE_BUFFER_SIZE + decoder.overlap;
                 let start_idx = DECODE_BUFFER_SIZE - POSTFILTER_FRAME_SIZE;
-                let signal = &decoder.decode_mem_fixed[start_idx..start_idx + POSTFILTER_FRAME_SIZE];
+                let signal =
+                    &decoder.decode_mem_fixed[start_idx..start_idx + POSTFILTER_FRAME_SIZE];
                 let coef0 = qconst16_clamped(f64::from(mode.pre_emphasis[0]), 15);
                 let trace_points: &[usize] = if loss == 0 { &[208, 680] } else { &[890] };
                 let mut mem_sig = start_preemph_mem;
@@ -6587,7 +6706,7 @@ mod tests {
                     let out = sig2word16(tmp);
                     let next_mem = mult16_32_q15(coef0, tmp);
                     if trace_points.contains(&j) {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "mono loss{loss} trace[{j}] sample={} mem_before={} tmp={} out={} mem_after={}",
                             sample,
                             mem_sig,
@@ -6614,8 +6733,9 @@ mod tests {
             )
             .expect("mono set noise start band should succeed");
 
-            let decoded_len = opus_custom_decode(&mut decoder, None, &mut decoded, POSTFILTER_FRAME_SIZE)
-                .expect("mono noise-path PLC should succeed");
+            let decoded_len =
+                opus_custom_decode(&mut decoder, None, &mut decoded, POSTFILTER_FRAME_SIZE)
+                    .expect("mono noise-path PLC should succeed");
             assert_eq!(decoded_len, POSTFILTER_FRAME_SIZE);
             assert!(decoded.iter().any(|&sample| sample != 0));
             assert_eq!(decoder_plc_iir_lpc_hash(&decoder), mono_expected_noise_lpc);
@@ -6676,7 +6796,7 @@ mod tests {
                 lpc_hashes[loss] = decoder_plc_iir_lpc_hash(&decoder);
                 tail_hashes[loss] = decoder_plc_iir_tail_hash(&decoder, POSTFILTER_FRAME_SIZE);
                 pcm_hashes[loss] = fnv1a_pcm_le(&decoded);
-                std::println!(
+                crate::test_trace::trace_println!(
                     "stereo loss{loss} pitch={} lpc=0x{:08x} tail=0x{:08x} pcm=0x{:08x}",
                     decoder.last_pitch_index,
                     lpc_hashes[loss],
@@ -6718,7 +6838,7 @@ mod tests {
                 hb = (hb ^ u32::from(v & 0xFF)).wrapping_mul(16777619);
                 hb = (hb ^ u32::from(v >> 8)).wrapping_mul(16777619);
             }
-            std::println!(
+            crate::test_trace::trace_println!(
                 "mdct_tables twiddle_hash=0x{:08x} first8={:?} bitrev_hash=0x{:08x} bitrev_first=[{}, {}, {}]",
                 ht,
                 &twiddles[..8],
@@ -6729,14 +6849,10 @@ mod tests {
             );
         }
         let mut pcm = vec![0i16; POSTFILTER_FRAME_SIZE];
-        let decoded = opus_custom_decode(
-            &mut decoder,
-            Some(&packet),
-            &mut pcm,
-            POSTFILTER_FRAME_SIZE,
-        )
-            .expect("decode should succeed");
-        std::println!(
+        let decoded =
+            opus_custom_decode(&mut decoder, Some(&packet), &mut pcm, POSTFILTER_FRAME_SIZE)
+                .expect("decode should succeed");
+        crate::test_trace::trace_println!(
             "single_packet decoded={} range=0x{:08x} pcm=0x{:08x} tail=0x{:08x}",
             decoded,
             decoder.rng,
@@ -6757,58 +6873,57 @@ mod tests {
         let mut spectrum_decoder =
             opus_custom_decoder_create(&mode, 2).expect("decoder creation should succeed");
         let (spectrum, masks) = decode_packet_band_spectrum(&mut spectrum_decoder, &packet, true);
-        std::println!(
+        crate::test_trace::trace_println!(
             "single_stereo_packet spectrum=0x{:08x} masks=0x{:08x}",
             fnv1a_pcm_le(&spectrum),
             fnv1a_bytes(&masks)
         );
-        std::println!("single_stereo_packet masks_full={:?}", masks);
+        crate::test_trace::trace_println!("single_stereo_packet masks_full={:?}", masks);
         let lm_dbg = (POSTFILTER_FRAME_SIZE / mode.short_mdct_size).ilog2() as usize;
         let channel_stride = spectrum.len() / 2;
         for band in 0..mode.num_ebands {
             let band_start = (mode.e_bands[band] as usize) << lm_dbg;
             let band_end = (mode.e_bands[band + 1] as usize) << lm_dbg;
-            std::println!(
+            crate::test_trace::trace_println!(
                 "single_stereo_packet band_hash_l[{band}]=0x{:08x}",
                 fnv1a_pcm_le(&spectrum[band_start..band_end])
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "single_stereo_packet band_hash_r[{band}]=0x{:08x}",
                 fnv1a_pcm_le(&spectrum[channel_stride + band_start..channel_stride + band_end])
             );
         }
         let band17_start = (mode.e_bands[17] as usize) << lm_dbg;
-        std::println!(
+        crate::test_trace::trace_println!(
             "single_stereo_packet band17_left={:?}",
             &spectrum[band17_start..band17_start + 8]
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "single_stereo_packet band17_right={:?}",
             &spectrum[channel_stride + band17_start..channel_stride + band17_start + 8]
         );
         let mut decoder =
             opus_custom_decoder_create(&mode, 2).expect("decoder creation should succeed");
         let mut pcm = vec![0i16; POSTFILTER_FRAME_SIZE * 2];
-        let decoded = opus_custom_decode(
-            &mut decoder,
-            Some(&packet),
-            &mut pcm,
-            POSTFILTER_FRAME_SIZE,
-        )
-        .expect("decode should succeed");
-        std::println!(
+        let decoded =
+            opus_custom_decode(&mut decoder, Some(&packet), &mut pcm, POSTFILTER_FRAME_SIZE)
+                .expect("decode should succeed");
+        crate::test_trace::trace_println!(
             "single_stereo_packet decoded={} range=0x{:08x} pcm=0x{:08x} tail=0x{:08x}",
             decoded,
             decoder.rng,
             fnv1a_pcm_le(&pcm[..decoded * 2]),
             decoder_plc_iir_tail_hash(&decoder, POSTFILTER_FRAME_SIZE)
         );
-        std::println!("single_stereo_packet first16={:?}", &pcm[..32]);
-        std::println!("single_stereo_packet first64={:?}", &pcm[..128]);
-        std::println!("single_stereo_packet full_pcm={:?}", &pcm[..decoded * 2]);
+        crate::test_trace::trace_println!("single_stereo_packet first16={:?}", &pcm[..32]);
+        crate::test_trace::trace_println!("single_stereo_packet first64={:?}", &pcm[..128]);
+        crate::test_trace::trace_println!(
+            "single_stereo_packet full_pcm={:?}",
+            &pcm[..decoded * 2]
+        );
         for block in 0..(POSTFILTER_FRAME_SIZE / 64) {
             let start = block * 64 * 2;
-            std::println!(
+            crate::test_trace::trace_println!(
                 "single_stereo_packet block{block:02}=0x{:08x}",
                 fnv1a_pcm_le(&pcm[start..start + 128])
             );
@@ -6817,9 +6932,12 @@ mod tests {
         let left_tail = &decoder.decode_mem_fixed[DECODE_BUFFER_SIZE - POSTFILTER_FRAME_SIZE
             ..DECODE_BUFFER_SIZE - POSTFILTER_FRAME_SIZE + POSTFILTER_FRAME_SIZE + decoder.overlap];
         let right_base = stride;
-        let right_tail = &decoder.decode_mem_fixed[right_base + DECODE_BUFFER_SIZE - POSTFILTER_FRAME_SIZE
-            ..right_base + DECODE_BUFFER_SIZE - POSTFILTER_FRAME_SIZE + POSTFILTER_FRAME_SIZE + decoder.overlap];
-        std::println!(
+        let right_tail = &decoder.decode_mem_fixed[right_base + DECODE_BUFFER_SIZE
+            - POSTFILTER_FRAME_SIZE
+            ..right_base + DECODE_BUFFER_SIZE - POSTFILTER_FRAME_SIZE
+                + POSTFILTER_FRAME_SIZE
+                + decoder.overlap];
+        crate::test_trace::trace_println!(
             "single_stereo_packet tail0=0x{:08x} tail1=0x{:08x}",
             fnv1a_sig32_le(left_tail),
             fnv1a_sig32_le(right_tail)
@@ -6862,7 +6980,8 @@ mod tests {
         let expected_recover_hash_without_loss = 0x7456_1161u32;
         let expected_reset_loss_hash = 0x9811_584du32;
 
-        let owned_mode = opus_custom_mode_create(48_000, 960).expect("mode creation should succeed");
+        let owned_mode =
+            opus_custom_mode_create(48_000, 960).expect("mode creation should succeed");
         let mode = owned_mode.mode();
         let mut encoder = opus_custom_encoder_create(&mode, 48_000, 1, 0)
             .expect("encoder creation should succeed");
@@ -6900,8 +7019,13 @@ mod tests {
             "decode with invalid frame size should fail",
         );
         assert!(
-            opus_custom_decode(&mut decoder_a, Some(&[0]), &mut out_a, POSTFILTER_FRAME_SIZE)
-                .is_err(),
+            opus_custom_decode(
+                &mut decoder_a,
+                Some(&[0]),
+                &mut out_a,
+                POSTFILTER_FRAME_SIZE
+            )
+            .is_err(),
             "tiny packet decode should fail",
         );
         #[cfg(feature = "deep_plc")]
@@ -6919,7 +7043,7 @@ mod tests {
                 false,
                 plc
             )
-                .is_err(),
+            .is_err(),
             "decode with empty PCM output should fail",
         );
 
@@ -6927,9 +7051,14 @@ mod tests {
         let mut warm_pcm_hashes = [0u32; DECODER_STATE_WARM_FRAMES];
         for frame in 0..DECODER_STATE_WARM_FRAMES {
             fill_decoder_state_pcm(&mut pcm, POSTFILTER_FRAME_SIZE, frame * 7);
-            let packet_len =
-                opus_custom_encode(&mut encoder, &pcm, POSTFILTER_FRAME_SIZE, &mut packet, POSTFILTER_MAX_PACKET_SIZE)
-                    .expect("warmup encode should succeed");
+            let packet_len = opus_custom_encode(
+                &mut encoder,
+                &pcm,
+                POSTFILTER_FRAME_SIZE,
+                &mut packet,
+                POSTFILTER_MAX_PACKET_SIZE,
+            )
+            .expect("warmup encode should succeed");
             let decoded_a = opus_custom_decode(
                 &mut decoder_a,
                 Some(&packet[..packet_len]),
@@ -6978,9 +7107,14 @@ mod tests {
         }
 
         fill_decoder_state_pcm(&mut pcm, POSTFILTER_FRAME_SIZE, 93);
-        let recover_packet_len =
-            opus_custom_encode(&mut encoder, &pcm, POSTFILTER_FRAME_SIZE, &mut packet, POSTFILTER_MAX_PACKET_SIZE)
-                .expect("recovery encode should succeed");
+        let recover_packet_len = opus_custom_encode(
+            &mut encoder,
+            &pcm,
+            POSTFILTER_FRAME_SIZE,
+            &mut packet,
+            POSTFILTER_MAX_PACKET_SIZE,
+        )
+        .expect("recovery encode should succeed");
         opus_custom_decode(
             &mut decoder_a,
             Some(&packet[..recover_packet_len]),
@@ -6999,7 +7133,10 @@ mod tests {
         let recover_hash_without_loss = fnv1a_pcm_le(&out_b[..POSTFILTER_FRAME_SIZE]);
         if strict_ctest_vectors {
             assert_eq!(recover_hash_after_loss, expected_recover_hash_after_loss);
-            assert_eq!(recover_hash_without_loss, expected_recover_hash_without_loss);
+            assert_eq!(
+                recover_hash_without_loss,
+                expected_recover_hash_without_loss
+            );
         }
 
         opus_custom_decoder_ctl(&mut decoder_a, DecoderCtlRequest::ResetState)
@@ -7164,11 +7301,8 @@ mod tests {
         let mut pcm_hashes = [0u32; DECODER_DATAFLOW_FRAMES];
         let mut final_ranges = [0u32; DECODER_DATAFLOW_FRAMES];
 
-        opus_custom_decoder_ctl(
-            &mut decoder,
-            DecoderCtlRequest::SetStartBand(0),
-        )
-        .expect("set start band should succeed");
+        opus_custom_decoder_ctl(&mut decoder, DecoderCtlRequest::SetStartBand(0))
+            .expect("set start band should succeed");
         opus_custom_decoder_ctl(
             &mut decoder,
             DecoderCtlRequest::SetEndBand(DECODER_DATAFLOW_NB_EBANDS),
@@ -7342,7 +7476,9 @@ mod tests {
         let zeros_q15: Vec<i16> = zeros.iter().map(|&sample| float2int16(sample)).collect();
         assert_eq!(zeros_q15, [0; 8], "zero-energy vector should remain zero");
 
-        let mut mixed = [1000.0, -2000.0, 3000.0, -4000.0, 500.0, -600.0, 700.0, -800.0];
+        let mut mixed = [
+            1000.0, -2000.0, 3000.0, -4000.0, 500.0, -600.0, 700.0, -800.0,
+        ];
         decoder_noise_renormalise_runtime(&mut mixed, 8, 1.0, 0);
         let mixed_q15: Vec<i16> = mixed.iter().map(|&sample| float2int16(sample)).collect();
         assert_eq!(
@@ -7362,7 +7498,10 @@ mod tests {
 
         let mut half_gain = [30000.0, -30000.0, 20000.0, -10000.0];
         decoder_noise_renormalise_runtime(&mut half_gain, 4, 0.5, 0);
-        let half_gain_q15: Vec<i16> = half_gain.iter().map(|&sample| float2int16(sample)).collect();
+        let half_gain_q15: Vec<i16> = half_gain
+            .iter()
+            .map(|&sample| float2int16(sample))
+            .collect();
         assert_eq!(
             half_gain_q15,
             [5124, -5124, 3416, -1708],
@@ -7478,10 +7617,8 @@ mod tests {
         }
 
         #[cfg(feature = "fixed_point")]
-        let fixed_mdct = crate::celt::mdct_fixed::FixedMdctLookup::new(
-            mode.mdct.len(),
-            mode.mdct.max_shift(),
-        );
+        let fixed_mdct =
+            crate::celt::mdct_fixed::FixedMdctLookup::new(mode.mdct.len(), mode.mdct.max_shift());
         #[cfg(feature = "fixed_point")]
         let fixed_window: Vec<crate::celt::types::FixedCeltCoef> = mode
             .window
@@ -7514,7 +7651,7 @@ mod tests {
         }
 
         for (i, sample) in output.iter().enumerate() {
-            std::println!("celt_synthesis_out[{}]={:.9e}", i, sample);
+            crate::test_trace::trace_println!("celt_synthesis_out[{}]={:.9e}", i, sample);
         }
     }
 }

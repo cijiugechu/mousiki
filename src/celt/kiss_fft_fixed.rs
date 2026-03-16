@@ -287,9 +287,12 @@ impl FixedKissFftState {
                     hash ^= value.i as u32;
                     hash = hash.wrapping_mul(0x0100_0193);
                 }
-                let preview: Vec<(i32, i32)> =
-                    fout.iter().take(8).map(|value| (value.r, value.i)).collect();
-                std::println!(
+                let preview: Vec<(i32, i32)> = fout
+                    .iter()
+                    .take(8)
+                    .map(|value| (value.r, value.i))
+                    .collect();
+                crate::test_trace::trace_println!(
                     "kffixed stage={} p={} m={} n={} mm={} downshift={} hash=0x{hash:08x} first8={preview:?}",
                     stages - 1 - stage,
                     p,
@@ -306,11 +309,7 @@ impl FixedKissFftState {
     }
 }
 
-fn fft_downshift(
-    fout: &mut [FixedKissFftCpx],
-    total: &mut i32,
-    step: i32,
-) {
+fn fft_downshift(fout: &mut [FixedKissFftCpx], total: &mut i32, step: i32) {
     if step <= 0 {
         return;
     }
@@ -450,7 +449,10 @@ fn kf_bfly2(fout: &mut [FixedKissFftCpx], m: usize, n: usize) {
 
             let t3 = FixedKissFftCpx::new(
                 s_mul(sub32_ovflw(fout[base + 7].i, fout[base + 7].r), tw),
-                s_mul(neg32_ovflw(add32_ovflw(fout[base + 7].i, fout[base + 7].r)), tw),
+                s_mul(
+                    neg32_ovflw(add32_ovflw(fout[base + 7].i, fout[base + 7].r)),
+                    tw,
+                ),
             );
             fout[base + 7] = c_sub(fout[base + 3], t3);
             fout[base + 3] = c_add(fout[base + 3], t3);
@@ -621,7 +623,10 @@ fn kf_bfly5(
             );
             let scratch6 = FixedKissFftCpx::new(
                 add32_ovflw(s_mul(scratch10.i, ya.i), s_mul(scratch9.i, yb.i)),
-                neg32_ovflw(add32_ovflw(s_mul(scratch10.r, ya.i), s_mul(scratch9.r, yb.i))),
+                neg32_ovflw(add32_ovflw(
+                    s_mul(scratch10.r, ya.i),
+                    s_mul(scratch9.r, yb.i),
+                )),
             );
 
             fout[base + m + u] = c_sub(scratch5, scratch6);

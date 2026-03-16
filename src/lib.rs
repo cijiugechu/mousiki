@@ -2,7 +2,6 @@
 
 extern crate alloc;
 
-#[cfg(test)]
 mod test_trace;
 
 mod analysis;

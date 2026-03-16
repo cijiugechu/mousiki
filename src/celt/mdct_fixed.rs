@@ -176,7 +176,10 @@ fn fold_input(
 
     for _ in (n4 - quarter_overlap)..n4 {
         let re = add32_ovflw(
-            neg32_ovflw(s_mul(input[(xp1 - n2_isize) as usize], window[wp1 as usize])),
+            neg32_ovflw(s_mul(
+                input[(xp1 - n2_isize) as usize],
+                window[wp1 as usize],
+            )),
             s_mul(input[xp2 as usize], window[wp2 as usize]),
         );
         let im = add32_ovflw(
@@ -438,9 +441,13 @@ pub fn clt_mdct_backward_fixed(
         static SHIFT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
         if SHIFT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "mdctcmp shifts maxval={} sumval={} pre_shift={} post_shift={} fft_shift={}",
-                maxval, sumval, pre_shift, post_shift, fft_shift
+                maxval,
+                sumval,
+                pre_shift,
+                post_shift,
+                fft_shift
             );
         }
     }
@@ -451,9 +458,9 @@ pub fn clt_mdct_backward_fixed(
         static INPUT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
         if INPUT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-            std::println!("mdctcmp input_len={}", input.len());
+            crate::test_trace::trace_println!("mdctcmp input_len={}", input.len());
             for (idx, value) in input.iter().enumerate() {
-                std::println!("mdctcmp input[{idx}]={value}");
+                crate::test_trace::trace_println!("mdctcmp input[{idx}]={value}");
             }
         }
     }
@@ -463,9 +470,13 @@ pub fn clt_mdct_backward_fixed(
         static PRE_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
         if PRE_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-            std::println!("mdctcmp pre_array_len={}", pre.len());
+            crate::test_trace::trace_println!("mdctcmp pre_array_len={}", pre.len());
             for (idx, value) in pre.iter().enumerate() {
-                std::println!("mdctcmp pre_array[{idx}]={},{}", value.r, value.i);
+                crate::test_trace::trace_println!(
+                    "mdctcmp pre_array[{idx}]={},{}",
+                    value.r,
+                    value.i
+                );
             }
         }
     }
@@ -483,11 +494,27 @@ pub fn clt_mdct_backward_fixed(
         let mut first8 = [0i32; 8];
         let mut idx = 0usize;
         for value in pre.iter() {
-            if idx < 8 { first8[idx] = value.r; idx += 1; }
-            if idx < 8 { first8[idx] = value.i; idx += 1; }
-            if idx >= 8 { break; }
+            if idx < 8 {
+                first8[idx] = value.r;
+                idx += 1;
+            }
+            if idx < 8 {
+                first8[idx] = value.i;
+                idx += 1;
+            }
+            if idx >= 8 {
+                break;
+            }
         }
-        std::println!("mdctcmp pre_hash=0x{:08x} first=({}, {}) last=({}, {}) first8={:?}", hash, pre[0].r, pre[0].i, pre[pre.len()-1].r, pre[pre.len()-1].i, first8);
+        crate::test_trace::trace_println!(
+            "mdctcmp pre_hash=0x{:08x} first=({}, {}) last=({}, {}) first8={:?}",
+            hash,
+            pre[0].r,
+            pre[0].i,
+            pre[pre.len() - 1].r,
+            pre[pre.len() - 1].i,
+            first8
+        );
     }
     fft.process(&mut pre, fft_shift);
     #[cfg(test)]
@@ -495,9 +522,13 @@ pub fn clt_mdct_backward_fixed(
         static FFT_DUMP_COUNTER: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
         if FFT_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-            std::println!("mdctcmp fft_array_len={}", pre.len());
+            crate::test_trace::trace_println!("mdctcmp fft_array_len={}", pre.len());
             for (idx, value) in pre.iter().enumerate() {
-                std::println!("mdctcmp fft_array[{idx}]={},{}", value.r, value.i);
+                crate::test_trace::trace_println!(
+                    "mdctcmp fft_array[{idx}]={},{}",
+                    value.r,
+                    value.i
+                );
             }
         }
     }
@@ -515,11 +546,27 @@ pub fn clt_mdct_backward_fixed(
         let mut first8 = [0i32; 8];
         let mut idx = 0usize;
         for value in pre.iter() {
-            if idx < 8 { first8[idx] = value.r; idx += 1; }
-            if idx < 8 { first8[idx] = value.i; idx += 1; }
-            if idx >= 8 { break; }
+            if idx < 8 {
+                first8[idx] = value.r;
+                idx += 1;
+            }
+            if idx < 8 {
+                first8[idx] = value.i;
+                idx += 1;
+            }
+            if idx >= 8 {
+                break;
+            }
         }
-        std::println!("mdctcmp fft_hash=0x{:08x} first=({}, {}) last=({}, {}) first8={:?}", hash, pre[0].r, pre[0].i, pre[pre.len()-1].r, pre[pre.len()-1].i, first8);
+        crate::test_trace::trace_println!(
+            "mdctcmp fft_hash=0x{:08x} first=({}, {}) last=({}, {}) first8={:?}",
+            hash,
+            pre[0].r,
+            pre[0].i,
+            pre[pre.len() - 1].r,
+            pre[pre.len() - 1].i,
+            first8
+        );
     }
     post_rotate_backward(&pre, twiddles, output, window, overlap, post_shift);
     #[cfg(test)]
@@ -535,9 +582,12 @@ pub fn clt_mdct_backward_fixed(
                 hash = (hash ^ ((part >> 16) & 0xFF)).wrapping_mul(16777619);
                 hash = (hash ^ ((part >> 24) & 0xFF)).wrapping_mul(16777619);
             }
-            std::println!("mdctcmp output_len={} hash=0x{hash:08x}", output.len());
+            crate::test_trace::trace_println!(
+                "mdctcmp output_len={} hash=0x{hash:08x}",
+                output.len()
+            );
             for (idx, value) in output.iter().enumerate() {
-                std::println!("mdctcmp output[{idx}]={value}");
+                crate::test_trace::trace_println!("mdctcmp output[{idx}]={value}");
             }
         }
     }
@@ -546,7 +596,7 @@ pub fn clt_mdct_backward_fixed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::celt::fixed_arch::{float2sig, SIG_SHIFT};
+    use crate::celt::fixed_arch::{SIG_SHIFT, float2sig};
     use crate::celt::float_cast::CELT_SIG_SCALE;
     use crate::celt::mdct::{clt_mdct_backward, clt_mdct_forward};
     use crate::celt::modes::compute_mdct_window;
@@ -558,10 +608,7 @@ mod tests {
     }
 
     fn window_to_float(window: &[FixedCeltCoef]) -> Vec<f32> {
-        window
-            .iter()
-            .map(|&w| w as f32 / 32768.0)
-            .collect()
+        window.iter().map(|&w| w as f32 / 32768.0).collect()
     }
 
     fn correlation(a: &[f32], b: &[f32]) -> f32 {
@@ -626,9 +673,7 @@ mod tests {
             let max_fixed = fixed_out_float
                 .iter()
                 .fold(0.0f32, |acc, v| acc.max(v.abs()));
-            let max_float = float_out
-                .iter()
-                .fold(0.0f32, |acc, v| acc.max(v.abs()));
+            let max_float = float_out.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
             let scale = if max_fixed > 0.0 {
                 max_float / max_fixed
             } else {
@@ -687,9 +732,7 @@ mod tests {
             let max_fixed = fixed_out_float
                 .iter()
                 .fold(0.0f32, |acc, v| acc.max(v.abs()));
-            let max_float = float_out
-                .iter()
-                .fold(0.0f32, |acc, v| acc.max(v.abs()));
+            let max_float = float_out.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
             let scale = if max_fixed > 0.0 {
                 max_float / max_fixed
             } else {

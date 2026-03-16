@@ -536,12 +536,9 @@ mod range_done_trace {
             None => return,
         };
         if cfg.frame.map_or(true, |frame| frame == frame_idx) {
-            std::println!(
-                "opus_range_done[{frame_idx}].len={}",
-                buffer.len()
-            );
+            crate::test_trace::trace_println!("opus_range_done[{frame_idx}].len={}", buffer.len());
             for (idx, value) in buffer.iter().enumerate() {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "opus_range_done[{frame_idx}].byte[{idx}]=0x{value:02x}"
                 );
             }
@@ -575,13 +572,13 @@ impl Drop for RangeEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::icdf;
     use crate::celt::EcDec;
+    use crate::icdf;
+    use crate::silk::SilkRangeDecoder;
     use crate::silk::tables_other::SILK_UNIFORM4_ICDF;
     use crate::silk::tables_pulses_per_block::{
         SILK_SHELL_CODE_TABLE_OFFSETS, SILK_SHELL_CODE_TABLE0,
     };
-    use crate::silk::SilkRangeDecoder;
 
     const SILK_FRAME_TYPE_INACTIVE: ICDFContext = icdf!(256; 26, 256);
 

@@ -270,30 +270,39 @@ impl<'a> EcEnc<'a> {
         let trace_frame = enc_done_trace::frame_to_dump();
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].init.rng=0x{:08x}",
                 self.ctx.rng
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].init.val=0x{:08x}",
                 self.ctx.val
             );
-            std::println!("opus_enc_done[{frame_idx}].init.rem={}", self.ctx.rem);
-            std::println!("opus_enc_done[{frame_idx}].init.ext={}", self.ctx.ext);
-            std::println!(
+            crate::test_trace::trace_println!(
+                "opus_enc_done[{frame_idx}].init.rem={}",
+                self.ctx.rem
+            );
+            crate::test_trace::trace_println!(
+                "opus_enc_done[{frame_idx}].init.ext={}",
+                self.ctx.ext
+            );
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].init.end_window=0x{:08x}",
                 self.ctx.end_window
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].init.nend_bits={}",
                 self.ctx.nend_bits
             );
-            std::println!("opus_enc_done[{frame_idx}].init.offs={}", self.ctx.offs);
-            std::println!(
+            crate::test_trace::trace_println!(
+                "opus_enc_done[{frame_idx}].init.offs={}",
+                self.ctx.offs
+            );
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].init.end_offs={}",
                 self.ctx.end_offs
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].init.storage={}",
                 self.ctx.storage
             );
@@ -305,9 +314,9 @@ impl<'a> EcEnc<'a> {
         let mut end = (self.ctx.val + msk) & !msk;
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame {
-            std::println!("opus_enc_done[{frame_idx}].l_init={}", l);
-            std::println!("opus_enc_done[{frame_idx}].msk_init=0x{:08x}", msk);
-            std::println!("opus_enc_done[{frame_idx}].end_init=0x{:08x}", end);
+            crate::test_trace::trace_println!("opus_enc_done[{frame_idx}].l_init={}", l);
+            crate::test_trace::trace_println!("opus_enc_done[{frame_idx}].msk_init=0x{:08x}", msk);
+            crate::test_trace::trace_println!("opus_enc_done[{frame_idx}].end_init=0x{:08x}", end);
         }
         if (end | msk) >= self.ctx.val.wrapping_add(self.ctx.rng) {
             l += 1;
@@ -316,16 +325,16 @@ impl<'a> EcEnc<'a> {
         }
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame {
-            std::println!("opus_enc_done[{frame_idx}].l_adj={}", l);
-            std::println!("opus_enc_done[{frame_idx}].msk_adj=0x{:08x}", msk);
-            std::println!("opus_enc_done[{frame_idx}].end_adj=0x{:08x}", end);
+            crate::test_trace::trace_println!("opus_enc_done[{frame_idx}].l_adj={}", l);
+            crate::test_trace::trace_println!("opus_enc_done[{frame_idx}].msk_adj=0x{:08x}", msk);
+            crate::test_trace::trace_println!("opus_enc_done[{frame_idx}].end_adj=0x{:08x}", end);
         }
         #[cfg(test)]
         let mut carry_iter: OpusInt32 = 0;
         while l > 0 {
             #[cfg(test)]
             if let Some(frame_idx) = trace_frame {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "opus_enc_done[{frame_idx}].carry[{carry_iter}].in=0x{:08x}",
                     end >> EC_CODE_SHIFT
                 );
@@ -343,15 +352,15 @@ impl<'a> EcEnc<'a> {
         }
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].after_carry.offs={}",
                 self.ctx.offs
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].after_carry.rem={}",
                 self.ctx.rem
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].after_carry.ext={}",
                 self.ctx.ext
             );
@@ -364,15 +373,15 @@ impl<'a> EcEnc<'a> {
         }
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].after_window.end_offs={}",
                 self.ctx.end_offs
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].after_window.used={}",
                 used
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].after_window.window=0x{:08x}",
                 window
             );
@@ -405,15 +414,15 @@ impl<'a> EcEnc<'a> {
         self.ctx.nend_bits = used;
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].final.offs={}",
                 self.ctx.offs
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].final.end_offs={}",
                 self.ctx.end_offs
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "opus_enc_done[{frame_idx}].final.error={}",
                 self.ctx.error
             );
@@ -661,11 +670,7 @@ mod tests {
             for ft in 2..1024u32 {
                 for i in 0..ft {
                     let sym = dec.dec_uint(ft);
-                    assert_eq!(
-                        sym, i,
-                        "decoded {} instead of {} with ft of {}",
-                        sym, i, ft
-                    );
+                    assert_eq!(sym, i, "decoded {} instead of {} with ft of {}", sym, i, ft);
                 }
             }
         }
@@ -740,7 +745,10 @@ mod tests {
 
             // Patching more bits than available should fail
             enc.enc_patch_initial_bits(0, 5);
-            assert_ne!(enc.error, 0, "patch_initial_bits didn't fail when it should have");
+            assert_ne!(
+                enc.error, 0,
+                "patch_initial_bits didn't fail when it should have"
+            );
             enc.enc_done();
             assert_eq!(enc.range_bytes(), 1);
             assert_eq!(buf[0], 192);
@@ -777,7 +785,10 @@ mod tests {
                 enc.enc_bits(0, 1);
             }
             enc.enc_done();
-            assert_ne!(enc.error, 0, "raw bits overfill didn't fail when it should have");
+            assert_ne!(
+                enc.error, 0,
+                "raw bits overfill didn't fail when it should have"
+            );
         }
 
         // Test 2: 17 raw bits in two bytes should fail
@@ -834,13 +845,7 @@ mod tests {
 
             // Generate random data
             let data: Vec<u32> = (0..sz)
-                .map(|_| {
-                    if zeros {
-                        0
-                    } else {
-                        rng.next() % ft
-                    }
-                })
+                .map(|_| if zeros { 0 } else { rng.next() % ft })
                 .collect();
 
             // Encode

@@ -11,10 +11,6 @@ use alloc::vec;
 use crate::celt::entcode::{ec_tell, ec_tell_frac};
 use crate::celt::entdec::EcDec;
 use crate::celt::entenc::{EcEnc, EcEncSnapshot};
-use crate::celt::rate::MAX_FINE_BITS;
-use crate::celt::types::{CeltGlog, OpusCustomMode};
-#[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltEner, FixedCeltGlog};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::DB_SHIFT;
 #[cfg(feature = "fixed_point")]
@@ -23,6 +19,10 @@ use crate::celt::fixed_ops::{
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
+use crate::celt::rate::MAX_FINE_BITS;
+use crate::celt::types::{CeltGlog, OpusCustomMode};
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{FixedCeltEner, FixedCeltGlog};
 use libm::floorf;
 
 use crate::celt::math::{celt_exp2, celt_log2};
@@ -132,8 +132,8 @@ pub(crate) const E_MEANS: [f32; 25] = [
 
 #[cfg(feature = "fixed_point")]
 const E_MEANS_Q4: [i8; 25] = [
-    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60, 60,
-    60, 60, 60,
+    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60, 60, 60,
+    60, 60,
 ];
 
 #[cfg(feature = "fixed_point")]
@@ -344,7 +344,10 @@ pub(crate) fn loss_distortion_fixed(
         old_e_bands.len() >= channels * bands_per_channel,
         "energy buffers must cover channel bands"
     );
-    assert!(end <= bands_per_channel, "end band must lie within the channel span");
+    assert!(
+        end <= bands_per_channel,
+        "end band must lie within the channel span"
+    );
 
     let mut dist: FixedCeltGlog = 0;
     let shift = (DB_SHIFT - 7) as u32;
@@ -402,8 +405,9 @@ fn quant_coarse_energy_impl(
 
     for band in start..end {
         #[cfg(test)]
-        let trace_should_dump =
-            trace_frame_idx.map_or(false, |frame_idx| coarse_energy_trace::should_dump(frame_idx, band));
+        let trace_should_dump = trace_frame_idx.map_or(false, |frame_idx| {
+            coarse_energy_trace::should_dump(frame_idx, band)
+        });
         for (channel, prev_entry) in prev.iter_mut().enumerate().take(channels) {
             let idx = channel * stride + band;
             let x = e_bands[idx];
@@ -526,7 +530,11 @@ fn quant_coarse_energy_impl_fixed(
     let stride = mode.num_ebands;
     let mut prev = vec![0i32; channels];
     let coef = if intra { 0 } else { PRED_COEF_Q15[lm] };
-    let beta = if intra { BETA_INTRA_Q15 } else { BETA_COEF_Q15[lm] };
+    let beta = if intra {
+        BETA_INTRA_Q15
+    } else {
+        BETA_COEF_Q15[lm]
+    };
     let mut badness = 0;
     let channels_i32 = channels as i32;
 
@@ -954,7 +962,11 @@ pub(crate) fn unquant_coarse_energy_fixed(
     let prob_model = &E_PROB_MODEL[lm][usize::from(intra)];
     let mut prev = vec![0i32; channels];
     let coef = if intra { 0 } else { PRED_COEF_Q15[lm] };
-    let beta = if intra { BETA_INTRA_Q15 } else { BETA_COEF_Q15[lm] };
+    let beta = if intra {
+        BETA_INTRA_Q15
+    } else {
+        BETA_COEF_Q15[lm]
+    };
     let budget = (dec.ctx().storage * 8) as i32;
 
     for band in start..end {
@@ -1019,12 +1031,7 @@ pub(crate) fn amp2_log2(
             #[cfg(test)]
             if let Some(frame_idx) = trace_frame_idx {
                 amp2log2_trace::dump_if_match(
-                    frame_idx,
-                    band_idx,
-                    channel,
-                    *energy,
-                    mean,
-                    *log_slot,
+                    frame_idx, band_idx, channel, *energy, mean, *log_slot,
                 );
             }
         }
@@ -1198,26 +1205,26 @@ mod amp2log2_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].energy={energy:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].mean={mean:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].log={log_val:.9e}"
         );
         let want_bits = config().map_or(false, |cfg| cfg.want_bits);
         if want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].energy_bits=0x{:08x}",
                 energy.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].mean_bits=0x{:08x}",
                 mean.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_amp2log2[{frame_idx}].band[{band}].c[{channel}].log_bits=0x{:08x}",
                 log_val.to_bits()
             );
@@ -1440,54 +1447,54 @@ mod fine_energy_trace {
             return;
         }
         let want_bits = config().map_or(false, |cfg| cfg.want_bits);
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].fine={fine}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].frac={frac}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].q2={q2}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].tell_before={tell_before}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].tell_after={tell_after}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].old_before={old_before:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].old_after={old_after:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].error_before={error_before:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].error_after={error_after:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].offset={offset:.9e}"
         );
         if want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].old_before_bits=0x{:08x}",
                 old_before.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].old_after_bits=0x{:08x}",
                 old_after.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].error_before_bits=0x{:08x}",
                 error_before.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].error_after_bits=0x{:08x}",
                 error_after.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_fine_energy[{frame_idx}].band[{band}].c[{channel}].offset_bits=0x{:08x}",
                 offset.to_bits()
             );
@@ -1583,104 +1590,104 @@ mod coarse_energy_trace {
             return;
         }
         let pass = if intra { "intra" } else { "inter" };
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].x={x:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].old_before={old_before:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].oldE={old_e:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].f={f:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].qi0={qi0}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].qi={qi}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].decay_bound={decay_bound:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].tell_before={tell_before}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].tell_after={tell_after}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].bits_left={bits_left}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].q={q:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].tmp={tmp:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].prev_before={prev_before:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].prev_after={prev_after:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].error_before={error_before:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].error_after={error_after:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].old_after={old_after:.9e}"
         );
         let want_bits = config().map_or(false, |cfg| cfg.want_bits);
         if want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].x_bits=0x{:08x}",
                 x.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].old_before_bits=0x{:08x}",
                 old_before.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].oldE_bits=0x{:08x}",
                 old_e.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].f_bits=0x{:08x}",
                 f.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].decay_bound_bits=0x{:08x}",
                 decay_bound.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].q_bits=0x{:08x}",
                 q.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].tmp_bits=0x{:08x}",
                 tmp.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].prev_before_bits=0x{:08x}",
                 prev_before.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].prev_after_bits=0x{:08x}",
                 prev_after.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].error_before_bits=0x{:08x}",
                 error_before.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].error_after_bits=0x{:08x}",
                 error_after.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_coarse_energy[{frame_idx}].pass[{pass}].band[{band}].c[{channel}].old_after_bits=0x{:08x}",
                 old_after.to_bits()
             );
@@ -1811,10 +1818,7 @@ pub(crate) fn quant_energy_finalise_fixed(
             {
                 let q2 = if error_slice[band] < 0 { 0 } else { 1 };
                 enc.enc_bits(q2 as u32, 1);
-                let offset = shr32(
-                    sub32(shl32(q2, DB_SHIFT), gconst(0.5)),
-                    fine_bits + 1,
-                );
+                let offset = shr32(sub32(shl32(q2, DB_SHIFT), gconst(0.5)), fine_bits + 1);
                 old_slice[band] = add32(old_slice[band], offset);
                 error_slice[band] = sub32(error_slice[band], offset);
                 bits_left -= 1;
@@ -1986,10 +1990,7 @@ pub(crate) fn unquant_energy_finalise_fixed(
             for channel in 0..channels {
                 let idx = channel * stride + band;
                 let q2 = dec.dec_bits(1) as i32;
-                let offset = shr32(
-                    sub32(shl32(q2, DB_SHIFT), gconst(0.5)),
-                    fine_bits + 1,
-                );
+                let offset = shr32(sub32(shl32(q2, DB_SHIFT), gconst(0.5)), fine_bits + 1);
                 old_ebands[idx] = add32(old_ebands[idx], offset);
                 bits_left -= 1;
             }
@@ -2016,14 +2017,14 @@ mod tests {
     use crate::celt::entcode::ec_tell;
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
-    use crate::celt::rate::MAX_FINE_BITS;
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::DB_SHIFT;
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_ops::{add32, qconst32, shl32, sub32};
-    use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
+    use crate::celt::rate::MAX_FINE_BITS;
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::{FixedCeltEner, FixedCeltGlog};
+    use crate::celt::types::{MdctLookup, OpusCustomMode, PulseCacheData};
 
     #[test]
     fn loss_distortion_matches_manual_accumulation() {
@@ -2116,7 +2117,10 @@ mod tests {
                 let idx = channel * 3 + band;
                 let mean = i32::from(E_MEANS_Q4[band]);
                 let expected = add32(
-                    sub32(super::celt_log2_db_fixed(band_e[idx]), shl32(mean, DB_SHIFT - 4)),
+                    sub32(
+                        super::celt_log2_db_fixed(band_e[idx]),
+                        shl32(mean, DB_SHIFT - 4),
+                    ),
                     gconst_q24(2.0),
                 );
                 assert_eq!(band_log_e[idx], expected);
@@ -2328,7 +2332,16 @@ mod tests {
         let fine_quant = [0, 1, MAX_FINE_BITS, 2];
         let fine_priority = [0, 1, 0, 1];
 
-        quant_fine_energy_fixed(&mode, 0, 4, &mut old_enc, &mut error, &fine_quant, &mut enc, 1);
+        quant_fine_energy_fixed(
+            &mode,
+            0,
+            4,
+            &mut old_enc,
+            &mut error,
+            &fine_quant,
+            &mut enc,
+            1,
+        );
         quant_energy_finalise_fixed(
             &mode,
             0,

@@ -22,8 +22,8 @@ mod fft_stage_trace {
     use std::env;
     use std::format;
     use std::string::String;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::vec::Vec;
 
     use super::KissFftCpx;
@@ -153,36 +153,38 @@ mod fft_stage_trace {
             }
             let src = fin[src_idx];
             let scaled = KissFftCpx::new(src.r * scale, src.i * scale);
-            std::println!("fft_stage[{frame_idx}].bitrev_src.bin[{dest}].src={src_idx}");
-            std::println!(
+            crate::test_trace::trace_println!(
+                "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].src={src_idx}"
+            );
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].input.r={}",
                 format_value(src.r as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].input.i={}",
                 format_value(src.i as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].input_bits.r=0x{:08x}",
                 src.r.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].input_bits.i=0x{:08x}",
                 src.i.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].scaled.r={}",
                 format_value(scaled.r as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].scaled.i={}",
                 format_value(scaled.i as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].scaled_bits.r=0x{:08x}",
                 scaled.r.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev_src.bin[{dest}].scaled_bits.i=0x{:08x}",
                 scaled.i.to_bits()
             );
@@ -203,11 +205,11 @@ mod fft_stage_trace {
             if !should_trace_bin(cfg, bin) {
                 continue;
             }
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev.bin[{bin}].r={}",
                 format_value(buf[bin].r as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].bitrev.bin[{bin}].i={}",
                 format_value(buf[bin].i as f64)
             );
@@ -225,12 +227,12 @@ mod fft_stage_trace {
             return;
         }
         let count = nfft.min(twiddles.len());
-        std::println!("fft_twiddles.nfft={count}");
+        crate::test_trace::trace_println!("fft_twiddles.nfft={count}");
         for (idx, value) in twiddles.iter().take(count).enumerate() {
             let r = value.r.to_bits();
             let i = value.i.to_bits();
-            std::println!("fft_twiddles[{idx}].bits.r=0x{r:08x}");
-            std::println!("fft_twiddles[{idx}].bits.i=0x{i:08x}");
+            crate::test_trace::trace_println!("fft_twiddles[{idx}].bits.r=0x{r:08x}");
+            crate::test_trace::trace_println!("fft_twiddles[{idx}].bits.i=0x{i:08x}");
         }
     }
 
@@ -242,7 +244,7 @@ mod fft_stage_trace {
             return;
         }
         let bits = phase.to_bits();
-        std::println!("fft_twiddle_phase[{index}].bits=0x{bits:016x}");
+        crate::test_trace::trace_println!("fft_twiddle_phase[{index}].bits=0x{bits:016x}");
     }
 
     pub(crate) fn dump_stage(stage: usize, buf: &[KissFftCpx]) {
@@ -259,11 +261,11 @@ mod fft_stage_trace {
             if !should_trace_bin(cfg, bin) {
                 continue;
             }
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bin[{bin}].r={}",
                 format_value(buf[bin].r as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bin[{bin}].i={}",
                 format_value(buf[bin].i as f64)
             );
@@ -291,9 +293,7 @@ mod fft_stage_trace {
     }
 
     pub(crate) fn end_bfly_stage(stage: usize) {
-        if BFLY_ENABLED.load(Ordering::Relaxed)
-            && BFLY_STAGE.load(Ordering::Relaxed) == stage
-        {
+        if BFLY_ENABLED.load(Ordering::Relaxed) && BFLY_STAGE.load(Ordering::Relaxed) == stage {
             BFLY_ENABLED.store(false, Ordering::Relaxed);
             BFLY_HEX.store(false, Ordering::Relaxed);
             BFLY_DETAIL_INDEX.store(4, Ordering::Relaxed);
@@ -323,11 +323,11 @@ mod fft_stage_trace {
             return;
         };
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}.r={}",
             format_value(value.r as f64)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}.i={}",
             format_value(value.i as f64)
         );
@@ -341,11 +341,11 @@ mod fft_stage_trace {
             return;
         };
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}.bits.r=0x{bits:08x}",
             bits = value.r.to_bits()
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}.bits.i=0x{bits:08x}",
             bits = value.i.to_bits()
         );
@@ -359,7 +359,7 @@ mod fft_stage_trace {
             return;
         };
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}={}",
             format_value(value as f64)
         );
@@ -373,7 +373,7 @@ mod fft_stage_trace {
             return;
         };
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}_bits=0x{bits:08x}",
             bits = value.to_bits()
         );
@@ -388,7 +388,7 @@ mod fft_stage_trace {
         };
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
         for (slot, idx) in indices.into_iter().enumerate() {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].idx[{slot}]={idx}"
             );
         }
@@ -402,7 +402,7 @@ mod fft_stage_trace {
             return;
         };
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
-        std::println!(
+        crate::test_trace::trace_println!(
             "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].{label}={index}"
         );
     }
@@ -417,20 +417,20 @@ mod fft_stage_trace {
         let stage = BFLY_STAGE.load(Ordering::Relaxed);
         let bfly_idx = BFLY_INDEX.fetch_add(1, Ordering::Relaxed);
         for (idx, value) in before.iter().enumerate() {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].in[{idx}].r={}",
                 format_value(value.r as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].in[{idx}].i={}",
                 format_value(value.i as f64)
             );
             let out = after[idx];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].out[{idx}].r={}",
                 format_value(out.r as f64)
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "fft_stage[{frame_idx}].stage[{stage}].bfly[{bfly_idx}].out[{idx}].i={}",
                 format_value(out.i as f64)
             );
@@ -993,11 +993,7 @@ fn kf_bfly3(
             fout[base + m + k] = fout_m;
             #[cfg(test)]
             if trace_enabled {
-                let after = [
-                    fout[base + k],
-                    fout[base + m + k],
-                    fout[base + m2 + k],
-                ];
+                let after = [fout[base + k], fout[base + m + k], fout[base + m2 + k]];
                 fft_stage_trace::dump_bfly(&before, &after);
             }
         }
@@ -1282,8 +1278,7 @@ fn kf_bfly5(
 
             let scratch11_r = mul_add_f32(scratch7.r, yb.r, scratch8.r * ya.r);
             let scratch11_i = mul_add_f32(scratch7.i, yb.r, scratch8.i * ya.r);
-            let scratch11 =
-                KissFftCpx::new(scratch0.r + scratch11_r, scratch0.i + scratch11_i);
+            let scratch11 = KissFftCpx::new(scratch0.r + scratch11_r, scratch0.i + scratch11_i);
             let scratch12 = KissFftCpx::new(
                 mul_add_f32(scratch9.i, ya.i, -scratch10.i * yb.i),
                 mul_add_f32(scratch10.r, yb.i, -scratch9.r * ya.i),

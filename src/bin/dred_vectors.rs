@@ -1,5 +1,11 @@
 extern crate alloc;
 
+#[cfg(test)]
+#[path = "../test_trace.rs"]
+mod test_trace;
+
+#[cfg(feature = "deep_plc")]
+use std::borrow::Cow;
 #[cfg(feature = "deep_plc")]
 use std::env;
 #[cfg(feature = "deep_plc")]
@@ -9,29 +15,27 @@ use std::io::{self, Read};
 #[cfg(feature = "deep_plc")]
 use std::path::{Path, PathBuf};
 use std::process;
-#[cfg(feature = "deep_plc")]
-use std::borrow::Cow;
 
 #[cfg(feature = "deep_plc")]
 use libm::{cosf, powf, sqrtf};
 #[cfg(feature = "deep_plc")]
 use mousiki::dred::DredVectorDecoder;
 #[cfg(feature = "deep_plc")]
-use mousiki::fargan::{FarganState, FARGAN_CONT_SAMPLES, FARGAN_FRAME_SIZE};
+use mousiki::fargan::{FARGAN_CONT_SAMPLES, FARGAN_FRAME_SIZE, FarganState};
 #[cfg(feature = "deep_plc")]
 use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
 #[cfg(feature = "deep_plc_weights")]
 use mousiki_deep_plc_weights::DNN_BLOB;
 
 #[cfg(feature = "deep_plc")]
-#[path = "../celt/mini_kfft.rs"]
-pub mod celt_mini_kfft;
+#[path = "../celt/fft_bitrev_480.rs"]
+pub mod celt_fft_bitrev_480;
 #[cfg(feature = "deep_plc")]
 #[path = "../celt/fft_twiddles_48000_960.rs"]
 pub mod celt_fft_twiddles_48000_960;
 #[cfg(feature = "deep_plc")]
-#[path = "../celt/fft_bitrev_480.rs"]
-pub mod celt_fft_bitrev_480;
+#[path = "../celt/mini_kfft.rs"]
+pub mod celt_mini_kfft;
 #[cfg(feature = "deep_plc")]
 pub mod celt_types {
     pub type OpusInt16 = i16;
@@ -39,9 +43,9 @@ pub mod celt_types {
 
 #[cfg(feature = "deep_plc")]
 mod celt {
-    pub use crate::celt_mini_kfft as mini_kfft;
-    pub use crate::celt_fft_twiddles_48000_960 as fft_twiddles_48000_960;
     pub use crate::celt_fft_bitrev_480 as fft_bitrev_480;
+    pub use crate::celt_fft_twiddles_48000_960 as fft_twiddles_48000_960;
+    pub use crate::celt_mini_kfft as mini_kfft;
     pub use crate::celt_types as types;
 }
 
@@ -113,9 +117,10 @@ fn run() -> Result<(), String> {
 
     #[cfg(feature = "deep_plc_weights")]
     let blob = match args.dnn_blob {
-        Some(ref path) => Cow::Owned(fs::read(path).map_err(|err| {
-            format!("Error opening DNN blob {}: {err}", path.display())
-        })?),
+        Some(ref path) => Cow::Owned(
+            fs::read(path)
+                .map_err(|err| format!("Error opening DNN blob {}: {err}", path.display()))?,
+        ),
         None => Cow::Borrowed(DNN_BLOB),
     };
     #[cfg(not(feature = "deep_plc_weights"))]
@@ -213,8 +218,7 @@ fn run_dred_decode_tests(vector_path: &Path, decoder: &DredVectorDecoder) -> Res
         let decoded = decode_dred_file(&dred_bit, decoder)?;
         println!("successfully decoded");
 
-        let reference =
-            read_f32_file(&vector_path.join(format!("vector{i}_dred_dec.f32")))?;
+        let reference = read_f32_file(&vector_path.join(format!("vector{i}_dred_dec.f32")))?;
         compare_features(&reference, &decoded, DRED_DECODE_THRESHOLDS)?;
         println!("output matches reference");
         println!();
@@ -266,18 +270,18 @@ fn run_opus_tests(vector_path: &Path) -> Result<(), String> {
 
 #[cfg(feature = "deep_plc")]
 fn decode_dred_file(path: &Path, decoder: &DredVectorDecoder) -> Result<Vec<f32>, String> {
-    let mut file = fs::File::open(path)
-        .map_err(|err| format!("Error opening {}: {err}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|err| format!("Error opening {}: {err}", path.display()))?;
     let mut output = Vec::new();
 
     loop {
         let Some(q0) = read_u32_be(&mut file)? else {
             break;
         };
-        let nb_chunks = read_u32_be(&mut file)?
-            .ok_or_else(|| "Truncated DRED header".to_string())?;
-        let nb_bytes = read_u32_be(&mut file)?
-            .ok_or_else(|| "Truncated DRED header".to_string())?;
+        let nb_chunks =
+            read_u32_be(&mut file)?.ok_or_else(|| "Truncated DRED header".to_string())?;
+        let nb_bytes =
+            read_u32_be(&mut file)?.ok_or_else(|| "Truncated DRED header".to_string())?;
 
         let mut payload = vec![0u8; nb_bytes as usize];
         if let Err(err) = file.read_exact(&mut payload) {
@@ -310,8 +314,7 @@ fn read_u32_be(reader: &mut impl Read) -> Result<Option<u32>, String> {
 
 #[cfg(feature = "deep_plc")]
 fn read_f32_file(path: &Path) -> Result<Vec<f32>, String> {
-    let data =
-        fs::read(path).map_err(|err| format!("Error opening {}: {err}", path.display()))?;
+    let data = fs::read(path).map_err(|err| format!("Error opening {}: {err}", path.display()))?;
     if data.len() % 4 != 0 {
         return Err(format!("Invalid float data length: {}", path.display()));
     }
@@ -326,8 +329,7 @@ fn read_f32_file(path: &Path) -> Result<Vec<f32>, String> {
 
 #[cfg(feature = "deep_plc")]
 fn read_i16_file(path: &Path) -> Result<Vec<i16>, String> {
-    let data =
-        fs::read(path).map_err(|err| format!("Error opening {}: {err}", path.display()))?;
+    let data = fs::read(path).map_err(|err| format!("Error opening {}: {err}", path.display()))?;
     if data.len() % 2 != 0 {
         return Err(format!("Invalid PCM data length: {}", path.display()));
     }
@@ -339,10 +341,7 @@ fn read_i16_file(path: &Path) -> Result<Vec<i16>, String> {
 }
 
 #[cfg(feature = "deep_plc")]
-fn synthesize_fargan_audio(
-    fargan: &mut FarganState,
-    features: &[f32],
-) -> Result<Vec<i16>, String> {
+fn synthesize_fargan_audio(fargan: &mut FarganState, features: &[f32]) -> Result<Vec<i16>, String> {
     if !features.len().is_multiple_of(NB_FEATURES) {
         return Err("Feature vector length is not a multiple of 20".to_string());
     }
@@ -381,8 +380,8 @@ fn synthesize_fargan_audio(
 
 #[cfg(feature = "deep_plc")]
 fn decode_opus_file(path: &Path, sampling_rate: i32, channels: i32) -> Result<Vec<i16>, String> {
-    let mut file = fs::File::open(path)
-        .map_err(|err| format!("Error opening {}: {err}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|err| format!("Error opening {}: {err}", path.display()))?;
     let mut decoder = opus_decoder_create(sampling_rate, channels)
         .map_err(|err| format!("opus_decoder_create failed: {err:?}"))?;
     let max_frame_size = (6 * sampling_rate / 50) as usize;
@@ -393,10 +392,12 @@ fn decode_opus_file(path: &Path, sampling_rate: i32, channels: i32) -> Result<Ve
         let Some(len) = read_u32_be(&mut file)? else {
             break;
         };
-        let _range = read_u32_be(&mut file)?
-            .ok_or_else(|| "Truncated Opus packet header".to_string())?;
+        let _range =
+            read_u32_be(&mut file)?.ok_or_else(|| "Truncated Opus packet header".to_string())?;
         let mut payload = vec![0u8; len as usize];
-        if len > 0 && let Err(err) = file.read_exact(&mut payload) {
+        if len > 0
+            && let Err(err) = file.read_exact(&mut payload)
+        {
             if err.kind() == io::ErrorKind::UnexpectedEof {
                 break;
             }
@@ -430,9 +431,7 @@ fn compare_features(
     actual: &[f32],
     thresholds: (f32, f32, f32),
 ) -> Result<(), String> {
-    if !reference.len().is_multiple_of(NB_FEATURES)
-        || !actual.len().is_multiple_of(NB_FEATURES)
-    {
+    if !reference.len().is_multiple_of(NB_FEATURES) || !actual.len().is_multiple_of(NB_FEATURES) {
         return Err("Feature buffer length must be a multiple of 20".to_string());
     }
     if reference.len() != actual.len() {
@@ -484,9 +483,7 @@ fn compare_features(
 
     tot_error = tot_error.sqrt();
     max_error = max_error.sqrt();
-    eprintln!(
-        "total = {tot_error}, max = {max_error}, pitch = {pitch_error}"
-    );
+    eprintln!("total = {tot_error}, max = {max_error}, pitch = {pitch_error}");
 
     let (tot_threshold, max_threshold, pitch_threshold) = thresholds;
     if tot_error <= f64::from(tot_threshold)
@@ -548,8 +545,7 @@ fn compare_audio_float(
     if xlength != ylength {
         return Err(format!(
             "Sample counts do not match ({} != {})",
-            xlength,
-            ylength
+            xlength, ylength
         ));
     }
     if xlength < TEST_WIN_SIZE {
@@ -568,12 +564,7 @@ fn compare_audio_float(
         let ycorr = compute_xcorr(actual, offset);
         let mut maxcorr = -1.0f32;
         let mut pitch = 0usize;
-        for (i, &value) in xcorr
-            .iter()
-            .enumerate()
-            .take(PITCH_MAX + 1)
-            .skip(PITCH_MIN)
-        {
+        for (i, &value) in xcorr.iter().enumerate().take(PITCH_MAX + 1).skip(PITCH_MIN) {
             if value > maxcorr {
                 maxcorr = value;
                 pitch = i;
@@ -675,8 +666,8 @@ fn compare_audio_float(
             for bin in BANDS[band]..BANDS[band + 1] {
                 let f = bin as f32 * core::f32::consts::PI / 960.0;
                 let thresh = 0.1 / (0.15 * 0.15 + f * f);
-                let re = powf(y[base + bin] + thresh, LOUDNESS)
-                    - powf(x[base + bin] + thresh, LOUDNESS);
+                let re =
+                    powf(y[base + bin] + thresh, LOUDNESS) - powf(x[base + bin] + thresh, LOUDNESS);
                 let im = re * re;
                 tb2 += w * f64::from(powf(x[base + bin] + thresh, 2.0 * LOUDNESS));
                 eb2 += w * f64::from(im);
@@ -764,19 +755,12 @@ fn inner_prod(x: &[f32], y: &[f32]) -> f32 {
 }
 
 #[cfg(feature = "deep_plc")]
-fn spectrum(
-    ps: &mut [f32],
-    input: &[f32],
-    nframes: usize,
-    window_size: usize,
-    step: usize,
-) {
+fn spectrum(ps: &mut [f32], input: &[f32], nframes: usize, window_size: usize, step: usize) {
     let ps_sz = window_size / 2;
     let mut window = vec![0.0f32; window_size];
     for (i, slot) in window.iter_mut().enumerate().take(window_size) {
         let n = (i as f32 + 0.5) / window_size as f32;
-        *slot = 0.35875
-            - 0.48829 * cosf(2.0 * core::f32::consts::PI * n)
+        *slot = 0.35875 - 0.48829 * cosf(2.0 * core::f32::consts::PI * n)
             + 0.14128 * cosf(4.0 * core::f32::consts::PI * n)
             - 0.01168 * cosf(6.0 * core::f32::consts::PI * n);
     }

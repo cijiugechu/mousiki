@@ -96,34 +96,34 @@ mod fast_atan2_trace {
                 return;
             }
         }
-        std::println!("analysis_fast_atan2.x2={:.9e}", x2 as f64);
-        std::println!("analysis_fast_atan2.x2_bits=0x{:08x}", x2.to_bits());
-        std::println!("analysis_fast_atan2.y2={:.9e}", y2 as f64);
-        std::println!("analysis_fast_atan2.y2_bits=0x{:08x}", y2.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.x2={:.9e}", x2 as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.x2_bits=0x{:08x}", x2.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.y2={:.9e}", y2 as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.y2_bits=0x{:08x}", y2.to_bits());
         if branch_x2_lt_y2 {
-            std::println!("analysis_fast_atan2.branch=x2<y2");
+            crate::test_trace::trace_println!("analysis_fast_atan2.branch=x2<y2");
         } else {
-            std::println!("analysis_fast_atan2.branch=x2>=y2");
+            crate::test_trace::trace_println!("analysis_fast_atan2.branch=x2>=y2");
         }
-        std::println!("analysis_fast_atan2.cb={:.9e}", cb as f64);
-        std::println!("analysis_fast_atan2.cb_bits=0x{:08x}", cb.to_bits());
-        std::println!("analysis_fast_atan2.cc={:.9e}", cc as f64);
-        std::println!("analysis_fast_atan2.cc_bits=0x{:08x}", cc.to_bits());
-        std::println!("analysis_fast_atan2.t1={:.9e}", t1 as f64);
-        std::println!("analysis_fast_atan2.t1_bits=0x{:08x}", t1.to_bits());
-        std::println!("analysis_fast_atan2.t2={:.9e}", t2 as f64);
-        std::println!("analysis_fast_atan2.t2_bits=0x{:08x}", t2.to_bits());
-        std::println!("analysis_fast_atan2.den={:.9e}", den as f64);
-        std::println!("analysis_fast_atan2.den_bits=0x{:08x}", den.to_bits());
-        std::println!("analysis_fast_atan2.xy={:.9e}", xy as f64);
-        std::println!("analysis_fast_atan2.xy_bits=0x{:08x}", xy.to_bits());
-        std::println!("analysis_fast_atan2.num_term={:.9e}", num_term as f64);
-        std::println!(
+        crate::test_trace::trace_println!("analysis_fast_atan2.cb={:.9e}", cb as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.cb_bits=0x{:08x}", cb.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.cc={:.9e}", cc as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.cc_bits=0x{:08x}", cc.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.t1={:.9e}", t1 as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.t1_bits=0x{:08x}", t1.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.t2={:.9e}", t2 as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.t2_bits=0x{:08x}", t2.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.den={:.9e}", den as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.den_bits=0x{:08x}", den.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.xy={:.9e}", xy as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.xy_bits=0x{:08x}", xy.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.num_term={:.9e}", num_term as f64);
+        crate::test_trace::trace_println!(
             "analysis_fast_atan2.num_term_bits=0x{:08x}",
             num_term.to_bits()
         );
-        std::println!("analysis_fast_atan2.num={:.9e}", num as f64);
-        std::println!("analysis_fast_atan2.num_bits=0x{:08x}", num.to_bits());
+        crate::test_trace::trace_println!("analysis_fast_atan2.num={:.9e}", num as f64);
+        crate::test_trace::trace_println!("analysis_fast_atan2.num_bits=0x{:08x}", num.to_bits());
     }
 }
 
@@ -213,21 +213,7 @@ pub(crate) fn fast_atan2f(y: f32, x: f32) -> f32 {
         let num = -xy * num_term;
         let result = num / den + if y < 0.0 { -CE } else { CE };
         #[cfg(test)]
-        fast_atan2_trace::maybe_dump(
-            y,
-            x,
-            x2,
-            y2,
-            true,
-            CB,
-            CC,
-            t1,
-            t2,
-            den,
-            xy,
-            num_term,
-            num,
-        );
+        fast_atan2_trace::maybe_dump(y, x, x2, y2, true, CB, CC, t1, t2, den, xy, num_term, num);
         result
     } else {
         let t1 = mul_add_c_order(CB, y2, x2);
@@ -236,24 +222,10 @@ pub(crate) fn fast_atan2f(y: f32, x: f32) -> f32 {
         let xy = x * y;
         let num_term = mul_add_c_order(CA, y2, x2);
         let num = xy * num_term;
-        let result = num / den + if y < 0.0 { -CE } else { CE }
-            - if x * y < 0.0 { -CE } else { CE };
+        let result =
+            num / den + if y < 0.0 { -CE } else { CE } - if x * y < 0.0 { -CE } else { CE };
         #[cfg(test)]
-        fast_atan2_trace::maybe_dump(
-            y,
-            x,
-            x2,
-            y2,
-            false,
-            CB,
-            CC,
-            t1,
-            t2,
-            den,
-            xy,
-            num_term,
-            num,
-        );
+        fast_atan2_trace::maybe_dump(y, x, x2, y2, false, CB, CC, t1, t2, den, xy, num_term, num);
         result
     }
 }

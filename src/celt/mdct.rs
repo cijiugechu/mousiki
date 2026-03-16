@@ -119,19 +119,7 @@ fn pre_rotate_forward(
         #[cfg(test)]
         if let Some(ctx) = ctx {
             mdct_trace::dump_stage_pre_rotate_terms(
-                ctx,
-                i,
-                t0,
-                t1,
-                re,
-                im,
-                mul_re_t0,
-                mul_im_t1,
-                mul_im_t0,
-                mul_re_t1,
-                yr,
-                yi,
-                yr_nf,
+                ctx, i, t0, t1, re, im, mul_re_t0, mul_im_t1, mul_im_t0, mul_re_t1, yr, yi, yr_nf,
                 yi_nf,
             );
         }
@@ -560,7 +548,7 @@ pub(crate) mod mdct_trace {
         let len = input.len();
         let start = ctx.start.min(len);
         let end = start.saturating_add(ctx.count).min(len);
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_in[{}].{}.call[{}].ch[{}].block[{}].len={}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -571,7 +559,7 @@ pub(crate) mod mdct_trace {
         );
         for i in start..end {
             let value = input[i];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_in[{}].{}.call[{}].ch[{}].block[{}].idx[{}]={:.9}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -582,7 +570,7 @@ pub(crate) mod mdct_trace {
                 value
             );
             if ctx.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct_in[{}].{}.call[{}].ch[{}].block[{}].idx_bits[{}]=0x{:08x}",
                     ctx.frame,
                     tag_name(ctx.tag),
@@ -600,7 +588,7 @@ pub(crate) mod mdct_trace {
         let len = folded.len();
         let start = ctx.start.min(len);
         let end = start.saturating_add(ctx.count).min(len);
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win[{}].{}.call[{}].ch[{}].block[{}].len={}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -611,7 +599,7 @@ pub(crate) mod mdct_trace {
         );
         for i in start..end {
             let value = folded[i];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win[{}].{}.call[{}].ch[{}].block[{}].idx[{}]={:.9}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -622,7 +610,7 @@ pub(crate) mod mdct_trace {
                 value
             );
             if ctx.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct_win[{}].{}.call[{}].ch[{}].block[{}].idx_bits[{}]=0x{:08x}",
                     ctx.frame,
                     tag_name(ctx.tag),
@@ -645,7 +633,7 @@ pub(crate) mod mdct_trace {
         let end = start.saturating_add(ctx.count).min(len);
         for i in start..end {
             let value = spectrum[i];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].r={:.9e}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -655,7 +643,7 @@ pub(crate) mod mdct_trace {
                 i,
                 value.r
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].i={:.9e}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -666,7 +654,7 @@ pub(crate) mod mdct_trace {
                 value.i
             );
             if ctx.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].r=0x{:08x}",
                     ctx.frame,
                     tag_name(ctx.tag),
@@ -676,7 +664,7 @@ pub(crate) mod mdct_trace {
                     i,
                     value.r.to_bits()
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].i=0x{:08x}",
                     ctx.frame,
                     tag_name(ctx.tag),
@@ -714,7 +702,7 @@ pub(crate) mod mdct_trace {
         if idx < start || idx >= end {
             return;
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].t0={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -724,7 +712,7 @@ pub(crate) mod mdct_trace {
             idx,
             t0
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].t1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -734,7 +722,7 @@ pub(crate) mod mdct_trace {
             idx,
             t1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].re={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -744,7 +732,7 @@ pub(crate) mod mdct_trace {
             idx,
             re
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].im={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -754,7 +742,7 @@ pub(crate) mod mdct_trace {
             idx,
             im
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].mul_re_t0={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -764,7 +752,7 @@ pub(crate) mod mdct_trace {
             idx,
             mul_re_t0
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].mul_im_t1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -774,7 +762,7 @@ pub(crate) mod mdct_trace {
             idx,
             mul_im_t1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].mul_im_t0={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -784,7 +772,7 @@ pub(crate) mod mdct_trace {
             idx,
             mul_im_t0
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].mul_re_t1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -794,7 +782,7 @@ pub(crate) mod mdct_trace {
             idx,
             mul_re_t1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].yr={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -804,7 +792,7 @@ pub(crate) mod mdct_trace {
             idx,
             yr
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].yi={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -814,7 +802,7 @@ pub(crate) mod mdct_trace {
             idx,
             yi
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].yr_nf={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -824,7 +812,7 @@ pub(crate) mod mdct_trace {
             idx,
             yr_nf
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx[{}].yi_nf={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -835,7 +823,7 @@ pub(crate) mod mdct_trace {
             yi_nf
         );
         if ctx.want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].t0=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -845,7 +833,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 t0.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].t1=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -855,7 +843,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 t1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].re=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -865,7 +853,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 re.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].im=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -875,7 +863,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 im.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].mul_re_t0=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -885,7 +873,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 mul_re_t0.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].mul_im_t1=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -895,7 +883,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 mul_im_t1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].mul_im_t0=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -905,7 +893,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 mul_im_t0.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].mul_re_t1=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -915,7 +903,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 mul_re_t1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].yr=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -925,7 +913,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 yr.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].yi=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -935,7 +923,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 yi.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].yr_nf=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -945,7 +933,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 yr_nf.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].pre_rotate.idx_bits[{}].yi_nf=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -967,7 +955,7 @@ pub(crate) mod mdct_trace {
         let end = start.saturating_add(ctx.count).min(len);
         for i in start..end {
             let value = spectrum[i];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].fft.idx[{}].r={:.9e}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -977,7 +965,7 @@ pub(crate) mod mdct_trace {
                 i,
                 value.r
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].fft.idx[{}].i={:.9e}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -988,7 +976,7 @@ pub(crate) mod mdct_trace {
                 value.i
             );
             if ctx.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].fft.idx_bits[{}].r=0x{:08x}",
                     ctx.frame,
                     tag_name(ctx.tag),
@@ -998,7 +986,7 @@ pub(crate) mod mdct_trace {
                     i,
                     value.r.to_bits()
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].fft.idx_bits[{}].i=0x{:08x}",
                     ctx.frame,
                     tag_name(ctx.tag),
@@ -1016,7 +1004,7 @@ pub(crate) mod mdct_trace {
         if !ctx.trace_stage {
             return;
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].scale={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1026,7 +1014,7 @@ pub(crate) mod mdct_trace {
             scale
         );
         if ctx.want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].scale_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1056,7 +1044,7 @@ pub(crate) mod mdct_trace {
         if idx < start || idx >= end {
             return;
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx[{}].t0={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1066,7 +1054,7 @@ pub(crate) mod mdct_trace {
             idx,
             t0
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx[{}].t1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1076,7 +1064,7 @@ pub(crate) mod mdct_trace {
             idx,
             t1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx[{}].fp.r={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1086,7 +1074,7 @@ pub(crate) mod mdct_trace {
             idx,
             fp_r
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx[{}].fp.i={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1096,7 +1084,7 @@ pub(crate) mod mdct_trace {
             idx,
             fp_i
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx[{}].yr={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1106,7 +1094,7 @@ pub(crate) mod mdct_trace {
             idx,
             yr
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx[{}].yi={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1117,7 +1105,7 @@ pub(crate) mod mdct_trace {
             yi
         );
         if ctx.want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx_bits[{}].t0=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1127,7 +1115,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 t0.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx_bits[{}].t1=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1137,7 +1125,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 t1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx_bits[{}].fp.r=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1147,7 +1135,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 fp_r.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx_bits[{}].fp.i=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1157,7 +1145,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 fp_i.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx_bits[{}].yr=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1167,7 +1155,7 @@ pub(crate) mod mdct_trace {
                 idx,
                 yr.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_stage[{}].{}.call[{}].ch[{}].block[{}].post_rotate.idx_bits[{}].yi=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1214,7 +1202,7 @@ pub(crate) mod mdct_trace {
         let re_fma = fmaf(a, w2, b * w1);
         let im_fma = fmaf(c, w1, -(d * w2));
 
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.call[{}].ch[{}].block[{}].i={}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1223,170 +1211,170 @@ pub(crate) mod mdct_trace {
             ctx.block,
             index
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.a={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             a
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.b={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             b
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.c={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             c
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.d={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             d
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.w1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             w1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.w2={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             w2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.mul_aw2={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_aw2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.mul_bw1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_bw1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.mul_cw1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_cw1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.mul_dw2={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_dw2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.re={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             re
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.im={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             im
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.re_fma={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             re_fma
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail[{}].{}.im_fma={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             im_fma
         );
         if ctx.want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.a_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 a.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.b_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 b.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.c_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 c.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.d_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 d.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.w1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 w1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.w2_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 w2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.mul_aw2_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_aw2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.mul_bw1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_bw1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.mul_cw1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_cw1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.mul_dw2_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_dw2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.re_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 re.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.im_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 im.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.re_fma_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 re_fma.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail[{}].{}.im_fma_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1433,7 +1421,7 @@ pub(crate) mod mdct_trace {
         let re_fma_bw2 = fmaf(b, w2, -mul_aw1);
         let re_fma_aw1 = fmaf(-a, w1, mul_bw2);
 
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.call[{}].ch[{}].block[{}].i={}",
             ctx.frame,
             tag_name(ctx.tag),
@@ -1442,170 +1430,170 @@ pub(crate) mod mdct_trace {
             ctx.block,
             index
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.a={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             a
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.b={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             b
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.c={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             c
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.d={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             d
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.w1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             w1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.w2={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             w2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.mul_aw1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_aw1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.mul_bw2={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_bw2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.mul_cw2={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_cw2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.mul_dw1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             mul_dw1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.re={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             re
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.im={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             im
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.re_fma={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             re_fma_bw2
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_mdct_win_detail_tail[{}].{}.re_fma_aw1={:.9e}",
             ctx.frame,
             tag_name(ctx.tag),
             re_fma_aw1
         );
         if ctx.want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.a_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 a.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.b_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 b.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.c_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 c.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.d_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 d.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.w1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 w1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.w2_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 w2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.mul_aw1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_aw1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.mul_bw2_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_bw2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.mul_cw2_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_cw2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.mul_dw1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 mul_dw1.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.re_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 re.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.im_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 im.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.re_fma_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
                 re_fma_bw2.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_mdct_win_detail_tail[{}].{}.re_fma_aw1_bits=0x{:08x}",
                 ctx.frame,
                 tag_name(ctx.tag),
@@ -1620,9 +1608,9 @@ mod tests {
     extern crate std;
 
     use super::*;
+    use crate::celt::modes::opus_custom_mode_find_static;
     use alloc::vec::Vec;
     use core::f32::consts::PI;
-    use crate::celt::modes::opus_custom_mode_find_static;
     use libm::fmaf;
 
     fn c_mul_fma(a: KissFftCpx, b: KissFftCpx) -> KissFftCpx {
@@ -1838,7 +1826,7 @@ mod tests {
         clt_mdct_backward(mdct, &input, &mut output, window, overlap, 0, 1);
 
         for (i, sample) in output.iter().enumerate() {
-            std::println!("mdct_backward_out[{}]={:.9e}", i, sample);
+            crate::test_trace::trace_println!("mdct_backward_out[{}]={:.9e}", i, sample);
         }
     }
 }

@@ -94,23 +94,15 @@ mod gru_trace {
         }
     }
 
-    pub(crate) fn dump_vec(
-        cfg: &TraceConfig,
-        frame_idx: usize,
-        label: &str,
-        values: &[f32],
-    ) {
-        std::println!(
-            "analysis_gru[{frame_idx}].{label}.len={}",
-            values.len()
-        );
+    pub(crate) fn dump_vec(cfg: &TraceConfig, frame_idx: usize, label: &str, values: &[f32]) {
+        crate::test_trace::trace_println!("analysis_gru[{frame_idx}].{label}.len={}", values.len());
         for (idx, &value) in values.iter().enumerate() {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "analysis_gru[{frame_idx}].{label}[{idx}]={:.9e}",
                 value as f64
             );
             if cfg.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "analysis_gru[{frame_idx}].{label}_bits[{idx}]=0x{:08x}",
                     value.to_bits()
                 );

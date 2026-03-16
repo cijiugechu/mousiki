@@ -14,43 +14,43 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::bands::normalise_bands;
 use crate::celt::bands::{
     BandCodingState, compute_band_energies, haar1, hysteresis_decision, quant_all_bands,
     spreading_decision,
 };
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::bands::normalise_bands;
 #[cfg(feature = "fixed_point")]
 use crate::celt::bands::{compute_band_energies_fixed, normalise_bands_fixed};
+#[cfg(feature = "fixed_point")]
+use crate::celt::celt::comb_filter_fixed;
 use crate::celt::celt::{
     COMBFILTER_MINPERIOD, TF_SELECT_TABLE, comb_filter, init_caps, resampling_factor,
 };
-#[cfg(feature = "fixed_point")]
-use crate::celt::celt::comb_filter_fixed;
 use crate::celt::cpu_support::opus_select_arch;
 use crate::celt::entcode::{BITRES, ec_ilog, ec_tell, ec_tell_frac};
 use crate::celt::entenc::EcEnc;
-use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::{DB_SHIFT, EPSILON as FIXED_EPSILON, SIG_SAT, SIG_SHIFT, float2sig};
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
     abs32, add32, mult16_16_q15, mult16_32_q15, qconst16, qconst32, shl32, shr32, sub32,
 };
+use crate::celt::float_cast::CELT_SIG_SCALE;
 #[cfg(feature = "fixed_point")]
 use crate::celt::math::celt_ilog2;
 use crate::celt::math::{celt_exp2, celt_log2, celt_maxabs16, celt_rcp, celt_sqrt, frac_div32_q29};
 #[cfg(feature = "fixed_point")]
 use crate::celt::math_fixed::celt_sqrt as celt_sqrt_fixed;
 use crate::celt::mdct::clt_mdct_forward;
+#[cfg(test)]
+use crate::celt::mdct::mdct_trace as mdct_input_trace;
 #[cfg(feature = "fixed_point")]
-use crate::celt::mdct_fixed::{clt_mdct_forward_fixed, FixedMdctLookup};
+use crate::celt::mdct_fixed::{FixedMdctLookup, clt_mdct_forward_fixed};
 use crate::celt::modes::opus_custom_mode_find_static;
 use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
 #[cfg(feature = "fixed_point")]
-use crate::celt::pitch::{
-    pitch_downsample_fixed, pitch_search_fixed, remove_doubling_fixed,
-};
+use crate::celt::pitch::{pitch_downsample_fixed, pitch_search_fixed, remove_doubling_fixed};
 use crate::celt::quant_bands::E_MEANS;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::{
@@ -58,7 +58,8 @@ use crate::celt::quant_bands::{
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::quant_bands::{
-    amp2_log2_fixed, quant_coarse_energy_fixed, quant_energy_finalise_fixed, quant_fine_energy_fixed,
+    amp2_log2_fixed, quant_coarse_energy_fixed, quant_energy_finalise_fixed,
+    quant_fine_energy_fixed,
 };
 use crate::celt::rate::clt_compute_allocation;
 use crate::celt::types::{
@@ -77,8 +78,6 @@ use core::ptr::NonNull;
 #[cfg(not(feature = "fixed_point"))]
 use libm::acosf;
 use libm::{floor, floorf};
-#[cfg(test)]
-use crate::celt::mdct::mdct_trace as mdct_input_trace;
 #[cfg(test)]
 extern crate std;
 
@@ -223,35 +222,37 @@ mod celt_alloc_trace {
                 return;
             }
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_alloc[{frame_idx}].use_external={}",
             if use_external { 1 } else { 0 }
         );
-        std::println!("celt_alloc[{frame_idx}].header_bytes={header_bytes}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].header_bytes={header_bytes}");
+        crate::test_trace::trace_println!(
             "celt_alloc[{frame_idx}].nb_compressed_bytes={nb_compressed_bytes}"
         );
-        std::println!("celt_alloc[{frame_idx}].tell0_frac={tell0_frac}");
-        std::println!("celt_alloc[{frame_idx}].tell={tell}");
-        std::println!("celt_alloc[{frame_idx}].nb_filled_bytes={nb_filled_bytes}");
-        std::println!("celt_alloc[{frame_idx}].tell_frac={tell_frac}");
-        std::println!("celt_alloc[{frame_idx}].start={start}");
-        std::println!("celt_alloc[{frame_idx}].end={end}");
-        std::println!("celt_alloc[{frame_idx}].bits={bits}");
-        std::println!("celt_alloc[{frame_idx}].coded_bands={coded_bands}");
-        std::println!("celt_alloc[{frame_idx}].balance={balance}");
-        std::println!("celt_alloc[{frame_idx}].intensity={intensity}");
-        std::println!("celt_alloc[{frame_idx}].dual_stereo={dual_stereo}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].tell0_frac={tell0_frac}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].tell={tell}");
+        crate::test_trace::trace_println!(
+            "celt_alloc[{frame_idx}].nb_filled_bytes={nb_filled_bytes}"
+        );
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].tell_frac={tell_frac}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].start={start}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].end={end}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].bits={bits}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].coded_bands={coded_bands}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].balance={balance}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].intensity={intensity}");
+        crate::test_trace::trace_println!("celt_alloc[{frame_idx}].dual_stereo={dual_stereo}");
         for band in start..end {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_alloc[{frame_idx}].band[{band}].pulses={}",
                 pulses[band]
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_alloc[{frame_idx}].band[{band}].fine_quant={}",
                 fine_quant[band]
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_alloc[{frame_idx}].band[{band}].fine_priority={}",
                 fine_priority[band]
             );
@@ -339,40 +340,52 @@ mod celt_ctrl_trace {
                 return;
             }
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_ctrl[{frame_idx}].use_external={}",
             if use_external { 1 } else { 0 }
         );
-        std::println!("celt_ctrl[{frame_idx}].header_bytes={header_bytes}");
-        std::println!("celt_ctrl[{frame_idx}].nb_compressed_bytes={nb_compressed_bytes}");
-        std::println!("celt_ctrl[{frame_idx}].nb_filled_bytes={nb_filled_bytes}");
-        std::println!("celt_ctrl[{frame_idx}].nb_available_bytes={nb_available_bytes}");
-        std::println!("celt_ctrl[{frame_idx}].effective_bytes={effective_bytes}");
-        std::println!("celt_ctrl[{frame_idx}].vbr_rate={vbr_rate}");
-        std::println!("celt_ctrl[{frame_idx}].equiv_rate={equiv_rate}");
-        std::println!("celt_ctrl[{frame_idx}].total_bits={total_bits}");
-        std::println!("celt_ctrl[{frame_idx}].tell0_frac={tell0_frac}");
-        std::println!("celt_ctrl[{frame_idx}].tell={tell}");
-        std::println!("celt_ctrl[{frame_idx}].tell_frac={tell_frac}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].header_bytes={header_bytes}");
+        crate::test_trace::trace_println!(
+            "celt_ctrl[{frame_idx}].nb_compressed_bytes={nb_compressed_bytes}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_ctrl[{frame_idx}].nb_filled_bytes={nb_filled_bytes}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_ctrl[{frame_idx}].nb_available_bytes={nb_available_bytes}"
+        );
+        crate::test_trace::trace_println!(
+            "celt_ctrl[{frame_idx}].effective_bytes={effective_bytes}"
+        );
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].vbr_rate={vbr_rate}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].equiv_rate={equiv_rate}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].total_bits={total_bits}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].tell0_frac={tell0_frac}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].tell={tell}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].tell_frac={tell_frac}");
+        crate::test_trace::trace_println!(
             "celt_ctrl[{frame_idx}].tf_estimate={:.9e}",
             tf_estimate as f64
         );
-        std::println!("celt_ctrl[{frame_idx}].tf_chan={tf_chan}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].tf_chan={tf_chan}");
+        crate::test_trace::trace_println!(
             "celt_ctrl[{frame_idx}].is_transient={}",
             if is_transient { 1 } else { 0 }
         );
-        std::println!("celt_ctrl[{frame_idx}].short_blocks={short_blocks}");
-        std::println!("celt_ctrl[{frame_idx}].spread_decision={spread_decision}");
-        std::println!("celt_ctrl[{frame_idx}].intensity={intensity}");
-        std::println!("celt_ctrl[{frame_idx}].alloc_trim={alloc_trim}");
-        std::println!("celt_ctrl[{frame_idx}].signal_bandwidth={signal_bandwidth}");
-        std::println!("celt_ctrl[{frame_idx}].start={start}");
-        std::println!("celt_ctrl[{frame_idx}].end={end}");
-        std::println!("celt_ctrl[{frame_idx}].bits={bits}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].short_blocks={short_blocks}");
+        crate::test_trace::trace_println!(
+            "celt_ctrl[{frame_idx}].spread_decision={spread_decision}"
+        );
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].intensity={intensity}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].alloc_trim={alloc_trim}");
+        crate::test_trace::trace_println!(
+            "celt_ctrl[{frame_idx}].signal_bandwidth={signal_bandwidth}"
+        );
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].start={start}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].end={end}");
+        crate::test_trace::trace_println!("celt_ctrl[{frame_idx}].bits={bits}");
         if cfg.want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_ctrl[{frame_idx}].tf_estimate_bits=0x{:08x}",
                 tf_estimate.to_bits()
             );
@@ -414,7 +427,9 @@ mod celt_vbr_budget_trace {
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+        })
     }
 
     fn config() -> Option<&'static TraceConfig> {
@@ -465,34 +480,38 @@ mod celt_vbr_budget_trace {
                 return;
             }
         }
-        std::println!("celt_vbr_budget[{frame_idx}].stage={stage}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].stage={stage}");
+        crate::test_trace::trace_println!(
             "celt_vbr_budget[{frame_idx}].use_external={}",
             if use_external { 1 } else { 0 }
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_vbr_budget[{frame_idx}].constrained_vbr={}",
             if constrained_vbr { 1 } else { 0 }
         );
-        std::println!("celt_vbr_budget[{frame_idx}].vbr_rate={vbr_rate}");
-        std::println!("celt_vbr_budget[{frame_idx}].vbr_reservoir={vbr_reservoir}");
-        std::println!("celt_vbr_budget[{frame_idx}].vbr_offset={vbr_offset}");
-        std::println!("celt_vbr_budget[{frame_idx}].vbr_drift={vbr_drift}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].vbr_rate={vbr_rate}");
+        crate::test_trace::trace_println!(
+            "celt_vbr_budget[{frame_idx}].vbr_reservoir={vbr_reservoir}"
+        );
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].vbr_offset={vbr_offset}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].vbr_drift={vbr_drift}");
+        crate::test_trace::trace_println!(
             "celt_vbr_budget[{frame_idx}].nb_compressed_bytes={nb_compressed_bytes}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_vbr_budget[{frame_idx}].nb_available_bytes={nb_available_bytes}"
         );
-        std::println!("celt_vbr_budget[{frame_idx}].nb_filled_bytes={nb_filled_bytes}");
-        std::println!("celt_vbr_budget[{frame_idx}].min_bytes={min_bytes}");
-        std::println!("celt_vbr_budget[{frame_idx}].max_allowed={max_allowed}");
-        std::println!("celt_vbr_budget[{frame_idx}].base_target={base_target}");
-        std::println!("celt_vbr_budget[{frame_idx}].target={target}");
-        std::println!("celt_vbr_budget[{frame_idx}].delta={delta}");
-        std::println!("celt_vbr_budget[{frame_idx}].min_allowed={min_allowed}");
-        std::println!("celt_vbr_budget[{frame_idx}].tell={tell}");
-        std::println!("celt_vbr_budget[{frame_idx}].tell_frac={tell_frac}");
+        crate::test_trace::trace_println!(
+            "celt_vbr_budget[{frame_idx}].nb_filled_bytes={nb_filled_bytes}"
+        );
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].min_bytes={min_bytes}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].max_allowed={max_allowed}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].base_target={base_target}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].target={target}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].delta={delta}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].min_allowed={min_allowed}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].tell={tell}");
+        crate::test_trace::trace_println!("celt_vbr_budget[{frame_idx}].tell_frac={tell_frac}");
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -517,30 +536,32 @@ mod celt_vbr_budget_trace {
                 return;
             }
         }
-        std::println!("celt_vbr_inputs[{frame_idx}].tell_frac={tell_frac}");
-        std::println!("celt_vbr_inputs[{frame_idx}].tot_boost={tot_boost}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_vbr_inputs[{frame_idx}].tell_frac={tell_frac}");
+        crate::test_trace::trace_println!("celt_vbr_inputs[{frame_idx}].tot_boost={tot_boost}");
+        crate::test_trace::trace_println!(
             "celt_vbr_inputs[{frame_idx}].tf_estimate={:.9e}",
             tf_estimate as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_vbr_inputs[{frame_idx}].stereo_saving={:.9e}",
             stereo_saving as f64
         );
-        std::println!("celt_vbr_inputs[{frame_idx}].intensity={intensity}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_vbr_inputs[{frame_idx}].intensity={intensity}");
+        crate::test_trace::trace_println!(
             "celt_vbr_inputs[{frame_idx}].last_coded_bands={last_coded_bands}"
         );
-        std::println!("celt_vbr_inputs[{frame_idx}].pitch_change={pitch_change}");
-        std::println!(
+        crate::test_trace::trace_println!(
+            "celt_vbr_inputs[{frame_idx}].pitch_change={pitch_change}"
+        );
+        crate::test_trace::trace_println!(
             "celt_vbr_inputs[{frame_idx}].max_depth={:.9e}",
             max_depth as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_vbr_inputs[{frame_idx}].surround_masking={:.9e}",
             surround_masking as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_vbr_inputs[{frame_idx}].temporal_vbr={:.9e}",
             temporal_vbr as f64
         );
@@ -577,7 +598,9 @@ mod celt_rc_trace {
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+        })
     }
 
     pub(crate) fn current_frame_idx() -> Option<usize> {
@@ -611,37 +634,39 @@ mod celt_rc_trace {
         if !should_dump(frame_idx) {
             return;
         }
-        std::println!("celt_rc[{frame_idx}].stage={stage}");
-        std::println!("celt_rc[{frame_idx}].offs={}", ctx.offs);
-        std::println!("celt_rc[{frame_idx}].end_offs={}", ctx.end_offs);
-        std::println!("celt_rc[{frame_idx}].nbits_total={}", ctx.nbits_total);
-        std::println!("celt_rc[{frame_idx}].nend_bits={}", ctx.nend_bits);
-        std::println!("celt_rc[{frame_idx}].rng=0x{:08x}", ctx.rng);
-        std::println!("celt_rc[{frame_idx}].val=0x{:08x}", ctx.val);
-        std::println!("celt_rc[{frame_idx}].ext=0x{:08x}", ctx.ext);
-        std::println!("celt_rc[{frame_idx}].rem={}", ctx.rem);
-        std::println!(
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].stage={stage}");
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].offs={}", ctx.offs);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].end_offs={}", ctx.end_offs);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].nbits_total={}", ctx.nbits_total);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].nend_bits={}", ctx.nend_bits);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].rng=0x{:08x}", ctx.rng);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].val=0x{:08x}", ctx.val);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].ext=0x{:08x}", ctx.ext);
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].rem={}", ctx.rem);
+        crate::test_trace::trace_println!(
             "celt_rc[{frame_idx}].end_window=0x{:08x}",
             ctx.end_window
         );
-        std::println!("celt_rc[{frame_idx}].error={}", ctx.error);
-        std::println!(
+        crate::test_trace::trace_println!("celt_rc[{frame_idx}].error={}", ctx.error);
+        crate::test_trace::trace_println!(
             "celt_rc[{frame_idx}].tell={}",
             crate::celt::entcode::ec_tell(ctx)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_rc[{frame_idx}].tell_frac={}",
             crate::celt::entcode::ec_tell_frac(ctx)
         );
         for i in 0..(ctx.offs as usize) {
             let value = ctx.buf[i];
-            std::println!("celt_rc[{frame_idx}].buf[{i}]=0x{value:02x}");
+            crate::test_trace::trace_println!("celt_rc[{frame_idx}].buf[{i}]=0x{value:02x}");
         }
         if ctx.end_offs > 0 {
             let start = (ctx.storage - ctx.end_offs) as usize;
             for i in 0..(ctx.end_offs as usize) {
                 let value = ctx.buf[start + i];
-                std::println!("celt_rc[{frame_idx}].end_buf[{i}]=0x{value:02x}");
+                crate::test_trace::trace_println!(
+                    "celt_rc[{frame_idx}].end_buf[{i}]=0x{value:02x}"
+                );
             }
         }
     }
@@ -674,7 +699,9 @@ mod celt_band_energy_trace {
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+        })
     }
 
     pub(crate) fn want_bits() -> bool {
@@ -713,7 +740,7 @@ mod celt_band_energy_trace {
         band_e: &[CeltGlog],
         want_bits: bool,
     ) {
-        std::println!("celt_band_energy[{}].{}.end={}", frame_idx, tag, end);
+        crate::test_trace::trace_println!("celt_band_energy[{}].{}.end={}", frame_idx, tag, end);
         for band in start..end {
             for channel in 0..channels {
                 let idx = band + channel * nb_ebands;
@@ -721,12 +748,16 @@ mod celt_band_energy_trace {
                     continue;
                 }
                 let value = band_e[idx];
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band_energy[{}].{}.band[{}].bandE[{}]={:.9}",
-                    frame_idx, tag, band, channel, value
+                    frame_idx,
+                    tag,
+                    band,
+                    channel,
+                    value
                 );
                 if want_bits {
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_band_energy[{}].{}.band[{}].bandE_bits[{}]=0x{:08x}",
                         frame_idx,
                         tag,
@@ -815,44 +846,44 @@ mod celt_loge_adjust_trace {
         if !should_dump(frame_idx, band) {
             return;
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_before={log_before:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].old={old:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].err={err:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].diff={diff:.9e}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].apply={}",
             apply as u8
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_after={log_after:.9e}"
         );
         let want_bits = config().map_or(false, |cfg| cfg.want_bits);
         if want_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_before_bits=0x{:08x}",
                 log_before.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].old_bits=0x{:08x}",
                 old.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].err_bits=0x{:08x}",
                 err.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].diff_bits=0x{:08x}",
                 diff.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_loge_adjust[{frame_idx}].band[{band}].c[{channel}].log_after_bits=0x{:08x}",
                 log_after.to_bits()
             );
@@ -891,7 +922,9 @@ mod celt_prefilter_trace {
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+        })
     }
 
     pub(crate) fn current_frame_idx() -> Option<usize> {
@@ -949,17 +982,21 @@ mod celt_prefilter_trace {
         let len = input.len() / channels;
         let start = cfg.start.min(len);
         let end = start.saturating_add(cfg.count).min(len);
-        std::println!("celt_prefilter[{}].{}.len={}", frame_idx, tag, len);
+        crate::test_trace::trace_println!("celt_prefilter[{}].{}.len={}", frame_idx, tag, len);
         for ch in 0..channels {
             let base = ch * len;
             for i in start..end {
                 let value = input[base + i];
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_prefilter[{}].{}.ch[{}].sample[{}]={:.9}",
-                    frame_idx, tag, ch, i, value
+                    frame_idx,
+                    tag,
+                    ch,
+                    i,
+                    value
                 );
                 if cfg.want_bits {
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_prefilter[{}].{}.ch[{}].sample_bits[{}]=0x{:08x}",
                         frame_idx,
                         tag,
@@ -1012,7 +1049,7 @@ mod celt_pcm_input_trace {
         }
         let start = cfg.start.min(len);
         let end = start.saturating_add(cfg.count).min(len);
-        std::println!("celt_pcm[{}].{}.len={}", frame_idx, tag, len);
+        crate::test_trace::trace_println!("celt_pcm[{}].{}.len={}", frame_idx, tag, len);
         for ch in 0..channels {
             for i in start..end {
                 let idx = i * channels + ch;
@@ -1020,12 +1057,16 @@ mod celt_pcm_input_trace {
                     continue;
                 }
                 let value = pcm[idx];
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_pcm[{}].{}.ch[{}].sample[{}]={:.9}",
-                    frame_idx, tag, ch, i, value
+                    frame_idx,
+                    tag,
+                    ch,
+                    i,
+                    value
                 );
                 if cfg.want_bits {
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_pcm[{}].{}.ch[{}].sample_bits[{}]=0x{:08x}",
                         frame_idx,
                         tag,
@@ -1101,7 +1142,9 @@ mod celt_mdct_trace {
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+        })
     }
 
     pub(crate) fn config() -> Option<&'static TraceConfig> {
@@ -1150,17 +1193,21 @@ mod celt_mdct_trace {
         let len = freq.len() / channels;
         let start = cfg.start.min(len);
         let end = start.saturating_add(cfg.count).min(len);
-        std::println!("celt_mdct[{}].{}.len={}", frame_idx, tag, len);
+        crate::test_trace::trace_println!("celt_mdct[{}].{}.len={}", frame_idx, tag, len);
         for ch in 0..channels {
             let base = ch * len;
             for i in start..end {
                 let value = freq[base + i];
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_mdct[{}].{}.ch[{}].idx[{}]={:.9}",
-                    frame_idx, tag, ch, i, value
+                    frame_idx,
+                    tag,
+                    ch,
+                    i,
+                    value
                 );
                 if cfg.want_bits {
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_mdct[{}].{}.ch[{}].idx_bits[{}]=0x{:08x}",
                         frame_idx,
                         tag,
@@ -1209,7 +1256,9 @@ mod celt_transient_trace {
     }
 
     pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
+        config().map_or(false, |cfg| {
+            cfg.frame.map_or(true, |frame| frame == frame_idx)
+        })
     }
 
     pub(crate) fn want_bits() -> bool {
@@ -1268,12 +1317,11 @@ const SPREAD_ICDF: [u8; 4] = [25, 23, 2, 0];
 const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 
 const TO_OPUS_TABLE: [u8; 20] = [
-    0xE0, 0xE8, 0xF0, 0xF8, 0xC0, 0xC8, 0xD0, 0xD8, 0xA0, 0xA8, 0xB0, 0xB8, 0x00, 0x00,
-    0x00, 0x00, 0x80, 0x88, 0x90, 0x98,
+    0xE0, 0xE8, 0xF0, 0xF8, 0xC0, 0xC8, 0xD0, 0xD8, 0xA0, 0xA8, 0xB0, 0xB8, 0x00, 0x00, 0x00, 0x00,
+    0x80, 0x88, 0x90, 0x98,
 ];
 const FROM_OPUS_TABLE: [u8; 16] = [
-    0x80, 0x88, 0x90, 0x98, 0x40, 0x48, 0x50, 0x58, 0x20, 0x28, 0x30, 0x38, 0x00, 0x08,
-    0x10, 0x18,
+    0x80, 0x88, 0x90, 0x98, 0x40, 0x48, 0x50, 0x58, 0x20, 0x28, 0x30, 0x38, 0x00, 0x08, 0x10, 0x18,
 ];
 
 fn to_opus(value: u8) -> Option<u8> {
@@ -2597,14 +2645,11 @@ fn transient_analysis(
     toneishness: OpusVal32,
 ) -> bool {
     const INV_TABLE: [u8; 128] = [
-        255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25,
-        23, 22, 21, 20, 19, 18, 17, 16, 16, 15, 15, 14, 13, 13, 12, 12,
-        12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8,
-        8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6,
-        6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5,
-        5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3,
-        3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
+        255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18,
+        17, 16, 16, 15, 15, 14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9,
+        8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
     ];
 
     debug_assert!(channels * len <= input.len());
@@ -2627,9 +2672,9 @@ fn transient_analysis(
     *tf_chan = 0;
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!("celt_transient[{frame_idx}].len={len}");
-        std::println!("celt_transient[{frame_idx}].channels={channels}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_transient[{frame_idx}].len={len}");
+        crate::test_trace::trace_println!("celt_transient[{frame_idx}].channels={channels}");
+        crate::test_trace::trace_println!(
             "celt_transient[{frame_idx}].allow_weak_transients={}",
             i32::from(allow_weak_transients)
         );
@@ -2678,19 +2723,19 @@ fn transient_analysis(
         let norm = (len2 as f32) / (frame_energy + 1e-15f32);
         #[cfg(test)]
         if let Some(frame_idx) = trace_frame_idx {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].channel[{c}].mean={:.9e}",
                 mean as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].channel[{c}].max_e={:.9e}",
                 max_e as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].channel[{c}].frame_energy={:.9e}",
                 frame_energy as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].channel[{c}].norm={:.9e}",
                 norm as f64
             );
@@ -2706,7 +2751,7 @@ fn transient_analysis(
             unmask += i32::from(INV_TABLE[clamped]);
             #[cfg(test)]
             if let Some(frame_idx) = trace_frame_idx {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_transient[{frame_idx}].channel[{c}].unmask_step i={i} tmp={:.9e} product={:.9e} scaled={:.9e} clamped={clamped} inv={}",
                     tmp[i] as f64,
                     product,
@@ -2722,10 +2767,10 @@ fn transient_analysis(
                 let value = (64 * unmask * 4) / denom;
                 #[cfg(test)]
                 if let Some(frame_idx) = trace_frame_idx {
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_transient[{frame_idx}].channel[{c}].unmask_sum={unmask}"
                     );
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_transient[{frame_idx}].channel[{c}].unmask_norm={value}"
                     );
                 }
@@ -2748,7 +2793,7 @@ fn transient_analysis(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!("celt_transient[{frame_idx}].mask_metric={mask_metric}");
+        crate::test_trace::trace_println!("celt_transient[{frame_idx}].mask_metric={mask_metric}");
     }
     let mut tf_max = celt_sqrt(27.0 * mask_metric as f32) - 42.0;
     #[cfg(test)]
@@ -2761,30 +2806,33 @@ fn transient_analysis(
     *tf_estimate = celt_sqrt(value);
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_transient[{frame_idx}].tf_max_raw={:.9e}",
             tf_max_raw as f64
         );
-        std::println!("celt_transient[{frame_idx}].tf_max={:.9e}", tf_max as f64);
-        std::println!("celt_transient[{frame_idx}].value={:.9e}", value as f64);
-        std::println!(
+        crate::test_trace::trace_println!(
+            "celt_transient[{frame_idx}].tf_max={:.9e}",
+            tf_max as f64
+        );
+        crate::test_trace::trace_println!("celt_transient[{frame_idx}].value={:.9e}", value as f64);
+        crate::test_trace::trace_println!(
             "celt_transient[{frame_idx}].tf_estimate={:.9e}",
             *tf_estimate as f64
         );
         if trace_bits {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].tf_max_raw_bits=0x{:08x}",
                 tf_max_raw.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].tf_max_bits=0x{:08x}",
                 tf_max.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].value_bits=0x{:08x}",
                 value.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_transient[{frame_idx}].tf_estimate_bits=0x{:08x}",
                 (*tf_estimate).to_bits()
             );
@@ -2935,29 +2983,31 @@ fn dynalloc_analysis(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_dynalloc_max[{frame_idx}].band={max_band}");
-            std::println!("celt_dynalloc_max[{frame_idx}].channel={max_channel}");
-            std::println!(
+            crate::test_trace::trace_println!("celt_dynalloc_max[{frame_idx}].band={max_band}");
+            crate::test_trace::trace_println!(
+                "celt_dynalloc_max[{frame_idx}].channel={max_channel}"
+            );
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_max[{frame_idx}].band_log_e={:.9e}",
                 max_band_log_e as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_max[{frame_idx}].band_log_e_bits=0x{:08x}",
                 max_band_log_e.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_max[{frame_idx}].noise_floor={:.9e}",
                 max_noise_floor as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_max[{frame_idx}].noise_floor_bits=0x{:08x}",
                 max_noise_floor.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_max[{frame_idx}].depth={:.9e}",
                 max_depth_val as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_max[{frame_idx}].depth_bits=0x{:08x}",
                 max_depth_val.to_bits()
             );
@@ -3273,12 +3323,12 @@ fn run_prefilter(
                     .unwrap_or(false);
                 let end = start.saturating_add(count).min(pitch_buf.len());
                 for idx in start..end {
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_pitch_buf[{frame_idx}].idx[{idx}]={:.9}",
                         pitch_buf[idx]
                     );
                     if want_bits {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_pitch_buf[{frame_idx}].idx_bits[{idx}]=0x{:08x}",
                             pitch_buf[idx].to_bits()
                         );
@@ -3348,39 +3398,39 @@ fn run_prefilter(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].gain1_pre={:.9}",
             gain1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pitch_index_pre={}",
             pitch_index
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].prefilter_period_pre={}",
             encoder.prefilter_period
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].prefilter_gain_pre={:.9}",
             encoder.prefilter_gain
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].analysis_max_pitch_ratio={:.9}",
             analysis.max_pitch_ratio
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].tf_estimate={:.9}",
             tf_estimate
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].toneishness={:.9}",
             toneishness
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].tone_freq={:.9}",
             tone_freq
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].nb_available_bytes={}",
             nb_available_bytes
         );
@@ -3411,7 +3461,7 @@ fn run_prefilter(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pf_threshold={:.9}",
             pf_threshold
         );
@@ -3434,19 +3484,19 @@ fn run_prefilter(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].gain1_quant={:.9}",
             gain1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pitch_index_quant={}",
             pitch_index
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].qg_local={}",
             qg_local
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pf_on_pre_cancel={}",
             pf_on as i32
         );
@@ -3549,11 +3599,11 @@ fn run_prefilter(
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
         for ch in 0..channels {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].before.ch[{ch}]={:.9}",
                 before[ch]
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].after.ch[{ch}]={:.9}",
                 after[ch]
             );
@@ -3561,22 +3611,22 @@ fn run_prefilter(
         if channels == 2 {
             let thresh0 = 0.25 * gain1 * before[0] + 0.01 * before[1];
             let thresh1 = 0.25 * gain1 * before[1] + 0.01 * before[0];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].thresh0={:.9}",
                 thresh0
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].thresh1={:.9}",
                 thresh1
             );
         } else {
             let thresh0 = 0.25 * gain1 * before[0];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].thresh0={:.9}",
                 thresh0
             );
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].cancel_pitch={}",
             cancel_pitch as i32
         );
@@ -3620,15 +3670,15 @@ fn run_prefilter(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].gain1_final={:.9}",
             gain1
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].qg_local_final={}",
             qg_local
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pf_on_final={}",
             pf_on as i32
         );
@@ -3761,12 +3811,12 @@ fn run_prefilter_fixed(
                 let end = start.saturating_add(count).min(pitch_buf.len());
                 for idx in start..end {
                     let value = pitch_buf[idx] as f32;
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_pitch_buf[{frame_idx}].idx[{idx}]={:.9}",
                         value
                     );
                     if want_bits {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_pitch_buf[{frame_idx}].idx_bits[{idx}]=0x{:08x}",
                             pitch_buf[idx] as u16 as u32
                         );
@@ -3779,8 +3829,13 @@ fn run_prefilter_fixed(
         if search_span > 0 {
             let offset = history_len >> 1;
             if offset < pitch_buf.len() {
-                let result =
-                    pitch_search_fixed(&pitch_buf[offset..], &pitch_buf, n, search_span, encoder.arch);
+                let result = pitch_search_fixed(
+                    &pitch_buf[offset..],
+                    &pitch_buf,
+                    n,
+                    search_span,
+                    encoder.arch,
+                );
                 pitch_index = history_len as i32 - result;
             }
         }
@@ -3833,47 +3888,45 @@ fn run_prefilter_fixed(
 
     if analysis.valid {
         let scaled = (gain1 as f32) * analysis.max_pitch_ratio;
-        let clamped = scaled
-            .max(i16::MIN as f32)
-            .min(i16::MAX as f32) as i32;
+        let clamped = scaled.max(i16::MIN as f32).min(i16::MAX as f32) as i32;
         gain1 = clamped as FixedOpusVal16;
     }
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].gain1_pre={:.9}",
             q15_to_float(gain1)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pitch_index_pre={}",
             pitch_index
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].prefilter_period_pre={}",
             encoder.prefilter_period
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].prefilter_gain_pre={:.9}",
             q15_to_float(encoder.fixed_prefilter_gain)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].analysis_max_pitch_ratio={:.9}",
             analysis.max_pitch_ratio
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].tf_estimate={:.9}",
             tf_estimate
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].toneishness={:.9}",
             toneishness
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].tone_freq={:.9}",
             tone_freq
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].nb_available_bytes={}",
             nb_available_bytes
         );
@@ -3905,7 +3958,7 @@ fn run_prefilter_fixed(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pf_threshold={:.9}",
             q15_to_float(pf_threshold)
         );
@@ -3929,19 +3982,19 @@ fn run_prefilter_fixed(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].gain1_quant={:.9}",
             q15_to_float(gain1)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pitch_index_quant={}",
             pitch_index
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].qg_local={}",
             qg_local
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pf_on_pre_cancel={}",
             if pf_on { 1 } else { 0 }
         );
@@ -3959,8 +4012,7 @@ fn run_prefilter_fixed(
 
     for ch in 0..channels {
         let input_offset = ch * stride;
-        let (head, tail) =
-            input_fixed[input_offset..input_offset + stride].split_at_mut(overlap);
+        let (head, tail) = input_fixed[input_offset..input_offset + stride].split_at_mut(overlap);
         head.copy_from_slice(&encoder.fixed_in_mem[ch * overlap..(ch + 1) * overlap]);
 
         let mut sum_before = 0i32;
@@ -4039,13 +4091,11 @@ fn run_prefilter_fixed(
             mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[1]),
             mult16_32_q15(qconst16(0.01, 15), before[0]),
         );
-        if after[0].wrapping_sub(before[0]) > thresh0
-            || after[1].wrapping_sub(before[1]) > thresh1
+        if after[0].wrapping_sub(before[0]) > thresh0 || after[1].wrapping_sub(before[1]) > thresh1
         {
             cancel_pitch = true;
         }
-        if before[0].wrapping_sub(after[0]) < thresh0
-            && before[1].wrapping_sub(after[1]) < thresh1
+        if before[0].wrapping_sub(after[0]) < thresh0 && before[1].wrapping_sub(after[1]) < thresh1
         {
             cancel_pitch = true;
         }
@@ -4056,11 +4106,11 @@ fn run_prefilter_fixed(
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
         for ch in 0..channels {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].before.ch[{ch}]={}",
                 before[ch]
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].after.ch[{ch}]={}",
                 after[ch]
             );
@@ -4074,25 +4124,22 @@ fn run_prefilter_fixed(
                 mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[1]),
                 mult16_32_q15(qconst16(0.01, 15), before[0]),
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].thresh0={}",
                 thresh0
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].thresh1={}",
                 thresh1
             );
         } else {
-            let thresh0 = mult16_32_q15(
-                mult16_16_q15(qconst16(0.25, 15), gain1),
-                before[0],
-            );
-            std::println!(
+            let thresh0 = mult16_32_q15(mult16_16_q15(qconst16(0.25, 15), gain1), before[0]);
+            crate::test_trace::trace_println!(
                 "celt_prefilter_debug[{frame_idx}].thresh0={}",
                 thresh0
             );
         }
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].cancel_pitch={}",
             if cancel_pitch { 1 } else { 0 }
         );
@@ -4136,15 +4183,15 @@ fn run_prefilter_fixed(
 
     #[cfg(test)]
     if let Some(frame_idx) = trace_frame_idx {
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].gain1_final={:.9}",
             q15_to_float(gain1)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].qg_local_final={}",
             qg_local
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_debug[{frame_idx}].pf_on_final={}",
             if pf_on { 1 } else { 0 }
         );
@@ -4157,8 +4204,7 @@ fn run_prefilter_fixed(
 
         let pre_offset = ch * (n + history_len);
         let pre_channel = &pre[pre_offset..pre_offset + history_len + n];
-        let mem =
-            &mut encoder.fixed_prefilter_mem[ch * history_len..(ch + 1) * history_len];
+        let mem = &mut encoder.fixed_prefilter_mem[ch * history_len..(ch + 1) * history_len];
         if n > history_len {
             mem.copy_from_slice(&pre_channel[n..n + history_len]);
         } else {
@@ -4281,69 +4327,82 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].base_target={base_target}");
-            std::println!("celt_vbr_compute[{frame_idx}].coded_bins={coded_bins}");
-            std::println!("celt_vbr_compute[{frame_idx}].coded_bands={coded_bands}");
-            std::println!("celt_vbr_compute[{frame_idx}].intensity={intensity}");
-            std::println!("celt_vbr_compute[{frame_idx}].tot_boost={tot_boost}");
-            std::println!("celt_vbr_compute[{frame_idx}].pitch_change={}", i32::from(pitch_change));
-            std::println!(
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].base_target={base_target}"
+            );
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].coded_bins={coded_bins}"
+            );
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].coded_bands={coded_bands}"
+            );
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].intensity={intensity}"
+            );
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].tot_boost={tot_boost}"
+            );
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].pitch_change={}",
+                i32::from(pitch_change)
+            );
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].analysis_valid={}",
                 if analysis.valid { 1 } else { 0 }
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].activity={:.9e}",
                 analysis.activity as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].activity_bits=0x{:08x}",
                 analysis.activity.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].tonality={:.9e}",
                 analysis.tonality as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].tonality_bits=0x{:08x}",
                 analysis.tonality.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].tf_estimate={:.9e}",
                 tf_estimate as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].tf_estimate_bits=0x{:08x}",
                 tf_estimate.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].stereo_saving={:.9e}",
                 stereo_saving as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].stereo_saving_bits=0x{:08x}",
                 stereo_saving.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].max_depth={:.9e}",
                 max_depth as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].max_depth_bits=0x{:08x}",
                 max_depth.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].surround_masking={:.9e}",
                 surround_masking as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].surround_masking_bits=0x{:08x}",
                 surround_masking.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].temporal_vbr={:.9e}",
                 temporal_vbr as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_vbr_compute[{frame_idx}].temporal_vbr_bits=0x{:08x}",
                 temporal_vbr.to_bits()
             );
@@ -4358,7 +4417,9 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_activity={target}");
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].after_activity={target}"
+            );
         }
     }
 
@@ -4377,7 +4438,9 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_stereo={target}");
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].after_stereo={target}"
+            );
         }
     }
 
@@ -4385,7 +4448,7 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_boost={target}");
+            crate::test_trace::trace_println!("celt_vbr_compute[{frame_idx}].after_boost={target}");
         }
     }
 
@@ -4396,7 +4459,7 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_tf={target}");
+            crate::test_trace::trace_println!("celt_vbr_compute[{frame_idx}].after_tf={target}");
         }
     }
 
@@ -4414,7 +4477,9 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_tonality={target}");
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].after_tonality={target}"
+            );
         }
     }
 
@@ -4426,7 +4491,9 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_surround={target}");
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].after_surround={target}"
+            );
         }
     }
 
@@ -4439,7 +4506,7 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_floor={target}");
+            crate::test_trace::trace_println!("celt_vbr_compute[{frame_idx}].after_floor={target}");
         }
     }
 
@@ -4450,7 +4517,9 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_constrained={target}");
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].after_constrained={target}"
+            );
         }
     }
 
@@ -4463,7 +4532,9 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_temporal={target}");
+            crate::test_trace::trace_println!(
+                "celt_vbr_compute[{frame_idx}].after_temporal={target}"
+            );
         }
     }
 
@@ -4472,7 +4543,7 @@ fn compute_vbr(
     #[cfg(test)]
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_vbr_compute[{frame_idx}].after_cap={target}");
+            crate::test_trace::trace_println!("celt_vbr_compute[{frame_idx}].after_cap={target}");
         }
     }
 
@@ -4736,15 +4807,17 @@ fn celt_encode_with_ec_inner<'a>(
     #[cfg(test)]
     let trace_band_frame_idx = celt_band_energy_trace::begin_frame();
     #[cfg(test)]
-    let trace_band_should_dump = trace_band_frame_idx
-        .map_or(false, |frame_idx| celt_band_energy_trace::should_dump(frame_idx));
+    let trace_band_should_dump = trace_band_frame_idx.map_or(false, |frame_idx| {
+        celt_band_energy_trace::should_dump(frame_idx)
+    });
     #[cfg(test)]
     let trace_band_want_bits = trace_band_should_dump && celt_band_energy_trace::want_bits();
     #[cfg(test)]
     let trace_prefilter_frame_idx = celt_prefilter_trace::begin_frame();
     #[cfg(test)]
-    let trace_prefilter_should_dump = trace_prefilter_frame_idx
-        .map_or(false, |frame_idx| celt_prefilter_trace::should_dump(frame_idx));
+    let trace_prefilter_should_dump = trace_prefilter_frame_idx.map_or(false, |frame_idx| {
+        celt_prefilter_trace::should_dump(frame_idx)
+    });
     #[cfg(test)]
     let trace_mdct_frame_idx = celt_mdct_trace::begin_frame();
     #[cfg(test)]
@@ -4787,7 +4860,11 @@ fn celt_encode_with_ec_inner<'a>(
             tmp = tmp.saturating_add(tell.saturating_mul(mode.sample_rate));
         }
         if encoder.bitrate != OPUS_BITRATE_MAX {
-            let extra = if encoder.signalling != 0 && !use_external { 1 } else { 0 };
+            let extra = if encoder.signalling != 0 && !use_external {
+                1
+            } else {
+                0
+            };
             let target = (tmp + 4 * mode.sample_rate) / (8 * mode.sample_rate) - extra;
             nb_compressed_bytes = max(2, min(nb_compressed_bytes as i32, target)) as usize;
             enc.enc_shrink(nb_compressed_bytes as OpusUint32);
@@ -4891,7 +4968,9 @@ fn celt_encode_with_ec_inner<'a>(
 
     let sample_span = c * (n.saturating_sub(overlap)) / upsample;
     let overlap_span = c * overlap / upsample;
-    let mut sample_max = encoder.overlap_max.max(celt_maxabs_res(&pcm[..sample_span]));
+    let mut sample_max = encoder
+        .overlap_max
+        .max(celt_maxabs_res(&pcm[..sample_span]));
     encoder.overlap_max = celt_maxabs_res(&pcm[sample_span..sample_span + overlap_span]);
     sample_max = sample_max.max(encoder.overlap_max);
 
@@ -5017,8 +5096,7 @@ fn celt_encode_with_ec_inner<'a>(
     let prefilter_period_old = encoder.prefilter_period;
     let prefilter_gain_old = encoder.prefilter_gain;
     let prefilter_tapset_old = encoder.prefilter_tapset;
-    let enabled = ((encoder.lfe && nb_available_bytes > 3)
-        || nb_available_bytes > 12 * c as i32)
+    let enabled = ((encoder.lfe && nb_available_bytes > 3) || nb_available_bytes > 12 * c as i32)
         && !hybrid
         && !silence
         && tell + 16 <= total_bits
@@ -5065,57 +5143,59 @@ fn celt_encode_with_ec_inner<'a>(
     #[cfg(test)]
     if trace_prefilter_should_dump {
         let frame_idx = trace_prefilter_frame_idx.unwrap();
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].enabled={}",
             if enabled { 1 } else { 0 }
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].pf_on={}",
             if pf_on { 1 } else { 0 }
         );
-        std::println!("celt_prefilter_param[{frame_idx}].pitch_index={pitch_index}");
-        std::println!(
+        crate::test_trace::trace_println!(
+            "celt_prefilter_param[{frame_idx}].pitch_index={pitch_index}"
+        );
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].gain1={:.9e}",
             gain1 as f64
         );
-        std::println!("celt_prefilter_param[{frame_idx}].qg={qg}");
-        std::println!(
+        crate::test_trace::trace_println!("celt_prefilter_param[{frame_idx}].qg={qg}");
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].prefilter_period_old={prefilter_period_old}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].prefilter_gain_old={:.9e}",
             prefilter_gain_old as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].prefilter_tapset_old={prefilter_tapset_old}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].prefilter_tapset={prefilter_tapset}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].tf_estimate={:.9e}",
             tf_estimate as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].tone_freq={:.9e}",
             tone_freq as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].toneishness={:.9e}",
             toneishness as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].nb_available_bytes={nb_available_bytes}"
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].analysis_valid={}",
             if analysis.valid { 1 } else { 0 }
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].max_pitch_ratio={:.9e}",
             analysis.max_pitch_ratio as f64
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_prefilter_param[{frame_idx}].loss_rate={}",
             encoder.loss_rate
         );
@@ -5141,10 +5221,7 @@ fn celt_encode_with_ec_inner<'a>(
         pitch_index += 1;
         let octave = ec_ilog(pitch_index as u32) - 5;
         enc.enc_uint(octave as u32, 6);
-        enc.enc_bits(
-            (pitch_index - (16 << octave)) as u32,
-            (4 + octave) as u32,
-        );
+        enc.enc_bits((pitch_index - (16 << octave)) as u32, (4 + octave) as u32);
         pitch_index -= 1;
         enc.enc_bits(qg as u32, 3);
         enc.enc_icdf(prefilter_tapset.max(0) as usize, &TAPSET_ICDF, 2);
@@ -5192,7 +5269,15 @@ fn celt_encode_with_ec_inner<'a>(
         if trace_mdct_should_dump {
             celt_mdct_trace::dump("mdct2", trace_mdct_frame_idx.unwrap(), &freq, c);
         }
-        compute_band_energies(mode, &freq[..c * n], &mut band_e, eff_end, c, lm, encoder.arch);
+        compute_band_energies(
+            mode,
+            &freq[..c * n],
+            &mut band_e,
+            eff_end,
+            c,
+            lm,
+            encoder.arch,
+        );
         #[cfg(test)]
         if trace_band_should_dump {
             celt_band_energy_trace::dump(
@@ -5233,22 +5318,14 @@ fn celt_encode_with_ec_inner<'a>(
             for channel in 0..c {
                 let base = channel * nb_ebands;
                 for band in 0..end as usize {
-                    band_log_e2_fixed[base + band] =
-                        add32(band_log_e2_fixed[base + band], offset);
+                    band_log_e2_fixed[base + band] = add32(band_log_e2_fixed[base + band], offset);
                 }
             }
             sync_loge_from_fixed(&mut band_log_e2, &band_log_e2_fixed);
         }
         #[cfg(not(feature = "fixed_point"))]
         {
-            amp2_log2(
-                mode,
-                eff_end,
-                end as usize,
-                &band_e,
-                &mut band_log_e2,
-                c,
-            );
+            amp2_log2(mode, eff_end, end as usize, &band_e, &mut band_log_e2, c);
             for channel in 0..c {
                 let base = channel * nb_ebands;
                 for band in 0..end as usize {
@@ -5296,44 +5373,52 @@ fn celt_encode_with_ec_inner<'a>(
                     let value = freq[idx] as f32;
                     let sq = value * value;
                     sum += sq;
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_band0_bin[{frame_idx}].ch[{channel}].bin[{bin_offset}].x={:.9e}",
                         value as f64
                     );
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_band0_bin[{frame_idx}].ch[{channel}].bin[{bin_offset}].x_bits=0x{:08x}",
                         value.to_bits()
                     );
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_band0_bin[{frame_idx}].ch[{channel}].bin[{bin_offset}].sq={:.9e}",
                         sq as f64
                     );
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_band0_bin[{frame_idx}].ch[{channel}].bin[{bin_offset}].sq_bits=0x{:08x}",
                         sq.to_bits()
                     );
                 }
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band0_bin[{frame_idx}].ch[{channel}].sum={:.9e}",
                     sum as f64
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band0_bin[{frame_idx}].ch[{channel}].sum_bits=0x{:08x}",
                     sum.to_bits()
                 );
                 let amp = celt_sqrt(sum) as f32;
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band0_bin[{frame_idx}].ch[{channel}].sqrt={:.9e}",
                     amp as f64
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band0_bin[{frame_idx}].ch[{channel}].sqrt_bits=0x{:08x}",
                     amp.to_bits()
                 );
             }
         }
     }
-    compute_band_energies(mode, &freq[..c * n], &mut band_e, eff_end, c, lm, encoder.arch);
+    compute_band_energies(
+        mode,
+        &freq[..c * n],
+        &mut band_e,
+        eff_end,
+        c,
+        lm,
+        encoder.arch,
+    );
     #[cfg(test)]
     if trace_band_should_dump {
         celt_band_energy_trace::dump(
@@ -5358,15 +5443,15 @@ fn celt_encode_with_ec_inner<'a>(
     if let Some(frame_idx) = celt_vbr_budget_trace::current_frame_idx() {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
             let band = 0usize;
-            std::println!("celt_band_log_e[{frame_idx}].band={band}");
+            crate::test_trace::trace_println!("celt_band_log_e[{frame_idx}].band={band}");
             for channel in 0..c {
                 let idx = channel * nb_ebands + band;
                 let value = band_e[idx] as f32;
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band_log_e[{frame_idx}].bandE.ch[{channel}]={:.9e}",
                     value as f64
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band_log_e[{frame_idx}].bandE_bits.ch[{channel}]=0x{:08x}",
                     value.to_bits()
                 );
@@ -5414,14 +5499,7 @@ fn celt_encode_with_ec_inner<'a>(
     }
     #[cfg(not(feature = "fixed_point"))]
     {
-        amp2_log2(
-            mode,
-            eff_end,
-            end as usize,
-            &band_e,
-            &mut band_log_e,
-            c,
-        );
+        amp2_log2(mode, eff_end, end as usize, &band_e, &mut band_log_e, c);
     }
 
     #[cfg(test)]
@@ -5431,11 +5509,11 @@ fn celt_encode_with_ec_inner<'a>(
             for channel in 0..c {
                 let idx = channel * nb_ebands + band;
                 let value = band_log_e[idx] as f32;
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band_log_e[{frame_idx}].bandLogE.ch[{channel}]={:.9e}",
                     value as f64
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_band_log_e[{frame_idx}].bandLogE_bits.ch[{channel}]=0x{:08x}",
                     value.to_bits()
                 );
@@ -5469,17 +5547,12 @@ fn celt_encode_with_ec_inner<'a>(
             }
             debug_assert!(count > 0.0);
             mask_avg = mask_avg / count + 0.2;
-            diff = diff
-                * 6.0
-                / (c as f32
-                    * (mask_end as f32 - 1.0)
-                    * (mask_end as f32 + 1.0)
-                    * mask_end as f32);
+            diff = diff * 6.0
+                / (c as f32 * (mask_end as f32 - 1.0) * (mask_end as f32 + 1.0) * mask_end as f32);
             diff *= 0.5;
             diff = diff.clamp(-0.031, 0.031);
             let mut midband = 0usize;
-            while midband + 1 < nb_ebands
-                && mode.e_bands[midband + 1] < mode.e_bands[mask_end] / 2
+            while midband + 1 < nb_ebands && mode.e_bands[midband + 1] < mode.e_bands[mask_end] / 2
             {
                 midband += 1;
             }
@@ -5520,7 +5593,7 @@ fn celt_encode_with_ec_inner<'a>(
         #[cfg(test)]
         if let Some(frame_idx) = trace_vbr_frame_idx {
             if celt_vbr_budget_trace::should_dump(frame_idx) {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_temporal_vbr[{frame_idx}].spec_avg_pre={:.9e}",
                     encoder.spec_avg as f64
                 );
@@ -5528,7 +5601,11 @@ fn celt_encode_with_ec_inner<'a>(
         }
         let mut follow = -10.0f32;
         let mut frame_avg = 0.0f32;
-        let offset = if short_blocks != 0 { 0.5 * lm as f32 } else { 0.0 };
+        let offset = if short_blocks != 0 {
+            0.5 * lm as f32
+        } else {
+            0.0
+        };
         for band in start..end as usize {
             let mut candidate = band_log_e[band] - offset;
             #[cfg(test)]
@@ -5549,25 +5626,25 @@ fn celt_encode_with_ec_inner<'a>(
             if let Some(frame_idx) = trace_vbr_frame_idx {
                 if celt_vbr_budget_trace::should_dump(frame_idx) {
                     if c == 2 {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_temporal_vbr[{frame_idx}].band[{band}].loge_l={:.9e}",
                             left_val as f64
                         );
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_temporal_vbr[{frame_idx}].band[{band}].loge_r={:.9e}",
                             right_val as f64
                         );
                     } else {
-                        std::println!(
+                        crate::test_trace::trace_println!(
                             "celt_temporal_vbr[{frame_idx}].band[{band}].loge={:.9e}",
                             left_val as f64
                         );
                     }
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_temporal_vbr[{frame_idx}].band[{band}].candidate={:.9e}",
                         candidate as f64
                     );
-                    std::println!(
+                    crate::test_trace::trace_println!(
                         "celt_temporal_vbr[{frame_idx}].band[{band}].follow={:.9e}",
                         follow as f64
                     );
@@ -5580,7 +5657,7 @@ fn celt_encode_with_ec_inner<'a>(
         #[cfg(test)]
         if let Some(frame_idx) = trace_vbr_frame_idx {
             if celt_vbr_budget_trace::should_dump(frame_idx) {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_temporal_vbr[{frame_idx}].frame_avg={:.9e}",
                     frame_avg as f64
                 );
@@ -5592,11 +5669,11 @@ fn celt_encode_with_ec_inner<'a>(
         #[cfg(test)]
         if let Some(frame_idx) = trace_vbr_frame_idx {
             if celt_vbr_budget_trace::should_dump(frame_idx) {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_temporal_vbr[{frame_idx}].temporal_vbr={:.9e}",
                     temporal_vbr as f64
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_temporal_vbr[{frame_idx}].spec_avg_post={:.9e}",
                     encoder.spec_avg as f64
                 );
@@ -5683,14 +5760,7 @@ fn celt_encode_with_ec_inner<'a>(
             }
             #[cfg(not(feature = "fixed_point"))]
             {
-                amp2_log2(
-                    mode,
-                    eff_end,
-                    end as usize,
-                    &band_e,
-                    &mut band_log_e,
-                    c,
-                );
+                amp2_log2(mode, eff_end, end as usize, &band_e, &mut band_log_e, c);
                 for channel in 0..c {
                     let base = channel * nb_ebands;
                     for band in 0..end as usize {
@@ -5710,7 +5780,15 @@ fn celt_encode_with_ec_inner<'a>(
     #[cfg(feature = "fixed_point")]
     {
         let mut x_fixed = vec![0i16; c * n];
-        normalise_bands_fixed(mode, &fixed_freq, &mut x_fixed, &band_e_fixed, eff_end, c, m);
+        normalise_bands_fixed(
+            mode,
+            &fixed_freq,
+            &mut x_fixed,
+            &band_e_fixed,
+            eff_end,
+            c,
+            m,
+        );
         fill_float_norm(&mut x, &x_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
@@ -5758,17 +5836,19 @@ fn celt_encode_with_ec_inner<'a>(
     #[cfg(test)]
     if let Some(frame_idx) = trace_vbr_frame_idx {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!("celt_dynalloc_summary[{frame_idx}].tot_boost={tot_boost}");
-            std::println!(
+            crate::test_trace::trace_println!(
+                "celt_dynalloc_summary[{frame_idx}].tot_boost={tot_boost}"
+            );
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_summary[{frame_idx}].max_depth={:.9e}",
                 max_depth as f64
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_summary[{frame_idx}].max_depth_bits=0x{:08x}",
                 max_depth.to_bits()
             );
             for band in start..end as usize {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_dynalloc_summary[{frame_idx}].offsets[{band}]={}",
                     offsets[band]
                 );
@@ -5941,7 +6021,15 @@ fn celt_encode_with_ec_inner<'a>(
         );
     }
 
-    tf_encode(start, end as usize, is_transient, &mut tf_res, lm, tf_select, enc);
+    tf_encode(
+        start,
+        end as usize,
+        is_transient,
+        &mut tf_res,
+        lm,
+        tf_select,
+        enc,
+    );
 
     if ec_tell(enc.ctx()) + 4 <= total_bits {
         if encoder.lfe {
@@ -6023,13 +6111,13 @@ fn celt_encode_with_ec_inner<'a>(
         #[cfg(test)]
         if let Some(frame_idx) = trace_vbr_frame_idx {
             if celt_vbr_budget_trace::should_dump(frame_idx) {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_dynalloc_bits[{frame_idx}].band[{band}].boost={boost}"
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_dynalloc_bits[{frame_idx}].band[{band}].tell_frac={tell_frac}"
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_dynalloc_bits[{frame_idx}].band[{band}].total_boost={total_boost}"
                 );
             }
@@ -6039,13 +6127,13 @@ fn celt_encode_with_ec_inner<'a>(
     #[cfg(test)]
     if let Some(frame_idx) = trace_vbr_frame_idx {
         if celt_vbr_budget_trace::should_dump(frame_idx) {
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_bits[{frame_idx}].tell_frac_pre={tell_frac_pre_dynalloc}"
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_bits[{frame_idx}].tell_frac_post={tell_frac}"
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_dynalloc_bits[{frame_idx}].total_boost={total_boost}"
             );
         }
@@ -6057,12 +6145,12 @@ fn celt_encode_with_ec_inner<'a>(
             dual_stereo = stereo_analysis(mode, &x, lm, n) as i32;
         }
         static INTENSITY_THRESHOLDS: [OpusVal16; 21] = [
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 16.0, 24.0, 36.0, 44.0, 50.0, 56.0, 62.0,
-            67.0, 72.0, 79.0, 88.0, 106.0, 134.0,
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 16.0, 24.0, 36.0, 44.0, 50.0, 56.0, 62.0, 67.0,
+            72.0, 79.0, 88.0, 106.0, 134.0,
         ];
         static INTENSITY_HYSTERESIS: [OpusVal16; 21] = [
-            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0,
-            4.0, 5.0, 6.0, 8.0, 8.0,
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 4.0,
+            5.0, 6.0, 8.0, 8.0,
         ];
 
         let intensity = hysteresis_decision(
@@ -6103,10 +6191,10 @@ fn celt_encode_with_ec_inner<'a>(
         #[cfg(test)]
         if let Some(frame_idx) = trace_vbr_frame_idx {
             if celt_vbr_budget_trace::should_dump(frame_idx) {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_alloc_trim[{frame_idx}].tell_frac_post={tell_frac}"
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_alloc_trim[{frame_idx}].total_boost={total_boost}"
                 );
             }
@@ -6259,12 +6347,11 @@ fn celt_encode_with_ec_inner<'a>(
 
     let tell_frac = ec_tell_frac(enc.ctx());
     let mut bits = ((nb_compressed_bytes as i32 * 8) << BITRES) - tell_frac as i32 - 1;
-    let anti_collapse_rsv =
-        if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << BITRES) {
-            1 << BITRES
-        } else {
-            0
-        };
+    let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << BITRES) {
+        1 << BITRES
+    } else {
+        0
+    };
     bits -= anti_collapse_rsv;
 
     let mut signal_bandwidth = end as i32 - 1;
@@ -6527,11 +6614,7 @@ fn celt_encode_with_ec_inner<'a>(
         #[cfg(feature = "fixed_point")]
         {
             let reset = glog_to_fixed(-28.0);
-            for value in encoder
-                .fixed_old_band_e
-                .iter_mut()
-                .take(c * nb_ebands)
-            {
+            for value in encoder.fixed_old_band_e.iter_mut().take(c * nb_ebands) {
                 *value = reset;
             }
             sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
@@ -6670,8 +6753,7 @@ pub(crate) fn celt_encode_with_ec(
         let tmp = ((mode.effective_ebands as i32 - end) >> 1).max(0);
         end = (mode.effective_ebands as i32 - tmp).max(1);
         encoder.end_band = end;
-        let mut header =
-            ((tmp as u8) << 5) | ((lm as u8) << 3) | (((c == 2) as u8) << 2);
+        let mut header = ((tmp as u8) << 5) | ((lm as u8) << 3) | (((c == 2) as u8) << 2);
         if mode.sample_rate == 48_000 && mode.short_mdct_size == 120 {
             header = to_opus(header).ok_or(CeltEncodeError::InvalidFrameSize)?;
         }
@@ -7137,15 +7219,16 @@ fn median_of_3(values: &[CeltGlog]) -> CeltGlog {
 mod tests {
     extern crate std;
 
+    #[cfg(feature = "fixed_point")]
+    use super::celt_preemphasis_fixed;
     use super::{
         COMBFILTER_MAXPERIOD, CeltEncodeError, CeltEncoderAlloc, CeltEncoderInitError, CeltSig,
         EncoderCtlRequest, MAX_CHANNELS, OPUS_BITRATE_MAX, OpusCustomEncoder, OpusCustomMode,
         OpusUint32, PREEMPHASIS_CLIP_LIMIT, celt_encoder_init, celt_preemphasis,
-        convert_f32_to_celt_sig, convert_i16_to_celt_sig, convert_i24_to_celt_sig, opus_custom_encode,
-        opus_custom_encoder_destroy, opus_custom_encoder_init, opus_custom_encoder_init_arch,
+        convert_f32_to_celt_sig, convert_i16_to_celt_sig, convert_i24_to_celt_sig,
+        opus_custom_encode, opus_custom_encoder_destroy, opus_custom_encoder_init,
+        opus_custom_encoder_init_arch,
     };
-    #[cfg(feature = "fixed_point")]
-    use super::celt_preemphasis_fixed;
     use super::{
         CeltEncoderCtlError, alloc_trim_analysis, compute_mdcts, compute_vbr, dynalloc_analysis,
         l1_metric, median_of_3, median_of_5, opus_custom_encoder_ctl, patch_transient_decision,
@@ -7170,9 +7253,9 @@ mod tests {
     use crate::celt::modes::{
         compute_preemphasis, opus_custom_mode_create, opus_custom_mode_find_static,
     };
-    use crate::celt::types::{AnalysisInfo, OpusCustomDecoder, OpusRes};
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::FixedCeltSig;
+    use crate::celt::types::{AnalysisInfo, OpusCustomDecoder, OpusRes};
     use crate::celt::vq::SPREAD_NORMAL;
     use alloc::format;
     use alloc::string::String;
@@ -8586,16 +8669,16 @@ mod tests {
     // =========================================================================
 
     use super::super::celt_decoder::{
-        CeltDecodeError, opus_custom_decode, opus_custom_decode24,
-        opus_custom_decode_float, opus_custom_decoder_create,
+        CeltDecodeError, opus_custom_decode, opus_custom_decode_float, opus_custom_decode24,
+        opus_custom_decoder_create,
     };
-    use super::{opus_custom_encode24, opus_custom_encode_float, opus_custom_encoder_create};
+    use super::{opus_custom_encode_float, opus_custom_encode24, opus_custom_encoder_create};
     use crate::opus_decoder::{
-        OpusDecodeError, OpusDecoder, opus_decode, opus_decode24, opus_decode_float,
+        OpusDecodeError, OpusDecoder, opus_decode, opus_decode_float, opus_decode24,
         opus_decoder_create,
     };
     use crate::opus_encoder::{
-        OpusEncoder, OpusEncoderCtlRequest, opus_encode, opus_encode24, opus_encode_float,
+        OpusEncoder, OpusEncoderCtlRequest, opus_encode, opus_encode_float, opus_encode24,
         opus_encoder_create, opus_encoder_ctl,
     };
     use core::f64::consts::PI as PI_F64;
@@ -8914,8 +8997,7 @@ mod tests {
 
             let mut error_pos = 0i32;
             loop {
-                let increment =
-                    (-(ber_1 as f64) * (1e-10 + rand_f64(rng)).ln()) as i32;
+                let increment = (-(ber_1 as f64) * (1e-10 + rand_f64(rng)).ln()) as i32;
                 error_pos += increment;
                 if error_pos >= (len2 * 8) as i32 {
                     break;
@@ -8933,16 +9015,13 @@ mod tests {
                     Some(dec) => dec,
                     None => return Err(String::from("missing custom decoder (corrupt)")),
                 };
-                let result =
-                    opus_custom_decode(dec, Some(corrupt_slice), &mut scratch, frame_size);
+                let result = opus_custom_decode(dec, Some(corrupt_slice), &mut scratch, frame_size);
                 if !matches!(
                     result,
                     Ok(_)
-                        | Err(
-                            CeltDecodeError::BadArgument
-                                | CeltDecodeError::InvalidPacket
-                                | CeltDecodeError::PacketLoss,
-                        )
+                        | Err(CeltDecodeError::BadArgument
+                            | CeltDecodeError::InvalidPacket
+                            | CeltDecodeError::PacketLoss,)
                 ) {
                     return Err(format!("opus_custom_decode corrupt failed: {result:?}"));
                 }
@@ -8962,11 +9041,9 @@ mod tests {
                 if !matches!(
                     result,
                     Ok(_)
-                        | Err(
-                            OpusDecodeError::BadArgument
-                                | OpusDecodeError::InvalidPacket
-                                | OpusDecodeError::BufferTooSmall,
-                        )
+                        | Err(OpusDecodeError::BadArgument
+                            | OpusDecodeError::InvalidPacket
+                            | OpusDecodeError::BufferTooSmall,)
                 ) {
                     return Err(format!("opus_decode corrupt failed: {result:?}"));
                 }
@@ -9107,7 +9184,10 @@ mod tests {
         }
 
         // Ensure we tested at least some configurations
-        assert!(success_count > 0, "No configurations were successfully tested");
+        assert!(
+            success_count > 0,
+            "No configurations were successfully tested"
+        );
     }
 
     /// Tests that the encoder processes PCM without panicking.
@@ -9155,7 +9235,8 @@ mod tests {
 
         // Test bitrate settings
         for &bitrate in &[6000, 12000, 24000, 48000, 96000, 510000] {
-            let result = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(bitrate));
+            let result =
+                opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetBitrate(bitrate));
             assert!(result.is_ok(), "SetBitrate({}) failed", bitrate);
         }
 
@@ -9167,25 +9248,31 @@ mod tests {
 
         // Test VBR constraint
         for &constraint in &[false, true] {
-            let result = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetVbrConstraint(constraint));
+            let result = opus_custom_encoder_ctl(
+                &mut encoder,
+                EncoderCtlRequest::SetVbrConstraint(constraint),
+            );
             assert!(result.is_ok(), "SetVbrConstraint({}) failed", constraint);
         }
 
         // Test complexity settings
         for complexity in 0..=10 {
-            let result = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(complexity));
+            let result =
+                opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetComplexity(complexity));
             assert!(result.is_ok(), "SetComplexity({}) failed", complexity);
         }
 
         // Test packet loss percentage
         for &loss in &[0, 1, 2, 5, 10] {
-            let result = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetPacketLossPerc(loss));
+            let result =
+                opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetPacketLossPerc(loss));
             assert!(result.is_ok(), "SetPacketLossPerc({}) failed", loss);
         }
 
         // Test LSB depth
         for &depth in &[8, 16, 24] {
-            let result = opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(depth));
+            let result =
+                opus_custom_encoder_ctl(&mut encoder, EncoderCtlRequest::SetLsbDepth(depth));
             assert!(result.is_ok(), "SetLsbDepth({}) failed", depth);
         }
     }
@@ -9272,8 +9359,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "custom fuzz test is too slow under Miri")]
     fn opus_custom_encode_decode_roundtrip() {
         let seed = seed_from_env();
-        let (num_encoders_to_fuzz, num_setting_changes, duration_seconds) =
-            custom_fuzz_settings();
+        let (num_encoders_to_fuzz, num_setting_changes, duration_seconds) = custom_fuzz_settings();
         let mut rng = FastRand::new(seed);
 
         let sampling_rates = [8000, 12000, 16000, 24000, 48000];
@@ -9459,15 +9545,11 @@ encoder_bit_depth: {}, decoder_bit_depth: {}, custom_encode: {}, custom_decode: 
                         enc,
                         EncoderCtlRequest::SetVbrConstraint(vbr_constraint),
                     )
-                    .unwrap_or_else(|err| {
-                        panic!("{context}: set vbr constraint failed: {err:?}")
-                    });
+                    .unwrap_or_else(|err| panic!("{context}: set vbr constraint failed: {err:?}"));
                     opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetComplexity(complexity))
                         .unwrap_or_else(|err| panic!("{context}: set complexity failed: {err:?}"));
                     opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetPacketLossPerc(pkt_loss))
-                        .unwrap_or_else(|err| {
-                            panic!("{context}: set packet loss failed: {err:?}")
-                        });
+                        .unwrap_or_else(|err| panic!("{context}: set packet loss failed: {err:?}"));
                     opus_custom_encoder_ctl(enc, EncoderCtlRequest::SetLsbDepth(lsb_depth))
                         .unwrap_or_else(|err| panic!("{context}: set lsb depth failed: {err:?}"));
                 } else {
@@ -9483,9 +9565,7 @@ encoder_bit_depth: {}, decoder_bit_depth: {}, custom_encode: {}, custom_decode: 
                     opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetComplexity(complexity))
                         .unwrap_or_else(|err| panic!("{context}: set complexity failed: {err:?}"));
                     opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetPacketLossPerc(pkt_loss))
-                        .unwrap_or_else(|err| {
-                            panic!("{context}: set packet loss failed: {err:?}")
-                        });
+                        .unwrap_or_else(|err| panic!("{context}: set packet loss failed: {err:?}"));
                     opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetLsbDepth(lsb_depth))
                         .unwrap_or_else(|err| panic!("{context}: set lsb depth failed: {err:?}"));
                 }
@@ -9519,8 +9599,8 @@ encoder_bit_depth: {}, decoder_bit_depth: {}, custom_encode: {}, custom_decode: 
             .unwrap_or(64);
 
         let mut file = std::fs::File::open(&path).expect("open CELT_TRACE_PCM");
-        let mut encoder = crate::opus_encoder::opus_encoder_create(48_000, 2, 2049)
-            .expect("encoder init");
+        let mut encoder =
+            crate::opus_encoder::opus_encoder_create(48_000, 2, 2049).expect("encoder init");
         crate::opus_encoder::opus_encoder_ctl(
             &mut encoder,
             crate::opus_encoder::OpusEncoderCtlRequest::SetBitrate(64_000),

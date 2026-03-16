@@ -407,7 +407,7 @@ pub(crate) mod kfft_trace {
     use std::env;
     use std::sync::OnceLock;
 
-    use super::{c_add, c_mul, c_mul_by_scalar, c_sub, KissFftCpx, MiniKissFft};
+    use super::{KissFftCpx, MiniKissFft, c_add, c_mul, c_mul_by_scalar, c_sub};
     use crate::celt::fft_bitrev_480::FFT_BITREV_480;
 
     const C_FACTORS_480: [i16; 10] = [5, 96, 3, 32, 4, 8, 2, 4, 4, 1];
@@ -485,11 +485,7 @@ pub(crate) mod kfft_trace {
     }
 
     fn tag_name(tag: usize) -> &'static str {
-        if tag == 1 {
-            "mdct2"
-        } else {
-            "main"
-        }
+        if tag == 1 { "mdct2" } else { "main" }
     }
 
     fn should_dump_stage(stage: usize) -> Option<&'static TraceConfig> {
@@ -657,38 +653,38 @@ pub(crate) mod kfft_trace {
         let start = cfg.start.min(len);
         let end = start.saturating_add(cfg.count).min(len);
 
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].p={p}",
             tag_name(tag)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].m={m}",
             tag_name(tag)
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].fstride={fstride}",
             tag_name(tag)
         );
 
         for i in start..end {
             let value = spectrum[i];
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].idx[{i}].r={:.9e}",
                 tag_name(tag),
                 value.r
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].idx[{i}].i={:.9e}",
                 tag_name(tag),
                 value.i
             );
             if cfg.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].idx_bits[{i}].r=0x{:08x}",
                     tag_name(tag),
                     value.r.to_bits()
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_kfft_stage[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].idx_bits[{i}].i=0x{:08x}",
                     tag_name(tag),
                     value.i.to_bits()
@@ -985,7 +981,8 @@ pub(crate) mod kfft_trace {
                 let term8_yb_i = scratch8.i * yb.r;
                 let sum78_ya_yb_r = super::fused_mul_add(scratch7.r, ya.r, term8_yb_r);
                 let sum78_ya_yb_i = super::fused_mul_add(scratch7.i, ya.r, term8_yb_i);
-                let scratch5 = KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
+                let scratch5 =
+                    KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
                 let scratch6 = KissFftCpx::new(
                     super::fused_mul_add(scratch10.i, ya.i, scratch9.i * yb.i),
                     -super::fused_mul_add(scratch10.r, ya.i, scratch9.r * yb.i),
@@ -1000,7 +997,8 @@ pub(crate) mod kfft_trace {
                 let term8_ya_i = scratch8.i * ya.r;
                 let sum78_yb_ya_r = super::fused_mul_add(scratch7.r, yb.r, term8_ya_r);
                 let sum78_yb_ya_i = super::fused_mul_add(scratch7.i, yb.r, term8_ya_i);
-                let scratch11 = KissFftCpx::new(scratch0.r + sum78_yb_ya_r, scratch0.i + sum78_yb_ya_i);
+                let scratch11 =
+                    KissFftCpx::new(scratch0.r + sum78_yb_ya_r, scratch0.i + sum78_yb_ya_i);
                 let scratch12 = KissFftCpx::new(
                     super::fused_mul_add(scratch9.i, ya.i, -(scratch10.i * yb.i)),
                     super::fused_mul_add(scratch10.r, yb.i, -(scratch9.r * ya.i)),
@@ -1159,24 +1157,24 @@ pub(crate) mod kfft_trace {
         let channel = CHANNEL_INDEX.load(Ordering::Relaxed);
         let block = BLOCK_INDEX.load(Ordering::Relaxed);
         let tag = TAG_INDEX.load(Ordering::Relaxed);
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_kfft_detail[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].u[{u}].{name}.r={:.9e}",
             tag_name(tag),
             value.r
         );
-        std::println!(
+        crate::test_trace::trace_println!(
             "celt_kfft_detail[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].u[{u}].{name}.i={:.9e}",
             tag_name(tag),
             value.i
         );
         if let Some(cfg) = config() {
             if cfg.want_bits {
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_kfft_detail[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].u[{u}].{name}_bits.r=0x{:08x}",
                     tag_name(tag),
                     value.r.to_bits()
                 );
-                std::println!(
+                crate::test_trace::trace_println!(
                     "celt_kfft_detail[{frame}].{}.call[{call}].ch[{channel}].block[{block}].stage[{stage}].u[{u}].{name}_bits.i=0x{:08x}",
                     tag_name(tag),
                     value.i.to_bits()
@@ -1427,13 +1425,19 @@ mod twiddle_trace {
             return;
         }
         for (i, tw) in twiddles.iter().enumerate() {
-            std::println!("celt_twiddle[{nfft}].idx[{i}].r={:.9e}", tw.r as f64);
-            std::println!("celt_twiddle[{nfft}].idx[{i}].i={:.9e}", tw.i as f64);
-            std::println!(
+            crate::test_trace::trace_println!(
+                "celt_twiddle[{nfft}].idx[{i}].r={:.9e}",
+                tw.r as f64
+            );
+            crate::test_trace::trace_println!(
+                "celt_twiddle[{nfft}].idx[{i}].i={:.9e}",
+                tw.i as f64
+            );
+            crate::test_trace::trace_println!(
                 "celt_twiddle[{nfft}].idx[{i}].r_bits=0x{:08x}",
                 tw.r.to_bits()
             );
-            std::println!(
+            crate::test_trace::trace_println!(
                 "celt_twiddle[{nfft}].idx[{i}].i_bits=0x{:08x}",
                 tw.i.to_bits()
             );
