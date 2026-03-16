@@ -19,11 +19,9 @@ mod entcode;
 mod entdec;
 mod entenc;
 mod fft_bitrev_480;
+mod fft_twiddles_48000_960;
 #[cfg(feature = "fixed_point")]
 mod fft_twiddles_fixed_48000_960;
-mod fft_twiddles_48000_960;
-mod mdct_twiddles_48000_960;
-mod window_48000_960;
 #[cfg(feature = "fixed_point")]
 mod fixed_arch;
 #[cfg(feature = "fixed_point")]
@@ -39,6 +37,7 @@ pub(crate) mod math_fixed;
 mod mdct;
 #[cfg(feature = "fixed_point")]
 mod mdct_fixed;
+mod mdct_twiddles_48000_960;
 mod mini_kfft;
 mod modes;
 mod pitch;
@@ -46,6 +45,7 @@ mod quant_bands;
 mod rate;
 mod types;
 mod vq;
+mod window_48000_960;
 mod x86_celt_map;
 
 #[allow(unused_imports)]

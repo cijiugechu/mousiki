@@ -7,16 +7,46 @@
 //! more complex pieces of the encoder so that future ports can focus on the
 //! higher-level control flow.
 
-use alloc::vec;
-use alloc::vec::Vec;
 #[cfg(test)]
 use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
 #[cfg(test)]
 extern crate std;
 
 use core::f32::consts::SQRT_2;
 
 use crate::celt::entcode::ec_tell_frac;
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_arch::{
+    DB_SHIFT, EPSILON as FIXED_EPSILON, NORM_SCALING as FIXED_NORM_SCALING, Q31_ONE,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::fixed_ops::{
+    abs32, add32, extract16, mult16_16, mult16_16_q15, mult16_32_q15, mult32_32_q31, pshr32,
+    qconst16, qconst32, shl32, shr32, sub32, vshr32,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::float_cast::{float2int, float2int16};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math::{celt_ilog2, celt_zlog2};
+#[cfg(feature = "fixed_point")]
+use crate::celt::math_fixed::{
+    celt_rcp as celt_rcp_fixed, celt_rsqrt_norm as celt_rsqrt_norm_fixed,
+    celt_sqrt as celt_sqrt_fixed,
+};
+#[cfg(feature = "fixed_point")]
+use crate::celt::pitch::dual_inner_prod_fixed;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::renormalise_vector;
+#[cfg(feature = "fixed_point")]
+use crate::celt::types::{
+    FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal32,
+};
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::vq::{alg_quant, alg_unquant};
+#[cfg(feature = "fixed_point")]
+use crate::celt::vq::{alg_quant_fixed, alg_unquant_fixed, renormalise_vector_fixed};
 use crate::celt::{
     BITRES, EcDec, EcEnc, EcEncSnapshot, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE,
     SPREAD_NORMAL, celt_exp2, celt_inner_prod, celt_rsqrt, celt_rsqrt_norm, celt_sqrt, celt_sudiv,
@@ -27,143 +57,7 @@ use crate::celt::{
     types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
     vq::stereo_itheta,
 };
-#[cfg(feature = "fixed_point")]
-use crate::celt::pitch::dual_inner_prod_fixed;
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::renormalise_vector;
-#[cfg(not(feature = "fixed_point"))]
-use crate::celt::vq::{alg_quant, alg_unquant};
 use core::convert::TryFrom;
-#[cfg(feature = "fixed_point")]
-use crate::celt::fixed_arch::{DB_SHIFT, EPSILON as FIXED_EPSILON, NORM_SCALING as FIXED_NORM_SCALING, Q31_ONE};
-#[cfg(feature = "fixed_point")]
-use crate::celt::fixed_ops::{
-    abs32, add32, extract16, mult16_16, mult16_16_q15, mult16_32_q15, mult32_32_q31, pshr32,
-    qconst16, qconst32, shl32, shr32, sub32, vshr32,
-};
-#[cfg(feature = "fixed_point")]
-use crate::celt::math::{celt_ilog2, celt_zlog2};
-#[cfg(feature = "fixed_point")]
-use crate::celt::math_fixed::{
-    celt_rcp as celt_rcp_fixed, celt_rsqrt_norm as celt_rsqrt_norm_fixed, celt_sqrt as celt_sqrt_fixed,
-};
-#[cfg(feature = "fixed_point")]
-use crate::celt::types::{FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal32};
-#[cfg(feature = "fixed_point")]
-use crate::celt::float_cast::{float2int, float2int16};
-#[cfg(feature = "fixed_point")]
-use crate::celt::vq::{alg_quant_fixed, alg_unquant_fixed, renormalise_vector_fixed};
-#[cfg(test)]
-mod quant_trace {
-    extern crate std;
-
-    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
-    use std::env;
-    use std::sync::OnceLock;
-
-    use crate::celt::types::CeltGlog;
-
-    pub(crate) struct TraceConfig {
-        frame: Option<usize>,
-        want_bits: bool,
-    }
-
-    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
-    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
-
-    pub(crate) fn begin_frame() -> Option<usize> {
-        if config().is_some() {
-            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn should_dump(frame_idx: usize) -> bool {
-        config().map_or(false, |cfg| cfg.frame.map_or(true, |frame| frame == frame_idx))
-    }
-
-    pub(crate) fn want_bits() -> bool {
-        config().map_or(false, |cfg| cfg.want_bits)
-    }
-
-    fn config() -> Option<&'static TraceConfig> {
-        TRACE_CONFIG
-            .get_or_init(|| {
-                let enabled = match env::var("CELT_TRACE_QUANT_BANDS") {
-                    Ok(value) => !value.is_empty() && value != "0",
-                    Err(_) => false,
-                };
-                if !enabled {
-                    return None;
-                }
-                let frame = env::var("CELT_TRACE_QUANT_BANDS_FRAME")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok());
-                let want_bits = match env::var("CELT_TRACE_QUANT_BANDS_BITS") {
-                    Ok(value) => !value.is_empty() && value != "0",
-                    Err(_) => false,
-                };
-                Some(TraceConfig { frame, want_bits })
-            })
-            .as_ref()
-    }
-
-    pub(crate) fn dump(
-        tag: &str,
-        frame_idx: usize,
-        start: usize,
-        end: usize,
-        channels: usize,
-        nb_ebands: usize,
-        band_e: &[CeltGlog],
-        pulses: &[i32],
-        tf_res: &[i32],
-        collapse_masks: Option<&[u8]>,
-        want_bits: bool,
-    ) {
-        for band in start..end {
-            let pulses_value = pulses.get(band).copied().unwrap_or(0);
-            let tf_value = tf_res.get(band).copied().unwrap_or(0);
-            std::println!(
-                "celt_quant[{}].{}.band[{}].pulses={}",
-                frame_idx, tag, band, pulses_value
-            );
-            std::println!(
-                "celt_quant[{}].{}.band[{}].tf_res={}",
-                frame_idx, tag, band, tf_value
-            );
-            for channel in 0..channels {
-                let idx = band + channel * nb_ebands;
-                if idx >= band_e.len() {
-                    continue;
-                }
-                let value = band_e[idx];
-                std::println!(
-                    "celt_quant[{}].{}.band[{}].bandE[{}]={:.9}",
-                    frame_idx, tag, band, channel, value
-                );
-                if want_bits {
-                    std::println!(
-                        "celt_quant[{}].{}.band[{}].bandE_bits[{}]=0x{:08x}",
-                        frame_idx,
-                        tag,
-                        band,
-                        channel,
-                        value.to_bits()
-                    );
-                }
-                if let Some(collapse) = collapse_masks.and_then(|masks| masks.get(idx)) {
-                    std::println!(
-                        "celt_quant[{}].{}.band[{}].collapse[{}]={}",
-                        frame_idx, tag, band, channel, collapse
-                    );
-                }
-            }
-        }
-    }
-}
-
 /// Small positive constant used throughout the CELT band tools to avoid divisions by zero.
 const EPSILON: f32 = 1e-15;
 
@@ -408,50 +302,11 @@ pub(crate) fn compute_theta(
     }
 
     let mut itheta = if encode {
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-            rc_band_trace::dump_stereo_itheta_input_if_match(
-                frame_idx, band, n, stereo, x, y,
-            );
-        }
-        stereo_itheta(x, y, stereo, n, ctx.arch)
+                stereo_itheta(x, y, stereo, n, ctx.arch)
     } else {
         0
     };
-    #[cfg(test)]
-    if encode {
-        if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-            let len = n.min(x.len()).min(y.len());
-            let mut emid = EPSILON;
-            let mut eside = EPSILON;
-            if stereo {
-                for i in 0..len {
-                    let m = 0.5 * (x[i] + y[i]);
-                    let s = 0.5 * (x[i] - y[i]);
-                    emid += m * m;
-                    eside += s * s;
-                }
-            } else {
-                emid += celt_inner_prod(&x[..len], &x[..len]);
-                eside += celt_inner_prod(&y[..len], &y[..len]);
-            }
-            let mid = celt_sqrt(emid);
-            let side = celt_sqrt(eside);
-            rc_band_trace::dump_stereo_itheta_if_match(
-                frame_idx,
-                band,
-                n,
-                stereo,
-                itheta,
-                emid,
-                eside,
-                mid,
-                side,
-            );
-        }
-    }
-
-    let tell_before = coder.tell_frac() as i32;
+        let tell_before = coder.tell_frac() as i32;
     let mut inv = false;
     let imid;
     let iside;
@@ -560,41 +415,13 @@ pub(crate) fn compute_theta(
         if encode && stereo {
             let band_e_left = band_e[band];
             let band_e_right = band_e[band + mode.num_ebands];
-            #[cfg(test)]
-            rc_band_trace::set_stereo_split_detail_band(band);
-            if itheta == 0 {
+                        if itheta == 0 {
                 intensity_stereo(mode, x, y, band_e, band, n);
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                    rc_band_trace::dump_stereo_split_if_match(
-                        frame_idx,
-                        band,
-                        n,
-                        "intensity",
-                        band_e_left,
-                        band_e_right,
-                        &x[..n],
-                        &y[..n],
-                    );
-                }
-            } else {
+                            } else {
                 let x_band = &mut x[..n];
                 let y_band = &mut y[..n];
                 stereo_split(x_band, y_band);
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                    rc_band_trace::dump_stereo_split_if_match(
-                        frame_idx,
-                        band,
-                        n,
-                        "split",
-                        band_e_left,
-                        band_e_right,
-                        x_band,
-                        y_band,
-                    );
-                }
-            }
+                            }
         }
     } else if stereo {
         if encode {
@@ -661,32 +488,7 @@ pub(crate) fn compute_theta(
     sctx.itheta = itheta;
     sctx.qalloc = qalloc;
 
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_theta_if_match(
-            frame_idx,
-            band,
-            ctx.theta_round,
-            n,
-            b_in,
-            *b,
-            b_current,
-            b0,
-            lm,
-            stereo,
-            *fill,
-            qn,
-            itheta,
-            qalloc,
-            delta,
-            imid,
-            iside,
-            inv,
-            tell_before,
-            tell_after,
-        );
     }
-}
 
 /// Indexing table for converting natural-order Hadamard coefficients into the
 /// "ordery" permutation used by CELT's spreading analysis.
@@ -939,7 +741,11 @@ fn pvq_alg_quant_runtime(
     arch: i32,
 ) -> u32 {
     assert!(x.len() >= n, "input vector shorter than band size");
-    let mut fixed_x: Vec<FixedCeltNorm> = x.iter().take(n).map(|&sample| float2int16(sample)).collect();
+    let mut fixed_x: Vec<FixedCeltNorm> = x
+        .iter()
+        .take(n)
+        .map(|&sample| float2int16(sample))
+        .collect();
     let mask = alg_quant_fixed(
         &mut fixed_x,
         n,
@@ -1005,7 +811,11 @@ fn pvq_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: OpusVal32, arch:
 #[cfg(feature = "fixed_point")]
 fn pvq_renormalise_runtime(x: &mut [OpusVal16], n: usize, gain: OpusVal32, arch: i32) {
     assert!(x.len() >= n, "input vector shorter than band size");
-    let mut fixed_x: Vec<FixedCeltNorm> = x.iter().take(n).map(|&sample| float2int16(sample)).collect();
+    let mut fixed_x: Vec<FixedCeltNorm> = x
+        .iter()
+        .take(n)
+        .map(|&sample| float2int16(sample))
+        .collect();
     renormalise_vector_fixed(&mut fixed_x, n, gain_to_q31(gain), arch);
     for (dst, &sample) in x.iter_mut().take(n).zip(fixed_x.iter()) {
         *dst = fixed_norm_to_float(sample);
@@ -1056,12 +866,7 @@ fn special_hybrid_folding_fixed(
 }
 
 #[cfg(feature = "fixed_point")]
-fn deinterleave_hadamard_fixed(
-    x: &mut [FixedCeltNorm],
-    n0: usize,
-    stride: usize,
-    hadamard: bool,
-) {
+fn deinterleave_hadamard_fixed(x: &mut [FixedCeltNorm], n0: usize, stride: usize, hadamard: bool) {
     if stride == 0 {
         return;
     }
@@ -1091,12 +896,7 @@ fn deinterleave_hadamard_fixed(
 }
 
 #[cfg(feature = "fixed_point")]
-fn interleave_hadamard_fixed(
-    x: &mut [FixedCeltNorm],
-    n0: usize,
-    stride: usize,
-    hadamard: bool,
-) {
+fn interleave_hadamard_fixed(x: &mut [FixedCeltNorm], n0: usize, stride: usize, hadamard: bool) {
     if stride == 0 {
         return;
     }
@@ -1135,7 +935,10 @@ fn haar1_fixed(x: &mut [FixedCeltNorm], n0: usize, stride: usize) {
         return;
     }
     let required = stride * n0;
-    assert!(x.len() >= required, "haar1 expects at least stride * n0 coefficients");
+    assert!(
+        x.len() >= required,
+        "haar1 expects at least stride * n0 coefficients"
+    );
 
     let scale = qconst16(core::f64::consts::FRAC_1_SQRT_2, 15);
     for i in 0..stride {
@@ -1151,12 +954,12 @@ fn haar1_fixed(x: &mut [FixedCeltNorm], n0: usize, stride: usize) {
 }
 
 #[cfg(feature = "fixed_point")]
-fn stereo_merge_fixed(
-    x: &mut [FixedCeltNorm],
-    y: &mut [FixedCeltNorm],
-    mid: FixedOpusVal32,
-) {
-    assert_eq!(x.len(), y.len(), "stereo_merge expects slices of equal length");
+fn stereo_merge_fixed(x: &mut [FixedCeltNorm], y: &mut [FixedCeltNorm], mid: FixedOpusVal32) {
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "stereo_merge expects slices of equal length"
+    );
     if x.is_empty() {
         return;
     }
@@ -1370,10 +1173,7 @@ fn quant_partition_fixed_decode(
     let mut cm = 0u32;
     let original_b = b_blocks;
 
-    #[cfg(test)]
-    let pvq_depth = rc_band_trace::pvq_depth_guard().depth();
-
-    if lm != -1 && n > 2 && !cache_slice.is_empty() {
+        if lm != -1 && n > 2 && !cache_slice.is_empty() {
         let hi_index = cache_slice[0] as usize;
         if hi_index < cache_slice.len() {
             let threshold = i32::from(cache_slice[hi_index]) + 12;
@@ -1396,15 +1196,7 @@ fn quant_partition_fixed_decode(
 
                 let mut split = SplitCtx::default();
                 compute_theta_decode_fixed(
-                    ctx,
-                    &mut split,
-                    half,
-                    &mut b,
-                    b_blocks,
-                    original_b,
-                    lm,
-                    false,
-                    &mut fill,
+                    ctx, &mut split, half, &mut b, b_blocks, original_b, lm, false, &mut fill,
                     coder,
                 );
 
@@ -1490,21 +1282,7 @@ fn quant_partition_fixed_decode(
     }
 
     let mut q = bits2pulses(mode, band, lm, b);
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_pvq_entry_if_match(
-            frame_idx,
-            band,
-            pvq_depth,
-            n,
-            b,
-            b_blocks.max(1),
-            lm,
-            fill,
-            ctx.remaining_bits,
-        );
-    }
-    let q_initial = q;
+        let q_initial = q;
     let mut curr_bits = pulses2bits(mode, band, lm, q);
     let curr_bits_initial = curr_bits;
     ctx.remaining_bits -= curr_bits;
@@ -1514,22 +1292,7 @@ fn quant_partition_fixed_decode(
         curr_bits = pulses2bits(mode, band, lm, q);
         ctx.remaining_bits -= curr_bits;
     }
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_pvq_bits_if_match(
-            frame_idx,
-            band,
-            pvq_depth,
-            q_initial,
-            q,
-            curr_bits_initial,
-            curr_bits,
-            ctx.remaining_bits,
-            if q != 0 { Some(get_pulses(q)) } else { None },
-        );
-    }
-
-    if q != 0 {
+        if q != 0 {
         let k = get_pulses(q);
         cm = alg_unquant_fixed(
             x,
@@ -1543,10 +1306,6 @@ fn quant_partition_fixed_decode(
     } else if ctx.resynth {
         let cm_mask = mask_from_bits(b_blocks);
         fill &= cm_mask;
-        #[cfg(test)]
-        let trace_before_seed = ctx.seed;
-        #[cfg(test)]
-        let trace_lowband: Option<Vec<i16>> = lowband.as_ref().map(|slice| slice.iter().take(n.min(8)).copied().collect());
         if fill == 0 {
             x[..n].fill(0);
         } else {
@@ -1565,26 +1324,8 @@ fn quant_partition_fixed_decode(
                 }
                 cm = cm_mask;
             }
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let coeffs: Vec<i16> = x.iter().take(n.min(8)).copied().collect();
-                std::println!(
-                    "q0_trace[{frame_idx}].band[{band}].kind=fixed.stage=pre_renorm.fill=0x{fill:08x}.cm_mask=0x{cm_mask:08x}.gain=0x{gain:08x}.seed_before=0x{trace_before_seed:08x}.seed_after=0x{seed_after:08x}.lowband={lowband:?}.coeffs={coeffs:?}",
-                    band = ctx.band,
-                    seed_after = ctx.seed,
-                    lowband = trace_lowband,
-                );
-            }
-            renormalise_vector_fixed(&mut x[..n], n, gain, ctx.arch);
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let coeffs: Vec<i16> = x.iter().take(n.min(8)).copied().collect();
-                std::println!(
-                    "q0_trace[{frame_idx}].band[{band}].kind=fixed.stage=post_renorm.fill=0x{fill:08x}.gain=0x{gain:08x}.coeffs={coeffs:?}",
-                    band = ctx.band,
-                );
-            }
-        }
+                        renormalise_vector_fixed(&mut x[..n], n, gain, ctx.arch);
+                    }
     }
 
     cm
@@ -1609,15 +1350,6 @@ fn quant_band_fixed_decode(
         return quant_band_n1_fixed(ctx, &mut x[..1], None, lowband_out, coder) as u32;
     }
 
-    #[cfg(test)]
-    let trace_band = ctx.band;
-    #[cfg(test)]
-    let dump_fixed_stage = |stage: &str, data: &[FixedCeltNorm]| {
-        if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-            let trace: Vec<OpusVal16> = data.iter().copied().map(fixed_norm_to_float).collect();
-            rc_band_trace::dump_band_prepartition_if_match(frame_idx, trace_band, n, stage, &trace);
-        }
-    };
     let n0 = n;
     let mut n_b = celt_udiv(n as u32, b_blocks as u32) as usize;
     let mut b0 = b_blocks;
@@ -1626,8 +1358,8 @@ fn quant_band_fixed_decode(
     let long_blocks = b0 == 1;
 
     let mut lowband_storage: Option<Vec<FixedCeltNorm>> = None;
-    let copy_lowband =
-        lowband_input.is_some() && (recombine > 0 || ((n_b & 1) == 0 && ctx.tf_change < 0) || b0 > 1);
+    let copy_lowband = lowband_input.is_some()
+        && (recombine > 0 || ((n_b & 1) == 0 && ctx.tf_change < 0) || b0 > 1);
     let mut lowband_view: Option<&mut [FixedCeltNorm]> = None;
     if let Some(slice) = lowband_input {
         let len = n.min(slice.len());
@@ -1672,7 +1404,9 @@ fn quant_band_fixed_decode(
 
     b0 = b_blocks;
     let n_b0 = n_b;
-    if b0 > 1 && let Some(ref mut lowband_slice) = lowband_view {
+    if b0 > 1
+        && let Some(ref mut lowband_slice) = lowband_view
+    {
         deinterleave_hadamard_fixed(
             lowband_slice,
             n_b >> recombine,
@@ -1684,7 +1418,8 @@ fn quant_band_fixed_decode(
     #[cfg(test)]
     dump_fixed_stage("post_deinterleave", &x[..n]);
 
-    let mut cm = quant_partition_fixed_decode(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
+    let mut cm =
+        quant_partition_fixed_decode(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
     #[cfg(test)]
     dump_fixed_stage("post_partition", &x[..n]);
     if ctx.resynth {
@@ -1778,11 +1513,8 @@ fn quant_band_stereo_fixed_decode(
         let use_side = itheta > 8_192;
         ctx.remaining_bits -= qalloc + sbits;
 
-        let (x2, y2): (&mut [FixedCeltNorm], &mut [FixedCeltNorm]) = if use_side {
-            (y, x)
-        } else {
-            (x, y)
-        };
+        let (x2, y2): (&mut [FixedCeltNorm], &mut [FixedCeltNorm]) =
+            if use_side { (y, x) } else { (x, y) };
         let mut sign = 0i32;
         if sbits != 0 {
             sign = coder.decode_bits(1) as i32;
@@ -1949,10 +1681,7 @@ pub(crate) fn quant_all_bands_decode_fixed(
         return;
     }
 
-    #[cfg(test)]
-    let rc_trace_frame_idx = rc_band_trace::begin_frame();
-
-    let channels = if y.is_some() { 2 } else { 1 };
+        let channels = if y.is_some() { 2 } else { 1 };
     let m = 1usize << (lm as usize);
     let b_blocks_base = if short_blocks { m as i32 } else { 1 };
 
@@ -1996,13 +1725,7 @@ pub(crate) fn quant_all_bands_decode_fixed(
     for band in start..end {
         ctx.band = band;
         let last = band + 1 == end;
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            if let Some(ctx_rc) = coder.decoder_ctx() {
-                rc_band_trace::dump_if_match(frame_idx, band, "pre_band", ctx_rc);
-            }
-        }
-        let band_start = m * (mode.e_bands[band] as usize);
+                let band_start = m * (mode.e_bands[band] as usize);
         let band_end = m * (mode.e_bands[band + 1] as usize);
         let n = band_end.saturating_sub(band_start);
         if n == 0 {
@@ -2021,25 +1744,8 @@ pub(crate) fn quant_all_bands_decode_fixed(
             let remaining_coded = (coded_bands - band).min(3) as i32;
             let curr_balance = celt_sudiv(balance, remaining_coded);
             let pulse_target = pulses.get(band).copied().unwrap_or(0) + curr_balance;
-            b_allocation = (ctx.remaining_bits + 1)
-                .min(pulse_target)
-                .clamp(0, 16_383);
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_trace_frame_idx {
-                rc_band_trace::dump_band_alloc_if_match(
-                    frame_idx,
-                    band,
-                    balance_before,
-                    balance,
-                    tell,
-                    ctx.remaining_bits,
-                    remaining_coded,
-                    curr_balance,
-                    pulses.get(band).copied().unwrap_or(0),
-                    b_allocation,
-                );
-            }
-        }
+            b_allocation = (ctx.remaining_bits + 1).min(pulse_target).clamp(0, 16_383);
+                    }
         if (band_start >= first_band_start.saturating_add(n) || band == start + 1)
             && (update_lowband || lowband_offset.is_none())
         {
@@ -2056,26 +1762,7 @@ pub(crate) fn quant_all_bands_decode_fixed(
 
         let x_band = &mut x[band_start..band_end];
         let mut y_band = y.as_mut().map(|slice| &mut slice[band_start..band_end]);
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            let x_trace: Vec<OpusVal16> = x_band.iter().copied().map(fixed_norm_to_float).collect();
-            let y_trace = y_band.as_deref().map(|slice| {
-                slice
-                    .iter()
-                    .copied()
-                    .map(fixed_norm_to_float)
-                    .collect::<Vec<OpusVal16>>()
-            });
-            rc_band_trace::dump_norm_in_if_match(
-                frame_idx,
-                band,
-                n,
-                &x_trace,
-                y_trace.as_deref(),
-            );
-        }
-
-        let mut effective_lowband = None;
+                let mut effective_lowband = None;
         let mut x_cm = 0u32;
         let mut y_cm = 0u32;
         if let Some(lowband_idx) = lowband_offset
@@ -2208,7 +1895,6 @@ pub(crate) fn quant_all_bands_decode_fixed(
             {
                 norm2_buf[*offset..*offset + data.len()].copy_from_slice(data);
             }
-
         } else if let Some(y_band_slice_ref) = y_band.as_mut() {
             let lowband_input_offset = effective_lowband;
             let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
@@ -2263,7 +1949,6 @@ pub(crate) fn quant_all_bands_decode_fixed(
             {
                 norm2_buf[*offset..*offset + data.len()].copy_from_slice(data);
             }
-
         } else {
             let lowband_input_offset = effective_lowband;
             let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
@@ -2303,7 +1988,6 @@ pub(crate) fn quant_all_bands_decode_fixed(
             {
                 norm[*offset..*offset + data.len()].copy_from_slice(data);
             }
-
         }
 
         if let Some(mask) = collapse_masks.get_mut(band * channels) {
@@ -2314,13 +1998,7 @@ pub(crate) fn quant_all_bands_decode_fixed(
         }
 
         balance += pulses.get(band).copied().unwrap_or(0) + tell;
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            if let Some(ctx_rc) = coder.decoder_ctx() {
-                rc_band_trace::dump_if_match(frame_idx, band, "post_band", ctx_rc);
-            }
-        }
-        update_lowband = b_allocation > ((n as i32) << BITRES);
+                update_lowband = b_allocation > ((n as i32) << BITRES);
         ctx.avoid_split_noise = false;
     }
 
@@ -2354,26 +2032,9 @@ fn quant_partition(
     let encode = ctx.encode;
     let spread = ctx.spread;
 
-    #[cfg(test)]
-    let pvq_depth_guard = rc_band_trace::pvq_depth_guard();
-    #[cfg(test)]
+        #[cfg(test)]
     let pvq_depth = pvq_depth_guard.depth();
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_pvq_entry_if_match(
-            frame_idx,
-            band,
-            pvq_depth,
-            n,
-            b,
-            b_blocks,
-            lm,
-            fill,
-            ctx.remaining_bits,
-        );
-    }
-
-    let cache_index = i32::from(mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band]);
+        let cache_index = i32::from(mode.cache.index[((lm + 1) as usize) * mode.num_ebands + band]);
     let cache_slice = if cache_index >= 0 {
         &mode.cache.bits[cache_index as usize..]
     } else {
@@ -2520,23 +2181,7 @@ fn quant_partition(
         ctx.remaining_bits -= curr_bits;
     }
 
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        let k = if q != 0 { Some(get_pulses(q)) } else { None };
-        rc_band_trace::dump_pvq_bits_if_match(
-            frame_idx,
-            band,
-            pvq_depth,
-            q_initial,
-            q,
-            curr_bits_initial,
-            curr_bits,
-            ctx.remaining_bits,
-            k,
-        );
-    }
-
-    if q != 0 {
+        if q != 0 {
         let k = get_pulses(q);
         let block_count = b_blocks.max(1) as usize;
         if encode {
@@ -2557,16 +2202,6 @@ fn quant_partition(
     } else if ctx.resynth {
         let cm_mask = mask_from_bits(b_blocks);
         fill &= cm_mask;
-        #[cfg(test)]
-        let trace_before_seed = ctx.seed;
-        #[cfg(test)]
-        let trace_lowband: Option<Vec<i16>> = lowband.as_ref().map(|slice| {
-            slice
-                .iter()
-                .take(n.min(8))
-                .map(|&value| float2int16(value))
-                .collect()
-        });
         if fill == 0 {
             x[..n].fill(0.0);
         } else if let Some(lowband_slice) = lowband {
@@ -2577,52 +2212,16 @@ fn quant_partition(
                 *dst = *src + noise;
             }
             cm = fill;
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let coeffs: Vec<i16> = x.iter().take(n.min(8)).map(|&value| float2int16(value)).collect();
-                std::println!(
-                    "q0_trace[{frame_idx}].band[{band}].kind=float.stage=pre_renorm.fill=0x{fill:08x}.cm_mask=0x{cm_mask:08x}.gain={gain:?}.seed_before=0x{trace_before_seed:08x}.seed_after=0x{seed_after:08x}.lowband={lowband:?}.coeffs={coeffs:?}",
-                    band = ctx.band,
-                    seed_after = ctx.seed,
-                    lowband = trace_lowband,
-                );
-            }
-            pvq_renormalise_runtime(x, n, gain, ctx.arch);
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let coeffs: Vec<i16> = x.iter().take(n.min(8)).map(|&value| float2int16(value)).collect();
-                std::println!(
-                    "q0_trace[{frame_idx}].band[{band}].kind=float.stage=post_renorm.fill=0x{fill:08x}.gain={gain:?}.coeffs={coeffs:?}",
-                    band = ctx.band,
-                );
-            }
-        } else {
+                        pvq_renormalise_runtime(x, n, gain, ctx.arch);
+                    } else {
             for sample in &mut x[..n] {
                 ctx.seed = celt_lcg_rand(ctx.seed);
                 let value = ((ctx.seed as i32) >> 20) as OpusVal16;
                 *sample = value;
             }
             cm = cm_mask;
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let coeffs: Vec<i16> = x.iter().take(n.min(8)).map(|&value| float2int16(value)).collect();
-                std::println!(
-                    "q0_trace[{frame_idx}].band[{band}].kind=float.stage=pre_renorm.fill=0x{fill:08x}.cm_mask=0x{cm_mask:08x}.gain={gain:?}.seed_before=0x{trace_before_seed:08x}.seed_after=0x{seed_after:08x}.lowband={lowband:?}.coeffs={coeffs:?}",
-                    band = ctx.band,
-                    seed_after = ctx.seed,
-                    lowband = trace_lowband,
-                );
-            }
-            pvq_renormalise_runtime(x, n, gain, ctx.arch);
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let coeffs: Vec<i16> = x.iter().take(n.min(8)).map(|&value| float2int16(value)).collect();
-                std::println!(
-                    "q0_trace[{frame_idx}].band[{band}].kind=float.stage=post_renorm.fill=0x{fill:08x}.gain={gain:?}.coeffs={coeffs:?}",
-                    band = ctx.band,
-                );
-            }
-        }
+                        pvq_renormalise_runtime(x, n, gain, ctx.arch);
+                    }
     }
 
     cm
@@ -2702,30 +2301,8 @@ fn quant_band(
     for k in 0..recombine {
         const BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
         if encode {
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let stage = format!("pre_haar_recombine_{k}");
-                rc_band_trace::dump_band_prepartition_if_match(
-                    frame_idx,
-                    ctx.band,
-                    n,
-                    &stage,
-                    &x[..n],
-                );
-            }
-            haar1(x, n >> k, 1usize << k);
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let stage = format!("haar_recombine_{k}");
-                rc_band_trace::dump_band_prepartition_if_match(
-                    frame_idx,
-                    ctx.band,
-                    n,
-                    &stage,
-                    &x[..n],
-                );
-            }
-        }
+                        haar1(x, n >> k, 1usize << k);
+                    }
         if let Some(ref mut lowband_slice) = lowband_view {
             haar1(lowband_slice, n >> k, 1usize << k);
         }
@@ -2740,30 +2317,8 @@ fn quant_band(
 
     while (n_b & 1) == 0 && tf_change < 0 {
         if encode {
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let stage = format!("pre_haar_time_divide_{time_divide}");
-                rc_band_trace::dump_band_prepartition_if_match(
-                    frame_idx,
-                    ctx.band,
-                    n,
-                    &stage,
-                    &x[..n],
-                );
-            }
-            haar1(x, n_b, b_blocks.max(1) as usize);
-            #[cfg(test)]
-            if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-                let stage = format!("haar_time_divide_{time_divide}");
-                rc_band_trace::dump_band_prepartition_if_match(
-                    frame_idx,
-                    ctx.band,
-                    n,
-                    &stage,
-                    &x[..n],
-                );
-            }
-        }
+                        haar1(x, n_b, b_blocks.max(1) as usize);
+                    }
         if let Some(ref mut lowband_slice) = lowband_view {
             haar1(lowband_slice, n_b, b_blocks.max(1) as usize);
         }
@@ -2778,18 +2333,7 @@ fn quant_band(
     b0 = b_blocks;
     let n_b0 = n_b;
 
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_band_prepartition_if_match(
-            frame_idx,
-            ctx.band,
-            n,
-            "post_haar",
-            &x[..n],
-        );
-    }
-
-    if b0 > 1 {
+        if b0 > 1 {
         if encode {
             deinterleave_hadamard(x, n_b >> recombine, (b0 << recombine) as usize, long_blocks);
         }
@@ -2803,28 +2347,8 @@ fn quant_band(
         }
     }
 
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_band_prepartition_if_match(
-            frame_idx,
-            ctx.band,
-            n,
-            "post_deinterleave",
-            &x[..n],
-        );
-    }
-    let mut cm = quant_partition(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_band_prepartition_if_match(
-            frame_idx,
-            ctx.band,
-            n,
-            "post_partition",
-            &x[..n],
-        );
-    }
-    if ctx.resynth {
+        let mut cm = quant_partition(ctx, x, n, b, b_blocks, lowband_view, lm, gain, fill, coder);
+        if ctx.resynth {
         if b0 > 1 {
             interleave_hadamard(x, n_b >> recombine, (b0 << recombine) as usize, long_blocks);
         }
@@ -2860,17 +2384,7 @@ fn quant_band(
         cm &= mask_from_bits(b_blocks);
     }
 
-    #[cfg(test)]
-    if let Some(frame_idx) = rc_band_trace::current_frame_idx() {
-        rc_band_trace::dump_band_prepartition_if_match(
-            frame_idx,
-            ctx.band,
-            n,
-            "post_final",
-            &x[..n],
-        );
-    }
-    cm
+        cm
 }
 
 const MIN_STEREO_ENERGY: OpusVal32 = 1e-10;
@@ -3139,33 +2653,7 @@ pub(crate) fn quant_all_bands(
         return;
     }
 
-    #[cfg(test)]
-    let trace_frame_idx = quant_trace::begin_frame();
-    #[cfg(test)]
-    let rc_trace_frame_idx = rc_band_trace::begin_frame();
-    #[cfg(test)]
-    let trace_should_dump =
-        trace_frame_idx.map_or(false, |frame_idx| quant_trace::should_dump(frame_idx));
-    #[cfg(test)]
-    let trace_want_bits = trace_should_dump && quant_trace::want_bits();
-    #[cfg(test)]
-    if trace_should_dump {
-        quant_trace::dump(
-            "pre",
-            trace_frame_idx.unwrap(),
-            start,
-            end,
-            channels,
-            mode.num_ebands,
-            band_e,
-            pulses,
-            tf_res,
-            None,
-            trace_want_bits,
-        );
-    }
-
-    let norm_offset = m * (mode.e_bands[start] as usize);
+                        let norm_offset = m * (mode.e_bands[start] as usize);
     let last_band_start = if mode.num_ebands > 0 {
         m * (mode.e_bands[mode.num_ebands - 1] as usize)
     } else {
@@ -3228,13 +2716,7 @@ pub(crate) fn quant_all_bands(
         ctx.band = band;
 
         let last = band + 1 == end;
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            if let Some(ctx_rc) = coder.encoder_ctx() {
-                rc_band_trace::dump_if_match(frame_idx, band, "pre_band", ctx_rc);
-            }
-        }
-        let band_start = m * (mode.e_bands[band] as usize);
+                let band_start = m * (mode.e_bands[band] as usize);
         let band_end = m * (mode.e_bands[band + 1] as usize);
         let n = band_end.saturating_sub(band_start);
         if n == 0 {
@@ -3259,23 +2741,7 @@ pub(crate) fn quant_all_bands(
             let max_target = (remaining_bits + 1).min(pulse_target);
             b_allocation = max_target.clamp(0, 16_383);
         }
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            rc_band_trace::dump_band_alloc_if_match(
-                frame_idx,
-                band,
-                balance_before,
-                balance,
-                tell,
-                remaining_bits,
-                remaining_coded,
-                curr_balance,
-                pulses.get(band).copied().unwrap_or(0),
-                b_allocation,
-            );
-        }
-
-        if resynth
+                if resynth
             && (band_start >= first_band_start.saturating_add(n) || band == start + 1)
             && (update_lowband || lowband_offset.is_none())
         {
@@ -3306,18 +2772,7 @@ pub(crate) fn quant_all_bands(
         let x_band = &mut x[band_start..band_end];
         let mut y_band = y.as_mut().map(|slice| &mut slice[band_start..band_end]);
 
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            rc_band_trace::dump_norm_in_if_match(
-                frame_idx,
-                band,
-                n,
-                x_band,
-                y_band.as_deref(),
-            );
-        }
-
-        let mut effective_lowband = None;
+                let mut effective_lowband = None;
         let mut x_cm = 0u32;
         let mut y_cm = 0u32;
 
@@ -3474,14 +2929,7 @@ pub(crate) fn quant_all_bands(
 
                 let ctx_initial = ctx.clone();
                 let coder_initial = coder.encoder_snapshot();
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_trace_frame_idx {
-                    if let Some(ctx_rc) = coder.encoder_ctx() {
-                        rc_band_trace::dump_if_match(frame_idx, band, "rdo_pre_round_down", ctx_rc);
-                    }
-                }
-
-                let mut x_before = vec![0.0; n];
+                                let mut x_before = vec![0.0; n];
                 x_before.copy_from_slice(&x_band[..n]);
                 let mut y_before = vec![0.0; n];
                 y_before.copy_from_slice(&y_band_slice[..n]);
@@ -3547,14 +2995,7 @@ pub(crate) fn quant_all_bands(
                         coder,
                     )
                 };
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_trace_frame_idx {
-                    if let Some(ctx_rc) = coder.encoder_ctx() {
-                        rc_band_trace::dump_if_match(frame_idx, band, "rdo_post_round_down", ctx_rc);
-                    }
-                }
-
-                let dist0 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
+                                let dist0 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
                     + weights[1] * celt_inner_prod(&y_before[..n], &y_band_slice[..n]);
 
                 let coder_after_first = coder.encoder_snapshot();
@@ -3605,14 +3046,7 @@ pub(crate) fn quant_all_bands(
                     let len = data.len().min(norm2_buf.len().saturating_sub(*offset));
                     norm2_buf[*offset..*offset + len].copy_from_slice(&data[..len]);
                 }
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_trace_frame_idx {
-                    if let Some(ctx_rc) = coder.encoder_ctx() {
-                        rc_band_trace::dump_if_match(frame_idx, band, "rdo_post_restore", ctx_rc);
-                    }
-                }
-
-                let mut x_lowband_input_second = lowband_input_offset.and_then(|offset| {
+                                let mut x_lowband_input_second = lowband_input_offset.and_then(|offset| {
                     if offset + n <= norm.len() {
                         Some((offset, norm[offset..offset + n].to_vec()))
                     } else {
@@ -3656,14 +3090,7 @@ pub(crate) fn quant_all_bands(
                         coder,
                     )
                 };
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_trace_frame_idx {
-                    if let Some(ctx_rc) = coder.encoder_ctx() {
-                        rc_band_trace::dump_if_match(frame_idx, band, "rdo_post_round_up", ctx_rc);
-                    }
-                }
-
-                let dist1 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
+                                let dist1 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
                     + weights[1] * celt_inner_prod(&y_before[..n], &y_band_slice[..n]);
 
                 if let Some((offset, data)) = x_lowband_input_second.as_ref() {
@@ -3697,13 +3124,7 @@ pub(crate) fn quant_all_bands(
                     x_cm = cm_second;
                 }
                 y_cm = x_cm;
-                #[cfg(test)]
-                if let Some(frame_idx) = rc_trace_frame_idx {
-                    if let Some(ctx_rc) = coder.encoder_ctx() {
-                        rc_band_trace::dump_if_match(frame_idx, band, "rdo_post_select", ctx_rc);
-                    }
-                }
-                ctx.theta_round = 0;
+                                ctx.theta_round = 0;
             } else {
                 let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
                     if offset + n <= norm.len() {
@@ -3812,855 +3233,14 @@ pub(crate) fn quant_all_bands(
         }
 
         balance += pulses.get(band).copied().unwrap_or(0) + tell;
-        #[cfg(test)]
-        if let Some(frame_idx) = rc_trace_frame_idx {
-            if let Some(ctx) = coder.encoder_ctx() {
-                rc_band_trace::dump_if_match(frame_idx, band, "post_band", ctx);
-            }
-        }
-        let n_bits = (n as i32) << BITRES;
+                let n_bits = (n as i32) << BITRES;
         update_lowband = b_allocation > n_bits;
         ctx.avoid_split_noise = false;
     }
 
     *seed = ctx.seed;
 
-    #[cfg(test)]
-    if trace_should_dump {
-        quant_trace::dump(
-            "post",
-            trace_frame_idx.unwrap(),
-            start,
-            end,
-            channels,
-            mode.num_ebands,
-            band_e,
-            pulses,
-            tf_res,
-            Some(collapse_masks),
-            trace_want_bits,
-        );
     }
-}
-
-#[cfg(test)]
-mod rc_band_trace {
-    extern crate std;
-
-    use alloc::format;
-    use alloc::string::String;
-    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
-    use std::env;
-    use std::sync::OnceLock;
-
-    use crate::celt::entcode::{ec_tell, ec_tell_frac, EcCtx};
-    use crate::celt::{OpusVal16, OpusVal32};
-
-    pub(crate) struct TraceConfig {
-        frame: Option<usize>,
-        band: Option<usize>,
-    }
-
-    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
-    static STEREO_ITHETA_INPUT_ENABLED: OnceLock<bool> = OnceLock::new();
-    static NORM_IN_ENABLED: OnceLock<bool> = OnceLock::new();
-    static STEREO_SPLIT_ENABLED: OnceLock<bool> = OnceLock::new();
-    static STEREO_SPLIT_DETAIL_ENABLED: OnceLock<bool> = OnceLock::new();
-    static BAND_PREPART_ENABLED: OnceLock<bool> = OnceLock::new();
-    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
-    static CURRENT_FRAME: AtomicIsize = AtomicIsize::new(-1);
-    static STEREO_SPLIT_DETAIL_BAND: AtomicIsize = AtomicIsize::new(-1);
-    static PVQ_DEPTH: AtomicUsize = AtomicUsize::new(0);
-
-    pub(crate) struct PvqDepthGuard {
-        active: bool,
-        depth: usize,
-    }
-
-    impl PvqDepthGuard {
-        pub(crate) fn depth(&self) -> usize {
-            self.depth
-        }
-    }
-
-    impl Drop for PvqDepthGuard {
-        fn drop(&mut self) {
-            if self.active {
-                PVQ_DEPTH.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    pub(crate) fn pvq_depth_guard() -> PvqDepthGuard {
-        if config().is_some() {
-            let depth = PVQ_DEPTH.fetch_add(1, Ordering::Relaxed);
-            PvqDepthGuard { active: true, depth }
-        } else {
-            PvqDepthGuard {
-                active: false,
-                depth: 0,
-            }
-        }
-    }
-
-    pub(crate) fn begin_frame() -> Option<usize> {
-        if config().is_some() {
-            let frame = FRAME_INDEX.fetch_add(1, Ordering::Relaxed);
-            CURRENT_FRAME.store(frame as isize, Ordering::Relaxed);
-            Some(frame)
-        } else {
-            CURRENT_FRAME.store(-1, Ordering::Relaxed);
-            None
-        }
-    }
-
-    pub(crate) fn current_frame_idx() -> Option<usize> {
-        let current = CURRENT_FRAME.load(Ordering::Relaxed);
-        if current < 0 {
-            None
-        } else {
-            Some(current as usize)
-        }
-    }
-
-    fn config() -> Option<&'static TraceConfig> {
-        TRACE_CONFIG
-            .get_or_init(|| {
-                let enabled = match env::var("CELT_TRACE_RC_BAND") {
-                    Ok(value) => !value.is_empty() && value != "0",
-                    Err(_) => false,
-                } || match env::var("CELT_TRACE_RC") {
-                    Ok(value) => !value.is_empty() && value != "0",
-                    Err(_) => false,
-                };
-                if !enabled {
-                    return None;
-                }
-                let frame = env::var("CELT_TRACE_RC_FRAME")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok());
-                let band = env::var("CELT_TRACE_RC_BAND")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok());
-                Some(TraceConfig { frame, band })
-            })
-            .as_ref()
-    }
-
-    fn should_dump(frame_idx: usize, band: usize) -> bool {
-        config().map_or(false, |cfg| {
-            cfg.frame.map_or(true, |frame| frame == frame_idx)
-                && cfg.band.map_or(true, |target_band| target_band == band)
-        })
-    }
-
-    fn stereo_itheta_input_enabled() -> bool {
-        *STEREO_ITHETA_INPUT_ENABLED.get_or_init(|| {
-            match env::var("CELT_TRACE_STEREO_ITHETA_IN") {
-                Ok(value) => !value.is_empty() && value != "0",
-                Err(_) => false,
-            }
-        })
-    }
-
-    fn norm_in_enabled() -> bool {
-        *NORM_IN_ENABLED.get_or_init(|| match env::var("CELT_TRACE_NORM_IN") {
-            Ok(value) => !value.is_empty() && value != "0",
-            Err(_) => false,
-        })
-    }
-
-    fn stereo_split_enabled() -> bool {
-        *STEREO_SPLIT_ENABLED.get_or_init(|| match env::var("CELT_TRACE_STEREO_SPLIT") {
-            Ok(value) => !value.is_empty() && value != "0",
-            Err(_) => false,
-        })
-    }
-
-    fn stereo_split_detail_enabled() -> bool {
-        *STEREO_SPLIT_DETAIL_ENABLED.get_or_init(|| {
-            match env::var("CELT_TRACE_STEREO_SPLIT_DETAIL") {
-                Ok(value) => !value.is_empty() && value != "0",
-                Err(_) => false,
-            }
-        })
-    }
-
-    fn band_prepartition_enabled() -> bool {
-        *BAND_PREPART_ENABLED.get_or_init(|| match env::var("CELT_TRACE_BAND_PREPART") {
-            Ok(value) => !value.is_empty() && value != "0",
-            Err(_) => false,
-        })
-    }
-
-    pub(crate) fn set_stereo_split_detail_band(band: usize) {
-        if stereo_split_detail_enabled() {
-            STEREO_SPLIT_DETAIL_BAND.store(band as isize, Ordering::Relaxed);
-        }
-    }
-
-    pub(crate) fn stereo_split_detail_band() -> Option<usize> {
-        let band = STEREO_SPLIT_DETAIL_BAND.load(Ordering::Relaxed);
-        if band < 0 {
-            None
-        } else {
-            Some(band as usize)
-        }
-    }
-
-    fn fmt_exp(value: OpusVal32) -> String {
-        let formatted = format!("{:.9e}", value as f64);
-        if let Some(idx) = formatted.find('e') {
-            let mantissa = &formatted[..idx];
-            let exp = formatted[idx + 1..].parse::<i32>().unwrap_or(0);
-            format!("{mantissa}e{exp:+03}")
-        } else {
-            formatted
-        }
-    }
-
-    pub(crate) fn dump_theta_if_match(
-        frame_idx: usize,
-        band: usize,
-        theta_round: i32,
-        n: usize,
-        b_in: i32,
-        b_out: i32,
-        b_current: i32,
-        b0: i32,
-        lm: i32,
-        stereo: bool,
-        fill: u32,
-        qn: i32,
-        itheta: i32,
-        qalloc: i32,
-        delta: i32,
-        imid: i32,
-        iside: i32,
-        inv: bool,
-        tell_before: i32,
-        tell_after: i32,
-    ) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        std::println!("celt_theta[{frame_idx}].band[{band}].stage=compute_theta");
-        std::println!(
-            "celt_theta[{frame_idx}].band[{band}].theta_round={theta_round}"
-        );
-        std::println!("celt_theta[{frame_idx}].band[{band}].n={n}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].b_in={b_in}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].b_out={b_out}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].b_current={b_current}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].b0={b0}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].lm={lm}");
-        std::println!(
-            "celt_theta[{frame_idx}].band[{band}].stereo={}",
-            i32::from(stereo)
-        );
-        std::println!(
-            "celt_theta[{frame_idx}].band[{band}].fill=0x{fill:08x}"
-        );
-        std::println!("celt_theta[{frame_idx}].band[{band}].qn={qn}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].itheta={itheta}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].qalloc={qalloc}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].delta={delta}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].imid={imid}");
-        std::println!("celt_theta[{frame_idx}].band[{band}].iside={iside}");
-        std::println!(
-            "celt_theta[{frame_idx}].band[{band}].inv={}",
-            i32::from(inv)
-        );
-        std::println!(
-            "celt_theta[{frame_idx}].band[{band}].tell_before={tell_before}"
-        );
-        std::println!(
-            "celt_theta[{frame_idx}].band[{band}].tell_after={tell_after}"
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn dump_band_alloc_if_match(
-        frame_idx: usize,
-        band: usize,
-        balance_before: i32,
-        balance_after: i32,
-        tell: i32,
-        remaining_bits: i32,
-        remaining_coded: i32,
-        curr_balance: i32,
-        pulses: i32,
-        b_allocation: i32,
-    ) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        std::println!(
-            "celt_band_alloc[{frame_idx}].band[{band}].balance_before={balance_before}"
-        );
-        std::println!(
-            "celt_band_alloc[{frame_idx}].band[{band}].balance_after={balance_after}"
-        );
-        std::println!("celt_band_alloc[{frame_idx}].band[{band}].tell={tell}");
-        std::println!(
-            "celt_band_alloc[{frame_idx}].band[{band}].remaining_bits={remaining_bits}"
-        );
-        std::println!(
-            "celt_band_alloc[{frame_idx}].band[{band}].remaining_coded={remaining_coded}"
-        );
-        std::println!(
-            "celt_band_alloc[{frame_idx}].band[{band}].curr_balance={curr_balance}"
-        );
-        std::println!("celt_band_alloc[{frame_idx}].band[{band}].pulses={pulses}");
-        std::println!("celt_band_alloc[{frame_idx}].band[{band}].b={b_allocation}");
-    }
-
-    pub(crate) fn dump_pvq_entry_if_match(
-        frame_idx: usize,
-        band: usize,
-        depth: usize,
-        n: usize,
-        b: i32,
-        b_blocks: i32,
-        lm: i32,
-        fill: u32,
-        remaining_bits: i32,
-    ) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].depth={depth}"
-        );
-        std::println!("celt_pvq[{frame_idx}].band[{band}].stage=entry");
-        std::println!("celt_pvq[{frame_idx}].band[{band}].n={n}");
-        std::println!("celt_pvq[{frame_idx}].band[{band}].b={b}");
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].b_blocks={b_blocks}"
-        );
-        std::println!("celt_pvq[{frame_idx}].band[{band}].lm={lm}");
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].fill=0x{fill:08x}"
-        );
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].remaining_bits={remaining_bits}"
-        );
-    }
-
-    pub(crate) fn dump_pvq_bits_if_match(
-        frame_idx: usize,
-        band: usize,
-        depth: usize,
-        q_initial: i32,
-        q_final: i32,
-        curr_bits_initial: i32,
-        curr_bits_final: i32,
-        remaining_bits: i32,
-        k: Option<i32>,
-    ) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].depth={depth}"
-        );
-        std::println!("celt_pvq[{frame_idx}].band[{band}].stage=bits");
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].q_initial={q_initial}"
-        );
-        std::println!("celt_pvq[{frame_idx}].band[{band}].q_final={q_final}");
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].curr_bits_initial={curr_bits_initial}"
-        );
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].curr_bits_final={curr_bits_final}"
-        );
-        std::println!(
-            "celt_pvq[{frame_idx}].band[{band}].remaining_bits={remaining_bits}"
-        );
-        if let Some(k_value) = k {
-            std::println!("celt_pvq[{frame_idx}].band[{band}].k={k_value}");
-        }
-    }
-
-    pub(crate) fn dump_stereo_itheta_if_match(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        stereo: bool,
-        itheta_raw: i32,
-        emid: OpusVal32,
-        eside: OpusVal32,
-        mid: OpusVal32,
-        side: OpusVal32,
-    ) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].n={n}"
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].stereo={}",
-            i32::from(stereo)
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].itheta_raw={itheta_raw}"
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].emid={}",
-            fmt_exp(emid)
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].emid_bits=0x{:08x}",
-            emid.to_bits()
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].eside={}",
-            fmt_exp(eside)
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].eside_bits=0x{:08x}",
-            eside.to_bits()
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].mid={}",
-            fmt_exp(mid)
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].mid_bits=0x{:08x}",
-            mid.to_bits()
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].side={}",
-            fmt_exp(side)
-        );
-        std::println!(
-            "celt_stereo_itheta[{frame_idx}].band[{band}].side_bits=0x{:08x}",
-            side.to_bits()
-        );
-    }
-
-    pub(crate) fn dump_stereo_itheta_input_if_match(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        stereo: bool,
-        x: &[OpusVal16],
-        y: &[OpusVal16],
-    ) {
-        if !should_dump(frame_idx, band) || !stereo_itheta_input_enabled() {
-            return;
-        }
-        let len = n.min(x.len()).min(y.len());
-        std::println!(
-            "celt_stereo_itheta_in[{frame_idx}].band[{band}].n={n}"
-        );
-        std::println!(
-            "celt_stereo_itheta_in[{frame_idx}].band[{band}].stereo={}",
-            i32::from(stereo)
-        );
-        for i in 0..len {
-            let xv = x[i];
-            let yv = y[i];
-            std::println!(
-                "celt_stereo_itheta_in[{frame_idx}].band[{band}].x[{i}]={}",
-                fmt_exp(xv as OpusVal32)
-            );
-            std::println!(
-                "celt_stereo_itheta_in[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
-                xv.to_bits()
-            );
-            std::println!(
-                "celt_stereo_itheta_in[{frame_idx}].band[{band}].y[{i}]={}",
-                fmt_exp(yv as OpusVal32)
-            );
-            std::println!(
-                "celt_stereo_itheta_in[{frame_idx}].band[{band}].y_bits[{i}]=0x{:08x}",
-                yv.to_bits()
-            );
-        }
-    }
-
-    pub(crate) fn dump_norm_in_if_match(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        x: &[OpusVal16],
-        y: Option<&[OpusVal16]>,
-    ) {
-        if !should_dump(frame_idx, band) || !norm_in_enabled() {
-            return;
-        }
-        let len = n.min(x.len());
-        std::println!("celt_norm_in[{frame_idx}].band[{band}].n={n}");
-        std::println!(
-            "celt_norm_in[{frame_idx}].band[{band}].stereo={}",
-            i32::from(y.is_some())
-        );
-        for i in 0..len {
-            let xv = x[i];
-            std::println!(
-                "celt_norm_in[{frame_idx}].band[{band}].x[{i}]={}",
-                fmt_exp(xv as OpusVal32)
-            );
-            std::println!(
-                "celt_norm_in[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
-                xv.to_bits()
-            );
-            if let Some(ys) = y {
-                if i < ys.len() {
-                    let yv = ys[i];
-                    std::println!(
-                        "celt_norm_in[{frame_idx}].band[{band}].y[{i}]={}",
-                        fmt_exp(yv as OpusVal32)
-                    );
-                    std::println!(
-                        "celt_norm_in[{frame_idx}].band[{band}].y_bits[{i}]=0x{:08x}",
-                        yv.to_bits()
-                    );
-                }
-            }
-        }
-    }
-
-    pub(crate) fn dump_stereo_split_if_match(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        stage: &str,
-        band_e_left: OpusVal32,
-        band_e_right: OpusVal32,
-        x: &[OpusVal16],
-        y: &[OpusVal16],
-    ) {
-        if !should_dump(frame_idx, band) || !stereo_split_enabled() {
-            return;
-        }
-        let len = n.min(x.len()).min(y.len());
-        std::println!("celt_stereo_split[{frame_idx}].band[{band}].stage={stage}");
-        std::println!("celt_stereo_split[{frame_idx}].band[{band}].n={n}");
-        std::println!(
-            "celt_stereo_split[{frame_idx}].band[{band}].band_e_left={}",
-            fmt_exp(band_e_left)
-        );
-        std::println!(
-            "celt_stereo_split[{frame_idx}].band[{band}].band_e_left_bits=0x{:08x}",
-            band_e_left.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split[{frame_idx}].band[{band}].band_e_right={}",
-            fmt_exp(band_e_right)
-        );
-        std::println!(
-            "celt_stereo_split[{frame_idx}].band[{band}].band_e_right_bits=0x{:08x}",
-            band_e_right.to_bits()
-        );
-        for i in 0..len {
-            let xv = x[i];
-            let yv = y[i];
-            std::println!(
-                "celt_stereo_split[{frame_idx}].band[{band}].x[{i}]={}",
-                fmt_exp(xv as OpusVal32)
-            );
-            std::println!(
-                "celt_stereo_split[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
-                xv.to_bits()
-            );
-            std::println!(
-                "celt_stereo_split[{frame_idx}].band[{band}].y[{i}]={}",
-                fmt_exp(yv as OpusVal32)
-            );
-            std::println!(
-                "celt_stereo_split[{frame_idx}].band[{band}].y_bits[{i}]=0x{:08x}",
-                yv.to_bits()
-            );
-        }
-    }
-
-    pub(crate) fn dump_stereo_split_detail_intensity_begin(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        left: OpusVal32,
-        right: OpusVal32,
-        norm: OpusVal32,
-        a1: OpusVal32,
-        a2: OpusVal32,
-    ) -> bool {
-        if !should_dump(frame_idx, band) || !stereo_split_detail_enabled() {
-            return false;
-        }
-        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].stage=intensity");
-        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].n={n}");
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].left={}",
-            fmt_exp(left)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].left_bits=0x{:08x}",
-            left.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].right={}",
-            fmt_exp(right)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].right_bits=0x{:08x}",
-            right.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].norm={}",
-            fmt_exp(norm)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].norm_bits=0x{:08x}",
-            norm.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].a1={}",
-            fmt_exp(a1)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].a1_bits=0x{:08x}",
-            a1.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].a2={}",
-            fmt_exp(a2)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].a2_bits=0x{:08x}",
-            a2.to_bits()
-        );
-        true
-    }
-
-    pub(crate) fn dump_stereo_split_detail_intensity_sample(
-        frame_idx: usize,
-        band: usize,
-        idx: usize,
-        l: OpusVal32,
-        r: OpusVal32,
-        mul1: OpusVal32,
-        mul2: OpusVal32,
-        sum: OpusVal32,
-    ) {
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].l[{idx}]={}",
-            fmt_exp(l)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].l_bits[{idx}]=0x{:08x}",
-            l.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].r[{idx}]={}",
-            fmt_exp(r)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].r_bits[{idx}]=0x{:08x}",
-            r.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul1[{idx}]={}",
-            fmt_exp(mul1)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul1_bits[{idx}]=0x{:08x}",
-            mul1.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul2[{idx}]={}",
-            fmt_exp(mul2)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].mul2_bits[{idx}]=0x{:08x}",
-            mul2.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum[{idx}]={}",
-            fmt_exp(sum)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum_bits[{idx}]=0x{:08x}",
-            sum.to_bits()
-        );
-    }
-
-    pub(crate) fn dump_stereo_split_detail_split_begin(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        scale: OpusVal32,
-    ) -> bool {
-        if !should_dump(frame_idx, band) || !stereo_split_detail_enabled() {
-            return false;
-        }
-        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].stage=split");
-        std::println!("celt_stereo_split_detail[{frame_idx}].band[{band}].n={n}");
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].scale={}",
-            fmt_exp(scale)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].scale_bits=0x{:08x}",
-            scale.to_bits()
-        );
-        true
-    }
-
-    pub(crate) fn dump_stereo_split_detail_split_sample(
-        frame_idx: usize,
-        band: usize,
-        idx: usize,
-        x_in: OpusVal32,
-        y_in: OpusVal32,
-        l: OpusVal32,
-        r: OpusVal32,
-        sum: OpusVal32,
-        diff: OpusVal32,
-    ) {
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].x_in[{idx}]={}",
-            fmt_exp(x_in)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].x_in_bits[{idx}]=0x{:08x}",
-            x_in.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].y_in[{idx}]={}",
-            fmt_exp(y_in)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].y_in_bits[{idx}]=0x{:08x}",
-            y_in.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].l[{idx}]={}",
-            fmt_exp(l)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].l_bits[{idx}]=0x{:08x}",
-            l.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].r[{idx}]={}",
-            fmt_exp(r)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].r_bits[{idx}]=0x{:08x}",
-            r.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum[{idx}]={}",
-            fmt_exp(sum)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].sum_bits[{idx}]=0x{:08x}",
-            sum.to_bits()
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].diff[{idx}]={}",
-            fmt_exp(diff)
-        );
-        std::println!(
-            "celt_stereo_split_detail[{frame_idx}].band[{band}].diff_bits[{idx}]=0x{:08x}",
-            diff.to_bits()
-        );
-    }
-
-    pub(crate) fn dump_band_prepartition_if_match(
-        frame_idx: usize,
-        band: usize,
-        n: usize,
-        stage: &str,
-        x: &[OpusVal16],
-    ) {
-        if !should_dump(frame_idx, band) || !band_prepartition_enabled() {
-            return;
-        }
-        let len = n.min(x.len());
-        std::println!("celt_band_prepartition[{frame_idx}].band[{band}].stage={stage}");
-        std::println!("celt_band_prepartition[{frame_idx}].band[{band}].n={n}");
-        for i in 0..len {
-            let xv = x[i];
-            std::println!(
-                "celt_band_prepartition[{frame_idx}].band[{band}].x[{i}]={}",
-                fmt_exp(xv as OpusVal32)
-            );
-            std::println!(
-                "celt_band_prepartition[{frame_idx}].band[{band}].x_bits[{i}]=0x{:08x}",
-                xv.to_bits()
-            );
-        }
-    }
-
-    pub(crate) fn dump_if_match(frame_idx: usize, band: usize, stage: &str, ctx: &EcCtx<'_>) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        std::println!("celt_rc_band[{frame_idx}].band[{band}].stage={stage}");
-        std::println!("celt_rc_band[{frame_idx}].band[{band}].offs={}", ctx.offs);
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].end_offs={}",
-            ctx.end_offs
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].nbits_total={}",
-            ctx.nbits_total
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].nend_bits={}",
-            ctx.nend_bits
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].rng=0x{:08x}",
-            ctx.rng
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].val=0x{:08x}",
-            ctx.val
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].ext=0x{:08x}",
-            ctx.ext
-        );
-        std::println!("celt_rc_band[{frame_idx}].band[{band}].rem={}", ctx.rem);
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].end_window=0x{:08x}",
-            ctx.end_window
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].error={}",
-            ctx.error
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].tell={}",
-            ec_tell(ctx)
-        );
-        std::println!(
-            "celt_rc_band[{frame_idx}].band[{band}].tell_frac={}",
-            ec_tell_frac(ctx)
-        );
-        for i in 0..(ctx.offs as usize) {
-            let value = ctx.buf[i];
-            std::println!(
-                "celt_rc_band[{frame_idx}].band[{band}].buf[{i}]=0x{value:02x}"
-            );
-        }
-        if ctx.end_offs > 0 {
-            let start = (ctx.storage - ctx.end_offs) as usize;
-            for i in 0..(ctx.end_offs as usize) {
-                let value = ctx.buf[start + i];
-                std::println!(
-                    "celt_rc_band[{frame_idx}].band[{band}].end_buf[{i}]=0x{value:02x}"
-                );
-            }
-        }
-    }
-}
 
 /// Computes stereo weighting factors used when balancing channel distortion.
 ///
@@ -4713,38 +3293,14 @@ pub(crate) fn intensity_stereo(
     let a1 = left / norm;
     let a2 = right / norm;
 
-    #[cfg(test)]
-    let trace_detail = rc_band_trace::current_frame_idx().and_then(|frame_idx| {
-        if rc_band_trace::dump_stereo_split_detail_intensity_begin(
-            frame_idx, band_id, n, left, right, norm, a1, a2,
-        ) {
-            Some(frame_idx)
-        } else {
-            None
-        }
-    });
-
-    for idx in 0..n {
+        for idx in 0..n {
         let l = x[idx];
         let r = y[idx];
         let mul1 = a1 * l;
         let mul2 = a2 * r;
         let sum = mul1 + mul2;
         let out = mul_add_f32(a1, l, mul2);
-        #[cfg(test)]
-        if let Some(frame_idx) = trace_detail {
-            rc_band_trace::dump_stereo_split_detail_intensity_sample(
-                frame_idx,
-                band_id,
-                idx,
-                l,
-                r,
-                mul1,
-                mul2,
-                sum,
-            );
-        }
-        x[idx] = out;
+                x[idx] = out;
     }
 }
 
@@ -4765,35 +3321,14 @@ pub(crate) fn stereo_split(x: &mut [f32], y: &mut [f32]) {
 
     #[allow(clippy::approx_constant)]
     let scale = 0.70710678_f32;
-    #[cfg(test)]
-    let trace_detail = rc_band_trace::current_frame_idx().and_then(|frame_idx| {
-        rc_band_trace::stereo_split_detail_band().and_then(|band| {
-            if rc_band_trace::dump_stereo_split_detail_split_begin(
-                frame_idx,
-                band,
-                x.len(),
-                scale,
-            ) {
-                Some((frame_idx, band))
-            } else {
-                None
-            }
-        })
-    });
-    for (idx, (left, right)) in x.iter_mut().zip(y.iter_mut()).enumerate() {
+        for (idx, (left, right)) in x.iter_mut().zip(y.iter_mut()).enumerate() {
         let xl = *left;
         let yr = *right;
         let l = scale * xl;
         let r = scale * yr;
         let sum = l + r;
         let diff = r - l;
-        #[cfg(test)]
-        if let Some((frame_idx, band)) = trace_detail {
-            rc_band_trace::dump_stereo_split_detail_split_sample(
-                frame_idx, band, idx, xl, yr, l, r, sum, diff,
-            );
-        }
-        *left = sum;
+                *left = sum;
         *right = diff;
     }
 }
@@ -5036,22 +3571,18 @@ pub(crate) fn anti_collapse_fixed(
         }
 
         let depth = (celt_udiv(
-            u32::try_from(pulses[band]).expect("pulse count fits in u32").wrapping_add(1),
+            u32::try_from(pulses[band])
+                .expect("pulse count fits in u32")
+                .wrapping_add(1),
             width as u32,
         ) >> lm) as i32;
 
-        let thresh32 = shr32(
-            celt_exp2_q10_fixed((-(depth << (10 - BITRES))) as i16),
-            1,
-        );
+        let thresh32 = shr32(celt_exp2_q10_fixed((-(depth << (10 - BITRES))) as i16), 1);
         let thresh = mult16_32_q15(qconst16(0.5, 15), 32_767.min(thresh32)) as i16;
 
         let t = (width as i32) << lm;
         let shift = celt_ilog2(t) >> 1;
         let sqrt_1 = celt_rsqrt_norm_fixed(shl32(t, ((7 - shift) << 1) as u32));
-
-        #[cfg(test)]
-        let trace_post_bands = std::env::var("CELT_TRACE_POST_BANDS").is_ok();
 
         for channel in 0..channels {
             let mut prev1 = prev1_log_e[channel * mode.num_ebands + band];
@@ -5061,7 +3592,8 @@ pub(crate) fn anti_collapse_fixed(
                 prev2 = prev2.max(prev2_log_e[mode.num_ebands + band]);
             }
 
-            let ediff = 0.max(log_e[channel * mode.num_ebands + band].wrapping_sub(prev1.min(prev2)));
+            let ediff =
+                0.max(log_e[channel * mode.num_ebands + band].wrapping_sub(prev1.min(prev2)));
             let mut r = if ediff < qconst32(16.0, DB_SHIFT) {
                 let r32 = shr32(celt_exp2_db_fixed(-ediff), 1);
                 (2 * 16_383.min(r32)) as i16
@@ -5073,15 +3605,6 @@ pub(crate) fn anti_collapse_fixed(
             }
             r = shr32(i32::from(thresh.min(r)), 1) as i16;
             r = shr32(i32::from(mult16_16_q15(sqrt_1, r)), shift as u32) as i16;
-
-            #[cfg(test)]
-            if trace_post_bands && band == 15 && channel == 0 {
-                std::println!(
-                    "anti_fixed.band15.depth={depth}.thresh32=0x{thresh32:08x}.thresh={thresh}.shift={shift}.sqrt1={sqrt_1}.prev1=0x{prev1:08x}.prev2=0x{prev2:08x}.loge=0x{loge:08x}.ediff=0x{ediff:08x}.r={r}.mask=0x{mask:02x}.seed=0x{seed:08x}",
-                    loge = log_e[channel * mode.num_ebands + band],
-                    mask = collapse_masks[band * channels + channel],
-                );
-            }
 
             let band_base = channel * size + ((mode.e_bands[band] as usize) << lm);
             let mut renormalize = false;
@@ -5500,10 +4023,7 @@ pub(crate) fn compute_band_energies(
         "band energy buffer too small"
     );
 
-    #[cfg(test)]
-    let trace_frame_idx = band_energy_detail_trace::begin_frame();
-
-    for c in 0..channels {
+        for c in 0..channels {
         let signal_base = c * n;
         let energy_base = c * stride;
 
@@ -5515,128 +4035,7 @@ pub(crate) fn compute_band_energies(
             let slice = &x[signal_base + band_start..signal_base + band_end];
             let sum = 1e-27_f32 + celt_inner_prod(slice, slice);
             band_e[energy_base + band] = celt_sqrt(sum);
-            #[cfg(test)]
-            if let Some(frame_idx) = trace_frame_idx {
-                band_energy_detail_trace::dump_if_match(frame_idx, band, c, slice);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod band_energy_detail_trace {
-    extern crate std;
-
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use std::env;
-    use std::sync::OnceLock;
-
-    use crate::celt::math::celt_sqrt;
-
-    pub(crate) struct TraceConfig {
-        frame: Option<usize>,
-        band: Option<usize>,
-        want_bits: bool,
-    }
-
-    static TRACE_CONFIG: OnceLock<Option<TraceConfig>> = OnceLock::new();
-    static FRAME_INDEX: AtomicUsize = AtomicUsize::new(0);
-
-    pub(crate) fn begin_frame() -> Option<usize> {
-        if config().is_some() {
-            Some(FRAME_INDEX.fetch_add(1, Ordering::Relaxed))
-        } else {
-            None
-        }
-    }
-
-    fn config() -> Option<&'static TraceConfig> {
-        TRACE_CONFIG
-            .get_or_init(|| {
-                let enabled = match env::var("CELT_TRACE_BAND_ENERGY_DETAIL") {
-                    Ok(value) => !value.is_empty() && value != "0",
-                    Err(_) => false,
-                };
-                if !enabled {
-                    return None;
-                }
-                let frame = env::var("CELT_TRACE_BAND_ENERGY_DETAIL_FRAME")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok());
-                let band = env::var("CELT_TRACE_BAND_ENERGY_DETAIL_BAND")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok());
-                let want_bits = match env::var("CELT_TRACE_BAND_ENERGY_DETAIL_BITS") {
-                    Ok(value) => !value.is_empty() && value != "0",
-                    Err(_) => false,
-                };
-                Some(TraceConfig {
-                    frame,
-                    band,
-                    want_bits,
-                })
-            })
-            .as_ref()
-    }
-
-    fn should_dump(frame_idx: usize, band: usize) -> bool {
-        config().map_or(false, |cfg| {
-            cfg.frame.map_or(true, |frame| frame == frame_idx)
-                && cfg.band.map_or(true, |target_band| target_band == band)
-        })
-    }
-
-    pub(crate) fn dump_if_match(frame_idx: usize, band: usize, channel: usize, slice: &[f32]) {
-        if !should_dump(frame_idx, band) {
-            return;
-        }
-        let want_bits = config().map_or(false, |cfg| cfg.want_bits);
-        let mut sum = 0.0f32;
-        for (bin, &value) in slice.iter().enumerate() {
-            let sq = value * value;
-            sum += sq;
-            std::println!(
-                "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].bin[{bin}].x={value:.9e}"
-            );
-            std::println!(
-                "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].bin[{bin}].x2={sq:.9e}"
-            );
-            if want_bits {
-                std::println!(
-                    "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].bin[{bin}].x_bits=0x{:08x}",
-                    value.to_bits()
-                );
-                std::println!(
-                    "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].bin[{bin}].x2_bits=0x{:08x}",
-                    sq.to_bits()
-                );
-            }
-        }
-        let sum_bias = sum + 1e-27_f32;
-        let sqrt_sum = celt_sqrt(sum_bias);
-        std::println!(
-            "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].sum={sum:.9e}"
-        );
-        std::println!(
-            "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].sum_bias={sum_bias:.9e}"
-        );
-        std::println!(
-            "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].sqrt={sqrt_sum:.9e}"
-        );
-        if want_bits {
-            std::println!(
-                "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].sum_bits=0x{:08x}",
-                sum.to_bits()
-            );
-            std::println!(
-                "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].sum_bias_bits=0x{:08x}",
-                sum_bias.to_bits()
-            );
-            std::println!(
-                "celt_band_energy_detail[{frame_idx}].band[{band}].c[{channel}].sqrt_bits=0x{:08x}",
-                sqrt_sum.to_bits()
-            );
-        }
+                    }
     }
 }
 
@@ -5688,12 +4087,14 @@ pub(crate) fn compute_band_energies_fixed(
                 if shift > 0 {
                     for &value in slice {
                         let sample = extract16(shr32(value, shift as u32));
-                        sum = sum.wrapping_add(shr32(mult16_16(sample, sample), (2 * shift2) as u32));
+                        sum =
+                            sum.wrapping_add(shr32(mult16_16(sample, sample), (2 * shift2) as u32));
                     }
                 } else {
                     for &value in slice {
                         let sample = extract16(shl32(value, (-shift) as u32));
-                        sum = sum.wrapping_add(shr32(mult16_16(sample, sample), (2 * shift2) as u32));
+                        sum =
+                            sum.wrapping_add(shr32(mult16_16(sample, sample), (2 * shift2) as u32));
                     }
                 }
                 shift += shift2;
@@ -5815,8 +4216,8 @@ pub(crate) fn normalise_bands_fixed(
 
 #[cfg(feature = "fixed_point")]
 const E_MEANS_Q4: [i8; 25] = [
-    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60, 60,
-    60, 60, 60,
+    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60, 60, 60,
+    60, 60,
 ];
 
 #[cfg(feature = "fixed_point")]
@@ -6018,42 +4419,35 @@ pub(crate) fn denormalise_bands_fixed(
     }
 
     denormalise_bands_fixed_native(
-        mode,
-        &x_fixed,
-        freq,
-        &log_fixed,
-        start,
-        end,
-        m,
-        downsample,
-        silence,
+        mode, &x_fixed, freq, &log_fixed, start, end, m, downsample, silence,
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BandCodingState, BandCtx, EPSILON, NORM_SCALING, SplitCtx, anti_collapse, bitexact_cos,
-        bitexact_log2tan, celt_lcg_rand, compute_band_energies, compute_channel_weights,
-        compute_qn, compute_theta, deinterleave_hadamard, denormalise_bands, frac_mul16, haar1,
-        hysteresis_decision, intensity_stereo, interleave_hadamard, normalise_bands, quant_band_n1,
-        special_hybrid_folding, spreading_decision, stereo_merge, stereo_split, DB_SHIFT,
+        BandCodingState, BandCtx, DB_SHIFT, EPSILON, NORM_SCALING, SplitCtx, anti_collapse,
+        bitexact_cos, bitexact_log2tan, celt_lcg_rand, compute_band_energies,
+        compute_channel_weights, compute_qn, compute_theta, deinterleave_hadamard,
+        denormalise_bands, frac_mul16, haar1, hysteresis_decision, intensity_stereo,
+        interleave_hadamard, normalise_bands, quant_band_n1, special_hybrid_folding,
+        spreading_decision, stereo_merge, stereo_split,
     };
     #[cfg(feature = "fixed_point")]
     use super::{
         compute_band_energies_fixed, denormalise_bands_fixed_native, normalise_bands_fixed,
         pvq_alg_quant_runtime, pvq_alg_unquant_runtime, pvq_renormalise_runtime,
     };
+    use crate::celt::entcode::BITRES;
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::EPSILON as FIXED_EPSILON;
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_ops::qconst32;
-    use crate::celt::entcode::BITRES;
+    #[cfg(feature = "fixed_point")]
+    use crate::celt::float_cast::float2int16;
     use crate::celt::math::celt_exp2;
     use crate::celt::quant_bands::E_MEANS;
     use crate::celt::types::{CeltSig, MdctLookup, OpusCustomMode, PulseCacheData};
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::float_cast::float2int16;
     #[cfg(feature = "fixed_point")]
     use crate::celt::vq::{alg_quant_fixed, alg_unquant_fixed, renormalise_vector_fixed};
     use crate::celt::{
@@ -7145,7 +5539,8 @@ mod tests {
         }
 
         assert_eq!(wrapped_mask, direct_mask);
-        for (idx, (&wrapped, &direct)) in wrapped_quant.iter().zip(direct_quant.iter()).enumerate() {
+        for (idx, (&wrapped, &direct)) in wrapped_quant.iter().zip(direct_quant.iter()).enumerate()
+        {
             let expected = f32::from(direct) * (1.0 / 32_768.0);
             assert!(
                 (wrapped - expected).abs() <= f32::EPSILON,
@@ -7185,7 +5580,11 @@ mod tests {
         }
 
         assert_eq!(wrapped_umask, direct_umask);
-        for (idx, (&wrapped, &direct)) in wrapped_unquant.iter().zip(direct_unquant.iter()).enumerate() {
+        for (idx, (&wrapped, &direct)) in wrapped_unquant
+            .iter()
+            .zip(direct_unquant.iter())
+            .enumerate()
+        {
             let expected = f32::from(direct) * (1.0 / 32_768.0);
             assert!(
                 (wrapped - expected).abs() <= f32::EPSILON,
@@ -7224,7 +5623,16 @@ mod tests {
         let log_n = [0i16, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode = OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        let mut mode = OpusCustomMode::new(
+            48_000,
+            8,
+            &e_bands,
+            &[],
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
         mode.short_mdct_size = 8;
         mode.num_short_mdcts = 1;
 
@@ -7245,7 +5653,16 @@ mod tests {
         let log_n = [0i16, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode = OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        let mut mode = OpusCustomMode::new(
+            48_000,
+            8,
+            &e_bands,
+            &[],
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
         mode.short_mdct_size = 8;
         mode.num_short_mdcts = 1;
 
@@ -7265,8 +5682,16 @@ mod tests {
         let log_n = [0i16, 0, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode =
-            OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        let mut mode = OpusCustomMode::new(
+            48_000,
+            8,
+            &e_bands,
+            &[],
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
         mode.short_mdct_size = 4;
         mode.num_short_mdcts = 1;
 
@@ -7286,17 +5711,21 @@ mod tests {
         let log_n = [0i16, 0, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode =
-            OpusCustomMode::new(48_000, 8, &e_bands, &[], &log_n, &window, mdct, PulseCacheData::default());
+        let mut mode = OpusCustomMode::new(
+            48_000,
+            8,
+            &e_bands,
+            &[],
+            &log_n,
+            &window,
+            mdct,
+            PulseCacheData::default(),
+        );
         mode.short_mdct_size = 4;
         mode.num_short_mdcts = 1;
 
         let x_in = vec![1234i16, -2345, 3456, -4567];
-        let band_log_e = vec![
-            -(18i32 << DB_SHIFT),
-            17i32 << DB_SHIFT,
-            10i32 << DB_SHIFT,
-        ];
+        let band_log_e = vec![-(18i32 << DB_SHIFT), 17i32 << DB_SHIFT, 10i32 << DB_SHIFT];
 
         let mut freq = vec![0i32; 4];
         denormalise_bands_fixed_native(&mode, &x_in, &mut freq, &band_log_e, 0, 3, 1, 1, false);
