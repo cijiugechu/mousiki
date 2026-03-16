@@ -3328,13 +3328,12 @@ pub(crate) fn quant_all_bands(
             let effective = lowband_start.saturating_sub(norm_offset).saturating_sub(n);
             effective_lowband = Some(effective);
 
-            let fold_start_threshold = effective.saturating_add(norm_offset);
-            let fold_end_threshold = fold_start_threshold.saturating_add(n);
+            let threshold = effective.saturating_add(norm_offset).saturating_add(n);
 
             let mut fold_start = lowband_idx;
             while fold_start > 0 {
                 fold_start -= 1;
-                if m * (mode.e_bands[fold_start] as usize) <= fold_start_threshold {
+                if m * (mode.e_bands[fold_start] as usize) <= threshold {
                     break;
                 }
             }
@@ -3342,7 +3341,7 @@ pub(crate) fn quant_all_bands(
             let mut fold_end = lowband_idx.saturating_sub(1);
             while {
                 fold_end = fold_end.saturating_add(1);
-                fold_end < band && m * (mode.e_bands[fold_end] as usize) < fold_end_threshold
+                fold_end < band && m * (mode.e_bands[fold_end] as usize) < threshold
             } {}
 
             for fold in fold_start..fold_end {

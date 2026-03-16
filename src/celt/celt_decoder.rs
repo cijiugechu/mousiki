@@ -3096,6 +3096,11 @@ where
         5
     };
 
+    #[cfg(feature = "fixed_point")]
+    let frame_total_bits = total_bits;
+    #[cfg(not(feature = "fixed_point"))]
+    let frame_total_bits = dynalloc_total_bits;
+
     let mut bits = ((len_bits << BITRES) - entcode::ec_tell_frac(dec.ctx()) as OpusInt32) - 1;
     let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= ((lm as OpusInt32 + 2) << BITRES)
     {
@@ -3175,7 +3180,7 @@ where
         postfilter_pitch,
         postfilter_gain,
         postfilter_tapset,
-        total_bits,
+        total_bits: frame_total_bits,
         tell,
         bits,
         start,

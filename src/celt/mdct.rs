@@ -370,6 +370,7 @@ pub fn clt_mdct_backward(
 ) {
     let n = lookup.effective_len(shift);
     let n2 = n >> 1;
+    output.fill(0.0);
     let n4 = n >> 2;
 
     assert!(input.len() >= stride * n2);
