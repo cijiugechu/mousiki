@@ -7,7 +7,7 @@ use crate::celt::fft_twiddles_48000_960::FFT_TWIDDLES_48000_960;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::f64::consts::PI as PI64;
-use libm::{cos, sin};
+use libm::{cos, fmaf, sin};
 
 const C_FACTORS_480: [i32; 10] = [5, 96, 3, 32, 4, 8, 2, 4, 4, 1];
 
@@ -69,27 +69,7 @@ fn c_mul(a: KissFftCpx, b: KissFftCpx) -> KissFftCpx {
 fn fused_mul_add(a: f32, b: f32, c: f32) -> f32 {
     // Keep this helper (do not replace with a*b + c); C relies on fused rounding.
     // Regression coverage lives in `fused_mul_add_matches_fma_bits`.
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "android",
-        target_os = "ios"
-    ))]
-    unsafe {
-        unsafe extern "C" {
-            fn fmaf(x: f32, y: f32, z: f32) -> f32;
-        }
-        fmaf(a, b, c)
-    }
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "android",
-        target_os = "ios"
-    )))]
-    {
-        libm::fmaf(a, b, c)
-    }
+    fmaf(a, b, c)
 }
 
 #[inline]

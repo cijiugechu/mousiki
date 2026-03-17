@@ -767,35 +767,6 @@ fn compute_twiddles(nfft: usize) -> Vec<KissFftCpx> {
         .collect()
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod twiddle_math {
-    #[link(name = "System")]
-    unsafe extern "C" {
-        fn sin(x: f64) -> f64;
-        fn cos(x: f64) -> f64;
-    }
-
-    pub(super) fn cos_sin(phase: f64) -> (f64, f64) {
-        // SAFETY: libSystem provides sin/cos.
-        unsafe { (cos(phase), sin(phase)) }
-    }
-}
-
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
-mod twiddle_math {
-    #[link(name = "m")]
-    unsafe extern "C" {
-        fn sin(x: f64) -> f64;
-        fn cos(x: f64) -> f64;
-    }
-
-    pub(super) fn cos_sin(phase: f64) -> (f64, f64) {
-        // SAFETY: libm provides sin/cos.
-        unsafe { (cos(phase), sin(phase)) }
-    }
-}
-
-#[cfg(not(unix))]
 mod twiddle_math {
     use libm::{cos, sin};
 
