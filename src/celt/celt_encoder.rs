@@ -655,14 +655,15 @@ mod celt_rc_trace {
             "celt_rc[{frame_idx}].tell_frac={}",
             crate::celt::entcode::ec_tell_frac(ctx)
         );
+        let buffer = ctx.buffer();
         for i in 0..(ctx.offs as usize) {
-            let value = ctx.buf[i];
+            let value = buffer[i];
             crate::test_trace::trace_println!("celt_rc[{frame_idx}].buf[{i}]=0x{value:02x}");
         }
         if ctx.end_offs > 0 {
             let start = (ctx.storage - ctx.end_offs) as usize;
             for i in 0..(ctx.end_offs as usize) {
-                let value = ctx.buf[start + i];
+                let value = buffer[start + i];
                 crate::test_trace::trace_println!(
                     "celt_rc[{frame_idx}].end_buf[{i}]=0x{value:02x}"
                 );

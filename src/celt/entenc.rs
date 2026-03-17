@@ -11,6 +11,8 @@ use crate::celt::entcode::{
     EC_WINDOW_SIZE, EcCtx, EcWindow, celt_udiv, ec_ilog,
 };
 use crate::celt::types::{OpusInt32, OpusUint32};
+use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(test)]
@@ -27,7 +29,7 @@ impl<'a> EcEnc<'a> {
     #[must_use]
     pub fn new(buf: &'a mut [u8]) -> Self {
         let storage = buf.len() as OpusUint32;
-        let mut ctx = EcCtx::new(buf);
+        let mut ctx = EcCtx::from_encoder_buffer(buf);
         ctx.storage = storage;
         ctx.end_offs = 0;
         ctx.end_window = 0;
@@ -59,7 +61,7 @@ impl<'a> EcEnc<'a> {
             -1
         } else {
             let idx = self.ctx.offs as usize;
-            self.ctx.buf[idx] = value as u8;
+            self.ctx.buffer_mut()[idx] = value as u8;
             self.ctx.offs += 1;
             0
         }
@@ -71,7 +73,7 @@ impl<'a> EcEnc<'a> {
         } else {
             self.ctx.end_offs += 1;
             let idx = (self.ctx.storage - self.ctx.end_offs) as usize;
-            self.ctx.buf[idx] = value as u8;
+            self.ctx.buffer_mut()[idx] = value as u8;
             0
         }
     }
@@ -234,8 +236,9 @@ impl<'a> EcEnc<'a> {
         let mask = ((1u32 << nbits) - 1) << shift;
         let val_masked = (val & ((1u32 << nbits) - 1)) << shift;
         if self.ctx.offs > 0 {
-            let byte = OpusUint32::from(self.ctx.buf[0]);
-            self.ctx.buf[0] = ((byte & !mask) | val_masked) as u8;
+            let buffer = self.ctx.buffer_mut();
+            let byte = OpusUint32::from(buffer[0]);
+            buffer[0] = ((byte & !mask) | val_masked) as u8;
         } else if self.ctx.rem >= 0 {
             let rem = self.ctx.rem as OpusUint32;
             self.ctx.rem = ((rem & !mask) | val_masked) as OpusInt32;
@@ -257,7 +260,7 @@ impl<'a> EcEnc<'a> {
                 let src_start = (self.ctx.storage - self.ctx.end_offs) as usize;
                 let dst_start = (size - self.ctx.end_offs) as usize;
                 self.ctx
-                    .buf
+                    .buffer_mut()
                     .copy_within(src_start..src_start + len, dst_start);
             }
             self.ctx.storage = size;
@@ -389,9 +392,7 @@ impl<'a> EcEnc<'a> {
         if self.ctx.error == 0 {
             let start = self.ctx.offs as usize;
             let end_idx = (self.ctx.storage - self.ctx.end_offs) as usize;
-            for slot in &mut self.ctx.buf[start..end_idx] {
-                *slot = 0;
-            }
+            self.ctx.buffer_mut()[start..end_idx].fill(0);
             if used > 0 {
                 if self.ctx.end_offs >= self.ctx.storage {
                     self.ctx.error = -1;
@@ -406,7 +407,7 @@ impl<'a> EcEnc<'a> {
                         self.ctx.error = -1;
                     }
                     let idx = (self.ctx.storage - self.ctx.end_offs - 1) as usize;
-                    self.ctx.buf[idx] |= window as u8;
+                    self.ctx.buffer_mut()[idx] |= window as u8;
                 }
             }
         }
@@ -433,6 +434,34 @@ impl<'a> EcEnc<'a> {
     #[must_use]
     pub fn range_bytes(&self) -> OpusUint32 {
         self.ctx.range_bytes()
+    }
+}
+
+impl EcEnc<'static> {
+    /// Creates an encoder that owns its output buffer.
+    #[must_use]
+    pub(crate) fn from_owned_buffer(buf: Box<[u8]>) -> Self {
+        let storage = buf.len() as OpusUint32;
+        let mut ctx = EcCtx::from_owned_buffer(buf);
+        ctx.storage = storage;
+        ctx.end_offs = 0;
+        ctx.end_window = 0;
+        ctx.nend_bits = 0;
+        ctx.nbits_total = EC_CODE_BITS as OpusInt32 + 1;
+        ctx.offs = 0;
+        ctx.rng = EC_CODE_TOP;
+        ctx.rem = -1;
+        ctx.val = 0;
+        ctx.ext = 0;
+        ctx.error = 0;
+        Self { ctx }
+    }
+
+    /// Creates an owned encoder with a zero-initialised buffer of the
+    /// requested capacity.
+    #[must_use]
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self::from_owned_buffer(vec![0u8; capacity].into_boxed_slice())
     }
 }
 
@@ -615,9 +644,9 @@ mod tests {
         let mut buf = vec![0u8; 2];
         let mut enc = EcEnc::new(&mut buf);
         enc.offs = 1;
-        enc.buf[0] = 0b1111_0000;
+        enc.buffer_mut()[0] = 0b1111_0000;
         enc.enc_patch_initial_bits(0b1010, 4);
-        assert_eq!(enc.buf[0], 0b1010_0000);
+        assert_eq!(enc.buffer()[0], 0b1010_0000);
     }
 
     #[test]
@@ -626,10 +655,10 @@ mod tests {
         let mut enc = EcEnc::new(&mut buf);
         enc.end_offs = 1;
         enc.storage = 4;
-        enc.buf[3] = 0xAA;
+        enc.buffer_mut()[3] = 0xAA;
         enc.enc_shrink(3);
         assert_eq!(enc.storage, 3);
-        assert_eq!(enc.buf[2], 0xAA);
+        assert_eq!(enc.buffer()[2], 0xAA);
     }
 
     #[test]
@@ -638,7 +667,7 @@ mod tests {
         let mut enc = EcEnc::new(&mut buf);
         enc.enc_bits(0b1011, 4);
         enc.enc_done();
-        assert_eq!(enc.buf[3], 0b1011);
+        assert_eq!(enc.buffer()[3], 0b1011);
         assert_eq!(enc.error, 0);
         assert!(enc.nend_bits < EC_WINDOW_SIZE as i32);
     }

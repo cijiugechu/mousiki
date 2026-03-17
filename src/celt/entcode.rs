@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
+
 use crate::celt::types::{OpusInt32, OpusUint32};
 
 /// Window type used by the entropy coder.
@@ -35,10 +37,43 @@ pub const EC_UINT_BITS: usize = 8;
 /// Resolution of fractional bit counts reported by [`ec_tell_frac`].
 pub const BITRES: u32 = 3;
 
+#[derive(Debug)]
+pub(crate) enum EcBuffer<'a> {
+    Borrowed(&'a [u8]),
+    BorrowedMut(&'a mut [u8]),
+    Owned(Box<[u8]>),
+}
+
+impl EcBuffer<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Borrowed(buf) => buf.len(),
+            Self::BorrowedMut(buf) => buf.len(),
+            Self::Owned(buf) => buf.len(),
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(buf) => buf,
+            Self::BorrowedMut(buf) => buf,
+            Self::Owned(buf) => buf,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        match self {
+            Self::Borrowed(_) => panic!("attempted mutable access to read-only entropy buffer"),
+            Self::BorrowedMut(buf) => buf,
+            Self::Owned(buf) => buf,
+        }
+    }
+}
+
 /// Entropy coder context used by both the encoder and the decoder.
 #[derive(Debug)]
 pub struct EcCtx<'a> {
-    pub buf: &'a mut [u8],
+    pub(crate) buf: EcBuffer<'a>,
     pub storage: OpusUint32,
     pub end_offs: OpusUint32,
     pub end_window: EcWindow,
@@ -53,9 +88,7 @@ pub struct EcCtx<'a> {
 }
 
 impl<'a> EcCtx<'a> {
-    /// Constructs a new entropy coder context backed by the provided buffer.
-    #[must_use]
-    pub fn new(buf: &'a mut [u8]) -> Self {
+    fn with_buffer(buf: EcBuffer<'a>) -> Self {
         let storage = buf.len() as OpusUint32;
         Self {
             buf,
@@ -73,6 +106,24 @@ impl<'a> EcCtx<'a> {
         }
     }
 
+    /// Constructs an entropy coder context for encoder-side mutable storage.
+    #[must_use]
+    pub fn from_encoder_buffer(buf: &'a mut [u8]) -> Self {
+        Self::with_buffer(EcBuffer::BorrowedMut(buf))
+    }
+
+    /// Constructs an entropy coder context for decoder-side read-only storage.
+    #[must_use]
+    pub fn from_decoder_buffer(buf: &'a [u8]) -> Self {
+        Self::with_buffer(EcBuffer::Borrowed(buf))
+    }
+
+    /// Constructs an entropy coder context that owns its backing storage.
+    #[must_use]
+    pub(crate) fn from_owned_buffer(buf: Box<[u8]>) -> Self {
+        Self::with_buffer(EcBuffer::Owned(buf))
+    }
+
     /// Returns the number of bytes currently stored in the range coder.
     #[must_use]
     pub fn range_bytes(&self) -> OpusUint32 {
@@ -82,13 +133,13 @@ impl<'a> EcCtx<'a> {
     /// Returns a shared view of the underlying I/O buffer.
     #[must_use]
     pub fn buffer(&self) -> &[u8] {
-        &*self.buf
+        self.buf.as_slice()
     }
 
     /// Returns a mutable view of the underlying I/O buffer.
     #[must_use]
     pub fn buffer_mut(&mut self) -> &mut [u8] {
-        &mut *self.buf
+        self.buf.as_mut_slice()
     }
 
     /// Returns the current error flag for the coder.
@@ -355,7 +406,7 @@ mod tests {
     #[test]
     fn fast_tell_frac_matches_reference() {
         let mut scratch = [0u8; 1];
-        let mut ctx = EcCtx::new(&mut scratch);
+        let mut ctx = EcCtx::from_encoder_buffer(&mut scratch);
         let samples = [
             (0x8000u32, 0),
             (0xFFFFu32, 5),

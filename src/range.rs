@@ -1,7 +1,4 @@
-use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 
 use crate::celt::{EcEnc, EcEncSnapshot, ec_tell};
 use crate::silk::icdf::ICDFContext;
@@ -340,7 +337,6 @@ const RANGE_ENCODER_STORAGE_BYTES: usize = 1275;
 #[derive(Debug)]
 pub struct RangeEncoder {
     encoder: EcEnc<'static>,
-    storage: NonNull<[u8]>,
 }
 
 impl RangeEncoder {
@@ -349,26 +345,14 @@ impl RangeEncoder {
     }
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        let boxed = vec![0u8; capacity].into_boxed_slice();
-        let storage = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
-        // SAFETY: The storage is owned by `Self` and released in `Drop`.
-        let encoder = {
-            let slice: &'static mut [u8] = unsafe { &mut *storage.as_ptr() };
-            EcEnc::new(slice)
-        };
-        Self { encoder, storage }
+        let encoder = EcEnc::with_capacity(capacity);
+        Self { encoder }
     }
 
     fn from_snapshot(snapshot: &EcEncSnapshot) -> Self {
-        let boxed = vec![0u8; snapshot.buffer_len()].into_boxed_slice();
-        let storage = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
-        // SAFETY: The storage is owned by `Self` and released in `Drop`.
-        let mut encoder = {
-            let slice: &'static mut [u8] = unsafe { &mut *storage.as_ptr() };
-            EcEnc::new(slice)
-        };
+        let mut encoder = EcEnc::with_capacity(snapshot.buffer_len());
         snapshot.restore(&mut encoder);
-        Self { encoder, storage }
+        Self { encoder }
     }
 
     /// Returns the number of whole bits emitted so far.
@@ -555,17 +539,6 @@ pub(crate) fn begin_range_done_trace_frame() -> Option<usize> {
 pub(crate) fn set_range_done_trace_frame(frame_idx: usize) {
     range_done_trace::set_frame(frame_idx);
     crate::celt::set_enc_done_trace_frame(frame_idx);
-}
-
-impl Drop for RangeEncoder {
-    fn drop(&mut self) {
-        // SAFETY: `storage` was created from a `Box<[u8]>` via `Box::into_raw` and is
-        // only reconstructed once the encoder (which holds the unique borrow) has
-        // been dropped.
-        unsafe {
-            let _ = Box::from_raw(self.storage.as_ptr());
-        }
-    }
 }
 
 // taken from <https://github.com/pion/opus/blob/e8536fe9e4ca2181db7d808e35d50b2c0400ceb1/internal/rangecoding/decoder_test.go>

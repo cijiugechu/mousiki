@@ -500,7 +500,6 @@ impl<'mode> OpusDecoder<'mode> {
         let mut pcm_transition: Option<Vec<OpusRes>> = None;
         let mut redundant_audio: Option<Vec<OpusRes>> = None;
         let mut redundant_packet: Option<&[u8]> = None;
-        let mut range_storage: Option<Vec<u8>> = None;
         let mut range_decoder: Option<EcDec<'_>> = None;
         let celt_only = if packet.is_some() {
             audiosize =
@@ -564,8 +563,7 @@ impl<'mode> OpusDecoder<'mode> {
         };
 
         if celt_only && let Some(packet) = packet {
-            let storage = range_storage.get_or_insert_with(|| packet.to_vec());
-            range_decoder = Some(EcDec::new(storage.as_mut_slice()));
+            range_decoder = Some(EcDec::new(packet));
         }
 
         let prev_celt_only = decode_as_celt_only(self.prev_mode);
@@ -649,8 +647,7 @@ impl<'mode> OpusDecoder<'mode> {
             }
 
             if range_decoder.is_none() {
-                let storage = range_storage.get_or_insert_with(|| packet.unwrap_or(&[]).to_vec());
-                range_decoder = Some(EcDec::new(storage.as_mut_slice()));
+                range_decoder = Some(EcDec::new(packet.unwrap_or(&[])));
             }
             {
                 let range_dec = range_decoder
@@ -1482,17 +1479,17 @@ fn map_celt_error(err: CeltDecodeError) -> OpusDecodeError {
     }
 }
 
-fn decode_celt_frame_with_ec<'mode, 'dec>(
+fn decode_celt_frame_with_ec<'mode, 'pkt>(
     decoder: &mut OwnedCeltDecoder<'mode>,
-    packet: Option<&[u8]>,
+    packet: Option<&'pkt [u8]>,
     pcm: &mut [OpusRes],
     frame_size: usize,
-    range_decoder: Option<&'dec mut EcDec<'dec>>,
+    range_decoder: Option<&'pkt mut EcDec<'pkt>>,
     accum: bool,
     plc: PlcHandle<'_>,
 ) -> Result<usize, OpusDecodeError>
 where
-    'mode: 'dec,
+    'mode: 'pkt,
 {
     celt_decode_with_ec_dred(
         decoder.decoder(),

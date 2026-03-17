@@ -8,6 +8,7 @@
 //! to the C implementation to ease future verification against the reference
 //! sources.
 
+use alloc::boxed::Box;
 use core::cmp::min;
 
 use crate::celt::entcode::{
@@ -16,7 +17,7 @@ use crate::celt::entcode::{
 };
 use crate::celt::types::{OpusInt32, OpusUint32};
 
-/// Range decoder operating on a mutable byte buffer.
+/// Range decoder operating on a read-only packet buffer.
 #[derive(Debug)]
 pub struct EcDec<'a> {
     ctx: EcCtx<'a>,
@@ -25,9 +26,9 @@ pub struct EcDec<'a> {
 impl<'a> EcDec<'a> {
     /// Creates a new decoder backed by the provided buffer.
     #[must_use]
-    pub fn new(buf: &'a mut [u8]) -> Self {
+    pub fn new(buf: &'a [u8]) -> Self {
         let storage = buf.len() as OpusUint32;
-        let mut ctx = EcCtx::new(buf);
+        let mut ctx = EcCtx::from_decoder_buffer(buf);
         ctx.storage = storage;
         ctx.end_offs = 0;
         ctx.end_window = 0;
@@ -63,7 +64,7 @@ impl<'a> EcDec<'a> {
 
     fn read_byte(&mut self) -> u8 {
         if self.ctx.offs < self.ctx.storage {
-            let byte = self.ctx.buf[self.ctx.offs as usize];
+            let byte = self.ctx.buffer()[self.ctx.offs as usize];
             self.ctx.offs += 1;
             byte
         } else {
@@ -75,7 +76,7 @@ impl<'a> EcDec<'a> {
         if self.ctx.end_offs < self.ctx.storage {
             self.ctx.end_offs += 1;
             let idx = (self.ctx.storage - self.ctx.end_offs) as usize;
-            self.ctx.buf[idx]
+            self.ctx.buffer()[idx]
         } else {
             0
         }
@@ -232,6 +233,34 @@ impl<'a> EcDec<'a> {
     #[must_use]
     pub fn range_bytes(&self) -> OpusUint32 {
         self.ctx.range_bytes()
+    }
+}
+
+impl EcDec<'static> {
+    /// Creates a decoder that owns its packet buffer.
+    #[must_use]
+    pub(crate) fn from_owned_buffer(buf: Box<[u8]>) -> Self {
+        let storage = buf.len() as OpusUint32;
+        let mut ctx = EcCtx::from_owned_buffer(buf);
+        ctx.storage = storage;
+        ctx.end_offs = 0;
+        ctx.end_window = 0;
+        ctx.nend_bits = 0;
+        ctx.nbits_total = (EC_CODE_BITS as OpusInt32) + 1
+            - (((EC_CODE_BITS - EC_CODE_EXTRA) / EC_SYM_BITS) as OpusInt32)
+                * EC_SYM_BITS as OpusInt32;
+        ctx.offs = 0;
+        ctx.rng = 1u32 << EC_CODE_EXTRA;
+        ctx.rem = 0;
+        ctx.ext = 0;
+        ctx.error = 0;
+
+        let mut dec = Self { ctx };
+        dec.ctx.rem = OpusInt32::from(dec.read_byte());
+        dec.ctx.val =
+            dec.ctx.rng - 1 - ((dec.ctx.rem as OpusUint32) >> (EC_SYM_BITS - EC_CODE_EXTRA));
+        dec.normalize();
+        dec
     }
 }
 

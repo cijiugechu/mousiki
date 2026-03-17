@@ -110,7 +110,6 @@ use core::cmp::{max, min};
 type PlcHandle<'a> = Option<&'a mut LpcNetPlcState>;
 #[cfg(not(feature = "deep_plc"))]
 type PlcHandle<'a> = ();
-use core::ptr::NonNull;
 
 #[cfg(feature = "fixed_point")]
 fn glog_from_fixed(value: FixedCeltGlog) -> f32 {
@@ -2473,78 +2472,24 @@ pub(crate) enum CeltDecodeError {
     InvalidPacket,
 }
 
-/// Range decoder storage mirroring the temporary buffer used by the C decoder.
-#[derive(Debug)]
-pub(crate) struct RangeDecoderState {
-    decoder: EcDec<'static>,
-    storage: NonNull<[u8]>,
-}
-
-impl RangeDecoderState {
-    /// Creates a new range decoder backed by an owned copy of the packet payload.
-    pub(crate) fn new(data: &[u8]) -> Self {
-        let boxed = data.to_vec().into_boxed_slice();
-        let storage = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
-        // SAFETY: The raw pointer originates from a boxed slice that is retained and
-        // later reconstructed in `Drop`. The lifetime extension is therefore sound
-        // because the memory outlives the decoder instance.
-        let decoder = {
-            let slice: &'static mut [u8] = unsafe { &mut *storage.as_ptr() };
-            EcDec::new(slice)
-        };
-        Self { decoder, storage }
-    }
-
-    /// Borrows the underlying range decoder with the appropriate lifetime.
-    pub(crate) fn decoder(&mut self) -> &mut EcDec<'static> {
-        &mut self.decoder
-    }
-
-    /// Borrows the decoder using an arbitrary caller lifetime.
-    pub(crate) fn decoder_with_lifetime<'a>(&mut self) -> &mut EcDec<'a> {
-        // SAFETY: The backing buffer is owned by `self` and outlives the returned borrow.
-        unsafe { core::mem::transmute::<&mut EcDec<'static>, &mut EcDec<'a>>(&mut self.decoder) }
-    }
-
-    /// Borrows the decoder using the mode lifetime expected by band quantisation helpers.
-    pub(crate) fn decoder_for_mode<'mode>(
-        &mut self,
-        _mode: &'mode OpusCustomMode<'mode>,
-    ) -> &mut EcDec<'mode> {
-        // SAFETY: The backing buffer is owned by `self` and outlives the returned borrow.
-        unsafe { core::mem::transmute::<&mut EcDec<'static>, &mut EcDec<'mode>>(&mut self.decoder) }
-    }
-}
-
-impl Drop for RangeDecoderState {
-    fn drop(&mut self) {
-        // SAFETY: `storage` was created from a `Box<[u8]>` via `Box::into_raw` and is
-        // only reconstructed once the decoder (which holds the unique borrow) has
-        // been dropped.
-        unsafe {
-            let _ = Box::from_raw(self.storage.as_ptr());
-        }
-    }
-}
-
 /// Range decoder wrapper that can either own or borrow the underlying decoder.
 #[derive(Debug)]
 pub(crate) enum RangeDecoderHandle<'a> {
-    Owned(RangeDecoderState),
+    Owned(EcDec<'a>),
     External(&'a mut EcDec<'a>),
 }
 
 impl<'a> RangeDecoderHandle<'a> {
-    fn new(packet: &[u8], external: Option<&'a mut EcDec<'a>>) -> Self {
+    fn new(packet: &'a [u8], external: Option<&'a mut EcDec<'a>>) -> Self {
         match external {
             Some(dec) => Self::External(dec),
-            None => Self::Owned(RangeDecoderState::new(packet)),
+            None => Self::Owned(EcDec::new(packet)),
         }
     }
 
     fn decoder(&mut self) -> &mut EcDec<'a> {
         match self {
-            Self::Owned(state) => state.decoder_with_lifetime(),
+            Self::Owned(decoder) => decoder,
             Self::External(dec) => dec,
         }
     }
@@ -2808,14 +2753,14 @@ fn tf_decode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_frame<'mode, 'dec>(
+pub(crate) fn prepare_frame<'mode, 'pkt>(
     decoder: &mut OpusCustomDecoder<'mode>,
-    packet: &[u8],
+    packet: &'pkt [u8],
     frame_size: usize,
-    range_decoder: Option<&'dec mut EcDec<'dec>>,
-) -> Result<FramePreparation<'dec>, CeltDecodeError>
+    range_decoder: Option<&'pkt mut EcDec<'pkt>>,
+) -> Result<FramePreparation<'pkt>, CeltDecodeError>
 where
-    'mode: 'dec,
+    'mode: 'pkt,
 {
     let cc = decoder.channels;
     let mut c = decoder.stream_channels;
@@ -3211,17 +3156,17 @@ fn res_to_int24(sample: OpusRes) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn celt_decode_with_ec_dred<'mode, 'dec>(
+pub(crate) fn celt_decode_with_ec_dred<'mode, 'pkt>(
     decoder: &mut OpusCustomDecoder<'mode>,
-    packet: Option<&[u8]>,
+    packet: Option<&'pkt [u8]>,
     pcm: &mut [OpusRes],
     frame_size: usize,
-    range_decoder: Option<&'dec mut EcDec<'dec>>,
+    range_decoder: Option<&'pkt mut EcDec<'pkt>>,
     accum: bool,
     plc: PlcHandle<'_>,
 ) -> Result<usize, CeltDecodeError>
 where
-    'mode: 'dec,
+    'mode: 'pkt,
 {
     #[cfg(feature = "fixed_point")]
     sync_from_fixed_primary_to_float_cache(decoder);
@@ -3238,17 +3183,17 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn celt_decode_with_ec_dred_impl<'mode, 'dec>(
+fn celt_decode_with_ec_dred_impl<'mode, 'pkt>(
     decoder: &mut OpusCustomDecoder<'mode>,
-    packet: Option<&[u8]>,
+    packet: Option<&'pkt [u8]>,
     pcm: &mut [OpusRes],
     frame_size: usize,
-    range_decoder: Option<&'dec mut EcDec<'dec>>,
+    range_decoder: Option<&'pkt mut EcDec<'pkt>>,
     accum: bool,
     plc: PlcHandle<'_>,
 ) -> Result<usize, CeltDecodeError>
 where
-    'mode: 'dec,
+    'mode: 'pkt,
 {
     validate_celt_decoder(decoder);
 
@@ -4173,16 +4118,16 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn celt_decode_with_ec<'mode, 'dec>(
+pub(crate) fn celt_decode_with_ec<'mode, 'pkt>(
     decoder: &mut OpusCustomDecoder<'mode>,
-    packet: Option<&[u8]>,
+    packet: Option<&'pkt [u8]>,
     pcm: &mut [OpusRes],
     frame_size: usize,
-    range_decoder: Option<&'dec mut EcDec<'dec>>,
+    range_decoder: Option<&'pkt mut EcDec<'pkt>>,
     accum: bool,
 ) -> Result<usize, CeltDecodeError>
 where
-    'mode: 'dec,
+    'mode: 'pkt,
 {
     #[cfg(feature = "deep_plc")]
     let plc = None;
@@ -4729,11 +4674,10 @@ mod tests {
     use super::opus_custom_decode;
     use super::{
         CeltDecodeError, CeltDecoderAlloc, CeltDecoderCtlError, CeltDecoderInitError,
-        DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, RangeDecoderState,
-        celt_decoder_get_size, celt_decoder_init, comb_filter, opus_custom_decoder_create,
-        opus_custom_decoder_ctl, opus_custom_decoder_get_size, opus_custom_decoder_init,
-        prefilter_and_fold, prepare_frame, tf_decode, validate_celt_decoder,
-        validate_channel_layout,
+        DECODE_BUFFER_SIZE, DecoderCtlRequest, LPC_ORDER, MAX_CHANNELS, celt_decoder_get_size,
+        celt_decoder_init, comb_filter, opus_custom_decoder_create, opus_custom_decoder_ctl,
+        opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold, prepare_frame,
+        tf_decode, validate_celt_decoder, validate_channel_layout,
     };
     #[cfg(feature = "fixed_point")]
     use crate::celt::bands::BandCodingState;
@@ -4754,6 +4698,7 @@ mod tests {
     use crate::celt::float_cast::CELT_SIG_SCALE;
     #[cfg(feature = "fixed_point")]
     use crate::celt::float_cast::float2int16;
+    use crate::celt::EcDec;
     use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
     use crate::celt::opus_select_arch;
     #[cfg(feature = "fixed_point")]
@@ -4770,9 +4715,9 @@ mod tests {
 
     #[test]
     fn tf_decode_returns_default_table_entries() {
-        let mut range = RangeDecoderState::new(&[0u8]);
+        let mut range = EcDec::new(&[0u8]);
         let mut tf_res = vec![0; 4];
-        tf_decode(0, tf_res.len(), false, &mut tf_res, 0, range.decoder());
+        tf_decode(0, tf_res.len(), false, &mut tf_res, 0, &mut range);
         assert!(tf_res.iter().all(|&v| v == 0));
     }
 
