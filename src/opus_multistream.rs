@@ -10,9 +10,9 @@ use crate::opus_decoder::{
     opus_decode_native, opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
 };
 use crate::opus_encoder::{
-    OPUS_FRAMESIZE_ARG, OpusEncodeError, OpusEncoder, OpusEncoderCtlError, OpusEncoderCtlRequest,
-    OpusEncoderInitError, opus_encode, opus_encoder_create, opus_encoder_ctl,
-    opus_encoder_get_size,
+    OPUS_FRAMESIZE_ARG, OpusEncodeError, OpusEncodeOptions, OpusEncoder, OpusEncoderCtlError,
+    OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode_with_options, opus_encoder_create,
+    opus_encoder_ctl, opus_encoder_get_size,
 };
 use crate::packet::{PacketError, opus_packet_get_nb_samples, opus_packet_parse_impl};
 
@@ -1115,6 +1115,11 @@ pub struct OpusMultistreamEncoder<'mode> {
     variable_duration: i32,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpusMultistreamEncodeOptions<'a> {
+    pub stream_energy_masks: Option<&'a [Option<&'a [f32]>]>,
+}
+
 impl<'mode> OpusMultistreamEncoder<'mode> {
     #[inline]
     pub fn layout(&self) -> &ChannelLayout {
@@ -1602,11 +1607,12 @@ fn extract_i16_channel(
     Ok(())
 }
 
-pub fn opus_multistream_encode(
+pub fn opus_multistream_encode_with_options(
     encoder: &mut OpusMultistreamEncoder<'_>,
     pcm: &[i16],
     frame_size: usize,
     data: &mut [u8],
+    options: OpusMultistreamEncodeOptions<'_>,
 ) -> Result<usize, OpusMultistreamEncoderError> {
     let channels = encoder.layout.nb_channels;
     if channels == 0 || frame_size == 0 {
@@ -1621,6 +1627,11 @@ pub fn opus_multistream_encode(
 
     let nb_streams = encoder.layout.nb_streams;
     if nb_streams == 0 {
+        return Err(OpusMultistreamEncoderError::BadArgument);
+    }
+    if let Some(masks) = options.stream_energy_masks
+        && masks.len() != nb_streams
+    {
         return Err(OpusMultistreamEncoderError::BadArgument);
     }
 
@@ -1673,6 +1684,13 @@ pub fn opus_multistream_encode(
                 OpusEncoderCtlRequest::SetBitrate(rate),
             );
         }
+        let encode_options = OpusEncodeOptions {
+            energy_masking: options
+                .stream_energy_masks
+                .and_then(|masks| masks.get(stream))
+                .copied()
+                .flatten(),
+        };
 
         if stream < encoder.layout.nb_coupled_streams {
             let left = get_left_channel(&encoder.layout, stream, None)
@@ -1684,7 +1702,7 @@ pub fn opus_multistream_encode(
             extract_i16_channel(pcm, channels, left, frame_size, &mut coupled_pcm, 2, 0)?;
             extract_i16_channel(pcm, channels, right, frame_size, &mut coupled_pcm, 2, 1)?;
 
-            let len = opus_encode(
+            let len = opus_encode_with_options(
                 encoder
                     .encoders
                     .get_mut(stream)
@@ -1692,6 +1710,7 @@ pub fn opus_multistream_encode(
                 &coupled_pcm,
                 frame_size,
                 &mut tmp,
+                encode_options,
             )?;
 
             let written =
@@ -1704,7 +1723,7 @@ pub fn opus_multistream_encode(
             let mut mono_pcm = vec![0i16; frame_size];
             extract_i16_channel(pcm, channels, chan, frame_size, &mut mono_pcm, 1, 0)?;
 
-            let len = opus_encode(
+            let len = opus_encode_with_options(
                 encoder
                     .encoders
                     .get_mut(stream)
@@ -1712,6 +1731,7 @@ pub fn opus_multistream_encode(
                 &mono_pcm,
                 frame_size,
                 &mut tmp,
+                encode_options,
             )?;
 
             let written =
@@ -1722,6 +1742,21 @@ pub fn opus_multistream_encode(
     }
 
     Ok(total_written)
+}
+
+pub fn opus_multistream_encode(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    pcm: &[i16],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusMultistreamEncoderError> {
+    opus_multistream_encode_with_options(
+        encoder,
+        pcm,
+        frame_size,
+        data,
+        OpusMultistreamEncodeOptions::default(),
+    )
 }
 
 fn write_stream_packet(
@@ -1754,11 +1789,12 @@ fn write_stream_packet(
     Some(start + frame.len())
 }
 
-pub fn opus_multistream_encode_float(
+pub fn opus_multistream_encode_float_with_options(
     encoder: &mut OpusMultistreamEncoder<'_>,
     pcm: &[f32],
     frame_size: usize,
     data: &mut [u8],
+    options: OpusMultistreamEncodeOptions<'_>,
 ) -> Result<usize, OpusMultistreamEncoderError> {
     let channels = encoder.layout.nb_channels;
     let required_pcm = channels
@@ -1772,14 +1808,30 @@ pub fn opus_multistream_encode_float(
         let scaled = libm::roundf(sample * 32_768.0);
         *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
     }
-    opus_multistream_encode(encoder, &tmp, frame_size, data)
+    opus_multistream_encode_with_options(encoder, &tmp, frame_size, data, options)
 }
 
-pub fn opus_multistream_encode24(
+pub fn opus_multistream_encode_float(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    pcm: &[f32],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusMultistreamEncoderError> {
+    opus_multistream_encode_float_with_options(
+        encoder,
+        pcm,
+        frame_size,
+        data,
+        OpusMultistreamEncodeOptions::default(),
+    )
+}
+
+pub fn opus_multistream_encode24_with_options(
     encoder: &mut OpusMultistreamEncoder<'_>,
     pcm: &[i32],
     frame_size: usize,
     data: &mut [u8],
+    options: OpusMultistreamEncodeOptions<'_>,
 ) -> Result<usize, OpusMultistreamEncoderError> {
     let channels = encoder.layout.nb_channels;
     let required_pcm = channels
@@ -1793,7 +1845,22 @@ pub fn opus_multistream_encode24(
         let shifted = (sample >> 8).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
         *dst = shifted as i16;
     }
-    opus_multistream_encode(encoder, &tmp, frame_size, data)
+    opus_multistream_encode_with_options(encoder, &tmp, frame_size, data, options)
+}
+
+pub fn opus_multistream_encode24(
+    encoder: &mut OpusMultistreamEncoder<'_>,
+    pcm: &[i32],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusMultistreamEncoderError> {
+    opus_multistream_encode24_with_options(
+        encoder,
+        pcm,
+        frame_size,
+        data,
+        OpusMultistreamEncodeOptions::default(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1957,6 +2024,7 @@ fn surround_layout(
 mod tests {
     use super::*;
     use crate::opus_decoder::{opus_decode, opus_decoder_create};
+    use crate::opus_encoder::opus_encode;
     use alloc::vec;
 
     fn layout_from_mapping(

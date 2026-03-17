@@ -729,7 +729,11 @@ pub enum OpusEncoderCtlRequest<'req> {
     ResetState,
     SetLfe(bool),
     GetLfe(&'req mut bool),
-    SetEnergyMask(*const f32),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpusEncodeOptions<'a> {
+    pub energy_masking: Option<&'a [f32]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -832,7 +836,6 @@ struct OpusEncoderLayout {
     auto_bandwidth: i32,
     silk_bw_switch: i32,
     first: i32,
-    energy_masking: *const f32,
     width_mem: StereoWidthState,
     delay_buffer: [OpusRes; DELAY_BUFFER_SAMPLES],
     #[cfg(not(feature = "fixed_point"))]
@@ -971,7 +974,6 @@ pub struct OpusEncoder<'mode> {
     dred_target_chunks: i32,
     #[cfg(feature = "dred")]
     dred_activity_mem: [u8; DRED_ACTIVITY_MEM_LEN],
-    energy_masking: *const f32,
     lfe: bool,
 }
 
@@ -1087,7 +1089,6 @@ impl<'mode> OpusEncoder<'mode> {
         self.nonfinal_frame = false;
         self.range_final = 0;
         self.dred_duration = 0;
-        self.energy_masking = core::ptr::null();
         self.lfe = false;
 
         #[cfg(not(feature = "fixed_point"))]
@@ -2388,6 +2389,7 @@ fn prepare_celt_prefill_from_delay(
 
 fn encode_frame_native<'mode>(
     encoder: &mut OpusEncoder<'mode>,
+    energy_masking: Option<&[f32]>,
     pcm: &[i16],
     frame_size: usize,
     data: &mut [u8],
@@ -2830,15 +2832,7 @@ fn encode_frame_native<'mode>(
             .clamp(5_000, 80_000);
 
             // Apply surround masking rate offset for SILK bitrate adjustment.
-            if !encoder.energy_masking.is_null() && encoder.use_vbr && !encoder.lfe {
-                // SAFETY: energy_masking is set by the multistream encoder and points to
-                // a valid array of 21 * channels f32 values for the duration of the encode call.
-                let mask = unsafe {
-                    core::slice::from_raw_parts(
-                        encoder.energy_masking,
-                        21 * encoder.stream_channels as usize,
-                    )
-                };
+            if let Some(mask) = energy_masking.filter(|_| encoder.use_vbr && !encoder.lfe) {
                 let rate_offset = compute_surround_masking_rate_offset(
                     mask,
                     bandwidth_int,
@@ -2856,7 +2850,7 @@ fn encode_frame_native<'mode>(
 
             // Compute HB gain: increasingly attenuate high band when CELT gets fewer bits.
             // Skip attenuation when energy_masking is present (surround mode).
-            let hb_gain = if encoder.energy_masking.is_null() {
+            let hb_gain = if energy_masking.is_none() {
                 let celt_rate = total_bitrate - encoder.silk_mode.bit_rate;
                 1.0 - 0.5 * celt_exp2(-celt_rate as f32 / 1024.0)
             } else {
@@ -3113,7 +3107,7 @@ fn encode_frame_native<'mode>(
                 // Apply stereo width reduction at low bitrates.
                 // This must happen after buffer copying to avoid affecting the SILK part.
                 // Skip when energy_masking is present (surround mode handles stereo differently).
-                if encoder.energy_masking.is_null() && encoder.channels == 2 {
+                if energy_masking.is_none() && encoder.channels == 2 {
                     let prev_width = encoder.hybrid_stereo_width_q14;
                     let curr_width = encoder.silk_mode.stereo_width_q14 as i16;
 
@@ -3522,7 +3516,6 @@ pub fn opus_encoder_create<'mode>(
         dred_target_chunks: 0,
         #[cfg(feature = "dred")]
         dred_activity_mem: [0; DRED_ACTIVITY_MEM_LEN],
-        energy_masking: core::ptr::null(),
         lfe: false,
     };
 
@@ -3770,20 +3763,16 @@ pub fn opus_encoder_ctl<'req>(
         OpusEncoderCtlRequest::GetLfe(out) => {
             *out = encoder.lfe;
         }
-        OpusEncoderCtlRequest::SetEnergyMask(mask) => {
-            encoder.energy_masking = mask;
-            // Note: CELT encoder's energy_mask is set separately by the multistream encoder
-            // using its own CTL request with the appropriate slice type.
-        }
     }
     Ok(())
 }
 
-pub fn opus_encode(
+pub fn opus_encode_with_options(
     encoder: &mut OpusEncoder<'_>,
     pcm: &[i16],
     frame_size: usize,
     data: &mut [u8],
+    options: OpusEncodeOptions<'_>,
 ) -> Result<usize, OpusEncodeError> {
     let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
     if channels == 0 || channels > MAX_CHANNELS || frame_size == 0 {
@@ -4328,6 +4317,7 @@ pub fn opus_encode(
             let frame_buf = &mut tmp_data[tot_size_usize..tot_size_usize + max_len_per_frame_usize];
             let len = match encode_frame_native(
                 encoder,
+                options.energy_masking,
                 &pcm[start..end],
                 enc_frame_size,
                 &mut frame_buf[..curr_max_usize],
@@ -4348,6 +4338,7 @@ pub fn opus_encode(
                 Err(OpusEncodeError::BufferTooSmall) if curr_max < max_len_per_frame => {
                     encode_frame_native(
                         encoder,
+                        options.energy_masking,
                         &pcm[start..end],
                         enc_frame_size,
                         &mut frame_buf[..max_len_per_frame_usize],
@@ -4405,6 +4396,7 @@ pub fn opus_encode(
     encoder.nonfinal_frame = false;
     encode_frame_native(
         encoder,
+        options.energy_masking,
         &pcm[..required],
         frame_size,
         data,
@@ -4423,12 +4415,22 @@ pub fn opus_encode(
     )
 }
 
+pub fn opus_encode(
+    encoder: &mut OpusEncoder<'_>,
+    pcm: &[i16],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusEncodeError> {
+    opus_encode_with_options(encoder, pcm, frame_size, data, OpusEncodeOptions::default())
+}
+
 /// Wrapper for encoding 24-bit PCM stored in `i32`, mirroring `opus_encode24`.
-pub fn opus_encode24(
+pub fn opus_encode24_with_options(
     encoder: &mut OpusEncoder<'_>,
     pcm: &[i32],
     frame_size: usize,
     data: &mut [u8],
+    options: OpusEncodeOptions<'_>,
 ) -> Result<usize, OpusEncodeError> {
     let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
     let required = channels
@@ -4444,14 +4446,24 @@ pub fn opus_encode24(
         tmp.push(scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
     }
 
-    opus_encode(encoder, &tmp, frame_size, data)
+    opus_encode_with_options(encoder, &tmp, frame_size, data, options)
 }
 
-pub fn opus_encode_float(
+pub fn opus_encode24(
+    encoder: &mut OpusEncoder<'_>,
+    pcm: &[i32],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusEncodeError> {
+    opus_encode24_with_options(encoder, pcm, frame_size, data, OpusEncodeOptions::default())
+}
+
+pub fn opus_encode_float_with_options(
     encoder: &mut OpusEncoder<'_>,
     pcm: &[f32],
     frame_size: usize,
     data: &mut [u8],
+    options: OpusEncodeOptions<'_>,
 ) -> Result<usize, OpusEncodeError> {
     let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
     let required = channels
@@ -4467,7 +4479,16 @@ pub fn opus_encode_float(
         tmp.push(scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
     }
 
-    opus_encode(encoder, &tmp, frame_size, data)
+    opus_encode_with_options(encoder, &tmp, frame_size, data, options)
+}
+
+pub fn opus_encode_float(
+    encoder: &mut OpusEncoder<'_>,
+    pcm: &[f32],
+    frame_size: usize,
+    data: &mut [u8],
+) -> Result<usize, OpusEncodeError> {
+    opus_encode_float_with_options(encoder, pcm, frame_size, data, OpusEncodeOptions::default())
 }
 
 #[cfg(test)]
@@ -4479,11 +4500,12 @@ mod tests {
         MAX_TMP_PREFILL_SAMPLES, MODE_CELT_ONLY, MODE_HYBRID, MODE_SILK_ONLY, OPUS_AUTO,
         OPUS_BANDWIDTH_NARROWBAND, OPUS_BANDWIDTH_SUPERWIDEBAND, OPUS_BANDWIDTH_WIDEBAND,
         OPUS_BITRATE_MAX, OPUS_FRAMESIZE_20_MS, OPUS_FRAMESIZE_40_MS, OPUS_SIGNAL_MUSIC,
-        OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, OpusRes,
-        StereoWidthState, VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2_Q16, VERY_SMALL,
-        compute_equiv_rate, compute_redundancy_bytes, compute_silk_rate_for_hybrid,
-        compute_stereo_width, dc_reject, decide_fec, hp_cutoff, lin2log, log2lin, opus_encode,
-        opus_encode24, opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
+        OpusEncodeError, OpusEncodeOptions, OpusEncoderCtlError, OpusEncoderCtlRequest,
+        OpusEncoderInitError, OpusRes, StereoWidthState, VARIABLE_HP_MIN_CUTOFF_HZ,
+        VARIABLE_HP_SMTH_COEF2_Q16, VERY_SMALL, compute_equiv_rate, compute_redundancy_bytes,
+        compute_silk_rate_for_hybrid, compute_stereo_width, dc_reject, decide_fec, hp_cutoff,
+        lin2log, log2lin, opus_encode, opus_encode24, opus_encode_with_options,
+        opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
         prepare_celt_prefill_from_delay, prepare_silk_prefill, update_high_pass_state,
         user_bitrate_to_bitrate,
     };
@@ -5580,30 +5602,29 @@ mod tests {
     }
 
     #[test]
-    fn ctl_energy_mask_round_trip() {
-        let mut enc = opus_encoder_create(48_000, 1, 2048).expect("encoder");
-        assert!(enc.energy_masking.is_null());
+    fn encode_with_options_accepts_energy_masking_slice() {
+        let mut enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
+        let pcm = vec![0i16; 960 * 2];
+        let mut out = vec![0u8; 512];
+        let mask = [0.1f32; 42];
 
-        let mask = [0.1f32; 21];
-        opus_encoder_ctl(
+        let len = opus_encode_with_options(
             &mut enc,
-            OpusEncoderCtlRequest::SetEnergyMask(mask.as_ptr()),
+            &pcm,
+            960,
+            &mut out,
+            OpusEncodeOptions {
+                energy_masking: Some(&mask),
+            },
         )
-        .unwrap();
-        assert!(!enc.energy_masking.is_null());
+        .expect("encode");
 
-        opus_encoder_ctl(
-            &mut enc,
-            OpusEncoderCtlRequest::SetEnergyMask(core::ptr::null()),
-        )
-        .unwrap();
-        assert!(enc.energy_masking.is_null());
+        assert!(len > 0);
     }
 
     #[test]
     fn init_sets_energy_masking_defaults() {
         let enc = opus_encoder_create(48_000, 2, 2048).expect("encoder");
-        assert!(enc.energy_masking.is_null());
         assert!(!enc.lfe);
     }
 
