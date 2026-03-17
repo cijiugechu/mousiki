@@ -1,7 +1,9 @@
 #[cfg(test)]
 use alloc::vec::Vec;
-use alloc::{boxed::Box, vec};
-use core::{mem, slice};
+#[cfg(test)]
+use alloc::vec;
+use alloc::boxed::Box;
+use core::mem;
 
 use crate::celt::{OpusRes, float2int, float2int16};
 
@@ -12,7 +14,10 @@ const RES_SCALE_24: f32 = RES_SCALE * 256.0;
 
 #[derive(Debug, Clone)]
 pub struct MappingMatrix {
-    storage: Box<[u8]>,
+    rows: usize,
+    cols: usize,
+    gain_db: i32,
+    data: Box<[i16]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,33 +60,23 @@ impl MappingMatrix {
             "aligned data size must match expected layout",
         );
 
-        let storage_len = mapping_matrix_get_size(rows, cols)
-            .expect("matrix dimensions must fit serialized form");
-        let mut storage = vec![0u8; storage_len].into_boxed_slice();
+        mapping_matrix_get_size(rows, cols).expect("matrix dimensions must fit serialized form");
 
-        // Fill the header.
-        let header_ptr = storage.as_mut_ptr() as *mut MappingMatrixHeader;
-        // SAFETY: storage has enough space and is aligned for the header by construction.
-        unsafe {
-            *header_ptr = MappingMatrixHeader {
-                rows: rows as i32,
-                cols: cols as i32,
-                gain_db,
-            };
+        Self {
+            rows,
+            cols,
+            gain_db,
+            data: data[..cell_count].to_vec().into_boxed_slice(),
         }
-
-        // Copy the data payload.
-        let data_offset = align(mem::size_of::<MappingMatrixHeader>());
-        let dst_bytes = &mut storage[data_offset..data_offset + expected_bytes];
-        let src_bytes =
-            unsafe { slice::from_raw_parts(data.as_ptr() as *const u8, expected_bytes) };
-        dst_bytes.copy_from_slice(src_bytes);
-
-        Self { storage }
     }
 
     pub fn as_view(&self) -> MappingMatrixView<'_> {
-        mapping_matrix_view_from_bytes(&self.storage)
+        MappingMatrixView {
+            rows: self.rows,
+            cols: self.cols,
+            gain_db: self.gain_db,
+            data: &self.data,
+        }
     }
 }
 
@@ -128,42 +123,6 @@ fn align(value: usize) -> usize {
 
     let alignment = mem::align_of::<AlignProbe>();
     value.div_ceil(alignment) * alignment
-}
-
-fn mapping_matrix_view_from_bytes(bytes: &[u8]) -> MappingMatrixView<'_> {
-    let header_size = align(mem::size_of::<MappingMatrixHeader>());
-    assert!(
-        bytes.len() >= header_size,
-        "matrix buffer too small for header"
-    );
-
-    let header = unsafe { &*(bytes.as_ptr() as *const MappingMatrixHeader) };
-    assert!(
-        header.rows >= 0 && header.cols >= 0,
-        "matrix header contains negative dimensions"
-    );
-    let rows = header.rows as usize;
-    let cols = header.cols as usize;
-    let cell_count = matrix_cell_count(rows, cols);
-    let cell_bytes = cell_count
-        .checked_mul(mem::size_of::<i16>())
-        .expect("matrix data size overflow");
-
-    let data_start = header_size;
-    assert!(
-        bytes.len() >= data_start + cell_bytes,
-        "matrix buffer too small for payload"
-    );
-
-    let data =
-        unsafe { slice::from_raw_parts(bytes[data_start..].as_ptr() as *const i16, cell_count) };
-
-    MappingMatrixView {
-        rows,
-        cols,
-        gain_db: header.gain_db,
-        data,
-    }
 }
 
 pub fn mapping_matrix_get_size(rows: usize, cols: usize) -> Option<usize> {
