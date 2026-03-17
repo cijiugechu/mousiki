@@ -74,7 +74,6 @@ use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
 use alloc::boxed::Box;
 use core::cmp::{max, min};
 use core::f32::consts::FRAC_1_SQRT_2;
-use core::ptr::NonNull;
 #[cfg(not(feature = "fixed_point"))]
 use libm::acosf;
 use libm::{floor, floorf};
@@ -1457,40 +1456,77 @@ pub(crate) fn celt_encoder_init<'a>(
     }
     if alloc.static_mode.is_none() {
         let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
-        let boxed = Box::new(mode);
-        let ptr = Box::into_raw(boxed);
-        // SAFETY: `Box::into_raw` never returns null.
-        alloc.static_mode = Some(unsafe { NonNull::new_unchecked(ptr) });
+        alloc.static_mode = Some(Box::new(mode));
     }
-    // SAFETY: `static_mode` stores a pointer obtained from `Box::into_raw` and remains
-    // valid for the lifetime of `alloc`. The reference is coerced to match the borrow
-    // used by the encoder initialisation.
-    let mode_ref: &OpusCustomMode<'static> = unsafe {
-        alloc
-            .static_mode
-            .expect("static mode is stored for canonical init")
-            .as_ref()
+
+    if channels == 0 || channels > MAX_CHANNELS {
+        return Err(CeltEncoderInitError::InvalidChannelCount);
+    }
+
+    alloc.reset();
+    let mode_ref = alloc
+        .static_mode
+        .as_deref()
+        .expect("static mode is stored for canonical init");
+    let mut encoder = {
+        #[cfg(feature = "fixed_point")]
+        {
+            OpusCustomEncoder::new(
+                mode_ref,
+                channels,
+                channels,
+                None,
+                alloc.in_mem.as_mut_slice(),
+                alloc.prefilter_mem.as_mut_slice(),
+                alloc.fixed_in_mem.as_mut_slice(),
+                alloc.fixed_prefilter_mem.as_mut_slice(),
+                alloc.old_band_e.as_mut_slice(),
+                alloc.old_log_e.as_mut_slice(),
+                alloc.old_log_e2.as_mut_slice(),
+                alloc.energy_error.as_mut_slice(),
+                alloc.fixed_old_band_e.as_mut_slice(),
+                alloc.fixed_energy_error.as_mut_slice(),
+            )
+        }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            OpusCustomEncoder::new(
+                mode_ref,
+                channels,
+                channels,
+                None,
+                alloc.in_mem.as_mut_slice(),
+                alloc.prefilter_mem.as_mut_slice(),
+                alloc.old_band_e.as_mut_slice(),
+                alloc.old_log_e.as_mut_slice(),
+                alloc.old_log_e2.as_mut_slice(),
+                alloc.energy_error.as_mut_slice(),
+            )
+        }
     };
-    let mut encoder =
-        alloc.init_custom_encoder_with_arch(mode_ref, channels, channels, arch, rng_seed)?;
+    encoder.reset_runtime_state();
     encoder.upsample = upsample as i32;
+    encoder.start_band = 0;
+    encoder.end_band = mode_ref.effective_ebands as i32;
+    encoder.signalling = 1;
+    encoder.arch = arch;
+    encoder.constrained_vbr = true;
+    encoder.clip = true;
+    encoder.bitrate = OPUS_BITRATE_MAX;
+    encoder.use_vbr = false;
+    encoder.force_intra = false;
+    encoder.complexity = 5;
+    encoder.lsb_depth = 24;
+    encoder.loss_rate = 0;
+    encoder.lfe = false;
+    encoder.disable_prefilter = false;
+    encoder.disable_inv = false;
+    encoder.rng = rng_seed;
     Ok(encoder)
 }
 
 /// Mirrors `opus_custom_encoder_destroy()` which simply releases the encoder allocation.
 pub(crate) fn opus_custom_encoder_destroy(_alloc: CeltEncoderAlloc) {}
-
-impl Drop for CeltEncoderAlloc {
-    fn drop(&mut self) {
-        if let Some(ptr) = self.static_mode.take() {
-            // SAFETY: `static_mode` was initialised from `Box::into_raw` and is only
-            // reconstructed here when the allocation is dropped.
-            unsafe {
-                let _ = Box::from_raw(ptr.as_ptr());
-            }
-        }
-    }
-}
 
 /// Owning wrapper around [`OpusCustomEncoder`] and its backing allocation.
 ///
@@ -2312,7 +2348,7 @@ pub(crate) struct CeltEncoderAlloc {
     fixed_old_band_e: Vec<FixedCeltGlog>,
     #[cfg(feature = "fixed_point")]
     fixed_energy_error: Vec<FixedCeltGlog>,
-    static_mode: Option<NonNull<OpusCustomMode<'static>>>,
+    static_mode: Option<Box<OpusCustomMode<'static>>>,
 }
 
 impl CeltEncoderAlloc {
