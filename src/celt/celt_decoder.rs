@@ -34,6 +34,10 @@ use crate::celt::bands::{denormalise_bands_fixed, denormalise_bands_fixed_native
 use crate::celt::celt::comb_filter;
 #[cfg(feature = "fixed_point")]
 use crate::celt::celt::comb_filter_fixed;
+#[cfg(feature = "fixed_point")]
+use crate::celt::celt::comb_filter_fixed_in_place;
+#[cfg(not(feature = "fixed_point"))]
+use crate::celt::celt::comb_filter_in_place;
 use crate::celt::celt::{COMBFILTER_MINPERIOD, TF_SELECT_TABLE, init_caps, resampling_factor};
 use crate::celt::cpu_support::{OPUS_ARCHMASK, opus_select_arch};
 use crate::celt::entcode::{self, BITRES};
@@ -3871,17 +3875,10 @@ where
     let output_start = DECODE_BUFFER_SIZE - n;
     #[cfg(not(feature = "fixed_point"))]
     for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
-        let channel_len = channel_slice.len();
-        let channel_ptr = channel_slice.as_ptr();
-        let output = &mut channel_slice[output_start..output_start + n];
-        let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
-
-        let first_len = mode.short_mdct_size.min(output.len());
+        let first_len = mode.short_mdct_size.min(n);
         if first_len > 0 {
-            let (first_block, tail_block) = output.split_at_mut(first_len);
-            comb_filter(
-                first_block,
-                full_channel,
+            comb_filter_in_place(
+                channel_slice,
                 output_start,
                 first_len,
                 decoder.postfilter_period_old,
@@ -3895,13 +3892,11 @@ where
                 decoder.arch,
             );
 
-            if lm != 0 && !tail_block.is_empty() {
-                let tail_start = output_start + first_len;
-                comb_filter(
-                    tail_block,
-                    full_channel,
-                    tail_start,
-                    tail_block.len(),
+            if lm != 0 && first_len < n {
+                comb_filter_in_place(
+                    channel_slice,
+                    output_start + first_len,
+                    n - first_len,
                     decoder.postfilter_period,
                     postfilter_pitch,
                     decoder.postfilter_gain,
@@ -3949,17 +3944,11 @@ where
             }
         }
         for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
-            let channel_len = channel_slice.len();
-            let channel_ptr = channel_slice.as_ptr();
-            let output = &mut channel_slice[output_start..output_start + n];
-            let full_channel = unsafe { core::slice::from_raw_parts(channel_ptr, channel_len) };
-            let first_len = mode.short_mdct_size.min(output.len());
+            let first_len = mode.short_mdct_size.min(n);
 
             if first_len > 0 {
-                let (first_block, tail_block) = output.split_at_mut(first_len);
-                comb_filter_fixed(
-                    first_block,
-                    full_channel,
+                comb_filter_fixed_in_place(
+                    channel_slice,
                     output_start,
                     first_len,
                     decoder.postfilter_period_old,
@@ -3973,13 +3962,11 @@ where
                     decoder.arch,
                 );
 
-                if lm != 0 && !tail_block.is_empty() {
-                    let tail_start = output_start + first_len;
-                    comb_filter_fixed(
-                        tail_block,
-                        full_channel,
-                        tail_start,
-                        tail_block.len(),
+                if lm != 0 && first_len < n {
+                    comb_filter_fixed_in_place(
+                        channel_slice,
+                        output_start + first_len,
+                        n - first_len,
                         decoder.postfilter_period,
                         postfilter_pitch,
                         g1,
@@ -4679,6 +4666,7 @@ mod tests {
         opus_custom_decoder_get_size, opus_custom_decoder_init, prefilter_and_fold, prepare_frame,
         tf_decode, validate_celt_decoder, validate_channel_layout,
     };
+    use crate::celt::EcDec;
     #[cfg(feature = "fixed_point")]
     use crate::celt::bands::BandCodingState;
     #[cfg(feature = "fixed_point")]
@@ -4698,7 +4686,6 @@ mod tests {
     use crate::celt::float_cast::CELT_SIG_SCALE;
     #[cfg(feature = "fixed_point")]
     use crate::celt::float_cast::float2int16;
-    use crate::celt::EcDec;
     use crate::celt::modes::{opus_custom_mode_create, opus_custom_mode_find_static};
     use crate::celt::opus_select_arch;
     #[cfg(feature = "fixed_point")]

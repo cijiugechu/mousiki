@@ -124,7 +124,57 @@ pub(crate) fn comb_filter_const(
     }
 }
 
-/// Applies the variable tapset comb filter with optional overlap ramping.
+/// Applies the constant-coefficient comb filter directly within one channel.
+///
+/// The decoder post-filter reads predictor history and writes the filtered
+/// samples back into the same decode buffer. Exposing that shape directly keeps
+/// the aliasing semantics in one place and lets hot decode paths stay safe
+/// without rebuilding shared raw slices at each call site.
+pub(crate) fn comb_filter_const_in_place(
+    channel: &mut [OpusVal32],
+    output_start: usize,
+    n: usize,
+    t: usize,
+    g10: CeltCoef,
+    g11: CeltCoef,
+    g12: CeltCoef,
+) {
+    if n == 0 {
+        return;
+    }
+
+    assert!(t >= COMBFILTER_MINPERIOD, "comb filter period too small");
+    assert!(
+        output_start >= t + 2,
+        "channel does not provide enough history for the comb filter",
+    );
+    assert!(
+        channel.len() >= output_start + n,
+        "channel must provide output_start + n samples",
+    );
+
+    let mut x4 = channel[output_start - t - 2];
+    let mut x3 = channel[output_start - t - 1];
+    let mut x2 = channel[output_start - t];
+    let mut x1 = channel[output_start - t + 1];
+
+    for i in 0..n {
+        let current = channel[output_start + i];
+        let x0 = channel[output_start + i - t + 2];
+        let mut acc = mul_add_f32(g10, x2, current);
+        acc = mul_add_f32(g11, x1 + x3, acc);
+        acc = mul_add_f32(g12, x0 + x4, acc);
+        channel[output_start + i] = acc;
+
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
+    }
+}
+
+/// Applies the out-of-place variable tapset comb filter with optional overlap
+/// ramping.
 ///
 /// Mirrors the scalar implementation of `comb_filter()` from `celt/celt.c`.
 /// The caller must provide the `x` buffer with enough history before
@@ -259,6 +309,126 @@ pub(crate) fn comb_filter(
     }
 }
 
+/// Applies the variable tapset comb filter directly within one channel.
+///
+/// This is the in-place counterpart to [`comb_filter`]. It exists so decode
+/// paths that naturally update `decode_mem` in place can express that intent
+/// safely and keep the aliasing behaviour local to the filter implementation
+/// instead of reconstituting shared input/output slices with `unsafe`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn comb_filter_in_place(
+    channel: &mut [OpusVal32],
+    output_start: usize,
+    n: usize,
+    mut t0: i32,
+    mut t1: i32,
+    g0: OpusVal16,
+    g1: OpusVal16,
+    tapset0: usize,
+    tapset1: usize,
+    window: &[CeltCoef],
+    overlap: usize,
+    _arch: i32,
+) {
+    if n == 0 {
+        return;
+    }
+
+    assert!(
+        channel.len() >= output_start + n,
+        "channel must expose the requested output span",
+    );
+    assert!(tapset0 < TAPSET_GAINS.len(), "invalid tapset index");
+    assert!(tapset1 < TAPSET_GAINS.len(), "invalid tapset index");
+
+    if g0 == 0.0 && g1 == 0.0 {
+        return;
+    }
+
+    t0 = t0.max(COMBFILTER_MINPERIOD as i32);
+    t1 = t1.max(COMBFILTER_MINPERIOD as i32);
+    let t0 = t0 as usize;
+    let t1 = t1 as usize;
+
+    assert!(
+        output_start >= t0 + 2 && output_start >= t1 + 2,
+        "channel lacks the required comb filter history",
+    );
+
+    let tap0 = TAPSET_GAINS[tapset0];
+    let tap1 = TAPSET_GAINS[tapset1];
+    let g00 = g0 * tap0[0];
+    let g01 = g0 * tap0[1];
+    let g02 = g0 * tap0[2];
+    let g10 = g1 * tap1[0];
+    let g11 = g1 * tap1[1];
+    let g12 = g1 * tap1[2];
+
+    let mut x1 = channel[output_start - t1 + 1];
+    let mut x2 = channel[output_start - t1];
+    let mut x3 = channel[output_start - t1 - 1];
+    let mut x4 = channel[output_start - t1 - 2];
+
+    let mut overlap = overlap.min(n);
+    if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
+        overlap = 0;
+    } else if overlap > 0 {
+        assert!(
+            window.len() >= overlap,
+            "window must expose at least overlap samples",
+        );
+    }
+
+    for i in 0..overlap {
+        let x0 = channel[output_start + i - t1 + 2];
+        let f = window[i] * window[i];
+        let one_minus_f = 1.0 - f;
+
+        let current = channel[output_start + i];
+        let past0 = channel[output_start + i - t0];
+        let past1 = channel[output_start + i - t0 + 1];
+        let pastm1 = channel[output_start + i - t0 - 1];
+        let past2 = channel[output_start + i - t0 + 2];
+        let pastm2 = channel[output_start + i - t0 - 2];
+
+        let g00f = one_minus_f * g00;
+        let g01f = one_minus_f * g01;
+        let g02f = one_minus_f * g02;
+        let g10f = f * g10;
+        let g11f = f * g11;
+        let g12f = f * g12;
+
+        let mut acc = mul_add_f32(g00f, past0, current);
+        acc = mul_add_f32(g01f, past1 + pastm1, acc);
+        acc = mul_add_f32(g02f, past2 + pastm2, acc);
+        acc = mul_add_f32(g10f, x2, acc);
+        acc = mul_add_f32(g11f, x1 + x3, acc);
+        acc = mul_add_f32(g12f, x0 + x4, acc);
+        channel[output_start + i] = acc;
+
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
+    }
+
+    if g1 == 0.0 {
+        return;
+    }
+
+    if overlap < n {
+        comb_filter_const_in_place(
+            channel,
+            output_start + overlap,
+            n - overlap,
+            t1,
+            g10,
+            g11,
+            g12,
+        );
+    }
+}
+
 #[cfg(feature = "fixed_point")]
 fn saturate_sig(value: FixedCeltSig) -> FixedCeltSig {
     if value > SIG_SAT {
@@ -308,6 +478,55 @@ pub(crate) fn comb_filter_const_fixed(
         acc = add32(acc, mult16_32_q15(g12, add32(x0, x4)));
         acc = sub32(acc, 1);
         *sample = saturate_sig(acc);
+
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
+    }
+}
+
+/// Fixed-point constant-coefficient comb filter operating in place.
+///
+/// Keeping the fixed-point decoder path on a single mutable channel buffer
+/// matches the arithmetic structure of the C code while avoiding raw slice
+/// reconstruction in Rust call sites.
+#[cfg(feature = "fixed_point")]
+pub(crate) fn comb_filter_const_fixed_in_place(
+    channel: &mut [FixedCeltSig],
+    output_start: usize,
+    n: usize,
+    t: usize,
+    g10: FixedOpusVal16,
+    g11: FixedOpusVal16,
+    g12: FixedOpusVal16,
+) {
+    if n == 0 {
+        return;
+    }
+
+    assert!(t >= COMBFILTER_MINPERIOD, "comb filter period too small");
+    assert!(
+        output_start >= t + 2,
+        "channel does not provide enough history for the comb filter",
+    );
+    assert!(
+        channel.len() >= output_start + n,
+        "channel must provide output_start + n samples",
+    );
+
+    let mut x4 = channel[output_start - t - 2];
+    let mut x3 = channel[output_start - t - 1];
+    let mut x2 = channel[output_start - t];
+    let mut x1 = channel[output_start - t + 1];
+
+    for i in 0..n {
+        let x0 = channel[output_start + i - t + 2];
+        let mut acc = add32(channel[output_start + i], mult16_32_q15(g10, x2));
+        acc = add32(acc, mult16_32_q15(g11, add32(x1, x3)));
+        acc = add32(acc, mult16_32_q15(g12, add32(x0, x4)));
+        acc = sub32(acc, 1);
+        channel[output_start + i] = saturate_sig(acc);
 
         x4 = x3;
         x3 = x2;
@@ -446,6 +665,127 @@ pub(crate) fn comb_filter_fixed(
     }
 }
 
+/// Fixed-point variable tapset comb filter operating directly on one channel.
+///
+/// The decoder's fixed-point post-filter updates `decode_mem_fixed` in place.
+/// This helper captures that ownership shape explicitly so the hot path stays
+/// zero-copy and does not need aliasing `unsafe` at the call site.
+#[cfg(feature = "fixed_point")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn comb_filter_fixed_in_place(
+    channel: &mut [FixedCeltSig],
+    output_start: usize,
+    n: usize,
+    mut t0: i32,
+    mut t1: i32,
+    g0: FixedOpusVal16,
+    g1: FixedOpusVal16,
+    tapset0: usize,
+    tapset1: usize,
+    window: &[FixedCeltCoef],
+    overlap: usize,
+    _arch: i32,
+) {
+    if n == 0 {
+        return;
+    }
+
+    assert!(
+        channel.len() >= output_start + n,
+        "channel must expose the requested output span",
+    );
+    assert!(tapset0 < TAPSET_GAINS_FIXED.len(), "invalid tapset index");
+    assert!(tapset1 < TAPSET_GAINS_FIXED.len(), "invalid tapset index");
+
+    if g0 == 0 && g1 == 0 {
+        return;
+    }
+
+    t0 = t0.max(COMBFILTER_MINPERIOD as i32);
+    t1 = t1.max(COMBFILTER_MINPERIOD as i32);
+    let t0 = t0 as usize;
+    let t1 = t1 as usize;
+
+    assert!(
+        output_start >= t0 + 2 && output_start >= t1 + 2,
+        "channel lacks the required comb filter history",
+    );
+
+    let tap0 = TAPSET_GAINS_FIXED[tapset0];
+    let tap1 = TAPSET_GAINS_FIXED[tapset1];
+    let g00 = mult16_16_p15(g0, tap0[0]);
+    let g01 = mult16_16_p15(g0, tap0[1]);
+    let g02 = mult16_16_p15(g0, tap0[2]);
+    let g10 = mult16_16_p15(g1, tap1[0]);
+    let g11 = mult16_16_p15(g1, tap1[1]);
+    let g12 = mult16_16_p15(g1, tap1[2]);
+
+    let mut x1 = channel[output_start - t1 + 1];
+    let mut x2 = channel[output_start - t1];
+    let mut x3 = channel[output_start - t1 - 1];
+    let mut x4 = channel[output_start - t1 - 2];
+
+    let mut overlap = overlap.min(n);
+    if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
+        overlap = 0;
+    } else if overlap > 0 {
+        assert!(
+            window.len() >= overlap,
+            "window must expose at least overlap samples",
+        );
+    }
+
+    for i in 0..overlap {
+        let x0 = channel[output_start + i - t1 + 2];
+        let f = mult16_16_q15(window[i], window[i]);
+        let one_minus_f = (Q15_ONE as i32 - f as i32) as FixedOpusVal16;
+
+        let current = channel[output_start + i];
+        let past0 = channel[output_start + i - t0];
+        let past1 = channel[output_start + i - t0 + 1];
+        let pastm1 = channel[output_start + i - t0 - 1];
+        let past2 = channel[output_start + i - t0 + 2];
+        let pastm2 = channel[output_start + i - t0 - 2];
+
+        let g00f = mult16_16_q15(one_minus_f, g00);
+        let g01f = mult16_16_q15(one_minus_f, g01);
+        let g02f = mult16_16_q15(one_minus_f, g02);
+        let g10f = mult16_16_q15(f, g10);
+        let g11f = mult16_16_q15(f, g11);
+        let g12f = mult16_16_q15(f, g12);
+
+        let mut acc = add32(current, mult16_32_q15(g00f, past0));
+        acc = add32(acc, mult16_32_q15(g01f, add32(past1, pastm1)));
+        acc = add32(acc, mult16_32_q15(g02f, add32(past2, pastm2)));
+        acc = add32(acc, mult16_32_q15(g10f, x2));
+        acc = add32(acc, mult16_32_q15(g11f, add32(x1, x3)));
+        acc = add32(acc, mult16_32_q15(g12f, add32(x0, x4)));
+        acc = sub32(acc, 3);
+        channel[output_start + i] = saturate_sig(acc);
+
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
+    }
+
+    if g1 == 0 {
+        return;
+    }
+
+    if overlap < n {
+        comb_filter_const_fixed_in_place(
+            channel,
+            output_start + overlap,
+            n - overlap,
+            t1,
+            g10,
+            g11,
+            g12,
+        );
+    }
+}
+
 /// Fills `cap` with the per-band dynamic allocation caps for the provided mode.
 ///
 /// Mirrors the behaviour of `init_caps()` from `celt/celt.c`, scaling the
@@ -500,8 +840,8 @@ pub(crate) fn resampling_factor(rate: OpusInt32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        OPUS_VERSION_STRING, TF_SELECT_TABLE, comb_filter, comb_filter_const, init_caps,
-        opus_get_version_string, opus_strerror, resampling_factor,
+        OPUS_VERSION_STRING, TF_SELECT_TABLE, comb_filter, comb_filter_const, comb_filter_in_place,
+        init_caps, opus_get_version_string, opus_strerror, resampling_factor,
     };
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::{Q15_ONE, SIG_SAT};
@@ -787,6 +1127,65 @@ mod tests {
         assert_eq!(y, expected);
     }
 
+    #[test]
+    fn comb_filter_in_place_matches_reference() {
+        let t0 = 21;
+        let t1 = 27;
+        let history = (t1 as usize) + 3;
+        let n = 12;
+        let mut channel = Vec::new();
+        for i in 0..(history + n + 6) {
+            channel.push((i as f32 * 0.13).sin());
+        }
+
+        let original = channel.clone();
+        let g0 = 0.6;
+        let g1 = 0.35;
+        let tapset0 = 0;
+        let tapset1 = 2;
+        let window = [0.1, 0.4, 0.6, 0.7, 0.5, 0.2];
+        let overlap = window.len();
+
+        comb_filter_in_place(
+            &mut channel,
+            history,
+            n,
+            t0,
+            t1,
+            g0,
+            g1,
+            tapset0,
+            tapset1,
+            &window,
+            overlap,
+            0,
+        );
+
+        let expected = comb_filter_reference(
+            &original, history, n, t0, t1, g0, g1, tapset0, tapset1, &window, overlap,
+        );
+
+        assert_eq!(&channel[..history], &original[..history]);
+        for (actual, expected) in channel[history..history + n].iter().zip(expected.iter()) {
+            assert!(approx_eq(*actual, *expected));
+        }
+    }
+
+    #[test]
+    fn comb_filter_in_place_zero_gains_noop() {
+        let history = super::COMBFILTER_MINPERIOD + 5;
+        let n = 8;
+        let mut channel = Vec::new();
+        for i in 0..(history + n) {
+            channel.push(i as f32 * 0.5);
+        }
+
+        let original = channel.clone();
+        comb_filter_in_place(&mut channel, history, n, 10, 12, 0.0, 0.0, 0, 1, &[], 0, 0);
+
+        assert_eq!(channel, original);
+    }
+
     #[cfg(feature = "fixed_point")]
     fn comb_filter_const_fixed_reference(
         y: &mut [FixedCeltSig],
@@ -1043,5 +1442,99 @@ mod tests {
         );
         expected.copy_from_slice(&x[x_start..x_start + n]);
         assert_eq!(y, expected);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn comb_filter_fixed_in_place_matches_reference() {
+        let history = 40usize;
+        let n = 12usize;
+        let mut channel = vec![0i32; history + n + 8];
+        for (i, slot) in channel.iter_mut().enumerate() {
+            let base = (i as i32 % 11) - 5;
+            let bump = if i & 1 == 0 { -200 } else { 200 };
+            *slot = base * 900 + bump;
+        }
+        let original = channel.clone();
+        let x_start = history;
+
+        let window: [FixedCeltCoef; 5] = [
+            qconst16(0.05, 15),
+            qconst16(0.25, 15),
+            qconst16(0.5, 15),
+            qconst16(0.75, 15),
+            qconst16(0.9, 15),
+        ];
+        let g0 = qconst16(0.65, 15);
+        let g1 = qconst16(-0.35, 15);
+        super::comb_filter_fixed_in_place(
+            &mut channel,
+            x_start,
+            n,
+            18,
+            26,
+            g0,
+            g1,
+            0,
+            2,
+            &window,
+            window.len(),
+            0,
+        );
+
+        let mut expected = vec![0i32; n];
+        comb_filter_fixed_reference(
+            &mut expected,
+            &original,
+            x_start,
+            n,
+            18,
+            26,
+            g0,
+            g1,
+            0,
+            2,
+            &window,
+            window.len(),
+        );
+
+        assert_eq!(&channel[..x_start], &original[..x_start]);
+        assert_eq!(&channel[x_start..x_start + n], expected.as_slice());
+    }
+
+    #[cfg(feature = "fixed_point")]
+    #[test]
+    fn comb_filter_fixed_in_place_zero_gains_noop() {
+        let history = 40usize;
+        let n = 12usize;
+        let mut channel = vec![0i32; history + n + 8];
+        for (i, slot) in channel.iter_mut().enumerate() {
+            *slot = (i as i32 - 11) * 73;
+        }
+
+        let original = channel.clone();
+        let window: [FixedCeltCoef; 5] = [
+            qconst16(0.05, 15),
+            qconst16(0.25, 15),
+            qconst16(0.5, 15),
+            qconst16(0.75, 15),
+            qconst16(0.9, 15),
+        ];
+        super::comb_filter_fixed_in_place(
+            &mut channel,
+            history,
+            n,
+            15,
+            15,
+            0,
+            0,
+            0,
+            0,
+            &window,
+            window.len(),
+            0,
+        );
+
+        assert_eq!(channel, original);
     }
 }
