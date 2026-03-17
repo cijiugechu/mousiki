@@ -84,7 +84,8 @@ pub(crate) struct AllocationTable {
 struct StaticMode {
     sample_rate: OpusInt32,
     base_frame_size: usize,
-    storage: UnsafeCell<Option<OwnedOpusCustomMode>>,
+    owned_storage: UnsafeCell<Option<OwnedOpusCustomMode>>,
+    mode_storage: UnsafeCell<Option<OpusCustomMode<'static>>>,
     initialised: AtomicBool,
     lock: AtomicBool,
 }
@@ -95,7 +96,8 @@ impl StaticMode {
         Self {
             sample_rate,
             base_frame_size,
-            storage: UnsafeCell::new(None),
+            owned_storage: UnsafeCell::new(None),
+            mode_storage: UnsafeCell::new(None),
             initialised: AtomicBool::new(false),
             lock: AtomicBool::new(false),
         }
@@ -125,8 +127,8 @@ impl StaticMode {
         false
     }
 
-    /// Returns the lazily constructed mode matching this entry.
-    fn mode(&self) -> &OwnedOpusCustomMode {
+    /// Returns the lazily constructed borrowed mode matching this entry.
+    fn mode_ref(&'static self) -> &'static OpusCustomMode<'static> {
         if !self.initialised.load(Ordering::Acquire) {
             while self
                 .lock
@@ -140,7 +142,27 @@ impl StaticMode {
                 let value = build_custom_mode(self.sample_rate, self.base_frame_size)
                     .expect("static mode configuration is valid");
                 unsafe {
-                    *self.storage.get() = Some(value);
+                    *self.owned_storage.get() = Some(value);
+                    let owned = (*self.owned_storage.get())
+                        .as_ref()
+                        .expect("static mode backing storage initialised");
+                    *self.mode_storage.get() = Some(OpusCustomMode {
+                        sample_rate: owned.sample_rate,
+                        overlap: owned.overlap,
+                        num_ebands: owned.layout.num_bands,
+                        effective_ebands: owned.effective_ebands,
+                        pre_emphasis: owned.pre_emphasis,
+                        e_bands: &owned.layout.bands,
+                        max_lm: owned.max_lm,
+                        num_short_mdcts: owned.num_short_mdcts,
+                        short_mdct_size: owned.short_mdct_size,
+                        num_alloc_vectors: owned.num_alloc_vectors,
+                        alloc_vectors: &owned.alloc_vectors,
+                        log_n: &owned.log_n,
+                        window: &owned.window,
+                        mdct: owned.mdct.clone(),
+                        cache: owned.cache.clone(),
+                    });
                 }
                 self.initialised.store(true, Ordering::Release);
             }
@@ -149,10 +171,16 @@ impl StaticMode {
         }
 
         unsafe {
-            (*self.storage.get())
+            (*self.mode_storage.get())
                 .as_ref()
                 .expect("static mode initialised")
         }
+    }
+
+    /// Returns an owned borrowed-data view for callers that need to keep the
+    /// existing value-returning interface.
+    fn mode(&'static self) -> OpusCustomMode<'static> {
+        self.mode_ref().clone()
     }
 }
 
@@ -608,7 +636,22 @@ pub(crate) fn opus_custom_mode_find_static(
 ) -> Option<OpusCustomMode<'static>> {
     for entry in STATIC_MODES.iter() {
         if entry.matches(sample_rate, frame_size) {
-            return Some(entry.mode().mode());
+            return Some(entry.mode());
+        }
+    }
+
+    None
+}
+
+/// Returns a shared reference to the statically-defined CELT mode matching the
+/// reference lookup table.
+pub(crate) fn opus_custom_mode_find_static_ref(
+    sample_rate: OpusInt32,
+    frame_size: usize,
+) -> Option<&'static OpusCustomMode<'static>> {
+    for entry in STATIC_MODES.iter() {
+        if entry.matches(sample_rate, frame_size) {
+            return Some(entry.mode_ref());
         }
     }
 
@@ -631,7 +674,7 @@ mod tests {
     use super::{
         BAND_ALLOCATION, BITALLOC_SIZE, EBAND_5MS, ModeError, compute_allocation_table,
         compute_ebands, compute_log_band_widths, compute_mdct_window, compute_preemphasis,
-        opus_custom_mode_create, opus_custom_mode_find_static,
+        opus_custom_mode_create, opus_custom_mode_find_static, opus_custom_mode_find_static_ref,
     };
     use crate::celt::cwrs::log2_frac;
 
@@ -842,5 +885,12 @@ mod tests {
     fn static_mode_lookup_rejects_unknown_combinations() {
         assert!(opus_custom_mode_find_static(32_000, 960).is_none());
         assert!(opus_custom_mode_find_static(48_000, 1920).is_none());
+    }
+
+    #[test]
+    fn static_mode_ref_lookup_reuses_cached_mode() {
+        let first = opus_custom_mode_find_static_ref(48_000, 960).expect("static mode");
+        let second = opus_custom_mode_find_static_ref(48_000, 960).expect("static mode");
+        assert!(core::ptr::eq(first, second));
     }
 }

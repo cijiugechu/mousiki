@@ -68,7 +68,7 @@ use crate::celt::math_fixed::{
 use crate::celt::mdct::clt_mdct_backward;
 #[cfg(feature = "fixed_point")]
 use crate::celt::mdct_fixed::{FixedMdctLookup, clt_mdct_backward_fixed};
-use crate::celt::modes::opus_custom_mode_find_static;
+use crate::celt::modes::{opus_custom_mode_find_static, opus_custom_mode_find_static_ref};
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::pitch::{pitch_downsample, pitch_search};
 #[cfg(feature = "fixed_point")]
@@ -102,7 +102,6 @@ use crate::celt::{
     LpcNetPlcState, PLC_FRAME_SIZE, PLC_UPDATE_SAMPLES, PREEMPHASIS, SINC_FILTER, SINC_ORDER,
     update_plc_state,
 };
-use core::cell::UnsafeCell;
 #[cfg(not(feature = "fixed_point"))]
 use core::cmp::Ordering;
 use core::cmp::{max, min};
@@ -112,7 +111,6 @@ type PlcHandle<'a> = Option<&'a mut LpcNetPlcState>;
 #[cfg(not(feature = "deep_plc"))]
 type PlcHandle<'a> = ();
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 #[cfg(feature = "fixed_point")]
 fn glog_from_fixed(value: FixedCeltGlog) -> f32 {
@@ -1845,54 +1843,8 @@ fn celt_decode_lost_impl(
 /// call-sites can rely on early argument checking just like the C helpers.
 const MAX_CHANNELS: usize = 2;
 
-const MODE_UNINITIALISED: u8 = 0;
-const MODE_INITIALISING: u8 = 1;
-const MODE_READY: u8 = 2;
-
-struct CanonicalModeCell {
-    state: AtomicU8,
-    value: UnsafeCell<Option<OpusCustomMode<'static>>>,
-}
-
-unsafe impl Sync for CanonicalModeCell {}
-
-static CANONICAL_MODE: CanonicalModeCell = CanonicalModeCell {
-    state: AtomicU8::new(MODE_UNINITIALISED),
-    value: UnsafeCell::new(None),
-};
-
 pub(crate) fn canonical_mode() -> Option<&'static OpusCustomMode<'static>> {
-    loop {
-        match CANONICAL_MODE.state.load(AtomicOrdering::Acquire) {
-            MODE_READY => unsafe {
-                return (*CANONICAL_MODE.value.get()).as_ref();
-            },
-            MODE_UNINITIALISED => {
-                if CANONICAL_MODE
-                    .state
-                    .compare_exchange(
-                        MODE_UNINITIALISED,
-                        MODE_INITIALISING,
-                        AtomicOrdering::Acquire,
-                        AtomicOrdering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    let mode = opus_custom_mode_find_static(48_000, 960);
-                    unsafe {
-                        *CANONICAL_MODE.value.get() = mode;
-                    }
-                    CANONICAL_MODE
-                        .state
-                        .store(MODE_READY, AtomicOrdering::Release);
-                    unsafe {
-                        return (*CANONICAL_MODE.value.get()).as_ref();
-                    }
-                }
-            }
-            _ => core::hint::spin_loop(),
-        }
-    }
+    opus_custom_mode_find_static_ref(48_000, 960)
 }
 
 /// Cumulative distribution used to decode the global allocation trim.
