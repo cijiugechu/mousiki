@@ -50,6 +50,7 @@ manual_let_else = "warn"
 manual_midpoint = "warn"
 needless_pass_by_value = "warn"
 redundant_else = "warn"
+excessive_precision = "allow"
 
 [dev-dependencies]
 sha2 = "0.10"
