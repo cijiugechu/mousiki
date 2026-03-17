@@ -637,7 +637,7 @@ mod tests {
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_arch::{SIG_SHIFT, int16tosig};
     #[cfg(feature = "fixed_point")]
-    use crate::celt::fixed_ops::{mac16_16, mult16_16, pshr32, shl32};
+    use crate::celt::fixed_ops::{mac16_16, mult16_16, shl32};
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::{FixedOpusVal16, FixedOpusVal32};
     use crate::celt::types::{OpusVal16, OpusVal32};

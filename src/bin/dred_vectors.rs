@@ -43,6 +43,7 @@ pub mod celt_types {
 
 #[cfg(feature = "deep_plc")]
 mod celt {
+    #[allow(unused_imports)]
     pub use crate::celt_fft_bitrev_480 as fft_bitrev_480;
     pub use crate::celt_fft_twiddles_48000_960 as fft_twiddles_48000_960;
     pub use crate::celt_mini_kfft as mini_kfft;

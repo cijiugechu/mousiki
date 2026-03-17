@@ -3,6 +3,7 @@
 // Copied verbatim to preserve bit-exact parity with the C table.
 use crate::celt::types::OpusInt16;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FFT_BITREV_480: [OpusInt16; 480] = [
     0, 96, 192, 288, 384, 32, 128, 224, 320, 416, 64, 160, 256, 352, 448, 8, 104, 200, 296, 392,
     40, 136, 232, 328, 424, 72, 168, 264, 360, 456, 16, 112, 208, 304, 400, 48, 144, 240, 336, 432,

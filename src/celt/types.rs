@@ -8,7 +8,7 @@ use super::deep_plc::PLC_UPDATE_SAMPLES;
 #[cfg(feature = "fixed_point")]
 use super::fixed_arch::DB_SHIFT;
 #[cfg(feature = "fixed_point")]
-use super::fixed_ops::{qconst16, qconst16_clamped, qconst32};
+use super::fixed_ops::{qconst16_clamped, qconst32};
 #[cfg(feature = "fixed_point")]
 use super::mdct_fixed::FixedMdctLookup;
 use super::vq::SPREAD_NORMAL;

@@ -14,6 +14,7 @@ pub(crate) fn emit_stdout(args: fmt::Arguments<'_>) {
     let _ = stdout.write_all(b"\n");
 }
 
+#[allow(unused_macros)]
 macro_rules! trace_println {
     ($($arg:tt)*) => {{
         #[cfg(test)]
@@ -27,4 +28,5 @@ macro_rules! trace_println {
     }};
 }
 
+#[allow(unused_imports)]
 pub(crate) use trace_println;

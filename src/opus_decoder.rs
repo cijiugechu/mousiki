@@ -1884,24 +1884,15 @@ mod tests {
         OpusDecoderCtlRequest, opus_decode, opus_decode_float, opus_decode_native, opus_decode24,
         opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size, smooth_fade,
     };
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::{DecoderCtlRequest as CeltDecoderCtlRequest, EcDec, opus_custom_decoder_ctl};
     use crate::celt::{
         OpusRes, canonical_mode, celt_decoder_get_size, celt_exp2, opus_custom_decoder_create,
     };
     #[cfg(feature = "fixed_point")]
     use crate::packet::{
-        Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_mode,
-        opus_packet_get_nb_channels, opus_packet_get_samples_per_frame,
+        Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_nb_channels,
     };
     use crate::silk::dec_api::Decoder as SilkDecoder;
-    #[cfg(feature = "fixed_point")]
-    use crate::silk::dec_api::silk_decode;
-    #[cfg(feature = "fixed_point")]
-    use crate::silk::decode_frame::DecodeFlag;
     use crate::silk::get_decoder_size::get_decoder_size;
-    #[cfg(feature = "fixed_point")]
-    use crate::silk::range_decoder::SilkRangeDecoder;
     use alloc::vec;
     use alloc::vec::Vec;
     #[cfg(feature = "deep_plc_weights")]

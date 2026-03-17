@@ -3,14 +3,11 @@
 #[cfg(test)]
 extern crate std;
 
-#[cfg(test)]
-use crate::celt::fft_bitrev_480::FFT_BITREV_480;
 use crate::celt::fft_twiddles_48000_960::FFT_TWIDDLES_48000_960;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::f32::consts::PI;
 use core::f64::consts::PI as PI64;
-use libm::{cos, cosf, sin, sinf};
+use libm::{cos, sin};
 
 const C_FACTORS_480: [i32; 10] = [5, 96, 3, 32, 4, 8, 2, 4, 4, 1];
 
@@ -351,16 +348,12 @@ impl MiniKissFft {
 
             // Preserve C's sum order with explicit temporaries to avoid
             // optimizer re-association and FMA differences.
-            let term7_ya_r = scratch7.r * ya.r;
-            let term7_ya_i = scratch7.i * ya.r;
             let term8_yb_r = scratch8.r * yb.r;
             let term8_yb_i = scratch8.i * yb.r;
             let sum78_ya_yb_r = fused_mul_add(scratch7.r, ya.r, term8_yb_r);
             let sum78_ya_yb_i = fused_mul_add(scratch7.i, ya.r, term8_yb_i);
             let scratch5 = KissFftCpx::new(scratch0.r + sum78_ya_yb_r, scratch0.i + sum78_ya_yb_i);
 
-            let term10_yai_r = scratch10.i * ya.i;
-            let term10_yai_i = scratch10.r * ya.i;
             let term9_ybi_r = scratch9.i * yb.i;
             let term9_ybi_i = scratch9.r * yb.i;
             // Match C's fused order: fma(scratch10.*, ya.i, term9_ybi).
@@ -371,8 +364,6 @@ impl MiniKissFft {
             fout[m + u] = c_sub(scratch5, scratch6);
             fout[4 * m + u] = c_add(scratch5, scratch6);
 
-            let term7_yb_r = scratch7.r * yb.r;
-            let term7_yb_i = scratch7.i * yb.r;
             let term8_ya_r = scratch8.r * ya.r;
             let term8_ya_i = scratch8.i * ya.r;
             // Use fused add here to mirror C compiler contraction in the
@@ -383,8 +374,6 @@ impl MiniKissFft {
             let scratch11 = KissFftCpx::new(scratch0.r + sum78_yb_ya_r, scratch0.i + sum78_yb_ya_i);
 
             let term10_ybi_r = scratch10.i * yb.i;
-            let term10_ybi_i = scratch10.r * yb.i;
-            let term9_yai_r = scratch9.i * ya.i;
             let term9_yai_i = scratch9.r * ya.i;
             let sum9ya_10yb_r = fused_mul_add(scratch9.i, ya.i, -term10_ybi_r);
             let sum9ya_10yb_i = fused_mul_add(scratch10.r, yb.i, -term9_yai_i);
@@ -546,10 +535,8 @@ pub(crate) mod kfft_trace {
         let stages = factors.len() / 2;
         let mut fstride = vec![0usize; stages + 1];
         fstride[0] = 1;
-        let mut m = 0usize;
         for stage in 0..stages {
             let p = factors[2 * stage];
-            m = factors[2 * stage + 1];
             fstride[stage + 1] = fstride[stage] * p;
         }
 
@@ -975,8 +962,6 @@ pub(crate) mod kfft_trace {
                 let fout0 = c_add(scratch0, scratch78);
 
                 // Preserve C's sum order with explicit temporaries.
-                let term7_ya_r = scratch7.r * ya.r;
-                let term7_ya_i = scratch7.i * ya.r;
                 let term8_yb_r = scratch8.r * yb.r;
                 let term8_yb_i = scratch8.i * yb.r;
                 let sum78_ya_yb_r = super::fused_mul_add(scratch7.r, ya.r, term8_yb_r);
@@ -991,8 +976,6 @@ pub(crate) mod kfft_trace {
                 let out1 = c_sub(scratch5, scratch6);
                 let out4 = c_add(scratch5, scratch6);
 
-                let term7_yb_r = scratch7.r * yb.r;
-                let term7_yb_i = scratch7.i * yb.r;
                 let term8_ya_r = scratch8.r * ya.r;
                 let term8_ya_i = scratch8.i * ya.r;
                 let sum78_yb_ya_r = super::fused_mul_add(scratch7.r, yb.r, term8_ya_r);
@@ -1299,6 +1282,7 @@ fn floor_sqrt_usize(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::f32::consts::PI;
     use libm::{cosf, sinf};
 
     fn naive_fft(input: &[KissFftCpx]) -> Vec<KissFftCpx> {

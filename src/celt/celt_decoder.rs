@@ -40,9 +40,8 @@ use crate::celt::entcode::{self, BITRES};
 use crate::celt::entdec::EcDec;
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_arch::{
-    DB_SHIFT, Q15_ONE, SIG_SHIFT, float2res as float_to_fixed_res, int16tosig,
-    res2float as fixed_res_to_float, res2int16 as fixed_res_to_int16, sig2res as fixed_sig_to_res,
-    sig2word16,
+    DB_SHIFT, Q15_ONE, SIG_SHIFT, int16tosig, res2float as fixed_res_to_float,
+    sig2res as fixed_sig_to_res, sig2word16,
 };
 #[cfg(feature = "fixed_point")]
 use crate::celt::fixed_ops::{
@@ -3355,8 +3354,6 @@ where
             {
                 *dst = fixed_sig_to_float(src);
             }
-
-            return Ok(output_samples);
         }
 
         #[cfg(not(feature = "fixed_point"))]
@@ -3760,6 +3757,30 @@ where
                 }
             }
         } else {
+            let mut out_slices_fixed: Vec<&mut [FixedCeltSig]> = Vec::with_capacity(cc);
+            for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
+                out_slices_fixed.push(&mut channel_slice[start_idx..]);
+            }
+            celt_synthesis_fixed_native(
+                mode,
+                &spectrum_fixed,
+                &mut out_slices_fixed,
+                decoder.old_ebands_fixed,
+                start,
+                eff_end,
+                c,
+                cc,
+                is_transient,
+                lm,
+                downsample,
+                silence,
+                &decoder.fixed_mdct,
+                decoder.fixed_window.as_slice(),
+                decoder.overlap,
+            );
+        }
+        #[cfg(not(test))]
+        {
             let mut out_slices_fixed: Vec<&mut [FixedCeltSig]> = Vec::with_capacity(cc);
             for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
                 out_slices_fixed.push(&mut channel_slice[start_idx..]);
@@ -4266,7 +4287,6 @@ pub(crate) fn opus_custom_decode(
             &decoder.mode.pre_emphasis,
             &mut mem,
         );
-        return Ok(samples);
     }
 
     #[cfg(not(feature = "fixed_point"))]
@@ -4776,7 +4796,7 @@ mod tests {
     #[cfg(feature = "fixed_point")]
     use crate::celt::entcode::celt_sudiv;
     #[cfg(feature = "fixed_point")]
-    use crate::celt::fixed_arch::{DB_SHIFT, float2sig, sig2word16};
+    use crate::celt::fixed_arch::{DB_SHIFT, sig2word16};
     #[cfg(feature = "fixed_point")]
     use crate::celt::fixed_ops::{mult16_32_q15, qconst16_clamped, qconst32};
     use crate::celt::float_cast::CELT_SIG_SCALE;
@@ -4788,8 +4808,6 @@ mod tests {
     use crate::celt::rate::{bits2pulses, get_pulses};
     #[cfg(feature = "fixed_point")]
     use crate::celt::types::FixedCeltSig;
-    #[cfg(feature = "fixed_point")]
-    use crate::celt::types::OpusCustomEncoder;
     use crate::celt::types::{
         CeltGlog, CeltNorm, CeltSig, MdctLookup, OpusCustomMode, PulseCacheData,
     };
@@ -6293,11 +6311,11 @@ mod tests {
         let super::FramePreparation {
             mut range_decoder,
             tf_res,
-            fine_quant,
+            fine_quant: _,
             pulses,
             spread_decision,
             short_blocks,
-            intra_ener,
+            intra_ener: _,
             anti_collapse_rsv,
             intensity,
             dual_stereo,

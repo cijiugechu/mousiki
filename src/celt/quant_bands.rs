@@ -391,6 +391,8 @@ fn quant_coarse_energy_impl(
     assert_eq!(error.len(), channels * mode.num_ebands);
     assert!(end <= mode.num_ebands);
     assert!(prob_model.len() >= 2 * core::cmp::min(end, 21));
+    #[cfg(not(test))]
+    let _ = trace_frame_idx;
 
     let stride = mode.num_ebands;
     let mut prev = vec![0.0f32; channels];
@@ -411,6 +413,7 @@ fn quant_coarse_energy_impl(
         for (channel, prev_entry) in prev.iter_mut().enumerate().take(channels) {
             let idx = channel * stride + band;
             let x = e_bands[idx];
+            #[cfg(test)]
             let old_before = old_e_bands[idx];
             let old_e = old_e_bands[idx].max(-9.0);
             let f = x - coef * old_e - *prev_entry;
@@ -459,7 +462,9 @@ fn quant_coarse_energy_impl(
                 qi = -1;
             }
 
+            #[cfg(test)]
             let tell_before = tell as u32;
+            #[cfg(test)]
             let prev_before = *prev_entry;
             error[idx] = f - qi as f32;
             badness += (qi0 - qi).abs();
@@ -1021,12 +1026,16 @@ pub(crate) fn amp2_log2(
         .take(channels)
         .enumerate()
     {
+        #[cfg(not(test))]
+        let _ = channel;
         for ((band_idx, (energy, log_slot)), &mean) in band_e_chunk[..eff_end]
             .iter()
             .zip(band_log_chunk[..eff_end].iter_mut())
             .enumerate()
             .zip(E_MEANS[..eff_end].iter())
         {
+            #[cfg(not(test))]
+            let _ = band_idx;
             *log_slot = celt_log2(*energy) - mean;
             #[cfg(test)]
             if let Some(frame_idx) = trace_frame_idx {
@@ -1284,8 +1293,13 @@ pub(crate) fn quant_fine_energy(
             .take(channels)
             .enumerate()
         {
+            #[cfg(not(test))]
+            let _ = channel;
+            #[cfg(test)]
             let tell_before = crate::celt::entcode::ec_tell_frac(enc.ctx());
+            #[cfg(test)]
             let old_before = old_slice[band];
+            #[cfg(test)]
             let error_before = error_slice[band];
             let target = error_slice[band] + 0.5;
             let mut q2 = floorf(target * frac as f32) as i32;

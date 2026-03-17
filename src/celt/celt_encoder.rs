@@ -157,7 +157,7 @@ fn lm_offset_fixed(lm: usize) -> FixedCeltGlog {
 mod celt_alloc_trace {
     extern crate std;
 
-    use core::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use std::env;
     use std::sync::OnceLock;
 
@@ -2948,10 +2948,15 @@ fn dynalloc_analysis(
     let mut band_log_e3 = vec![0.0f32; nb_ebands];
 
     let mut max_depth = -31.9f32;
+    #[cfg(test)]
     let mut max_band = 0usize;
+    #[cfg(test)]
     let mut max_channel = 0usize;
+    #[cfg(test)]
     let mut max_band_log_e = 0.0f32;
+    #[cfg(test)]
     let mut max_noise_floor = 0.0f32;
+    #[cfg(test)]
     let mut max_depth_val = max_depth;
     let depth_shift = (9 - lsb_depth) as f32;
 
@@ -2971,11 +2976,14 @@ fn dynalloc_analysis(
             let depth = band_log_e[base + i] - noise_floor[i];
             if depth > max_depth {
                 max_depth = depth;
-                max_band = i;
-                max_channel = c;
-                max_band_log_e = band_log_e[base + i];
-                max_noise_floor = noise_floor[i];
-                max_depth_val = depth;
+                #[cfg(test)]
+                {
+                    max_band = i;
+                    max_channel = c;
+                    max_band_log_e = band_log_e[base + i];
+                    max_noise_floor = noise_floor[i];
+                    max_depth_val = depth;
+                }
             }
         }
     }
@@ -3729,7 +3737,7 @@ fn run_prefilter_fixed(
     tf_estimate: OpusVal16,
     nb_available_bytes: i32,
     analysis: &AnalysisInfo,
-    mut tone_freq: OpusVal16,
+    tone_freq: OpusVal16,
     toneishness: OpusVal32,
 ) -> bool {
     assert!(channels > 0, "run_prefilter requires at least one channel");
@@ -3779,7 +3787,7 @@ fn run_prefilter_fixed(
     }
 
     let mut pitch_index = COMBFILTER_MINPERIOD as i32;
-    let mut gain1: FixedOpusVal16 = 0;
+    let mut gain1: FixedOpusVal16;
 
     if enabled {
         let downsample_len = history_len + n;
@@ -3861,7 +3869,6 @@ fn run_prefilter_fixed(
             let mut tone_freq_fixed = qconst16(f64::from(tone_freq), 13);
             while tone_freq_fixed >= qconst16(0.39, 13) {
                 tone_freq_fixed >>= 1;
-                tone_freq *= 0.5;
             }
             if tone_freq_fixed > qconst16(0.006_148, 13) && tone_freq_fixed > 0 {
                 let candidate = 51472 / tone_freq_fixed as i32;
@@ -5093,8 +5100,11 @@ fn celt_encode_with_ec_inner<'a>(
     let mut qg = 0;
     let mut pitch_change = false;
     let prefilter_tapset = encoder.tapset_decision;
+    #[cfg(test)]
     let prefilter_period_old = encoder.prefilter_period;
+    #[cfg(test)]
     let prefilter_gain_old = encoder.prefilter_gain;
+    #[cfg(test)]
     let prefilter_tapset_old = encoder.prefilter_tapset;
     let enabled = ((encoder.lfe && nb_available_bytes > 3) || nb_available_bytes > 12 * c as i32)
         && !hybrid
@@ -6082,7 +6092,7 @@ fn celt_encode_with_ec_inner<'a>(
     let mut total_boost = 0i32;
     let mut tell_frac = ec_tell_frac(enc.ctx()) as i32;
     #[cfg(test)]
-    let mut tell_frac_pre_dynalloc = tell_frac;
+    let tell_frac_pre_dynalloc = tell_frac;
 
     for band in start..end as usize {
         let width = (c as i32 * (mode.e_bands[band + 1] - mode.e_bands[band]) as i32) << lm;
@@ -6187,7 +6197,6 @@ fn celt_encode_with_ec_inner<'a>(
         }
         enc.enc_icdf(alloc_trim as usize, &TRIM_ICDF, 7);
         tell_frac = ec_tell_frac(enc.ctx()) as i32;
-        tell = tell_frac;
         #[cfg(test)]
         if let Some(frame_idx) = trace_vbr_frame_idx {
             if celt_vbr_budget_trace::should_dump(frame_idx) {

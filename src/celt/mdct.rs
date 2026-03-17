@@ -107,13 +107,19 @@ fn pre_rotate_forward(
         let im = folded[2 * i + 1];
         let t0 = cos_part[i];
         let t1 = sin_part[i];
+        #[cfg(test)]
         let mul_re_t0 = re * t0;
+        #[cfg(test)]
         let mul_im_t1 = im * t1;
+        #[cfg(test)]
         let mul_im_t0 = im * t0;
+        #[cfg(test)]
         let mul_re_t1 = re * t1;
         let yr = fmaf(re, t0, -im * t1);
         let yi = fmaf(im, t0, re * t1);
+        #[cfg(test)]
         let yr_nf = mul_re_t0 - mul_im_t1;
+        #[cfg(test)]
         let yi_nf = mul_im_t0 + mul_re_t1;
         out[i] = KissFftCpx::new(yr, yi);
         #[cfg(test)]
@@ -320,10 +326,11 @@ pub fn clt_mdct_forward(
         }
     }
     #[cfg(test)]
-    let mut spectrum = pre_rotate_forward(&folded, twiddles, n4, trace_ctx.as_ref());
+    let spectrum = pre_rotate_forward(&folded, twiddles, n4, trace_ctx.as_ref());
     #[cfg(not(test))]
-    let mut spectrum = pre_rotate_forward(&folded, twiddles, n4, None);
+    let spectrum = pre_rotate_forward(&folded, twiddles, n4, None);
     // Match the C path: kiss_fft applies the 1/nfft scale before the butterfly stages.
+    #[cfg(test)]
     let scale = mdct_fft_scale(n4);
     #[cfg(test)]
     if let Some(ctx) = trace_ctx.as_ref() {

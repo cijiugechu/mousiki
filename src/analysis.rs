@@ -5,9 +5,6 @@
 #[cfg(test)]
 extern crate std;
 
-#[cfg(test)]
-use alloc::vec::Vec;
-
 use core::cmp::{max, min};
 use core::f32::consts::{LOG2_E, PI};
 
@@ -385,7 +382,7 @@ fn silk_resampler_down2_hp(s: &mut [f32; 3], out: &mut [f32], input: &[f32]) -> 
     let len2 = input.len() / 2;
     debug_assert!(out.len() >= len2);
     let mut hp_ener = 0.0f32;
-        for k in 0..len2 {
+    for k in 0..len2 {
         let in_even = input[2 * k];
         let y = in_even - s[0];
         let x = 0.607_437_1 * y;
@@ -406,7 +403,7 @@ fn silk_resampler_down2_hp(s: &mut [f32; 3], out: &mut [f32], input: &[f32]) -> 
         out32_hp += x;
         s[2] = -in_odd + x;
 
-                hp_ener = mul_add_f32(out32_hp, out32_hp, hp_ener);
+        hp_ener = mul_add_f32(out32_hp, out32_hp, hp_ener);
         out[k] = 0.5 * out32;
     }
 
@@ -635,7 +632,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         offset = 3 * offset / 2;
     }
 
-                    // Capture the accumulated high-pass energy for this analysis window (matches C).
+    // Capture the accumulated high-pass energy for this analysis window (matches C).
     let hp_ener = {
         let avail = min(len as usize, ANALYSIS_BUF_SIZE - tonal.mem_fill);
         let ret = downmix_and_resample(
@@ -701,7 +698,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     }
 
     let info = &mut tonal.info[info_slot];
-        opus_fft(&tonal.kfft, &input_fft, &mut output_fft);
+    opus_fft(&tonal.kfft, &input_fft, &mut output_fft);
     if output_fft[0].r.is_nan() {
         info.valid = false;
         return;
@@ -747,7 +744,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         let d_angle2 = angle2 - angle;
         let d2_angle2 = d_angle2 - d_angle;
 
-                let d2_angle_int = float2int(d2_angle);
+        let d2_angle_int = float2int(d2_angle);
         let mod1_pre = d2_angle - d2_angle_int as f32;
         noisiness[i] = mod1_pre.abs();
         let mut mod1 = mod1_pre;
@@ -768,21 +765,17 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         tonality[i] = 1.0 / denom - 0.015;
         tonality2[i] = 1.0 / denom2 - 0.015;
 
-                        tonal.angle[i] = angle2;
+        tonal.angle[i] = angle2;
         tonal.d_angle[i] = d_angle2;
         tonal.d2_angle[i] = mod2;
     }
 
     for i in 2..239 {
-        let tonality_pre = tonality[i];
-        let tonality2_prev = tonality2[i - 1];
-        let tonality2_cur = tonality2[i];
-        let tonality2_next = tonality2[i + 1];
         let tt = tonality2[i].min(tonality2[i - 1].max(tonality2[i + 1]));
         tonality[i] = 0.9 * tonality[i].max(tt - 0.1);
-            }
+    }
 
-        info.activity = 0.0;
+    info.activity = 0.0;
     if tonal.count == 0 {
         tonal.low_e.fill(1e10);
         tonal.high_e.fill(-1e10);
@@ -821,8 +814,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             ) * SCALE_ENER;
             let tonality_val = tonality[i];
             let tonality_clamped = tonality_val.max(0.0);
-            let t_e_term = bin_e * tonality_clamped;
-                        band_e += bin_e;
+            band_e += bin_e;
             t_e = accumulate_t_e(t_e, bin_e, tonality_clamped);
             let noisiness_term = 0.5 - noisiness[i];
             n_e = mul_add_f32(bin_e * 2.0, noisiness_term, n_e);
@@ -831,7 +823,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         tonal.e[tonal.e_count][b] = band_e;
         let band_noisiness = n_e / (1e-15 + band_e);
         frame_noisiness += band_noisiness;
-                frame_loudness += sqrtf(band_e + 1e-10);
+        frame_loudness += sqrtf(band_e + 1e-10);
         let band_e_eps = band_e + 1e-10;
         let log_e_val = log(band_e_eps as f64) as f32;
         log_e[b] = log_e_val;
@@ -866,11 +858,11 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             // Use f64 sqrt to mirror the C double path; keep the cast for parity.
             #[allow(clippy::cast_lossless)]
             let sqrt_e = sqrt(band_e as f64) as f32;
-                        l1 += sqrt_e;
+            l1 += sqrt_e;
             l2 += band_e;
         }
         let denom = stationarity_denom(l2);
-                let mut stationarity = (l1 / denom).min(0.99);
+        let mut stationarity = (l1 / denom).min(0.99);
         stationarity = stationarity * stationarity;
         stationarity *= stationarity;
         frame_stationarity += stationarity;
@@ -889,10 +881,9 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         let weighted = (weight as f64 * frame_tonality as f64) as f32;
         max_frame_tonality = max_frame_tonality.max(weighted);
         let slope_delta = (b as i32 - 8) as f32;
-        let slope_pre = slope;
         let slope_term = band_tonality[b] * slope_delta;
         slope = slope + slope_term;
-                tonal.prev_band_tonality[b] = band_tonality[b];
+        tonal.prev_band_tonality[b] = band_tonality[b];
     }
 
     leakage_from[0] = band_log2[0];
@@ -965,7 +956,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         } else {
             above_max_pitch += band_e;
         }
-                tonal.mean_e[b] = ((1.0 - alpha_e2) * tonal.mean_e[b]).max(band_e);
+        tonal.mean_e[b] = ((1.0 - alpha_e2) * tonal.mean_e[b]).max(band_e);
         let em = tonal.mean_e[b].max(band_e);
         if band_e * 1e9 > max_e
             && (em > 3.0 * noise_floor * (band_end - band_start) as f32
@@ -993,7 +984,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
             30.0
         };
         above_max_pitch += e_high;
-                tonal.mean_e[NB_TBANDS] = ((1.0 - alpha_e2) * tonal.mean_e[NB_TBANDS]).max(e_high);
+        tonal.mean_e[NB_TBANDS] = ((1.0 - alpha_e2) * tonal.mean_e[NB_TBANDS]).max(e_high);
         let em = tonal.mean_e[NB_TBANDS].max(e_high);
         if em > 3.0 * noise_ratio * noise_floor * 160.0
             || e_high > noise_ratio * noise_floor * 160.0
@@ -1013,7 +1004,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     } else {
         1.0
     };
-        if bandwidth == 20 && is_masked[NB_TBANDS] {
+    if bandwidth == 20 && is_masked[NB_TBANDS] {
         bandwidth -= 2;
     } else if bandwidth > 0 && bandwidth <= NB_TBANDS && is_masked[bandwidth - 1] {
         bandwidth -= 1;
@@ -1054,7 +1045,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     frame_tonality = max_frame_tonality / (NB_TBANDS - NB_TONAL_SKIP_BANDS) as f32;
     let prev_term = tonal.prev_tonality * 0.8;
     frame_tonality = frame_tonality.max(prev_term);
-        tonal.prev_tonality = frame_tonality;
+    tonal.prev_tonality = frame_tonality;
 
     slope /= 64.0;
     info.tonality_slope = slope;
@@ -1118,13 +1109,11 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
     features[23] = info.tonality_slope + 0.069_216;
     features[24] = tonal.low_e_count - 0.067_930;
 
-    #[cfg(test)]
-    let mut rnn_pre: Vec<f32> = Vec::new();
-        analysis_compute_dense(&LAYER0, &mut layer_out, &features);
-            analysis_compute_gru(&LAYER1, &mut tonal.rnn_state, &layer_out);
-        let mut frame_probs = [0.0f32; 2];
+    analysis_compute_dense(&LAYER0, &mut layer_out, &features);
+    analysis_compute_gru(&LAYER1, &mut tonal.rnn_state, &layer_out);
+    let mut frame_probs = [0.0f32; 2];
     analysis_compute_dense(&LAYER2, &mut frame_probs, &tonal.rnn_state);
-        info.activity_probability = frame_probs[1];
+    info.activity_probability = frame_probs[1];
     info.music_prob = frame_probs[0];
     info.bandwidth = bandwidth as i32;
     tonal.prev_bandwidth = bandwidth as i32;
