@@ -123,6 +123,7 @@ if (NOT OPUS_CTESTS_FIXED_POINT)
     add_executable(analysis_fft_trace analysis_fft_trace.c)
     add_executable(analysis_fft_stage_trace analysis_fft_stage_trace.c)
   endif()
+  add_executable(opus_codec_bench codec_bench.c)
   add_executable(opus_packet_encode opus_packet_encode.c)
   add_executable(opus_packet_decode opus_packet_decode.c)
 endif()
@@ -256,6 +257,11 @@ if (NOT OPUS_CTESTS_FIXED_POINT)
       "${OPUS_ROOT}/include"
   )
 
+  target_include_directories(opus_codec_bench
+    PRIVATE
+      "${OPUS_ROOT}/include"
+  )
+
   target_include_directories(opus_packet_decode
     PRIVATE
       "${OPUS_ROOT}/include"
@@ -288,6 +294,7 @@ else()
     target_link_libraries(analysis_fft_trace PRIVATE opus)
     target_link_libraries(analysis_fft_stage_trace PRIVATE opus)
   endif()
+  target_link_libraries(opus_codec_bench PRIVATE opus)
   target_link_libraries(opus_packet_encode PRIVATE opus)
   target_link_libraries(opus_packet_decode PRIVATE opus)
 endif()
@@ -319,6 +326,7 @@ if (NOT OPUS_CTESTS_FIXED_POINT)
     target_compile_definitions(analysis_fft_trace PRIVATE OPUS_BUILD)
     target_compile_definitions(analysis_fft_stage_trace PRIVATE OPUS_BUILD)
   endif()
+  target_compile_definitions(opus_codec_bench PRIVATE OPUS_BUILD)
   target_compile_definitions(opus_packet_encode PRIVATE OPUS_BUILD)
   target_compile_definitions(opus_packet_decode PRIVATE OPUS_BUILD)
 endif()

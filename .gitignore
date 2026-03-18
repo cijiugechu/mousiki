@@ -9,7 +9,9 @@ Cargo.lock
 opus_decode_fuzzer
 .DS_Store
 ctests/build/
+ctests/build-bench/
 ctests/build-custom/
 ctests/build-nointr/
 ctests/build-ffp*/
+target/codec-bench/
 testdata/dred_vectors/
