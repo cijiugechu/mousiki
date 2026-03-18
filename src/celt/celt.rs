@@ -173,6 +173,25 @@ pub(crate) fn comb_filter_const_in_place(
     }
 }
 
+#[inline]
+fn slices_overlap<T>(lhs: &[T], rhs: &[T]) -> bool {
+    if lhs.is_empty() || rhs.is_empty() {
+        return false;
+    }
+
+    let elem_size = core::mem::size_of::<T>();
+    if elem_size == 0 {
+        return false;
+    }
+
+    let lhs_start = lhs.as_ptr() as usize;
+    let rhs_start = rhs.as_ptr() as usize;
+    let lhs_end = lhs_start + lhs.len() * elem_size;
+    let rhs_end = rhs_start + rhs.len() * elem_size;
+
+    lhs_start < rhs_end && rhs_start < lhs_end
+}
+
 /// Applies the out-of-place variable tapset comb filter with optional overlap
 /// ramping.
 ///
@@ -180,6 +199,8 @@ pub(crate) fn comb_filter_const_in_place(
 /// The caller must provide the `x` buffer with enough history before
 /// `x_start` (at least `max(T0, T1) + 2` samples) in addition to the `n`
 /// samples of the current frame. `y` must provide room for `n` output samples.
+/// Callers that need same-buffer updates must use [`comb_filter_in_place`];
+/// this out-of-place variant assumes its input and output spans do not overlap.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn comb_filter(
     y: &mut [OpusVal32],
@@ -208,19 +229,11 @@ pub(crate) fn comb_filter(
     if g0 == 0.0 && g1 == 0.0 {
         let src = &x[x_start..x_start + n];
         let dst = &mut y[..n];
-        let elem_size = core::mem::size_of::<OpusVal32>();
-        let src_ptr = src.as_ptr() as usize;
-        let dst_ptr = dst.as_ptr() as usize;
-        let byte_len = n * elem_size;
-        let overlaps = src_ptr < dst_ptr + byte_len && dst_ptr < src_ptr + byte_len;
-        if overlaps {
-            // Allow overlap like memmove; comb_filter is often in-place.
-            unsafe {
-                core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), n);
-            }
-        } else {
-            dst.copy_from_slice(src);
-        }
+        debug_assert!(
+            !slices_overlap(src, dst),
+            "comb_filter requires distinct input/output slices; use comb_filter_in_place for overlap",
+        );
+        dst.copy_from_slice(src);
         return;
     }
 
@@ -295,11 +308,11 @@ pub(crate) fn comb_filter(
         if overlap < n {
             let src = &x[x_start + overlap..x_start + n];
             let dst = &mut y[overlap..n];
-            let len = n - overlap;
-            // Use memmove semantics to allow overlap between src and dst.
-            unsafe {
-                core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), len);
-            }
+            debug_assert!(
+                !slices_overlap(src, dst),
+                "comb_filter requires distinct input/output slices; use comb_filter_in_place for overlap",
+            );
+            dst.copy_from_slice(src);
         }
         return;
     }
@@ -536,6 +549,9 @@ pub(crate) fn comb_filter_const_fixed_in_place(
 }
 
 /// Fixed-point variable tapset comb filter with optional overlap ramping.
+///
+/// Like [`comb_filter`], this variant is strictly out-of-place. Callers that
+/// need same-buffer updates must use [`comb_filter_fixed_in_place`].
 #[cfg(feature = "fixed_point")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn comb_filter_fixed(
@@ -565,18 +581,11 @@ pub(crate) fn comb_filter_fixed(
     if g0 == 0 && g1 == 0 {
         let src = &x[x_start..x_start + n];
         let dst = &mut y[..n];
-        let elem_size = core::mem::size_of::<FixedCeltSig>();
-        let src_ptr = src.as_ptr() as usize;
-        let dst_ptr = dst.as_ptr() as usize;
-        let byte_len = n * elem_size;
-        let overlaps = src_ptr < dst_ptr + byte_len && dst_ptr < src_ptr + byte_len;
-        if overlaps {
-            unsafe {
-                core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), n);
-            }
-        } else {
-            dst.copy_from_slice(src);
-        }
+        debug_assert!(
+            !slices_overlap(src, dst),
+            "comb_filter_fixed requires distinct input/output slices; use comb_filter_fixed_in_place for overlap",
+        );
+        dst.copy_from_slice(src);
         return;
     }
 
@@ -652,10 +661,11 @@ pub(crate) fn comb_filter_fixed(
         if overlap < n {
             let src = &x[x_start + overlap..x_start + n];
             let dst = &mut y[overlap..n];
-            let len = n - overlap;
-            unsafe {
-                core::ptr::copy(src.as_ptr(), dst.as_mut_ptr(), len);
-            }
+            debug_assert!(
+                !slices_overlap(src, dst),
+                "comb_filter_fixed requires distinct input/output slices; use comb_filter_fixed_in_place for overlap",
+            );
+            dst.copy_from_slice(src);
         }
         return;
     }
