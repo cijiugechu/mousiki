@@ -17,7 +17,7 @@ use core::fmt::Write as _;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(any(feature = "silk_tic_toc", feature = "silk_debug"))]
-use core::cell::UnsafeCell;
+use spin::Mutex;
 
 pub const SILK_DEBUG: bool = cfg!(feature = "silk_debug");
 pub const SILK_TIC_TOC: bool = cfg!(feature = "silk_tic_toc");
@@ -30,27 +30,6 @@ type TimerNow = fn() -> u64;
 
 const fn default_timer_now() -> u64 {
     0
-}
-
-#[cfg(any(feature = "silk_tic_toc", feature = "silk_debug"))]
-struct StaticMut<T> {
-    inner: UnsafeCell<T>,
-}
-
-#[cfg(any(feature = "silk_tic_toc", feature = "silk_debug"))]
-unsafe impl<T> Sync for StaticMut<T> {}
-
-#[cfg(any(feature = "silk_tic_toc", feature = "silk_debug"))]
-impl<T> StaticMut<T> {
-    const fn new(value: T) -> Self {
-        Self {
-            inner: UnsafeCell::new(value),
-        }
-    }
-
-    unsafe fn get(&self) -> *mut T {
-        self.inner.get()
-    }
 }
 
 /// Aggregated timer statistics.
@@ -160,19 +139,17 @@ impl TimerState {
 }
 
 #[cfg(feature = "silk_tic_toc")]
-static TIMER_STATE: StaticMut<TimerState> = StaticMut::new(TimerState::new());
+static TIMER_STATE: Mutex<TimerState> = Mutex::new(TimerState::new());
 
 #[cfg(feature = "silk_tic_toc")]
-static TIMER_SOURCE: StaticMut<TimerNow> = StaticMut::new(default_timer_now);
+static TIMER_SOURCE: Mutex<TimerNow> = Mutex::new(default_timer_now);
 
 #[cfg(feature = "silk_tic_toc")]
 pub fn set_timer_source(source: TimerNow) -> TimerNow {
-    unsafe {
-        let ptr = TIMER_SOURCE.get();
-        let previous = *ptr;
-        *ptr = source;
-        previous
-    }
+    let mut timer_source = TIMER_SOURCE.lock();
+    let previous = *timer_source;
+    *timer_source = source;
+    previous
 }
 
 #[cfg(not(feature = "silk_tic_toc"))]
@@ -182,18 +159,14 @@ pub fn set_timer_source(_source: TimerNow) -> TimerNow {
 
 #[cfg(feature = "silk_tic_toc")]
 fn now() -> u64 {
-    unsafe {
-        let ptr = TIMER_SOURCE.get();
-        (*ptr)()
-    }
+    let timer_source = TIMER_SOURCE.lock();
+    (*timer_source)()
 }
 
 #[cfg(feature = "silk_tic_toc")]
 pub fn reset_timers() {
-    unsafe {
-        (*TIMER_STATE.get()).reset();
-        *TIMER_SOURCE.get() = default_timer_now;
-    }
+    TIMER_STATE.lock().reset();
+    *TIMER_SOURCE.lock() = default_timer_now;
 }
 
 #[cfg(not(feature = "silk_tic_toc"))]
@@ -201,13 +174,12 @@ pub fn reset_timers() {}
 
 #[cfg(feature = "silk_tic_toc")]
 pub fn tic(tag: &str) {
-    unsafe {
-        let state = &mut *TIMER_STATE.get();
-        let id = state.get_or_insert(tag);
-        state.depth[id] = state.depth_ctr;
-        state.start[id] = now();
-        state.depth_ctr += 1;
-    }
+    let start = now();
+    let mut state = TIMER_STATE.lock();
+    let id = state.get_or_insert(tag);
+    state.depth[id] = state.depth_ctr;
+    state.start[id] = start;
+    state.depth_ctr += 1;
 }
 
 #[cfg(not(feature = "silk_tic_toc"))]
@@ -215,22 +187,21 @@ pub fn tic(_tag: &str) {}
 
 #[cfg(feature = "silk_tic_toc")]
 pub fn toc(tag: &str) {
-    unsafe {
-        let state = &mut *TIMER_STATE.get();
-        let Some(id) = state.find(tag) else {
-            state.depth_ctr = state.depth_ctr.saturating_sub(1);
-            return;
-        };
-
-        let elapsed = now().saturating_sub(state.start[id]);
-        if elapsed < 100_000_000 {
-            state.count[id] = state.count[id].saturating_add(1);
-            state.sum[id] = state.sum[id].saturating_add(u128::from(elapsed));
-            state.max[id] = state.max[id].max(elapsed);
-            state.min[id] = state.min[id].min(elapsed);
-        }
+    let end = now();
+    let mut state = TIMER_STATE.lock();
+    let Some(id) = state.find(tag) else {
         state.depth_ctr = state.depth_ctr.saturating_sub(1);
+        return;
+    };
+
+    let elapsed = end.saturating_sub(state.start[id]);
+    if elapsed < 100_000_000 {
+        state.count[id] = state.count[id].saturating_add(1);
+        state.sum[id] = state.sum[id].saturating_add(u128::from(elapsed));
+        state.max[id] = state.max[id].max(elapsed);
+        state.min[id] = state.min[id].min(elapsed);
     }
+    state.depth_ctr = state.depth_ctr.saturating_sub(1);
 }
 
 #[cfg(not(feature = "silk_tic_toc"))]
@@ -238,38 +209,36 @@ pub fn toc(_tag: &str) {}
 
 #[cfg(feature = "silk_tic_toc")]
 pub fn timer_snapshot() -> Option<Vec<TimerReport>> {
-    unsafe {
-        let state = &*TIMER_STATE.get();
-        if state.n_timers == 0 {
-            return None;
+    let state = TIMER_STATE.lock();
+    if state.n_timers == 0 {
+        return None;
+    }
+
+    let mut reports = Vec::with_capacity(state.n_timers);
+    for idx in 0..state.n_timers {
+        let count = state.count[idx];
+        if count == 0 {
+            continue;
         }
 
-        let mut reports = Vec::with_capacity(state.n_timers);
-        for idx in 0..state.n_timers {
-            let count = state.count[idx];
-            if count == 0 {
-                continue;
-            }
+        reports.push(TimerReport {
+            tag: state.tag_to_string(idx),
+            count,
+            min: if state.min[idx] == u64::MAX {
+                0
+            } else {
+                state.min[idx]
+            },
+            max: state.max[idx],
+            sum: state.sum[idx],
+            depth: state.depth[idx],
+        });
+    }
 
-            reports.push(TimerReport {
-                tag: state.tag_to_string(idx),
-                count,
-                min: if state.min[idx] == u64::MAX {
-                    0
-                } else {
-                    state.min[idx]
-                },
-                max: state.max[idx],
-                sum: state.sum[idx],
-                depth: state.depth[idx],
-            });
-        }
-
-        if reports.is_empty() {
-            None
-        } else {
-            Some(reports)
-        }
+    if reports.is_empty() {
+        None
+    } else {
+        Some(reports)
     }
 }
 
@@ -344,37 +313,36 @@ impl DebugStore {
 }
 
 #[cfg(feature = "silk_debug")]
-static DEBUG_STORE: StaticMut<Option<DebugStore>> = StaticMut::new(None);
+static DEBUG_STORE: Mutex<Option<DebugStore>> = Mutex::new(None);
 
 #[cfg(feature = "silk_debug")]
-fn debug_store_mut() -> &'static mut DebugStore {
-    unsafe {
-        let ptr = DEBUG_STORE.get();
-        if (*ptr).is_none() {
-            *ptr = Some(DebugStore::new());
-        }
-        (*ptr).as_mut().unwrap()
+fn with_debug_store<R>(f: impl FnOnce(&mut DebugStore) -> R) -> R {
+    let mut store = DEBUG_STORE.lock();
+    if store.is_none() {
+        *store = Some(DebugStore::new());
     }
+    f(store.as_mut().expect("debug store must be initialised"))
 }
 
 #[cfg(feature = "silk_debug")]
 pub fn debug_store_data(file_name: &str, payload: &[u8]) {
-    let store = debug_store_mut();
-    if store.entries.len() >= NUM_STORES_MAX {
-        return;
-    }
+    with_debug_store(|store| {
+        if store.entries.len() >= NUM_STORES_MAX {
+            return;
+        }
 
-    let entry = store
-        .entries
-        .iter_mut()
-        .find(|entry| entry.name == file_name);
-    match entry {
-        Some(existing) => existing.data.extend_from_slice(payload),
-        None => store.entries.push(StoredData {
-            name: file_name.into(),
-            data: payload.to_vec(),
-        }),
-    }
+        let entry = store
+            .entries
+            .iter_mut()
+            .find(|entry| entry.name == file_name);
+        match entry {
+            Some(existing) => existing.data.extend_from_slice(payload),
+            None => store.entries.push(StoredData {
+                name: file_name.into(),
+                data: payload.to_vec(),
+            }),
+        }
+    });
 }
 
 #[cfg(not(feature = "silk_debug"))]
@@ -382,7 +350,7 @@ pub fn debug_store_data(_file_name: &str, _payload: &[u8]) {}
 
 #[cfg(feature = "silk_debug")]
 pub fn debug_store_snapshot() -> Vec<StoredData> {
-    debug_store_mut().entries.clone()
+    with_debug_store(|store| store.entries.clone())
 }
 
 #[cfg(not(feature = "silk_debug"))]
@@ -392,7 +360,7 @@ pub fn debug_store_snapshot() -> Vec<StoredData> {
 
 #[cfg(feature = "silk_debug")]
 pub fn debug_store_reset() {
-    if let Some(store) = unsafe { (*DEBUG_STORE.get()).as_mut() } {
+    if let Some(store) = DEBUG_STORE.lock().as_mut() {
         store.entries.clear();
     }
 }
@@ -402,7 +370,7 @@ pub fn debug_store_reset() {}
 
 #[cfg(feature = "silk_debug")]
 pub fn debug_store_count() -> usize {
-    debug_store_mut().entries.len()
+    with_debug_store(|store| store.entries.len())
 }
 
 #[cfg(not(feature = "silk_debug"))]
@@ -413,11 +381,12 @@ pub fn debug_store_count() -> usize {
 #[cfg(all(test, feature = "silk_tic_toc"))]
 mod timer_tests {
     use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
 
-    static mut NOW: u64 = 0;
+    static NOW: AtomicU64 = AtomicU64::new(0);
 
     fn fake_now() -> u64 {
-        unsafe { NOW }
+        NOW.load(Ordering::Relaxed)
     }
 
     #[test]
@@ -425,14 +394,14 @@ mod timer_tests {
         reset_timers();
         set_timer_source(fake_now);
 
-        unsafe { NOW = 0 };
+        NOW.store(0, Ordering::Relaxed);
         tic("LPC");
-        unsafe { NOW = 125 };
+        NOW.store(125, Ordering::Relaxed);
         toc("LPC");
 
-        unsafe { NOW = 200 };
+        NOW.store(200, Ordering::Relaxed);
         tic("LPC");
-        unsafe { NOW = 340 };
+        NOW.store(340, Ordering::Relaxed);
         toc("LPC");
 
         let reports = timer_snapshot().expect("Timers should produce data");
