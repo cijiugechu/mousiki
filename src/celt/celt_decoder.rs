@@ -12,7 +12,6 @@
 //! packet loss concealment, and post-filter plumbing still live in the C
 //! sources and will be translated in follow-up patches.
 
-use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 #[cfg(test)]
@@ -182,10 +181,10 @@ fn sync_from_fixed_primary_to_float_cache(decoder: &mut OpusCustomDecoder<'_>) {
     {
         *dst = fixed_sig_to_float(src);
     }
-    sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
-    sync_loge_from_fixed(decoder.old_log_e, decoder.old_log_e_fixed);
-    sync_loge_from_fixed(decoder.old_log_e2, decoder.old_log_e2_fixed);
-    sync_loge_from_fixed(decoder.background_log_e, decoder.background_log_e_fixed);
+    sync_loge_from_fixed(&mut decoder.old_ebands, &decoder.old_ebands_fixed);
+    sync_loge_from_fixed(&mut decoder.old_log_e, &decoder.old_log_e_fixed);
+    sync_loge_from_fixed(&mut decoder.old_log_e2, &decoder.old_log_e2_fixed);
+    sync_loge_from_fixed(&mut decoder.background_log_e, &decoder.background_log_e_fixed);
 }
 
 #[cfg(feature = "fixed_point")]
@@ -217,10 +216,10 @@ fn sync_from_float_cache_to_fixed_primary(decoder: &mut OpusCustomDecoder<'_>) {
     {
         *dst = celt_sig_to_fixed(src);
     }
-    sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
-    sync_loge_to_fixed(decoder.old_log_e_fixed, decoder.old_log_e);
-    sync_loge_to_fixed(decoder.old_log_e2_fixed, decoder.old_log_e2);
-    sync_loge_to_fixed(decoder.background_log_e_fixed, decoder.background_log_e);
+    sync_loge_to_fixed(&mut decoder.old_ebands_fixed, &decoder.old_ebands);
+    sync_loge_to_fixed(&mut decoder.old_log_e_fixed, &decoder.old_log_e);
+    sync_loge_to_fixed(&mut decoder.old_log_e2_fixed, &decoder.old_log_e2);
+    sync_loge_to_fixed(&mut decoder.background_log_e_fixed, &decoder.background_log_e);
 }
 
 #[cfg(feature = "fixed_point")]
@@ -2376,18 +2375,14 @@ pub(crate) fn celt_decoder_get_size(channels: usize) -> Option<usize> {
         .and_then(|mode| opus_custom_decoder_get_size(&mode, channels))
 }
 
-/// Owning wrapper around [`OpusCustomDecoder`] and its backing allocation.
+/// Owning wrapper around [`OpusCustomDecoder`].
 ///
-/// The C implementation returns an opaque pointer whose trailing buffers live in
-/// the same allocation as the primary decoder fields.  In Rust we model this by
-/// keeping the [`CeltDecoderAlloc`] inside a [`Box`] and storing the decoder
-/// view alongside it.  This ensures the borrowed slices remain valid for the
-/// lifetime of the wrapper while keeping the ownership semantics of
-/// `opus_custom_decoder_create()` intact.
+/// The decoder now owns its trailing buffers directly, but the wrapper keeps
+/// the historical "owned decoder handle" surface used by the Opus front-end
+/// and existing tests.
 #[derive(Debug)]
 pub(crate) struct OwnedCeltDecoder<'mode> {
     decoder: OpusCustomDecoder<'mode>,
-    alloc: Box<CeltDecoderAlloc>,
 }
 
 impl<'mode> OwnedCeltDecoder<'mode> {
@@ -2449,11 +2444,11 @@ impl<'mode> AsMut<OpusCustomDecoder<'mode>> for OwnedCeltDecoder<'mode> {
 /// Mirrors `celt_decoder_init()` from `celt/celt_decoder.c` by borrowing the
 /// statically defined mode, delegating to [`opus_custom_decoder_init`], and
 /// updating the downsampling factor based on the caller-provided sampling rate.
-pub(crate) fn celt_decoder_init<'a>(
-    alloc: &'a mut CeltDecoderAlloc,
+pub(crate) fn celt_decoder_init(
+    alloc: &mut CeltDecoderAlloc,
     sampling_rate: OpusInt32,
     channels: usize,
-) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+) -> Result<OpusCustomDecoder<'static>, CeltDecoderInitError> {
     let mode = canonical_mode().ok_or(CeltDecoderInitError::CanonicalModeUnavailable)?;
     let mut decoder = alloc.init_decoder(mode, channels, channels)?;
 
@@ -2981,22 +2976,31 @@ where
 
     #[cfg(feature = "fixed_point")]
     {
-        sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
+        sync_loge_to_fixed(&mut decoder.old_ebands_fixed, &decoder.old_ebands);
         unquant_coarse_energy_fixed(
             mode,
             start,
             end,
-            decoder.old_ebands_fixed,
+            &mut decoder.old_ebands_fixed,
             intra_ener,
             dec,
             c,
             lm,
         );
-        sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
+        sync_loge_from_fixed(&mut decoder.old_ebands, &decoder.old_ebands_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
-        unquant_coarse_energy(mode, start, end, decoder.old_ebands, intra_ener, dec, c, lm);
+        unquant_coarse_energy(
+            mode,
+            start,
+            end,
+            &mut decoder.old_ebands,
+            intra_ener,
+            dec,
+            c,
+            lm,
+        );
     }
 
     let mut tf_res = vec![0; nb_ebands];
@@ -3097,16 +3101,16 @@ where
             mode,
             start,
             end,
-            decoder.old_ebands_fixed,
+            &mut decoder.old_ebands_fixed,
             &fine_quant,
             dec,
             c,
         );
-        sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
+        sync_loge_from_fixed(&mut decoder.old_ebands, &decoder.old_ebands_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
-        unquant_fine_energy(mode, start, end, decoder.old_ebands, &fine_quant, dec, c);
+        unquant_fine_energy(mode, start, end, &mut decoder.old_ebands, &fine_quant, dec, c);
     }
 
     let tell = entcode::ec_tell(dec.ctx());
@@ -3180,10 +3184,10 @@ where
         celt_decode_with_ec_dred_impl(decoder, packet, pcm, frame_size, range_decoder, accum, plc);
     #[cfg(feature = "fixed_point")]
     if matches!(packet, Some(data) if data.len() > 1) {
-        sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
-        sync_loge_to_fixed(decoder.old_log_e_fixed, decoder.old_log_e);
-        sync_loge_to_fixed(decoder.old_log_e2_fixed, decoder.old_log_e2);
-        sync_loge_to_fixed(decoder.background_log_e_fixed, decoder.background_log_e);
+        sync_loge_to_fixed(&mut decoder.old_ebands_fixed, &decoder.old_ebands);
+        sync_loge_to_fixed(&mut decoder.old_log_e_fixed, &decoder.old_log_e);
+        sync_loge_to_fixed(&mut decoder.old_log_e2_fixed, &decoder.old_log_e2);
+        sync_loge_to_fixed(&mut decoder.background_log_e_fixed, &decoder.background_log_e);
     }
     result
 }
@@ -3488,14 +3492,14 @@ where
             mode,
             start,
             end,
-            decoder.old_ebands_fixed,
+            &mut decoder.old_ebands_fixed,
             &fine_quant,
             &fine_priority,
             remaining_bits,
             dec,
             c,
         );
-        sync_loge_from_fixed(decoder.old_ebands, decoder.old_ebands_fixed);
+        sync_loge_from_fixed(&mut decoder.old_ebands, &decoder.old_ebands_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -3503,7 +3507,7 @@ where
             mode,
             start,
             end,
-            decoder.old_ebands,
+            &mut decoder.old_ebands,
             &fine_quant,
             &fine_priority,
             remaining_bits,
@@ -3537,9 +3541,9 @@ where
                 n,
                 start,
                 end,
-                decoder.old_ebands_fixed,
-                decoder.old_log_e_fixed,
-                decoder.old_log_e2_fixed,
+                &decoder.old_ebands_fixed,
+                &decoder.old_log_e_fixed,
+                &decoder.old_log_e2_fixed,
                 &pulses,
                 decoder.rng,
                 false,
@@ -3557,9 +3561,9 @@ where
                 n,
                 start,
                 end,
-                decoder.old_ebands,
-                decoder.old_log_e,
-                decoder.old_log_e2,
+                &decoder.old_ebands,
+                &decoder.old_log_e,
+                &decoder.old_log_e2,
                 &pulses,
                 decoder.rng,
                 false,
@@ -3611,7 +3615,7 @@ where
         decoder.old_ebands.fill(-28.0);
         #[cfg(feature = "fixed_point")]
         {
-            sync_loge_to_fixed(decoder.old_ebands_fixed, decoder.old_ebands);
+            sync_loge_to_fixed(&mut decoder.old_ebands_fixed, &decoder.old_ebands);
         }
     }
 
@@ -3636,7 +3640,7 @@ where
                 mode,
                 &spectrum_float,
                 &mut out_slices_float,
-                decoder.old_ebands,
+                &decoder.old_ebands,
                 start,
                 eff_end,
                 c,
@@ -3668,7 +3672,7 @@ where
                 mode,
                 &spectrum_fixed,
                 &mut out_slices_fixed,
-                decoder.old_ebands_fixed,
+                &decoder.old_ebands_fixed,
                 start,
                 eff_end,
                 c,
@@ -3692,7 +3696,7 @@ where
                 mode,
                 &spectrum_fixed,
                 &mut out_slices_fixed,
-                decoder.old_ebands_fixed,
+                &decoder.old_ebands_fixed,
                 start,
                 eff_end,
                 c,
@@ -3715,7 +3719,7 @@ where
                 mode,
                 &spectrum_fixed,
                 &mut freq_native,
-                decoder.old_ebands_fixed,
+                &decoder.old_ebands_fixed,
                 start,
                 eff_end,
                 1 << lm,
@@ -3727,7 +3731,7 @@ where
                 mode,
                 &spectrum_float,
                 &mut freq_bridge,
-                decoder.old_ebands,
+                &decoder.old_ebands,
                 start,
                 eff_end,
                 1 << lm,
@@ -3765,7 +3769,7 @@ where
                 mode,
                 &spectrum_float,
                 &mut bridge_views,
-                decoder.old_ebands,
+                &decoder.old_ebands,
                 start,
                 eff_end,
                 c,
@@ -3856,7 +3860,7 @@ where
             mode,
             &spectrum,
             &mut out_slices,
-            decoder.old_ebands,
+            &decoder.old_ebands,
             start,
             eff_end,
             c,
@@ -4007,8 +4011,8 @@ where
             *log_e = (*log_e).min(*band_e);
         }
     } else {
-        decoder.old_log_e2.copy_from_slice(decoder.old_log_e);
-        decoder.old_log_e.copy_from_slice(decoder.old_ebands);
+        decoder.old_log_e2.copy_from_slice(&decoder.old_log_e);
+        decoder.old_log_e.copy_from_slice(&decoder.old_ebands);
     }
 
     let increase = ((decoder.loss_duration + m as i32).min(160) as f32) * 0.001;
@@ -4380,30 +4384,30 @@ impl CeltDecoderAlloc {
     /// buffers.  This mirrors the C layout where the state and trailing memory
     /// occupy a single blob, enabling the caller to reset or reuse the decoder
     /// without reallocating.
-    pub(crate) fn as_decoder<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    pub(crate) fn as_decoder<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
-    ) -> OpusCustomDecoder<'a> {
+    ) -> OpusCustomDecoder<'mode> {
         #[cfg(feature = "fixed_point")]
         {
             OpusCustomDecoder::new(
                 mode,
                 channels,
                 stream_channels,
-                self.decode_mem_fixed.as_mut_slice(),
-                self.lpc_fixed.as_mut_slice(),
-                self.old_ebands_fixed.as_mut_slice(),
-                self.old_log_e_fixed.as_mut_slice(),
-                self.old_log_e2_fixed.as_mut_slice(),
-                self.background_log_e_fixed.as_mut_slice(),
-                self.decode_mem.as_mut_slice(),
-                self.lpc.as_mut_slice(),
-                self.old_ebands.as_mut_slice(),
-                self.old_log_e.as_mut_slice(),
-                self.old_log_e2.as_mut_slice(),
-                self.background_log_e.as_mut_slice(),
+                core::mem::take(&mut self.decode_mem_fixed).into_boxed_slice(),
+                core::mem::take(&mut self.lpc_fixed).into_boxed_slice(),
+                core::mem::take(&mut self.old_ebands_fixed).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e_fixed).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e2_fixed).into_boxed_slice(),
+                core::mem::take(&mut self.background_log_e_fixed).into_boxed_slice(),
+                core::mem::take(&mut self.decode_mem).into_boxed_slice(),
+                core::mem::take(&mut self.lpc).into_boxed_slice(),
+                core::mem::take(&mut self.old_ebands).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e2).into_boxed_slice(),
+                core::mem::take(&mut self.background_log_e).into_boxed_slice(),
             )
         }
         #[cfg(not(feature = "fixed_point"))]
@@ -4412,12 +4416,12 @@ impl CeltDecoderAlloc {
                 mode,
                 channels,
                 stream_channels,
-                self.decode_mem.as_mut_slice(),
-                self.lpc.as_mut_slice(),
-                self.old_ebands.as_mut_slice(),
-                self.old_log_e.as_mut_slice(),
-                self.old_log_e2.as_mut_slice(),
-                self.background_log_e.as_mut_slice(),
+                core::mem::take(&mut self.decode_mem).into_boxed_slice(),
+                core::mem::take(&mut self.lpc).into_boxed_slice(),
+                core::mem::take(&mut self.old_ebands).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e2).into_boxed_slice(),
+                core::mem::take(&mut self.background_log_e).into_boxed_slice(),
             )
         }
     }
@@ -4458,12 +4462,12 @@ impl CeltDecoderAlloc {
     /// The helper ports the zeroing performed by `opus_custom_decoder_init()`
     /// and the follow-up `OPUS_RESET_STATE` call by validating the channel
     /// layout, borrowing the trailing buffers, and clearing the runtime state.
-    fn prepare_decoder<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    fn prepare_decoder<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
-    ) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+    ) -> Result<OpusCustomDecoder<'mode>, CeltDecoderInitError> {
         validate_channel_layout(channels, stream_channels)?;
 
         let mut decoder = self.as_decoder(mode, channels, stream_channels);
@@ -4485,12 +4489,12 @@ impl CeltDecoderAlloc {
     /// that depend on the current mode and sampling rate.  Callers receive a
     /// fully formed [`OpusCustomDecoder`] that borrows the allocation's backing
     /// storage.
-    pub(crate) fn init_decoder<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    pub(crate) fn init_decoder<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
-    ) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+    ) -> Result<OpusCustomDecoder<'mode>, CeltDecoderInitError> {
         let mut decoder = self.prepare_decoder(mode, channels, stream_channels)?;
 
         let downsample = resampling_factor(mode.sample_rate);
@@ -4511,11 +4515,11 @@ impl CeltDecoderAlloc {
 /// freshly reset state.  The helper leaves the downsampling factor at unity, as
 /// the C implementation derives any alternative stride from the caller-provided
 /// sampling rate after this routine completes.
-pub(crate) fn opus_custom_decoder_init<'a>(
-    alloc: &'a mut CeltDecoderAlloc,
-    mode: &'a OpusCustomMode<'a>,
+pub(crate) fn opus_custom_decoder_init<'mode>(
+    alloc: &mut CeltDecoderAlloc,
+    mode: &'mode OpusCustomMode<'mode>,
     channels: usize,
-) -> Result<OpusCustomDecoder<'a>, CeltDecoderInitError> {
+) -> Result<OpusCustomDecoder<'mode>, CeltDecoderInitError> {
     alloc.prepare_decoder(mode, channels, channels)
 }
 
@@ -4529,33 +4533,14 @@ pub(crate) fn opus_custom_decoder_create<'mode>(
     channels: usize,
 ) -> Result<OwnedCeltDecoder<'mode>, CeltDecoderInitError> {
     validate_channel_layout(channels, channels)?;
-    let alloc = Box::new(CeltDecoderAlloc::new(mode, channels));
-    let ptr = Box::into_raw(alloc);
-    // SAFETY: `ptr` originates from `Box::into_raw` and remains valid until it is
-    // reconstructed below. The pointer is never null.
-    let result = unsafe { (*ptr).prepare_decoder(mode, channels, channels) };
-    match result {
-        Ok(decoder) => {
-            // SAFETY: Rebuilds the `Box` returned by `Box::into_raw` so the
-            // allocation is managed by Rust again.
-            let alloc = unsafe { Box::from_raw(ptr) };
-            Ok(OwnedCeltDecoder { decoder, alloc })
-        }
-        Err(err) => {
-            // SAFETY: The allocation must be reclaimed when initialisation fails
-            // to avoid leaking memory.
-            unsafe {
-                let _ = Box::from_raw(ptr);
-            }
-            Err(err)
-        }
-    }
+    let mut alloc = CeltDecoderAlloc::new(mode, channels);
+    let decoder = alloc.prepare_decoder(mode, channels, channels)?;
+    Ok(OwnedCeltDecoder { decoder })
 }
 
 /// Releases the resources owned by [`OwnedCeltDecoder`].
 ///
-/// The wrapper owns the trailing buffers through its boxed allocation, so
-/// consuming it mirrors the behaviour of `opus_custom_decoder_destroy()` in C.
+/// Consuming it mirrors the behaviour of `opus_custom_decoder_destroy()` in C.
 /// Dropping the wrapper performs all necessary cleanup, so this helper is a
 /// no-op that exists for API parity.
 #[inline]
@@ -6113,7 +6098,7 @@ mod tests {
 
     #[cfg(feature = "fixed_point")]
     fn decoder_plc_iir_lpc_hash(decoder: &super::OpusCustomDecoder<'_>) -> u32 {
-        fnv1a_pcm_le(decoder.lpc_fixed)
+        fnv1a_pcm_le(&decoder.lpc_fixed)
     }
 
     #[cfg(feature = "fixed_point")]
@@ -6172,7 +6157,7 @@ mod tests {
                 fnv1a_pcm_le(decoded),
                 decoder_plc_iir_tail_hash(decoder, POSTFILTER_FRAME_SIZE),
                 decoder_plc_iir_lpc_hash(decoder),
-                fnv1a_sig32_le(decoder.old_ebands_fixed)
+                fnv1a_sig32_le(&decoder.old_ebands_fixed)
             );
             if pitch > 0 {
                 return pitch;

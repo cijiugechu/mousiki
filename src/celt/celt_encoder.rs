@@ -47,7 +47,7 @@ use crate::celt::mdct::clt_mdct_forward;
 use crate::celt::mdct::mdct_trace as mdct_input_trace;
 #[cfg(feature = "fixed_point")]
 use crate::celt::mdct_fixed::{FixedMdctLookup, clt_mdct_forward_fixed};
-use crate::celt::modes::opus_custom_mode_find_static;
+use crate::celt::modes::{opus_custom_mode_find_static, opus_custom_mode_find_static_ref};
 use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
 #[cfg(feature = "fixed_point")]
 use crate::celt::pitch::{pitch_downsample_fixed, pitch_search_fixed, remove_doubling_fixed};
@@ -71,7 +71,6 @@ use crate::celt::types::{
     FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16,
 };
 use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
-use alloc::boxed::Box;
 use core::cmp::{max, min};
 use core::f32::consts::FRAC_1_SQRT_2;
 #[cfg(not(feature = "fixed_point"))]
@@ -1423,121 +1422,54 @@ pub(crate) fn celt_encoder_get_size(channels: usize) -> Option<usize> {
 }
 
 /// Mirrors `opus_custom_encoder_init_arch()` from the reference encoder.
-pub(crate) fn opus_custom_encoder_init_arch<'a>(
-    alloc: &'a mut CeltEncoderAlloc,
-    mode: &'a OpusCustomMode<'a>,
+pub(crate) fn opus_custom_encoder_init_arch<'mode>(
+    alloc: &mut CeltEncoderAlloc,
+    mode: &'mode OpusCustomMode<'mode>,
     channels: usize,
     arch: i32,
     rng_seed: OpusUint32,
-) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+) -> Result<OpusCustomEncoder<'mode>, CeltEncoderInitError> {
     alloc.init_custom_encoder_with_arch(mode, channels, channels, arch, rng_seed)
 }
 
 /// Mirrors `opus_custom_encoder_init()` by selecting the runtime architecture automatically.
-pub(crate) fn opus_custom_encoder_init<'a>(
-    alloc: &'a mut CeltEncoderAlloc,
-    mode: &'a OpusCustomMode<'a>,
+pub(crate) fn opus_custom_encoder_init<'mode>(
+    alloc: &mut CeltEncoderAlloc,
+    mode: &'mode OpusCustomMode<'mode>,
     channels: usize,
     rng_seed: OpusUint32,
-) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+) -> Result<OpusCustomEncoder<'mode>, CeltEncoderInitError> {
     alloc.init_custom_encoder(mode, channels, channels, rng_seed)
 }
 
 /// Mirrors `celt_encoder_init()` by initialising the canonical Opus encoder mode.
-pub(crate) fn celt_encoder_init<'a>(
-    alloc: &'a mut CeltEncoderAlloc,
+pub(crate) fn celt_encoder_init(
+    alloc: &mut CeltEncoderAlloc,
     sampling_rate: OpusInt32,
     channels: usize,
     arch: i32,
     rng_seed: OpusUint32,
-) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+) -> Result<OpusCustomEncoder<'static>, CeltEncoderInitError> {
     let upsample = resampling_factor(sampling_rate);
     if upsample == 0 {
         return Err(CeltEncoderInitError::UnsupportedSampleRate);
     }
-    if alloc.static_mode.is_none() {
-        let mode = opus_custom_mode_find_static(48_000, 960).expect("static mode");
-        alloc.static_mode = Some(Box::new(mode));
-    }
-
-    if channels == 0 || channels > MAX_CHANNELS {
-        return Err(CeltEncoderInitError::InvalidChannelCount);
-    }
-
-    alloc.reset();
-    let mode_ref = alloc
-        .static_mode
-        .as_deref()
-        .expect("static mode is stored for canonical init");
-    let mut encoder = {
-        #[cfg(feature = "fixed_point")]
-        {
-            OpusCustomEncoder::new(
-                mode_ref,
-                channels,
-                channels,
-                None,
-                alloc.in_mem.as_mut_slice(),
-                alloc.prefilter_mem.as_mut_slice(),
-                alloc.fixed_in_mem.as_mut_slice(),
-                alloc.fixed_prefilter_mem.as_mut_slice(),
-                alloc.old_band_e.as_mut_slice(),
-                alloc.old_log_e.as_mut_slice(),
-                alloc.old_log_e2.as_mut_slice(),
-                alloc.energy_error.as_mut_slice(),
-                alloc.fixed_old_band_e.as_mut_slice(),
-                alloc.fixed_energy_error.as_mut_slice(),
-            )
-        }
-        #[cfg(not(feature = "fixed_point"))]
-        {
-            OpusCustomEncoder::new(
-                mode_ref,
-                channels,
-                channels,
-                None,
-                alloc.in_mem.as_mut_slice(),
-                alloc.prefilter_mem.as_mut_slice(),
-                alloc.old_band_e.as_mut_slice(),
-                alloc.old_log_e.as_mut_slice(),
-                alloc.old_log_e2.as_mut_slice(),
-                alloc.energy_error.as_mut_slice(),
-            )
-        }
-    };
-    encoder.reset_runtime_state();
-    encoder.upsample = upsample as i32;
-    encoder.start_band = 0;
-    encoder.end_band = mode_ref.effective_ebands as i32;
-    encoder.signalling = 1;
-    encoder.arch = arch;
-    encoder.constrained_vbr = true;
-    encoder.clip = true;
-    encoder.bitrate = OPUS_BITRATE_MAX;
-    encoder.use_vbr = false;
-    encoder.force_intra = false;
-    encoder.complexity = 5;
-    encoder.lsb_depth = 24;
-    encoder.loss_rate = 0;
-    encoder.lfe = false;
-    encoder.disable_prefilter = false;
-    encoder.disable_inv = false;
-    encoder.rng = rng_seed;
-    Ok(encoder)
+    let mode = opus_custom_mode_find_static_ref(48_000, 960).expect("static mode");
+    alloc.init_internal(mode, channels, channels, upsample, arch, rng_seed)
 }
 
-/// Mirrors `opus_custom_encoder_destroy()` which simply releases the encoder allocation.
-pub(crate) fn opus_custom_encoder_destroy(_alloc: CeltEncoderAlloc) {}
+/// Mirrors `opus_custom_encoder_destroy()` which simply releases the encoder state.
+pub(crate) fn opus_custom_encoder_destroy(_encoder: OwnedCeltEncoder<'_>) {}
 
 /// Owning wrapper around [`OpusCustomEncoder`] and its backing allocation.
 ///
 /// Matches the pattern used by [`OwnedCeltDecoder`](crate::celt::OwnedCeltDecoder):
-/// the encoder state borrows slices stored in [`CeltEncoderAlloc`], so the
-/// allocation is boxed and kept alongside the borrowed view.
+/// the wrapper preserves the historical "owned CELT encoder" surface used by
+/// the higher-level Opus front-end while the encoder now owns its backing
+/// buffers directly.
 #[derive(Debug)]
 pub(crate) struct OwnedCeltEncoder<'mode> {
     encoder: OpusCustomEncoder<'mode>,
-    alloc: Box<CeltEncoderAlloc>,
 }
 
 impl<'mode> OwnedCeltEncoder<'mode> {
@@ -1583,31 +1515,13 @@ pub(crate) fn opus_custom_encoder_create<'mode>(
     channels: usize,
     rng_seed: OpusUint32,
 ) -> Result<OwnedCeltEncoder<'mode>, CeltEncoderInitError> {
-    let alloc = Box::new(CeltEncoderAlloc::new(mode, channels));
-    let ptr = Box::into_raw(alloc);
-    // SAFETY: `ptr` originates from `Box::into_raw` and remains valid until it is
-    // reconstructed below. The pointer is never null.
-    let result = if sampling_rate == mode.sample_rate {
-        unsafe { (*ptr).init_custom_encoder(mode, channels, channels, rng_seed) }
+    let mut alloc = CeltEncoderAlloc::new(mode, channels);
+    let encoder = if sampling_rate == mode.sample_rate {
+        alloc.init_custom_encoder(mode, channels, channels, rng_seed)
     } else {
-        unsafe { (*ptr).init_encoder_for_rate(mode, channels, channels, sampling_rate, rng_seed) }
-    };
-    match result {
-        Ok(encoder) => {
-            // SAFETY: Rebuilds the `Box` returned by `Box::into_raw` so the
-            // allocation is managed by Rust again.
-            let alloc = unsafe { Box::from_raw(ptr) };
-            Ok(OwnedCeltEncoder { encoder, alloc })
-        }
-        Err(err) => {
-            // SAFETY: The allocation must be reclaimed when initialisation fails
-            // to avoid leaking memory.
-            unsafe {
-                let _ = Box::from_raw(ptr);
-            }
-            Err(err)
-        }
-    }
+        alloc.init_encoder_for_rate(mode, channels, channels, sampling_rate, rng_seed)
+    }?;
+    Ok(OwnedCeltEncoder { encoder })
 }
 
 /// Computes the L1 norm used by the time/frequency resolution heuristics.
@@ -2349,7 +2263,6 @@ pub(crate) struct CeltEncoderAlloc {
     fixed_old_band_e: Vec<FixedCeltGlog>,
     #[cfg(feature = "fixed_point")]
     fixed_energy_error: Vec<FixedCeltGlog>,
-    static_mode: Option<Box<OpusCustomMode<'static>>>,
 }
 
 impl CeltEncoderAlloc {
@@ -2378,7 +2291,6 @@ impl CeltEncoderAlloc {
             fixed_old_band_e: vec![0; band_count],
             #[cfg(feature = "fixed_point")]
             fixed_energy_error: vec![0; band_count],
-            static_mode: None,
         }
     }
 
@@ -2409,13 +2321,13 @@ impl CeltEncoderAlloc {
     }
 
     /// Borrows the allocation as an [`OpusCustomEncoder`] tied to the provided mode.
-    pub(crate) fn as_encoder<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    pub(crate) fn as_encoder<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
-        energy_mask: Option<&'a [CeltGlog]>,
-    ) -> OpusCustomEncoder<'a> {
+        energy_mask: Option<&'mode [CeltGlog]>,
+    ) -> OpusCustomEncoder<'mode> {
         #[cfg(feature = "fixed_point")]
         {
             OpusCustomEncoder::new(
@@ -2423,16 +2335,16 @@ impl CeltEncoderAlloc {
                 channels,
                 stream_channels,
                 energy_mask,
-                self.in_mem.as_mut_slice(),
-                self.prefilter_mem.as_mut_slice(),
-                self.fixed_in_mem.as_mut_slice(),
-                self.fixed_prefilter_mem.as_mut_slice(),
-                self.old_band_e.as_mut_slice(),
-                self.old_log_e.as_mut_slice(),
-                self.old_log_e2.as_mut_slice(),
-                self.energy_error.as_mut_slice(),
-                self.fixed_old_band_e.as_mut_slice(),
-                self.fixed_energy_error.as_mut_slice(),
+                core::mem::take(&mut self.in_mem).into_boxed_slice(),
+                core::mem::take(&mut self.prefilter_mem).into_boxed_slice(),
+                core::mem::take(&mut self.fixed_in_mem).into_boxed_slice(),
+                core::mem::take(&mut self.fixed_prefilter_mem).into_boxed_slice(),
+                core::mem::take(&mut self.old_band_e).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e2).into_boxed_slice(),
+                core::mem::take(&mut self.energy_error).into_boxed_slice(),
+                core::mem::take(&mut self.fixed_old_band_e).into_boxed_slice(),
+                core::mem::take(&mut self.fixed_energy_error).into_boxed_slice(),
             )
         }
         #[cfg(not(feature = "fixed_point"))]
@@ -2442,12 +2354,12 @@ impl CeltEncoderAlloc {
                 channels,
                 stream_channels,
                 energy_mask,
-                self.in_mem.as_mut_slice(),
-                self.prefilter_mem.as_mut_slice(),
-                self.old_band_e.as_mut_slice(),
-                self.old_log_e.as_mut_slice(),
-                self.old_log_e2.as_mut_slice(),
-                self.energy_error.as_mut_slice(),
+                core::mem::take(&mut self.in_mem).into_boxed_slice(),
+                core::mem::take(&mut self.prefilter_mem).into_boxed_slice(),
+                core::mem::take(&mut self.old_band_e).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e).into_boxed_slice(),
+                core::mem::take(&mut self.old_log_e2).into_boxed_slice(),
+                core::mem::take(&mut self.energy_error).into_boxed_slice(),
             )
         }
     }
@@ -2470,15 +2382,15 @@ impl CeltEncoderAlloc {
     }
 
     /// Internal helper shared by the public initialisation routines.
-    fn init_internal<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    fn init_internal<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
         upsample: u32,
         arch: i32,
         rng_seed: OpusUint32,
-    ) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    ) -> Result<OpusCustomEncoder<'mode>, CeltEncoderInitError> {
         if channels == 0 || channels > MAX_CHANNELS {
             return Err(CeltEncoderInitError::InvalidChannelCount);
         }
@@ -2512,25 +2424,25 @@ impl CeltEncoderAlloc {
 
     /// Mirrors `opus_custom_encoder_init_arch()` by allowing the caller to
     /// specify the architecture hint used by the encoder heuristics.
-    pub(crate) fn init_custom_encoder_with_arch<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    pub(crate) fn init_custom_encoder_with_arch<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
         arch: i32,
         rng_seed: OpusUint32,
-    ) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    ) -> Result<OpusCustomEncoder<'mode>, CeltEncoderInitError> {
         self.init_internal(mode, channels, stream_channels, 1, arch, rng_seed)
     }
 
     /// Mirrors `opus_custom_encoder_init()` by configuring the encoder for a custom mode.
-    pub(crate) fn init_custom_encoder<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    pub(crate) fn init_custom_encoder<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
         rng_seed: OpusUint32,
-    ) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    ) -> Result<OpusCustomEncoder<'mode>, CeltEncoderInitError> {
         self.init_custom_encoder_with_arch(
             mode,
             channels,
@@ -2541,14 +2453,14 @@ impl CeltEncoderAlloc {
     }
 
     /// Mirrors `celt_encoder_init()` by configuring the encoder for a public Opus mode.
-    pub(crate) fn init_encoder_for_rate<'a>(
-        &'a mut self,
-        mode: &'a OpusCustomMode<'a>,
+    pub(crate) fn init_encoder_for_rate<'mode>(
+        &mut self,
+        mode: &'mode OpusCustomMode<'mode>,
         channels: usize,
         stream_channels: usize,
         sampling_rate: OpusInt32,
         rng_seed: OpusUint32,
-    ) -> Result<OpusCustomEncoder<'a>, CeltEncoderInitError> {
+    ) -> Result<OpusCustomEncoder<'mode>, CeltEncoderInitError> {
         let upsample = resampling_factor(sampling_rate);
         if upsample == 0 {
             return Err(CeltEncoderInitError::UnsupportedSampleRate);
@@ -4259,8 +4171,8 @@ fn run_prefilter_fixed(
     }
 
     fill_float_sig(input, input_fixed);
-    fill_float_sig(encoder.in_mem, encoder.fixed_in_mem);
-    fill_float_sig(encoder.prefilter_mem, encoder.fixed_prefilter_mem);
+    fill_float_sig(&mut encoder.in_mem, &encoder.fixed_in_mem);
+    fill_float_sig(&mut encoder.prefilter_mem, &encoder.fixed_prefilter_mem);
 
     *gain_fixed = gain1;
     *gain = q15_to_float(gain1);
@@ -5743,7 +5655,7 @@ fn celt_encode_with_ec_inner<'a>(
     {
         if patch_transient_decision(
             &band_log_e,
-            encoder.old_band_e,
+            &encoder.old_band_e,
             nb_ebands,
             start,
             end as usize,
@@ -5857,7 +5769,7 @@ fn celt_encode_with_ec_inner<'a>(
     let max_depth = dynalloc_analysis(
         &band_log_e,
         &band_log_e2,
-        encoder.old_band_e,
+        &encoder.old_band_e,
         nb_ebands,
         start,
         end as usize,
@@ -5948,8 +5860,8 @@ fn celt_encode_with_ec_inner<'a>(
     let trace_loge_frame_idx = celt_loge_adjust_trace::begin_frame();
     #[cfg(feature = "fixed_point")]
     {
-        sync_loge_to_fixed(encoder.fixed_old_band_e, encoder.old_band_e);
-        sync_loge_to_fixed(encoder.fixed_energy_error, encoder.energy_error);
+        sync_loge_to_fixed(&mut encoder.fixed_old_band_e, &encoder.old_band_e);
+        sync_loge_to_fixed(&mut encoder.fixed_energy_error, &encoder.energy_error);
         encoder.fixed_delayed_intra = glog_to_fixed(encoder.delayed_intra);
 
         let diff_limit = glog_to_fixed(2.0);
@@ -6029,7 +5941,7 @@ fn celt_encode_with_ec_inner<'a>(
             end as usize,
             eff_end,
             &band_log_e_fixed,
-            encoder.fixed_old_band_e,
+            &mut encoder.fixed_old_band_e,
             total_bits as u32,
             &mut error_fixed,
             enc,
@@ -6043,7 +5955,7 @@ fn celt_encode_with_ec_inner<'a>(
             encoder.lfe,
         );
         encoder.delayed_intra = glog_from_fixed(encoder.fixed_delayed_intra);
-        sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+        sync_loge_from_fixed(&mut encoder.old_band_e, &encoder.fixed_old_band_e);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -6053,7 +5965,7 @@ fn celt_encode_with_ec_inner<'a>(
             end as usize,
             eff_end,
             &band_log_e,
-            encoder.old_band_e,
+            &mut encoder.old_band_e,
             total_bits as u32,
             &mut error,
             enc,
@@ -6514,13 +6426,13 @@ fn celt_encode_with_ec_inner<'a>(
             mode,
             start,
             end as usize,
-            encoder.fixed_old_band_e,
+            &mut encoder.fixed_old_band_e,
             &mut error_fixed,
             &fine_quant,
             enc,
             c,
         );
-        sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+        sync_loge_from_fixed(&mut encoder.old_band_e, &encoder.fixed_old_band_e);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -6528,7 +6440,7 @@ fn celt_encode_with_ec_inner<'a>(
             mode,
             start,
             end as usize,
-            encoder.old_band_e,
+            &mut encoder.old_band_e,
             &mut error,
             &fine_quant,
             enc,
@@ -6599,7 +6511,7 @@ fn celt_encode_with_ec_inner<'a>(
             mode,
             start,
             end as usize,
-            encoder.fixed_old_band_e,
+            &mut encoder.fixed_old_band_e,
             &mut error_fixed,
             &fine_quant,
             &fine_priority,
@@ -6607,7 +6519,7 @@ fn celt_encode_with_ec_inner<'a>(
             enc,
             c,
         );
-        sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+        sync_loge_from_fixed(&mut encoder.old_band_e, &encoder.fixed_old_band_e);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -6615,7 +6527,7 @@ fn celt_encode_with_ec_inner<'a>(
             mode,
             start,
             end as usize,
-            encoder.old_band_e,
+            &mut encoder.old_band_e,
             &mut error,
             &fine_quant,
             &fine_priority,
@@ -6642,7 +6554,7 @@ fn celt_encode_with_ec_inner<'a>(
                 encoder.fixed_energy_error[idx] = clamped;
             }
         }
-        sync_loge_from_fixed(encoder.energy_error, encoder.fixed_energy_error);
+        sync_loge_from_fixed(&mut encoder.energy_error, &encoder.fixed_energy_error);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
@@ -6663,7 +6575,7 @@ fn celt_encode_with_ec_inner<'a>(
             for value in encoder.fixed_old_band_e.iter_mut().take(c * nb_ebands) {
                 *value = reset;
             }
-            sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+            sync_loge_from_fixed(&mut encoder.old_band_e, &encoder.fixed_old_band_e);
         }
         #[cfg(not(feature = "fixed_point"))]
         {
@@ -6686,7 +6598,7 @@ fn celt_encode_with_ec_inner<'a>(
         {
             let (left, right) = encoder.fixed_old_band_e.split_at_mut(nb_ebands);
             right[..nb_ebands].copy_from_slice(&left[..nb_ebands]);
-            sync_loge_from_fixed(encoder.old_band_e, encoder.fixed_old_band_e);
+            sync_loge_from_fixed(&mut encoder.old_band_e, &encoder.fixed_old_band_e);
         }
         #[cfg(not(feature = "fixed_point"))]
         {
@@ -8366,9 +8278,9 @@ mod tests {
     fn opus_custom_encoder_destroy_drops_allocation() {
         let owned = opus_custom_mode_create(48_000, 960).expect("mode");
         let mode = owned.mode();
-        let alloc = CeltEncoderAlloc::new(&mode, 1);
+        let encoder = opus_custom_encoder_create(&mode, 48_000, 1, 0).expect("encoder");
 
-        opus_custom_encoder_destroy(alloc);
+        opus_custom_encoder_destroy(encoder);
     }
 
     #[test]

@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-#[cfg(test)]
 use alloc::boxed::Box;
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -446,20 +445,20 @@ pub struct OpusCustomEncoder<'a> {
     pub intensity: i32,
     pub energy_mask: Option<&'a [CeltGlog]>,
     pub spec_avg: CeltGlog,
-    pub in_mem: &'a mut [CeltSig],
-    pub prefilter_mem: &'a mut [CeltSig],
+    pub in_mem: Box<[CeltSig]>,
+    pub prefilter_mem: Box<[CeltSig]>,
     #[cfg(feature = "fixed_point")]
-    pub fixed_in_mem: &'a mut [FixedCeltSig],
+    pub fixed_in_mem: Box<[FixedCeltSig]>,
     #[cfg(feature = "fixed_point")]
-    pub fixed_prefilter_mem: &'a mut [FixedCeltSig],
-    pub old_band_e: &'a mut [CeltGlog],
-    pub old_log_e: &'a mut [CeltGlog],
-    pub old_log_e2: &'a mut [CeltGlog],
-    pub energy_error: &'a mut [CeltGlog],
+    pub fixed_prefilter_mem: Box<[FixedCeltSig]>,
+    pub old_band_e: Box<[CeltGlog]>,
+    pub old_log_e: Box<[CeltGlog]>,
+    pub old_log_e2: Box<[CeltGlog]>,
+    pub energy_error: Box<[CeltGlog]>,
     #[cfg(feature = "fixed_point")]
-    pub fixed_old_band_e: &'a mut [FixedCeltGlog],
+    pub fixed_old_band_e: Box<[FixedCeltGlog]>,
     #[cfg(feature = "fixed_point")]
-    pub fixed_energy_error: &'a mut [FixedCeltGlog],
+    pub fixed_energy_error: Box<[FixedCeltGlog]>,
     #[cfg(feature = "fixed_point")]
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
@@ -473,16 +472,16 @@ impl<'a> OpusCustomEncoder<'a> {
         channels: usize,
         stream_channels: usize,
         energy_mask: Option<&'a [CeltGlog]>,
-        in_mem: &'a mut [CeltSig],
-        prefilter_mem: &'a mut [CeltSig],
-        #[cfg(feature = "fixed_point")] fixed_in_mem: &'a mut [FixedCeltSig],
-        #[cfg(feature = "fixed_point")] fixed_prefilter_mem: &'a mut [FixedCeltSig],
-        old_band_e: &'a mut [CeltGlog],
-        old_log_e: &'a mut [CeltGlog],
-        old_log_e2: &'a mut [CeltGlog],
-        energy_error: &'a mut [CeltGlog],
-        #[cfg(feature = "fixed_point")] fixed_old_band_e: &'a mut [FixedCeltGlog],
-        #[cfg(feature = "fixed_point")] fixed_energy_error: &'a mut [FixedCeltGlog],
+        in_mem: Box<[CeltSig]>,
+        prefilter_mem: Box<[CeltSig]>,
+        #[cfg(feature = "fixed_point")] fixed_in_mem: Box<[FixedCeltSig]>,
+        #[cfg(feature = "fixed_point")] fixed_prefilter_mem: Box<[FixedCeltSig]>,
+        old_band_e: Box<[CeltGlog]>,
+        old_log_e: Box<[CeltGlog]>,
+        old_log_e2: Box<[CeltGlog]>,
+        energy_error: Box<[CeltGlog]>,
+        #[cfg(feature = "fixed_point")] fixed_old_band_e: Box<[FixedCeltGlog]>,
+        #[cfg(feature = "fixed_point")] fixed_energy_error: Box<[FixedCeltGlog]>,
     ) -> Self {
         let overlap = mode.overlap * channels;
         debug_assert_eq!(in_mem.len(), overlap);
@@ -675,23 +674,23 @@ pub struct OpusCustomDecoder<'a> {
     #[cfg(feature = "deep_plc")]
     pub plc_preemphasis_mem: f32,
     #[cfg(feature = "fixed_point")]
-    pub decode_mem_fixed: &'a mut [FixedCeltSig],
+    pub decode_mem_fixed: Box<[FixedCeltSig]>,
     #[cfg(feature = "fixed_point")]
-    pub lpc_fixed: &'a mut [FixedOpusVal16],
+    pub lpc_fixed: Box<[FixedOpusVal16]>,
     #[cfg(feature = "fixed_point")]
-    pub old_ebands_fixed: &'a mut [FixedCeltGlog],
+    pub old_ebands_fixed: Box<[FixedCeltGlog]>,
     #[cfg(feature = "fixed_point")]
-    pub old_log_e_fixed: &'a mut [FixedCeltGlog],
+    pub old_log_e_fixed: Box<[FixedCeltGlog]>,
     #[cfg(feature = "fixed_point")]
-    pub old_log_e2_fixed: &'a mut [FixedCeltGlog],
+    pub old_log_e2_fixed: Box<[FixedCeltGlog]>,
     #[cfg(feature = "fixed_point")]
-    pub background_log_e_fixed: &'a mut [FixedCeltGlog],
-    pub decode_mem: &'a mut [CeltSig],
-    pub lpc: &'a mut [OpusVal16],
-    pub old_ebands: &'a mut [CeltGlog],
-    pub old_log_e: &'a mut [CeltGlog],
-    pub old_log_e2: &'a mut [CeltGlog],
-    pub background_log_e: &'a mut [CeltGlog],
+    pub background_log_e_fixed: Box<[FixedCeltGlog]>,
+    pub decode_mem: Box<[CeltSig]>,
+    pub lpc: Box<[OpusVal16]>,
+    pub old_ebands: Box<[CeltGlog]>,
+    pub old_log_e: Box<[CeltGlog]>,
+    pub old_log_e2: Box<[CeltGlog]>,
+    pub background_log_e: Box<[CeltGlog]>,
     #[cfg(feature = "fixed_point")]
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
@@ -704,18 +703,18 @@ impl<'a> OpusCustomDecoder<'a> {
         mode: &'a OpusCustomMode<'a>,
         channels: usize,
         stream_channels: usize,
-        #[cfg(feature = "fixed_point")] decode_mem_fixed: &'a mut [FixedCeltSig],
-        #[cfg(feature = "fixed_point")] lpc_fixed: &'a mut [FixedOpusVal16],
-        #[cfg(feature = "fixed_point")] old_ebands_fixed: &'a mut [FixedCeltGlog],
-        #[cfg(feature = "fixed_point")] old_log_e_fixed: &'a mut [FixedCeltGlog],
-        #[cfg(feature = "fixed_point")] old_log_e2_fixed: &'a mut [FixedCeltGlog],
-        #[cfg(feature = "fixed_point")] background_log_e_fixed: &'a mut [FixedCeltGlog],
-        decode_mem: &'a mut [CeltSig],
-        lpc: &'a mut [OpusVal16],
-        old_ebands: &'a mut [CeltGlog],
-        old_log_e: &'a mut [CeltGlog],
-        old_log_e2: &'a mut [CeltGlog],
-        background_log_e: &'a mut [CeltGlog],
+        #[cfg(feature = "fixed_point")] decode_mem_fixed: Box<[FixedCeltSig]>,
+        #[cfg(feature = "fixed_point")] lpc_fixed: Box<[FixedOpusVal16]>,
+        #[cfg(feature = "fixed_point")] old_ebands_fixed: Box<[FixedCeltGlog]>,
+        #[cfg(feature = "fixed_point")] old_log_e_fixed: Box<[FixedCeltGlog]>,
+        #[cfg(feature = "fixed_point")] old_log_e2_fixed: Box<[FixedCeltGlog]>,
+        #[cfg(feature = "fixed_point")] background_log_e_fixed: Box<[FixedCeltGlog]>,
+        decode_mem: Box<[CeltSig]>,
+        lpc: Box<[OpusVal16]>,
+        old_ebands: Box<[CeltGlog]>,
+        old_log_e: Box<[CeltGlog]>,
+        old_log_e2: Box<[CeltGlog]>,
+        background_log_e: Box<[CeltGlog]>,
     ) -> Self {
         let overlap = mode.overlap;
         let decode_stride = if channels > 0 {
