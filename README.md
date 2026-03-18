@@ -159,7 +159,6 @@ For Ogg input, see the `oggreader` example to extract raw Opus packets.
 
 ## TODO
 - Make the public API more Rust-idiomatic.
-- Remove all `unsafe` code.
 
 ## License and acknowledgements
 - License: MIT (see `LICENSE`).
