@@ -14,6 +14,11 @@ use crate::celt::entdec::EcDec;
 use crate::celt::entenc::EcEnc;
 use crate::celt::types::{OpusInt16, OpusInt32, OpusUint32, OpusVal32};
 
+#[path = "cwrs_pvq.rs"]
+mod pvq_data;
+
+use pvq_data::{CELT_PVQ_U_DATA, CELT_PVQ_U_ROW_LENGTHS, CELT_PVQ_U_ROW_OFFSETS};
+
 /// Returns a conservatively large estimate of `log2(val)` with `frac` fractional bits.
 ///
 /// Mirrors `log2_frac()` from `celt/cwrs.c`. The routine assumes `val > 0` and that
@@ -235,6 +240,147 @@ fn cwrsi(
     energy
 }
 
+#[inline]
+fn pvq_u(n: usize, k: usize) -> Option<OpusUint32> {
+    let row = n.min(k);
+    let col = n.max(k);
+    let row_offset = *CELT_PVQ_U_ROW_OFFSETS.get(row)?;
+    let row_len = *CELT_PVQ_U_ROW_LENGTHS.get(row)?;
+    let max_col = row.checked_add(row_len.checked_sub(1)?)?;
+    if col > max_col {
+        return None;
+    }
+    CELT_PVQ_U_DATA.get(row_offset + col).copied()
+}
+
+#[inline]
+fn pvq_v(n: usize, k: usize) -> Option<OpusUint32> {
+    pvq_u(n, k)?.checked_add(pvq_u(n, k + 1)?)
+}
+
+#[inline]
+fn accumulate_energy(energy: &mut OpusVal32, value: OpusInt32) {
+    let sample = value as OpusVal32;
+    *energy += sample * sample;
+}
+
+// Mirrors the reference non-small-footprint `cwrsi()` so decode can reuse the
+// static PVQ table instead of rebuilding a workspace row for every band.
+fn cwrsi_pvq(
+    mut n: usize,
+    mut k: usize,
+    mut index: OpusUint32,
+    y: &mut [OpusInt32],
+) -> Option<OpusVal32> {
+    debug_assert!(k > 0);
+    debug_assert!(n > 1);
+    debug_assert!(y.len() >= n);
+
+    let mut energy: OpusVal32 = 0.0;
+    let mut out_index = 0usize;
+
+    while n > 2 {
+        if k >= n {
+            let sign_threshold = pvq_u(n, k + 1)?;
+            let negative = if index >= sign_threshold {
+                index -= sign_threshold;
+                true
+            } else {
+                false
+            };
+
+            let original_k = k;
+            let diagonal = pvq_u(n, n)?;
+            let p = if diagonal > index {
+                debug_assert!(sign_threshold > diagonal);
+                k = n;
+                loop {
+                    k = k.checked_sub(1)?;
+                    let candidate = pvq_u(k, n)?;
+                    if candidate <= index {
+                        break candidate;
+                    }
+                }
+            } else {
+                loop {
+                    let candidate = pvq_u(n, k)?;
+                    if candidate <= index {
+                        break candidate;
+                    }
+                    k = k.checked_sub(1)?;
+                }
+            };
+
+            index -= p;
+            let magnitude = (original_k - k) as OpusInt32;
+            let value = if negative { -magnitude } else { magnitude };
+            y[out_index] = value;
+            accumulate_energy(&mut energy, value);
+        } else {
+            let zero_threshold = pvq_u(k, n)?;
+            let sign_threshold = pvq_u(k + 1, n)?;
+            if zero_threshold <= index && index < sign_threshold {
+                index -= zero_threshold;
+                y[out_index] = 0;
+            } else {
+                let negative = if index >= sign_threshold {
+                    index -= sign_threshold;
+                    true
+                } else {
+                    false
+                };
+
+                let original_k = k;
+                let p = loop {
+                    k = k.checked_sub(1)?;
+                    let candidate = pvq_u(k, n)?;
+                    if candidate <= index {
+                        break candidate;
+                    }
+                };
+
+                index -= p;
+                let magnitude = (original_k - k) as OpusInt32;
+                let value = if negative { -magnitude } else { magnitude };
+                y[out_index] = value;
+                accumulate_energy(&mut energy, value);
+            }
+        }
+
+        out_index += 1;
+        n -= 1;
+    }
+
+    debug_assert_eq!(n, 2);
+
+    let sign_threshold = (2 * k + 1) as OpusUint32;
+    let negative = if index >= sign_threshold {
+        index -= sign_threshold;
+        true
+    } else {
+        false
+    };
+    let original_k = k;
+    k = ((index + 1) >> 1) as usize;
+    if k != 0 {
+        index -= (2 * k - 1) as OpusUint32;
+    }
+    let magnitude = (original_k - k) as OpusInt32;
+    let first = if negative { -magnitude } else { magnitude };
+    y[out_index] = first;
+    accumulate_energy(&mut energy, first);
+
+    let last = if index == 0 {
+        k as OpusInt32
+    } else {
+        -(k as OpusInt32)
+    };
+    y[out_index + 1] = last;
+    accumulate_energy(&mut energy, last);
+
+    Some(energy)
+}
+
 pub(crate) fn encode_pulses(y: &[OpusInt32], n: usize, k: usize, enc: &mut EcEnc<'_>) {
     debug_assert!(k > 0);
     debug_assert!(n >= 2);
@@ -255,6 +401,13 @@ pub(crate) fn decode_pulses(
     debug_assert!(n >= 2);
     debug_assert!(y.len() >= n);
 
+    if let Some(total) = pvq_v(n, k) {
+        let index = dec.dec_uint(total);
+        if let Some(energy) = cwrsi_pvq(n, k, index, y) {
+            return energy;
+        }
+    }
+
     let mut workspace = vec![0u32; k + 2];
     let total = ncwrs_urow(n, k, &mut workspace);
     let index = dec.dec_uint(total);
@@ -271,6 +424,13 @@ pub(crate) fn decode_pulses_debug(
     debug_assert!(k > 0);
     debug_assert!(n >= 2);
     debug_assert!(y.len() >= n);
+
+    if let Some(total) = pvq_v(n, k) {
+        let index = dec.dec_uint(total);
+        if let Some(energy) = cwrsi_pvq(n, k, index, y) {
+            return (index, total, energy);
+        }
+    }
 
     let mut workspace = vec![0u32; k + 2];
     let total = ncwrs_urow(n, k, &mut workspace);
@@ -319,7 +479,8 @@ pub(crate) fn get_required_bits(bits: &mut [OpusInt16], n: usize, max_k: usize, 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_pulses, encode_pulses, get_required_bits, log2_frac, ncwrs_urow, unext, uprev,
+        cwrsi, cwrsi_pvq, decode_pulses, encode_pulses, get_required_bits, log2_frac, ncwrs_urow,
+        pvq_u, pvq_v, unext, uprev,
     };
     use crate::celt::entdec::EcDec;
     use crate::celt::entenc::EcEnc;
@@ -385,8 +546,8 @@ mod tests {
         }
     }
 
-    fn reference_u_table(n_max: usize, k_max: usize) -> Vec<Vec<u64>> {
-        let mut table = vec![vec![0u64; k_max + 2]; n_max + 1];
+    fn reference_u_table(n_max: usize, k_max: usize) -> Vec<Vec<u128>> {
+        let mut table = vec![vec![0u128; k_max + 2]; n_max + 1];
         table[0][0] = 1;
 
         if n_max >= 1 {
@@ -416,13 +577,13 @@ mod tests {
                 let v = ncwrs_urow(n, k, &mut u);
                 for (idx, _) in u.iter().enumerate().take(k + 1 + 1) {
                     assert_eq!(
-                        u64::from(u[idx]),
+                        u128::from(u[idx]),
                         reference[n][idx],
                         "U({n}, {idx}) mismatch"
                     );
                 }
                 let expected_v = reference[n][k] + reference[n][k + 1];
-                assert_eq!(u64::from(v), expected_v, "V({n}, {k}) mismatch");
+                assert_eq!(u128::from(v), expected_v, "V({n}, {k}) mismatch");
             }
         }
     }
@@ -524,7 +685,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "comprehensive CWRS roundtrip is too slow under Miri")]
     fn cwrs_roundtrip_comprehensive() {
-        use super::{cwrsi, icwrs, ncwrs_urow};
+        use super::{icwrs, ncwrs_urow};
 
         // Test dimensions matching the C test's pn[] table (non-CUSTOM_MODES variant)
         // Reduced set for reasonable test time
@@ -620,6 +781,75 @@ mod tests {
                 get_required_bits(&mut bits, n, max_k, frac);
                 let expected = reference_required_bits(n, max_k, frac);
                 assert_eq!(bits, expected, "Mismatch for n={n}, frac={frac}");
+            }
+        }
+    }
+
+    #[test]
+    fn static_pvq_table_matches_reference_rows() {
+        let reference = reference_u_table(14, 208);
+
+        for n in 0..=14usize {
+            for k in 0..=208usize {
+                let expected = if n == 0 && k == 0 {
+                    Some(1u32)
+                } else if n == 0 || k == 0 {
+                    Some(0u32)
+                } else {
+                    Some(reference[n][k] as u32)
+                };
+
+                match pvq_u(n, k) {
+                    Some(actual) => assert_eq!(Some(actual), expected, "U({n}, {k}) mismatch"),
+                    None => {}
+                }
+            }
+        }
+
+        for n in 2..=14usize {
+            for k in 1..=208usize {
+                if let Some(total) = pvq_v(n, k) {
+                    let expected = (reference[n][k] + reference[n][k + 1]) as u32;
+                    assert_eq!(total, expected, "V({n}, {k}) mismatch");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn static_cwrsi_matches_generic_decode() {
+        const PN: &[usize] = &[2, 3, 4, 6, 8, 9, 11, 12];
+
+        for &n in PN {
+            for k in 1..=32usize {
+                let Some(total) = pvq_v(n, k) else {
+                    continue;
+                };
+
+                let mut indices = vec![0u32];
+                if total > 1 {
+                    indices.push(total / 2);
+                    indices.push(total - 1);
+                }
+                indices.sort_unstable();
+                indices.dedup();
+
+                for index in indices {
+                    let mut generic_u = vec![0u32; k + 2];
+                    let _ = ncwrs_urow(n, k, &mut generic_u);
+                    let mut generic = vec![0i32; n];
+                    let generic_energy = cwrsi(n, k, index, &mut generic, &mut generic_u);
+
+                    let mut cached = vec![0i32; n];
+                    let cached_energy = cwrsi_pvq(n, k, index, &mut cached)
+                        .expect("supported PVQ case should decode from static table");
+
+                    assert_eq!(
+                        cached, generic,
+                        "pulse vector mismatch for N={n}, K={k}, index={index}"
+                    );
+                    assert!((cached_energy - generic_energy).abs() < 1e-6);
+                }
             }
         }
     }
