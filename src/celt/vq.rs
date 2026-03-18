@@ -51,6 +51,9 @@ pub(crate) const SPREAD_AGGRESSIVE: i32 = 3;
 const SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
 const Q15_ONE: OpusVal16 = 1.0;
 const EPSILON: OpusVal32 = 1e-15;
+// CELT mode construction rejects any band wider than 208 coefficients, which
+// lets the decoder mirror the C stack allocation here without heap traffic.
+const MAX_PVQ_BAND_SIZE: usize = 208;
 
 #[cfg(feature = "fixed_point")]
 #[inline]
@@ -633,13 +636,18 @@ pub(crate) fn alg_unquant(
     assert!(k > 0, "alg_unquant requires at least one pulse");
     assert!(n > 1, "alg_unquant requires at least two dimensions");
     assert!(x.len() >= n, "input vector shorter than band size");
+    assert!(
+        n <= MAX_PVQ_BAND_SIZE,
+        "alg_unquant band size exceeds CELT maximum"
+    );
 
-    let mut pulses = vec![0i32; n];
+    let mut pulses = [0i32; MAX_PVQ_BAND_SIZE];
+    let pulses = &mut pulses[..n];
     let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
-    let ryy = decode_pulses(&mut pulses, n, total_pulses, dec);
-    normalise_residual(&pulses, x, n, ryy, gain);
+    let ryy = decode_pulses(pulses, n, total_pulses, dec);
+    normalise_residual(pulses, x, n, ryy, gain);
     exp_rotation(x, n, -1, b, k, spread);
-    extract_collapse_mask(&pulses, n, b)
+    extract_collapse_mask(pulses, n, b)
 }
 
 #[cfg(feature = "fixed_point")]
@@ -655,19 +663,24 @@ pub(crate) fn alg_unquant_fixed(
     assert!(k > 0, "alg_unquant requires at least one pulse");
     assert!(n > 1, "alg_unquant requires at least two dimensions");
     assert!(x.len() >= n, "input vector shorter than band size");
+    assert!(
+        n <= MAX_PVQ_BAND_SIZE,
+        "alg_unquant band size exceeds CELT maximum"
+    );
 
-    let mut pulses = vec![0i32; n];
+    let mut pulses = [0i32; MAX_PVQ_BAND_SIZE];
+    let pulses = &mut pulses[..n];
     let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
-    let _ = decode_pulses(&mut pulses, n, total_pulses, dec);
+    let _ = decode_pulses(pulses, n, total_pulses, dec);
 
     let mut ryy: i32 = 0;
-    for &pulse in pulses.iter().take(n) {
+    for &pulse in pulses.iter() {
         ryy = mac16_16(ryy, pulse as i16, pulse as i16);
     }
 
-    normalise_residual_fixed(&pulses, x, n, ryy, gain);
+    normalise_residual_fixed(pulses, x, n, ryy, gain);
     exp_rotation_fixed(x, n, -1, b, k, spread);
-    extract_collapse_mask(&pulses, n, b)
+    extract_collapse_mask(pulses, n, b)
 }
 
 /// Renormalises a vector to unit gain, matching `renormalise_vector()`.
