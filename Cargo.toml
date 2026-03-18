@@ -28,14 +28,14 @@ dred = ["mousiki-dred-weights"]
 dred_fetch = ["dred", "mousiki-dred-weights/fetch"]
 custom_modes = []
 silk_strict_asserts = []
-silk_debug = []
-silk_tic_toc = []
+silk_debug = ["dep:spin"]
+silk_tic_toc = ["dep:spin"]
 
 [dependencies]
 libm = "0.2"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
 mousiki-deep-plc-weights = { path = "mousiki-deep-plc-weights", optional = true }
 mousiki-dred-weights = { path = "mousiki-dred-weights", optional = true }
 
