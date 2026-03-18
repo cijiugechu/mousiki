@@ -1004,6 +1004,7 @@ pub(crate) fn clt_compute_allocation(
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
     use alloc::collections::BTreeMap;
     use alloc::vec;
 
@@ -1089,6 +1090,8 @@ mod tests {
         cache: PulseCacheData,
     ) -> OpusCustomMode<'a> {
         let nb_ebands = e_bands.len().saturating_sub(1);
+        let mdct = Box::leak(Box::new(MdctLookup::new(4, 0)));
+        let cache = Box::leak(Box::new(cache));
         OpusCustomMode {
             sample_rate: 48_000,
             overlap: 0,
@@ -1107,8 +1110,8 @@ mod tests {
             alloc_vectors,
             log_n,
             window: &[],
-            mdct: MdctLookup::new(4, 0),
-            cache,
+            mdct,
+            cache: cache.as_view(),
         }
     }
 

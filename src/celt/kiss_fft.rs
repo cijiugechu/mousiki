@@ -2,6 +2,7 @@
 
 use core::f32::consts::FRAC_1_SQRT_2;
 
+use alloc::borrow::Cow;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -563,16 +564,56 @@ fn fft_scale(nfft: usize) -> f32 {
 }
 
 #[derive(Clone, Debug)]
+enum TwiddleStorage {
+    Static(&'static [KissFftCpx]),
+    Shared(Arc<[KissFftCpx]>),
+}
+
+impl TwiddleStorage {
+    #[inline]
+    fn as_slice(&self) -> &[KissFftCpx] {
+        match self {
+            Self::Static(values) => values,
+            Self::Shared(values) => values.as_ref(),
+        }
+    }
+
+    #[inline]
+    const fn from_static(values: &'static [KissFftCpx]) -> Self {
+        Self::Static(values)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct KissFftState {
     nfft: usize,
     scale: f32,
     shift: Option<usize>,
-    factors: Vec<usize>,
-    bitrev: Vec<usize>,
-    twiddles: Arc<[KissFftCpx]>,
+    factors: Cow<'static, [usize]>,
+    bitrev: Cow<'static, [usize]>,
+    twiddles: TwiddleStorage,
 }
 
 impl KissFftState {
+    #[must_use]
+    pub(crate) const fn from_static(
+        nfft: usize,
+        scale: f32,
+        shift: Option<usize>,
+        factors: &'static [usize],
+        bitrev: &'static [usize],
+        twiddles: &'static [KissFftCpx],
+    ) -> Self {
+        Self {
+            nfft,
+            scale,
+            shift,
+            factors: Cow::Borrowed(factors),
+            bitrev: Cow::Borrowed(bitrev),
+            twiddles: TwiddleStorage::from_static(twiddles),
+        }
+    }
+
     /// Creates a new FFT state for the provided transform length.
     #[must_use]
     pub fn new(nfft: usize) -> Self {
@@ -594,18 +635,18 @@ impl KissFftState {
                 base_state.nfft,
                 "base FFT length must be a power-of-two multiple of the requested length"
             );
-            (Arc::clone(&base_state.twiddles), Some(shift))
+            (base_state.twiddles.clone(), Some(shift))
         } else {
             let twiddles = if nfft == 480 {
-                Arc::<[KissFftCpx]>::from(&FFT_TWIDDLES_48000_960[..])
+                TwiddleStorage::Static(&FFT_TWIDDLES_48000_960)
             } else {
-                Arc::<[KissFftCpx]>::from(compute_twiddles(nfft))
+                TwiddleStorage::Shared(Arc::<[KissFftCpx]>::from(compute_twiddles(nfft)))
             };
             (twiddles, None)
         };
         #[cfg(test)]
         if fft_stage_trace::config().is_some() {
-            fft_stage_trace::dump_twiddles(nfft, twiddles.as_ref());
+            fft_stage_trace::dump_twiddles(nfft, twiddles.as_slice());
         }
 
         let factors = kf_factor(nfft);
@@ -621,8 +662,8 @@ impl KissFftState {
             nfft,
             scale: fft_scale(nfft),
             shift,
-            factors,
-            bitrev,
+            factors: Cow::Owned(factors),
+            bitrev: Cow::Owned(bitrev),
             twiddles,
         }
     }
@@ -642,7 +683,7 @@ impl KissFftState {
     #[inline]
     #[must_use]
     pub fn bitrev(&self) -> &[usize] {
-        &self.bitrev
+        self.bitrev.as_ref()
     }
 
     /// Computes the forward complex FFT with 1/N scaling.
@@ -661,10 +702,10 @@ impl KissFftState {
 
         #[cfg(test)]
         if fft_stage_trace::config().is_some() {
-            fft_stage_trace::dump_bitrev_source(fin, &self.bitrev, self.scale);
+            fft_stage_trace::dump_bitrev_source(fin, self.bitrev.as_ref(), self.scale);
         }
 
-        for (src, &rev) in fin.iter().zip(self.bitrev.iter()) {
+        for (src, &rev) in fin.iter().zip(self.bitrev.as_ref().iter()) {
             fout[rev] = KissFftCpx::new(src.r * self.scale, src.i * self.scale);
         }
 
@@ -690,7 +731,7 @@ impl KissFftState {
             "in-place FFT not supported"
         );
 
-        for (src, &rev) in fin.iter().zip(self.bitrev.iter()) {
+        for (src, &rev) in fin.iter().zip(self.bitrev.as_ref().iter()) {
             fout[rev] = KissFftCpx::new(src.r, -src.i);
         }
         self.fft_impl(fout);
@@ -703,9 +744,10 @@ impl KissFftState {
         let mut fstride = [0usize; MAXFACTORS + 1];
         fstride[0] = 1;
         let mut stages = 0usize;
+        let factors = self.factors.as_ref();
         loop {
-            let p = self.factors[2 * stages];
-            let m = self.factors[2 * stages + 1];
+            let p = factors[2 * stages];
+            let m = factors[2 * stages + 1];
             fstride[stages + 1] = fstride[stages] * p;
             stages += 1;
             if m == 1 {
@@ -713,14 +755,14 @@ impl KissFftState {
             }
         }
 
-        let mut m = self.factors[2 * stages - 1];
+        let mut m = factors[2 * stages - 1];
         let shift = self.shift.unwrap_or(0);
         #[cfg(test)]
         let total_stages = stages;
         for stage in (0..stages).rev() {
-            let p = self.factors[2 * stage];
+            let p = factors[2 * stage];
             let m2 = if stage != 0 {
-                self.factors[2 * stage - 1]
+                factors[2 * stage - 1]
             } else {
                 1
             };
@@ -929,7 +971,8 @@ fn kf_bfly3(
     #[cfg(test)]
     let trace_enabled = fft_stage_trace::bfly_active();
     let m2 = 2 * m;
-    let epi3 = st.twiddles[fstride * m];
+    let twiddles = st.twiddles.as_slice();
+    let epi3 = twiddles[fstride * m];
     for i in 0..n {
         let base = i * mm;
         let mut tw1 = 0usize;
@@ -943,8 +986,8 @@ fn kf_bfly3(
                 before[1] = fout[base + m + k];
                 before[2] = fout[base + m2 + k];
             }
-            let scratch1 = c_mul(fout[base + m + k], st.twiddles[tw1]);
-            let scratch2 = c_mul(fout[base + m2 + k], st.twiddles[tw2]);
+            let scratch1 = c_mul(fout[base + m + k], twiddles[tw1]);
+            let scratch2 = c_mul(fout[base + m2 + k], twiddles[tw2]);
             let scratch3 = c_add(scratch1, scratch2);
             let scratch0 = c_sub(scratch1, scratch2);
             tw1 += fstride;
@@ -981,6 +1024,7 @@ fn kf_bfly4(
 ) {
     #[cfg(test)]
     let trace_enabled = fft_stage_trace::bfly_active();
+    let twiddles = st.twiddles.as_slice();
     if m == 1 {
         for i in 0..n {
             let base = i * mm;
@@ -1051,9 +1095,9 @@ fn kf_bfly4(
                 } else {
                     None
                 };
-                let scratch0 = c_mul(fout[base + j + m], st.twiddles[tw1]);
-                let scratch1 = c_mul(fout[base + j + m2], st.twiddles[tw2]);
-                let scratch2 = c_mul(fout[base + j + m3], st.twiddles[tw3]);
+                let scratch0 = c_mul(fout[base + j + m], twiddles[tw1]);
+                let scratch1 = c_mul(fout[base + j + m2], twiddles[tw2]);
+                let scratch2 = c_mul(fout[base + j + m3], twiddles[tw3]);
                 #[cfg(test)]
                 if let Some(bfly_idx) = bfly_idx {
                     fft_stage_trace::dump_bfly_value(bfly_idx, "mul_in0", before[1]);
@@ -1062,12 +1106,12 @@ fn kf_bfly4(
                     fft_stage_trace::dump_bfly_bits(bfly_idx, "mul_in0", before[1]);
                     fft_stage_trace::dump_bfly_bits(bfly_idx, "mul_in1", before[2]);
                     fft_stage_trace::dump_bfly_bits(bfly_idx, "mul_in2", before[3]);
-                    fft_stage_trace::dump_bfly_value(bfly_idx, "tw1", st.twiddles[tw1]);
-                    fft_stage_trace::dump_bfly_value(bfly_idx, "tw2", st.twiddles[tw2]);
-                    fft_stage_trace::dump_bfly_value(bfly_idx, "tw3", st.twiddles[tw3]);
-                    fft_stage_trace::dump_bfly_bits(bfly_idx, "tw1", st.twiddles[tw1]);
-                    fft_stage_trace::dump_bfly_bits(bfly_idx, "tw2", st.twiddles[tw2]);
-                    fft_stage_trace::dump_bfly_bits(bfly_idx, "tw3", st.twiddles[tw3]);
+                    fft_stage_trace::dump_bfly_value(bfly_idx, "tw1", twiddles[tw1]);
+                    fft_stage_trace::dump_bfly_value(bfly_idx, "tw2", twiddles[tw2]);
+                    fft_stage_trace::dump_bfly_value(bfly_idx, "tw3", twiddles[tw3]);
+                    fft_stage_trace::dump_bfly_bits(bfly_idx, "tw1", twiddles[tw1]);
+                    fft_stage_trace::dump_bfly_bits(bfly_idx, "tw2", twiddles[tw2]);
+                    fft_stage_trace::dump_bfly_bits(bfly_idx, "tw3", twiddles[tw3]);
                     fft_stage_trace::dump_bfly_value(bfly_idx, "mul0", scratch0);
                     fft_stage_trace::dump_bfly_value(bfly_idx, "mul1", scratch1);
                     fft_stage_trace::dump_bfly_value(bfly_idx, "mul2", scratch2);
@@ -1125,8 +1169,9 @@ fn kf_bfly5(
 ) {
     #[cfg(test)]
     let trace_enabled = fft_stage_trace::bfly_active();
-    let ya = st.twiddles[fstride * m];
-    let yb = st.twiddles[fstride * 2 * m];
+    let twiddles = st.twiddles.as_slice();
+    let ya = twiddles[fstride * m];
+    let yb = twiddles[fstride * 2 * m];
     for i in 0..n {
         let base = i * mm;
         for u in 0..m {
@@ -1168,10 +1213,10 @@ fn kf_bfly5(
             if let Some(bfly_idx) = bfly_idx {
                 fft_stage_trace::dump_bfly_value(bfly_idx, "scratch0", scratch0);
             }
-            let scratch1 = c_mul(fout[base + m + u], st.twiddles[u * fstride]);
-            let scratch2 = c_mul(fout[base + 2 * m + u], st.twiddles[2 * u * fstride]);
-            let scratch3 = c_mul(fout[base + 3 * m + u], st.twiddles[3 * u * fstride]);
-            let scratch4 = c_mul(fout[base + 4 * m + u], st.twiddles[4 * u * fstride]);
+            let scratch1 = c_mul(fout[base + m + u], twiddles[u * fstride]);
+            let scratch2 = c_mul(fout[base + 2 * m + u], twiddles[2 * u * fstride]);
+            let scratch3 = c_mul(fout[base + 3 * m + u], twiddles[3 * u * fstride]);
+            let scratch4 = c_mul(fout[base + 4 * m + u], twiddles[4 * u * fstride]);
             #[cfg(test)]
             if let Some(bfly_idx) = bfly_idx {
                 let tw4_idx = 4 * u * fstride;
@@ -1181,7 +1226,7 @@ fn kf_bfly5(
                 fft_stage_trace::dump_bfly_value(bfly_idx, "scratch4", scratch4);
                 fft_stage_trace::dump_bfly_bits(bfly_idx, "mul_in4", before[4]);
                 fft_stage_trace::dump_bfly_twiddle_index(bfly_idx, "tw4.idx", tw4_idx);
-                fft_stage_trace::dump_bfly_bits(bfly_idx, "tw4", st.twiddles[tw4_idx]);
+                fft_stage_trace::dump_bfly_bits(bfly_idx, "tw4", twiddles[tw4_idx]);
                 fft_stage_trace::dump_bfly_bits(bfly_idx, "scratch4", scratch4);
             }
 

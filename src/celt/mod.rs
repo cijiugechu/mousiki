@@ -43,6 +43,7 @@ mod modes;
 mod pitch;
 mod quant_bands;
 mod rate;
+mod static_mode_48000_960;
 mod types;
 mod vq;
 mod window_48000_960;
@@ -106,6 +107,8 @@ pub(crate) use pitch::*;
 pub(crate) use quant_bands::*;
 #[allow(unused_imports)]
 pub(crate) use rate::*;
+#[allow(unused_imports)]
+pub(crate) use static_mode_48000_960::*;
 #[allow(unused_imports)]
 pub(crate) use types::*;
 #[allow(unused_imports)]

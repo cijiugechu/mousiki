@@ -4425,6 +4425,7 @@ mod tests {
         EcDec, EcEnc, SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, celt_rsqrt_norm,
         dual_inner_prod,
     };
+    use alloc::boxed::Box;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -4515,7 +4516,7 @@ mod tests {
         let log_n = [0i16; 4];
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(4, 0);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             0,
             &e_bands,
@@ -5040,7 +5041,8 @@ mod tests {
     }
 
     fn dummy_mode<'a>(e_bands: &'a [i16], short_mdct_size: usize) -> OpusCustomMode<'a> {
-        let mdct = MdctLookup::new(short_mdct_size, 0);
+        let mdct = Box::leak(Box::new(MdctLookup::new(short_mdct_size, 0)));
+        let cache = Box::leak(Box::new(PulseCacheData::default()));
         OpusCustomMode {
             sample_rate: 48_000,
             overlap: 0,
@@ -5056,7 +5058,7 @@ mod tests {
             log_n: &[],
             window: &[],
             mdct,
-            cache: PulseCacheData::default(),
+            cache: cache.as_view(),
         }
     }
 
@@ -5142,23 +5144,16 @@ mod tests {
         let e_bands = [0i16, 2, 4];
         let log_n = [0i16, 0];
         let mdct = MdctLookup::new(4, 0);
-        let mode = OpusCustomMode {
-            sample_rate: 48_000,
-            overlap: 0,
-            num_ebands: e_bands.len() - 1,
-            effective_ebands: e_bands.len() - 1,
-            pre_emphasis: [0.0; 4],
-            e_bands: &e_bands,
-            max_lm: 0,
-            num_short_mdcts: 1,
-            short_mdct_size: 4,
-            num_alloc_vectors: 0,
-            alloc_vectors: &[],
-            log_n: &log_n,
-            window: &[],
+        let mode = OpusCustomMode::new_test(
+            48_000,
+            0,
+            &e_bands,
+            &[],
+            &log_n,
+            &[],
             mdct,
-            cache: PulseCacheData::default(),
-        };
+            PulseCacheData::default(),
+        );
         let band_e = vec![0.75_f32, 0.6, 0.65, 0.7];
         let n = 4;
         let initial_b = 48 << BITRES;
@@ -5594,7 +5589,7 @@ mod tests {
         let log_n = [0i16, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode = OpusCustomMode::new(
+        let mut mode = OpusCustomMode::new_test(
             48_000,
             8,
             &e_bands,
@@ -5624,7 +5619,7 @@ mod tests {
         let log_n = [0i16, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode = OpusCustomMode::new(
+        let mut mode = OpusCustomMode::new_test(
             48_000,
             8,
             &e_bands,
@@ -5653,7 +5648,7 @@ mod tests {
         let log_n = [0i16, 0, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode = OpusCustomMode::new(
+        let mut mode = OpusCustomMode::new_test(
             48_000,
             8,
             &e_bands,
@@ -5682,7 +5677,7 @@ mod tests {
         let log_n = [0i16, 0, 0];
         let mdct = MdctLookup::new(16, 0);
         let window = crate::celt::modes::compute_mdct_window(8);
-        let mut mode = OpusCustomMode::new(
+        let mut mode = OpusCustomMode::new_test(
             48_000,
             8,
             &e_bands,

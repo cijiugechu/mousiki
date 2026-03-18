@@ -1014,7 +1014,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![10, 20, 30, 40, 50, 60]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,

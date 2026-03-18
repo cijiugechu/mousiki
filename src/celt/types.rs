@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(test)]
+use alloc::boxed::Box;
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 use super::KissFftState;
@@ -81,10 +84,10 @@ pub type KissTwiddleScalar = f32;
 pub struct MdctLookup {
     pub len: usize,
     pub max_shift: usize,
-    pub forward: Vec<KissFftState>,
-    pub inverse: Vec<KissFftState>,
-    pub twiddle: Vec<KissTwiddleScalar>,
-    pub twiddle_offsets: Vec<usize>,
+    pub forward: Cow<'static, [KissFftState]>,
+    pub inverse: Cow<'static, [KissFftState]>,
+    pub twiddle: Cow<'static, [KissTwiddleScalar]>,
+    pub twiddle_offsets: Cow<'static, [usize]>,
 }
 
 #[cfg(test)]
@@ -110,6 +113,25 @@ mod tests {
 }
 
 impl MdctLookup {
+    #[must_use]
+    pub(crate) const fn from_static(
+        len: usize,
+        max_shift: usize,
+        forward: &'static [KissFftState],
+        inverse: &'static [KissFftState],
+        twiddle: &'static [KissTwiddleScalar],
+        twiddle_offsets: &'static [usize],
+    ) -> Self {
+        Self {
+            len,
+            max_shift,
+            forward: Cow::Borrowed(forward),
+            inverse: Cow::Borrowed(inverse),
+            twiddle: Cow::Borrowed(twiddle),
+            twiddle_offsets: Cow::Borrowed(twiddle_offsets),
+        }
+    }
+
     #[must_use]
     pub fn new(len: usize, max_shift: usize) -> Self {
         assert!(len.is_multiple_of(2), "MDCT length must be even");
@@ -165,10 +187,10 @@ impl MdctLookup {
         Self {
             len,
             max_shift,
-            forward,
-            inverse,
-            twiddle,
-            twiddle_offsets: offsets,
+            forward: Cow::Owned(forward),
+            inverse: Cow::Owned(inverse),
+            twiddle: Cow::Owned(twiddle),
+            twiddle_offsets: Cow::Owned(offsets),
         }
     }
 
@@ -194,24 +216,25 @@ impl MdctLookup {
     #[inline]
     #[must_use]
     pub fn forward_plan(&self, shift: usize) -> &KissFftState {
-        assert!(shift < self.forward.len());
-        &self.forward[shift]
+        assert!(shift < self.forward.as_ref().len());
+        &self.forward.as_ref()[shift]
     }
 
     #[inline]
     #[must_use]
     pub fn inverse_plan(&self, shift: usize) -> &KissFftState {
-        assert!(shift < self.inverse.len());
-        &self.inverse[shift]
+        assert!(shift < self.inverse.as_ref().len());
+        &self.inverse.as_ref()[shift]
     }
 
     #[inline]
     #[must_use]
     pub fn twiddles(&self, shift: usize) -> &[KissTwiddleScalar] {
         assert!(shift <= self.max_shift);
-        let start = self.twiddle_offsets[shift];
-        let end = self.twiddle_offsets[shift + 1];
-        &self.twiddle[start..end]
+        let offsets = self.twiddle_offsets.as_ref();
+        let start = offsets[shift];
+        let end = offsets[shift + 1];
+        &self.twiddle.as_ref()[start..end]
     }
 }
 
@@ -258,7 +281,7 @@ impl PulseCacheData {
 }
 
 /// Rust port of the opaque `OpusCustomMode`/`CELTMode` type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct OpusCustomMode<'a> {
     pub sample_rate: OpusInt32,
     pub overlap: usize,
@@ -273,8 +296,8 @@ pub struct OpusCustomMode<'a> {
     pub alloc_vectors: &'a [u8],
     pub log_n: &'a [i16],
     pub window: &'a [CeltCoef],
-    pub mdct: MdctLookup,
-    pub cache: PulseCacheData,
+    pub mdct: &'a MdctLookup,
+    pub cache: PulseCache<'a>,
 }
 
 impl<'a> OpusCustomMode<'a> {
@@ -286,8 +309,8 @@ impl<'a> OpusCustomMode<'a> {
         alloc_vectors: &'a [u8],
         log_n: &'a [i16],
         window: &'a [CeltCoef],
-        mdct: MdctLookup,
-        cache: PulseCacheData,
+        mdct: &'a MdctLookup,
+        cache: PulseCache<'a>,
     ) -> Self {
         let num_ebands = e_bands.len().saturating_sub(1);
         let num_alloc_vectors = if num_ebands > 0 {
@@ -317,7 +340,33 @@ impl<'a> OpusCustomMode<'a> {
     /// Returns a borrowed view of the cached pulse tables.
     #[must_use]
     pub fn pulse_cache(&self) -> PulseCache<'_> {
-        self.cache.as_view()
+        self.cache
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_test(
+        sample_rate: OpusInt32,
+        overlap: usize,
+        e_bands: &'a [i16],
+        alloc_vectors: &'a [u8],
+        log_n: &'a [i16],
+        window: &'a [CeltCoef],
+        mdct: MdctLookup,
+        cache: PulseCacheData,
+    ) -> Self {
+        let mdct = Box::leak(Box::new(mdct));
+        let cache = Box::leak(Box::new(cache));
+        Self::new(
+            sample_rate,
+            overlap,
+            e_bands,
+            alloc_vectors,
+            log_n,
+            window,
+            mdct,
+            cache.as_view(),
+        )
     }
 }
 

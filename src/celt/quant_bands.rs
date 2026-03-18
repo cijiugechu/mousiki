@@ -2094,7 +2094,7 @@ mod tests {
         window: &'a [f32],
     ) -> OpusCustomMode<'a> {
         let mdct = MdctLookup::new(4, 0);
-        OpusCustomMode::new(
+        OpusCustomMode::new_test(
             48_000,
             0,
             e_bands,
@@ -2437,7 +2437,7 @@ mod tests {
         let window = [0.0f32; 4];
         let _twiddle = [0.0f32; 1];
         let mdct = MdctLookup::new(4, 0);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             0,
             &e_bands,
@@ -2520,7 +2520,7 @@ mod tests {
         let log_n = [0i16; 6];
         let window = [0.0f32; 6];
         let mdct = MdctLookup::new(8, 0);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             0,
             &e_bands,
@@ -2603,7 +2603,7 @@ mod tests {
         let log_n = [0i16; 6];
         let window = [0.0f32; 6];
         let mdct = MdctLookup::new(8, 0);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             0,
             &e_bands,
@@ -2632,7 +2632,7 @@ mod tests {
         let log_n = [0i16; 6];
         let window = [0.0f32; 6];
         let mdct = MdctLookup::new(8, 0);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             0,
             &e_bands,

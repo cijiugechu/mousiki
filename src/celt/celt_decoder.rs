@@ -89,9 +89,11 @@ use crate::celt::rate::clt_compute_allocation;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::types::OpusVal32;
 use crate::celt::types::{
-    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt16, OpusInt32, OpusRes,
+    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes,
     OpusUint32, OpusVal16,
 };
+#[cfg(any(feature = "fixed_point", feature = "deep_plc"))]
+use crate::celt::types::OpusInt16;
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{
     FixedCeltCoef, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16,
@@ -4890,7 +4892,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5020,7 +5022,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5047,7 +5049,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5093,7 +5095,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5129,7 +5131,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             12_000,
             4,
             &e_bands,
@@ -5161,7 +5163,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5271,7 +5273,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5366,7 +5368,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mut mode = OpusCustomMode::new(
+        let mut mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5397,7 +5399,7 @@ mod tests {
         let window = [0.0f32; 4];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0; 6], vec![0; 6], vec![0; 6]);
-        let mut mode = OpusCustomMode::new(
+        let mut mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5429,7 +5431,7 @@ mod tests {
         let window = [0.25f32, 0.5, 0.5, 0.25];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0i16; 2], vec![0; 2], vec![0; 2]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5507,7 +5509,7 @@ mod tests {
         let window = [0.25f32, 0.5, 0.5, 0.25];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0i16; 2], vec![0; 2], vec![0; 2]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,
@@ -5606,7 +5608,7 @@ mod tests {
         let window = [0.25f32, 0.5, 0.5, 0.25];
         let mdct = MdctLookup::new(8, 0);
         let cache = PulseCacheData::new(vec![0i16; 2], vec![0; 2], vec![0; 2]);
-        let mode = OpusCustomMode::new(
+        let mode = OpusCustomMode::new_test(
             48_000,
             4,
             &e_bands,

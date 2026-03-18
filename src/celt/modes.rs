@@ -9,15 +9,16 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
 use core::convert::TryFrom;
 use core::fmt;
-use core::hint::spin_loop;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::celt::rate::compute_pulse_cache;
+use crate::celt::static_mode_48000_960::{
+    CACHE_BITS_50, CACHE_CAPS_50, CACHE_INDEX_50, LOG_N_400, STATIC_MDCT_48000_960,
+};
 use crate::celt::types::{
-    CeltCoef, MdctLookup, OpusCustomMode, OpusInt16, OpusInt32, OpusVal16, PulseCacheData,
+    CeltCoef, MdctLookup, OpusCustomMode, OpusInt16, OpusInt32, OpusVal16, PulseCache,
+    PulseCacheData,
 };
 use crate::celt::window_48000_960::WINDOW_120;
 use libm::sinf;
@@ -80,114 +81,47 @@ pub(crate) struct AllocationTable {
     num_bands: usize,
 }
 
-/// Lazily-instantiated representation of a statically-defined CELT mode.
-struct StaticMode {
-    sample_rate: OpusInt32,
-    base_frame_size: usize,
-    owned_storage: UnsafeCell<Option<OwnedOpusCustomMode>>,
-    mode_storage: UnsafeCell<Option<OpusCustomMode<'static>>>,
-    initialised: AtomicBool,
-    lock: AtomicBool,
+static STATIC_MODE_48KHZ_960: OpusCustomMode<'static> = OpusCustomMode {
+    sample_rate: 48_000,
+    overlap: 120,
+    num_ebands: MAX_BANDS,
+    effective_ebands: MAX_BANDS,
+    pre_emphasis: [0.850_006_1, 0.0, 1.0, 1.0],
+    e_bands: &EBAND_5MS,
+    max_lm: 3,
+    num_short_mdcts: 8,
+    short_mdct_size: 120,
+    num_alloc_vectors: BITALLOC_SIZE,
+    alloc_vectors: &BAND_ALLOCATION,
+    log_n: &LOG_N_400,
+    window: &WINDOW_120,
+    mdct: &STATIC_MDCT_48000_960,
+    cache: PulseCache {
+        size: CACHE_BITS_50.len(),
+        index: &CACHE_INDEX_50,
+        bits: &CACHE_BITS_50,
+        caps: &CACHE_CAPS_50,
+    },
+};
+
+fn static_mode_matches(sample_rate: OpusInt32, frame_size: usize, base_frame_size: usize) -> bool {
+    if sample_rate != 48_000 || frame_size == 0 {
+        return false;
+    }
+
+    let mut candidate = frame_size;
+    for _ in 0..4 {
+        if candidate == base_frame_size {
+            return true;
+        }
+        if candidate > base_frame_size {
+            break;
+        }
+        candidate = candidate.saturating_mul(2);
+    }
+
+    false
 }
-
-impl StaticMode {
-    /// Creates a new static mode description matching the reference lookup table.
-    const fn new(sample_rate: OpusInt32, base_frame_size: usize) -> Self {
-        Self {
-            sample_rate,
-            base_frame_size,
-            owned_storage: UnsafeCell::new(None),
-            mode_storage: UnsafeCell::new(None),
-            initialised: AtomicBool::new(false),
-            lock: AtomicBool::new(false),
-        }
-    }
-
-    /// Returns `true` when the requested configuration aliases this static entry.
-    fn matches(&self, sample_rate: OpusInt32, frame_size: usize) -> bool {
-        if sample_rate != self.sample_rate {
-            return false;
-        }
-
-        if frame_size == 0 {
-            return false;
-        }
-
-        let mut candidate = frame_size;
-        for _ in 0..4 {
-            if candidate == self.base_frame_size {
-                return true;
-            }
-            if candidate > self.base_frame_size {
-                break;
-            }
-            candidate = candidate.saturating_mul(2);
-        }
-
-        false
-    }
-
-    /// Returns the lazily constructed borrowed mode matching this entry.
-    fn mode_ref(&'static self) -> &'static OpusCustomMode<'static> {
-        if !self.initialised.load(Ordering::Acquire) {
-            while self
-                .lock
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                spin_loop();
-            }
-
-            if !self.initialised.load(Ordering::Acquire) {
-                let value = build_custom_mode(self.sample_rate, self.base_frame_size)
-                    .expect("static mode configuration is valid");
-                unsafe {
-                    *self.owned_storage.get() = Some(value);
-                    let owned = (*self.owned_storage.get())
-                        .as_ref()
-                        .expect("static mode backing storage initialised");
-                    *self.mode_storage.get() = Some(OpusCustomMode {
-                        sample_rate: owned.sample_rate,
-                        overlap: owned.overlap,
-                        num_ebands: owned.layout.num_bands,
-                        effective_ebands: owned.effective_ebands,
-                        pre_emphasis: owned.pre_emphasis,
-                        e_bands: &owned.layout.bands,
-                        max_lm: owned.max_lm,
-                        num_short_mdcts: owned.num_short_mdcts,
-                        short_mdct_size: owned.short_mdct_size,
-                        num_alloc_vectors: owned.num_alloc_vectors,
-                        alloc_vectors: &owned.alloc_vectors,
-                        log_n: &owned.log_n,
-                        window: &owned.window,
-                        mdct: owned.mdct.clone(),
-                        cache: owned.cache.clone(),
-                    });
-                }
-                self.initialised.store(true, Ordering::Release);
-            }
-
-            self.lock.store(false, Ordering::Release);
-        }
-
-        unsafe {
-            (*self.mode_storage.get())
-                .as_ref()
-                .expect("static mode initialised")
-        }
-    }
-
-    /// Returns an owned borrowed-data view for callers that need to keep the
-    /// existing value-returning interface.
-    fn mode(&'static self) -> OpusCustomMode<'static> {
-        self.mode_ref().clone()
-    }
-}
-
-unsafe impl Sync for StaticMode {}
-
-static MODE_48KHZ_960: StaticMode = StaticMode::new(48_000, 960);
-static STATIC_MODES: [&StaticMode; 1] = [&MODE_48KHZ_960];
 
 impl AllocationTable {
     fn new(vectors: Vec<u8>, num_bands: usize) -> Self {
@@ -525,8 +459,8 @@ impl OwnedOpusCustomMode {
             alloc_vectors: &self.alloc_vectors,
             log_n: &self.log_n,
             window: &self.window,
-            mdct: self.mdct.clone(),
-            cache: self.cache.clone(),
+            mdct: &self.mdct,
+            cache: self.cache.as_view(),
         }
     }
 
@@ -634,10 +568,8 @@ pub(crate) fn opus_custom_mode_find_static(
     sample_rate: OpusInt32,
     frame_size: usize,
 ) -> Option<OpusCustomMode<'static>> {
-    for entry in STATIC_MODES.iter() {
-        if entry.matches(sample_rate, frame_size) {
-            return Some(entry.mode());
-        }
+    if static_mode_matches(sample_rate, frame_size, 960) {
+        return Some(STATIC_MODE_48KHZ_960);
     }
 
     None
@@ -649,10 +581,8 @@ pub(crate) fn opus_custom_mode_find_static_ref(
     sample_rate: OpusInt32,
     frame_size: usize,
 ) -> Option<&'static OpusCustomMode<'static>> {
-    for entry in STATIC_MODES.iter() {
-        if entry.matches(sample_rate, frame_size) {
-            return Some(entry.mode_ref());
-        }
+    if static_mode_matches(sample_rate, frame_size, 960) {
+        return Some(&STATIC_MODE_48KHZ_960);
     }
 
     None
