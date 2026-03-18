@@ -1,8 +1,8 @@
-#[cfg(test)]
-use alloc::vec::Vec;
+use alloc::boxed::Box;
 #[cfg(test)]
 use alloc::vec;
-use alloc::boxed::Box;
+#[cfg(test)]
+use alloc::vec::Vec;
 use core::mem;
 
 use crate::celt::{OpusRes, float2int, float2int16};

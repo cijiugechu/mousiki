@@ -85,14 +85,14 @@ use crate::celt::quant_bands::{
     unquant_coarse_energy_fixed, unquant_energy_finalise_fixed, unquant_fine_energy_fixed,
 };
 use crate::celt::rate::clt_compute_allocation;
+#[cfg(any(feature = "fixed_point", feature = "deep_plc"))]
+use crate::celt::types::OpusInt16;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::types::OpusVal32;
 use crate::celt::types::{
-    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes,
-    OpusUint32, OpusVal16,
+    CeltGlog, CeltNorm, CeltSig, OpusCustomDecoder, OpusCustomMode, OpusInt32, OpusRes, OpusUint32,
+    OpusVal16,
 };
-#[cfg(any(feature = "fixed_point", feature = "deep_plc"))]
-use crate::celt::types::OpusInt16;
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{
     FixedCeltCoef, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16,
@@ -184,7 +184,10 @@ fn sync_from_fixed_primary_to_float_cache(decoder: &mut OpusCustomDecoder<'_>) {
     sync_loge_from_fixed(&mut decoder.old_ebands, &decoder.old_ebands_fixed);
     sync_loge_from_fixed(&mut decoder.old_log_e, &decoder.old_log_e_fixed);
     sync_loge_from_fixed(&mut decoder.old_log_e2, &decoder.old_log_e2_fixed);
-    sync_loge_from_fixed(&mut decoder.background_log_e, &decoder.background_log_e_fixed);
+    sync_loge_from_fixed(
+        &mut decoder.background_log_e,
+        &decoder.background_log_e_fixed,
+    );
 }
 
 #[cfg(feature = "fixed_point")]
@@ -219,7 +222,10 @@ fn sync_from_float_cache_to_fixed_primary(decoder: &mut OpusCustomDecoder<'_>) {
     sync_loge_to_fixed(&mut decoder.old_ebands_fixed, &decoder.old_ebands);
     sync_loge_to_fixed(&mut decoder.old_log_e_fixed, &decoder.old_log_e);
     sync_loge_to_fixed(&mut decoder.old_log_e2_fixed, &decoder.old_log_e2);
-    sync_loge_to_fixed(&mut decoder.background_log_e_fixed, &decoder.background_log_e);
+    sync_loge_to_fixed(
+        &mut decoder.background_log_e_fixed,
+        &decoder.background_log_e,
+    );
 }
 
 #[cfg(feature = "fixed_point")]
@@ -3110,7 +3116,15 @@ where
     }
     #[cfg(not(feature = "fixed_point"))]
     {
-        unquant_fine_energy(mode, start, end, &mut decoder.old_ebands, &fine_quant, dec, c);
+        unquant_fine_energy(
+            mode,
+            start,
+            end,
+            &mut decoder.old_ebands,
+            &fine_quant,
+            dec,
+            c,
+        );
     }
 
     let tell = entcode::ec_tell(dec.ctx());
@@ -3187,7 +3201,10 @@ where
         sync_loge_to_fixed(&mut decoder.old_ebands_fixed, &decoder.old_ebands);
         sync_loge_to_fixed(&mut decoder.old_log_e_fixed, &decoder.old_log_e);
         sync_loge_to_fixed(&mut decoder.old_log_e2_fixed, &decoder.old_log_e2);
-        sync_loge_to_fixed(&mut decoder.background_log_e_fixed, &decoder.background_log_e);
+        sync_loge_to_fixed(
+            &mut decoder.background_log_e_fixed,
+            &decoder.background_log_e,
+        );
     }
     result
 }

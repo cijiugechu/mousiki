@@ -4505,7 +4505,7 @@ mod tests {
         OpusEncoderInitError, OpusRes, StereoWidthState, VARIABLE_HP_MIN_CUTOFF_HZ,
         VARIABLE_HP_SMTH_COEF2_Q16, VERY_SMALL, compute_equiv_rate, compute_redundancy_bytes,
         compute_silk_rate_for_hybrid, compute_stereo_width, dc_reject, decide_fec, hp_cutoff,
-        lin2log, log2lin, opus_encode, opus_encode24, opus_encode_with_options,
+        lin2log, log2lin, opus_encode, opus_encode_with_options, opus_encode24,
         opus_encoder_create, opus_encoder_ctl, opus_encoder_get_size,
         prepare_celt_prefill_from_delay, prepare_silk_prefill, update_high_pass_state,
         user_bitrate_to_bitrate,
