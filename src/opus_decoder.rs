@@ -47,6 +47,8 @@ type PlcHandle<'a> = ();
 
 /// Maximum supported channel count for the canonical decoder.
 const MAX_CHANNELS: usize = 2;
+/// Maximum decoded frame size per channel (120 ms at 48 kHz).
+const MAX_DECODE_SAMPLES_PER_CHANNEL: usize = 5760;
 /// Scale factor that converts the quarter-dB decode gain to a base-2 exponent.
 const DECODE_GAIN_SCALE: f32 = core::f32::consts::LOG2_10 / 5120.0;
 /// Mode tag mirrored from `opus_private.h`.
@@ -234,6 +236,8 @@ pub struct OpusDecoder<'mode> {
     softclip_mem: [f32; 2],
     /// Final range of the last decoded packet.
     range_final: u32,
+    /// Reusable temporary buffer for integer decode wrappers.
+    decode_scratch: Vec<OpusRes>,
 }
 
 /// Error codes reported by the top-level decoder helpers.
@@ -358,6 +362,7 @@ impl<'mode> OpusDecoder<'mode> {
             self.softclip_mem = [0.0; 2];
         }
         self.range_final = 0;
+        self.decode_scratch.clear();
         #[cfg(feature = "deep_plc")]
         {
             self.lpcnet.reset();
@@ -1575,6 +1580,7 @@ pub fn opus_decoder_create(
         #[cfg(not(feature = "fixed_point"))]
         softclip_mem: [0.0; 2],
         range_final: 0,
+        decode_scratch: Vec::with_capacity(MAX_DECODE_SAMPLES_PER_CHANNEL * MAX_CHANNELS),
     };
 
     decoder.init(fs, channels)?;
@@ -1669,18 +1675,27 @@ pub fn opus_decode(
         return Err(OpusDecodeError::BufferTooSmall);
     }
 
-    let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
-    let decoded = opus_decode_native(
+    let mut out = core::mem::take(&mut decoder.decode_scratch);
+    if out.len() < total_samples {
+        out.resize(total_samples, OpusRes::default());
+    }
+    let decoded = match opus_decode_native(
         decoder,
         data,
         len,
-        &mut out,
+        &mut out[..total_samples],
         frame_size,
         decode_fec,
         false,
         None,
         OPTIONAL_CLIP,
-    )?;
+    ) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            decoder.decode_scratch = out;
+            return Err(err);
+        }
+    };
 
     let decoded_samples = decoded
         .checked_mul(channels)
@@ -1693,6 +1708,7 @@ pub fn opus_decode(
         &out[..decoded_samples],
         &mut pcm[..decoded_samples],
     );
+    decoder.decode_scratch = out;
 
     Ok(decoded)
 }
@@ -1745,10 +1761,27 @@ pub fn opus_decode24(
         return Err(OpusDecodeError::BufferTooSmall);
     }
 
-    let mut out: Vec<OpusRes> = vec![OpusRes::default(); total_samples];
-    let decoded = opus_decode_native(
-        decoder, data, len, &mut out, frame_size, decode_fec, false, None, false,
-    )?;
+    let mut out = core::mem::take(&mut decoder.decode_scratch);
+    if out.len() < total_samples {
+        out.resize(total_samples, OpusRes::default());
+    }
+    let decoded = match opus_decode_native(
+        decoder,
+        data,
+        len,
+        &mut out[..total_samples],
+        frame_size,
+        decode_fec,
+        false,
+        None,
+        false,
+    ) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            decoder.decode_scratch = out;
+            return Err(err);
+        }
+    };
 
     let decoded_samples = decoded
         .checked_mul(channels)
@@ -1760,6 +1793,7 @@ pub fn opus_decode24(
     for (dst, &src) in pcm.iter_mut().take(decoded_samples).zip(out.iter()) {
         *dst = res_to_int24(src);
     }
+    decoder.decode_scratch = out;
 
     Ok(decoded)
 }
@@ -1974,6 +2008,9 @@ mod tests {
             #[cfg(not(feature = "fixed_point"))]
             softclip_mem: [0.0; 2],
             range_final: 0,
+            decode_scratch: Vec::with_capacity(
+                super::MAX_DECODE_SAMPLES_PER_CHANNEL * super::MAX_CHANNELS,
+            ),
         };
 
         decoder.init(48_000, 1).expect("init succeeds");
