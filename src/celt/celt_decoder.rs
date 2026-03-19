@@ -3248,21 +3248,27 @@ where
 
     if frame.packet_loss {
         celt_decode_lost(decoder, n, frame.lm, plc);
+        let start = DECODE_BUFFER_SIZE
+            .checked_sub(n)
+            .ok_or(CeltDecodeError::BadArgument)?;
 
         #[cfg(feature = "fixed_point")]
         {
-            let mut inputs: Vec<&[FixedCeltSig]> = Vec::with_capacity(cc);
-            for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
-                let start = DECODE_BUFFER_SIZE
-                    .checked_sub(n)
-                    .ok_or(CeltDecodeError::BadArgument)?;
+            debug_assert!(cc <= MAX_CHANNELS);
+            let mut inputs: [&[FixedCeltSig]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+            for (channel, channel_slice) in decoder
+                .decode_mem_fixed
+                .chunks_mut(stride)
+                .take(cc)
+                .enumerate()
+            {
                 let (_, rest) = channel_slice.split_at(start);
                 let (output, _) = rest.split_at(n);
-                inputs.push(output);
+                inputs[channel] = output;
             }
 
             deemphasis_fixed(
-                &inputs,
+                &inputs[..cc],
                 pcm,
                 n,
                 cc,
@@ -3281,28 +3287,28 @@ where
         }
 
         #[cfg(not(feature = "fixed_point"))]
-        let mut inputs: Vec<&[CeltSig]> = Vec::with_capacity(cc);
-        #[cfg(not(feature = "fixed_point"))]
-        for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
-            let start = DECODE_BUFFER_SIZE
-                .checked_sub(n)
-                .ok_or(CeltDecodeError::BadArgument)?;
-            let (_, rest) = channel_slice.split_at(start);
-            let (output, _) = rest.split_at(n);
-            inputs.push(output);
-        }
+        {
+            debug_assert!(cc <= MAX_CHANNELS);
+            let mut inputs: [&[CeltSig]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+            for (channel, channel_slice) in
+                decoder.decode_mem.chunks_mut(stride).take(cc).enumerate()
+            {
+                let (_, rest) = channel_slice.split_at(start);
+                let (output, _) = rest.split_at(n);
+                inputs[channel] = output;
+            }
 
-        #[cfg(not(feature = "fixed_point"))]
-        deemphasis(
-            &inputs,
-            pcm,
-            n,
-            cc,
-            downsample,
-            &mode.pre_emphasis,
-            &mut decoder.preemph_mem_decoder,
-            accum,
-        );
+            deemphasis(
+                &inputs[..cc],
+                pcm,
+                n,
+                cc,
+                downsample,
+                &mode.pre_emphasis,
+                &mut decoder.preemph_mem_decoder,
+                accum,
+            );
+        }
 
         return Ok(output_samples);
     }
@@ -4064,16 +4070,22 @@ where
     // parity is fully established to avoid repeated heap allocations on hot paths.
     #[cfg(feature = "fixed_point")]
     {
-        let mut deemph_inputs: Vec<&[FixedCeltSig]> = Vec::with_capacity(cc);
-        for channel_slice in decoder.decode_mem_fixed.chunks_mut(stride).take(cc) {
+        debug_assert!(cc <= MAX_CHANNELS);
+        let mut deemph_inputs: [&[FixedCeltSig]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+        for (channel, channel_slice) in decoder
+            .decode_mem_fixed
+            .chunks_mut(stride)
+            .take(cc)
+            .enumerate()
+        {
             let start_idx = DECODE_BUFFER_SIZE - n;
             let (_, rest) = channel_slice.split_at_mut(start_idx);
             let (output, _) = rest.split_at_mut(n);
-            deemph_inputs.push(output);
+            deemph_inputs[channel] = output;
         }
 
         deemphasis_fixed(
-            &deemph_inputs,
+            &deemph_inputs[..cc],
             pcm,
             n,
             cc,
@@ -4093,16 +4105,17 @@ where
 
     #[cfg(not(feature = "fixed_point"))]
     {
-        let mut deemph_inputs: Vec<&[CeltSig]> = Vec::with_capacity(cc);
-        for channel_slice in decoder.decode_mem.chunks_mut(stride).take(cc) {
+        debug_assert!(cc <= MAX_CHANNELS);
+        let mut deemph_inputs: [&[CeltSig]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+        for (channel, channel_slice) in decoder.decode_mem.chunks_mut(stride).take(cc).enumerate() {
             let start_idx = DECODE_BUFFER_SIZE - n;
             let (_, rest) = channel_slice.split_at_mut(start_idx);
             let (output, _) = rest.split_at_mut(n);
-            deemph_inputs.push(output);
+            deemph_inputs[channel] = output;
         }
 
         deemphasis(
-            &deemph_inputs,
+            &deemph_inputs[..cc],
             pcm,
             n,
             cc,
@@ -4180,13 +4193,19 @@ pub(crate) fn opus_custom_decode(
         let n = samples * decoder.downsample.max(1) as usize;
         let stride = DECODE_BUFFER_SIZE + decoder.overlap;
         let start_idx = DECODE_BUFFER_SIZE - n;
-        let mut inputs: Vec<&[FixedCeltSig]> = Vec::with_capacity(channels);
-        for channel_slice in decoder.decode_mem_fixed.chunks(stride).take(channels) {
-            inputs.push(&channel_slice[start_idx..start_idx + n]);
+        debug_assert!(channels <= MAX_CHANNELS);
+        let mut inputs: [&[FixedCeltSig]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+        for (channel, channel_slice) in decoder
+            .decode_mem_fixed
+            .chunks(stride)
+            .take(channels)
+            .enumerate()
+        {
+            inputs[channel] = &channel_slice[start_idx..start_idx + n];
         }
         let mut mem = start_preemph_mem;
         deemphasis_fixed_to_int16(
-            &inputs,
+            &inputs[..channels],
             pcm,
             n,
             channels,
