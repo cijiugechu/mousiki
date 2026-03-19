@@ -58,6 +58,8 @@ use crate::celt::{
 use core::convert::TryFrom;
 /// Small positive constant used throughout the CELT band tools to avoid divisions by zero.
 const EPSILON: f32 = 1e-15;
+// CELT mode construction bounds each band width to 208 coefficients.
+const MAX_CELT_BAND_SIZE: usize = 208;
 
 /// Scaling factor applied to unit-norm vectors in the float build.
 const NORM_SCALING: OpusVal16 = 1.0;
@@ -1348,7 +1350,7 @@ fn quant_band_fixed_decode(
     let recombine = ctx.tf_change.max(0);
     let long_blocks = b0 == 1;
 
-    let mut lowband_storage = Vec::new();
+    let mut lowband_stack_storage = [0i16; MAX_CELT_BAND_SIZE];
     let copy_lowband = lowband_input.is_some()
         && (recombine > 0 || ((n_b & 1) == 0 && ctx.tf_change < 0) || b0 > 1);
     let mut lowband_view: Option<&mut [FixedCeltNorm]> = None;
@@ -1356,13 +1358,20 @@ fn quant_band_fixed_decode(
         let len = n.min(slice.len());
         if copy_lowband {
             if let Some(scratch) = lowband_scratch.as_mut() {
-                let len = len.min(scratch.len());
+                assert!(
+                    scratch.len() >= len,
+                    "lowband scratch shorter than current band width"
+                );
                 scratch[..len].copy_from_slice(&slice[..len]);
                 let (head, _) = scratch.split_at_mut(len);
                 lowband_view = Some(head);
             } else {
-                lowband_storage.extend_from_slice(&slice[..len]);
-                let (head, _) = lowband_storage.split_at_mut(len);
+                assert!(
+                    len <= lowband_stack_storage.len(),
+                    "band width exceeds fixed lowband stack workspace"
+                );
+                lowband_stack_storage[..len].copy_from_slice(&slice[..len]);
+                let (head, _) = lowband_stack_storage.split_at_mut(len);
                 lowband_view = Some(head);
             }
         } else {
@@ -1800,57 +1809,29 @@ pub(crate) fn quant_all_bands_decode_fixed(
 
         if dual_stereo {
             let lowband_input_offset = effective_lowband;
-            let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some((offset, norm[offset..offset + n].to_vec()))
-                } else {
-                    None
-                }
-            });
-            let mut y_lowband_temp = lowband_input_offset.and_then(|offset| {
-                norm2.as_ref().and_then(|norm2_buf| {
-                    if offset + n <= norm2_buf.len() {
-                        Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
-                })
-            });
-
-            let x_lowband_input = x_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-            let y_lowband_input = y_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-            let x_lowband_out = lowband_out_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some(&mut norm[offset..offset + n])
-                } else {
-                    None
-                }
-            });
-            let y_lowband_out = lowband_out_offset.and_then(|offset| {
-                norm2.as_mut().and_then(|norm2_buf| {
-                    if offset + n <= norm2_buf.len() {
-                        Some(&mut norm2_buf[offset..offset + n])
-                    } else {
-                        None
-                    }
-                })
-            });
-
-            x_cm = quant_band_fixed_decode(
-                &mut ctx,
-                x_band,
-                n,
-                b_allocation / 2,
-                b_blocks_base,
-                x_lowband_input,
-                lm,
-                x_lowband_out,
-                Q31_ONE,
-                lowband_scratch_storage.as_deref_mut(),
-                x_cm,
-                coder,
-            );
-            if let Some(y_band_slice_ref) = y_band.as_mut() {
+            {
+                let (x_lowband_input, x_lowband_out) =
+                    lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
+                x_cm = quant_band_fixed_decode(
+                    &mut ctx,
+                    x_band,
+                    n,
+                    b_allocation / 2,
+                    b_blocks_base,
+                    x_lowband_input,
+                    lm,
+                    x_lowband_out,
+                    Q31_ONE,
+                    lowband_scratch_storage.as_deref_mut(),
+                    x_cm,
+                    coder,
+                );
+            }
+            if let Some(y_band_slice_ref) = y_band.as_mut()
+                && let Some(norm2_buf) = norm2.as_mut()
+            {
+                let (y_lowband_input, y_lowband_out) =
+                    lowband_in_out_mut(norm2_buf, lowband_input_offset, lowband_out_offset, n);
                 y_cm = quant_band_fixed_decode(
                     &mut ctx,
                     y_band_slice_ref,
@@ -1866,45 +1847,10 @@ pub(crate) fn quant_all_bands_decode_fixed(
                     coder,
                 );
             }
-
-            if let Some((offset, data)) = x_lowband_temp.as_ref()
-                && *offset + data.len() <= norm.len()
-            {
-                norm[*offset..*offset + data.len()].copy_from_slice(data);
-            }
-            if let Some((offset, data)) = y_lowband_temp.as_ref()
-                && let Some(norm2_buf) = norm2.as_mut()
-                && *offset + data.len() <= norm2_buf.len()
-            {
-                norm2_buf[*offset..*offset + data.len()].copy_from_slice(data);
-            }
         } else if let Some(y_band_slice_ref) = y_band.as_mut() {
             let lowband_input_offset = effective_lowband;
-            let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some((offset, norm[offset..offset + n].to_vec()))
-                } else {
-                    None
-                }
-            });
-            let y_lowband_temp = lowband_input_offset.and_then(|offset| {
-                norm2.as_ref().and_then(|norm2_buf| {
-                    if offset + n <= norm2_buf.len() {
-                        Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
-                })
-            });
-            let x_lowband_input = x_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-            let x_lowband_out = lowband_out_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some(&mut norm[offset..offset + n])
-                } else {
-                    None
-                }
-            });
-
+            let (x_lowband_input, x_lowband_out) =
+                lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
             x_cm = quant_band_stereo_fixed_decode(
                 &mut ctx,
                 x_band,
@@ -1920,36 +1866,10 @@ pub(crate) fn quant_all_bands_decode_fixed(
                 coder,
             );
             y_cm = x_cm;
-
-            if let Some((offset, data)) = x_lowband_temp.as_ref()
-                && *offset + data.len() <= norm.len()
-            {
-                norm[*offset..*offset + data.len()].copy_from_slice(data);
-            }
-            if let Some((offset, data)) = y_lowband_temp.as_ref()
-                && let Some(norm2_buf) = norm2.as_mut()
-                && *offset + data.len() <= norm2_buf.len()
-            {
-                norm2_buf[*offset..*offset + data.len()].copy_from_slice(data);
-            }
         } else {
             let lowband_input_offset = effective_lowband;
-            let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some((offset, norm[offset..offset + n].to_vec()))
-                } else {
-                    None
-                }
-            });
-            let x_lowband_input = x_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-            let x_lowband_out = lowband_out_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some(&mut norm[offset..offset + n])
-                } else {
-                    None
-                }
-            });
-
+            let (x_lowband_input, x_lowband_out) =
+                lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
             x_cm = quant_band_fixed_decode(
                 &mut ctx,
                 x_band,
@@ -1965,12 +1885,6 @@ pub(crate) fn quant_all_bands_decode_fixed(
                 coder,
             );
             y_cm = x_cm;
-
-            if let Some((offset, data)) = x_lowband_temp.as_ref()
-                && *offset + data.len() <= norm.len()
-            {
-                norm[*offset..*offset + data.len()].copy_from_slice(data);
-            }
         }
 
         if let Some(mask) = collapse_masks.get_mut(band * channels) {
@@ -2249,7 +2163,7 @@ fn quant_band(
         recombine = tf_change;
     }
 
-    let mut _lowband_storage: Option<Vec<OpusVal16>> = None;
+    let mut lowband_stack_storage = [0.0; MAX_CELT_BAND_SIZE];
     let copy_lowband =
         lowband_input.is_some() && (recombine > 0 || ((n_b & 1) == 0 && tf_change < 0) || b0 > 1);
     let mut lowband_view: Option<&mut [OpusVal16]> = None;
@@ -2258,15 +2172,20 @@ fn quant_band(
         let len = n.min(slice.len());
         if copy_lowband {
             if let Some(scratch) = lowband_scratch.as_mut() {
-                let len = len.min(scratch.len());
+                assert!(
+                    scratch.len() >= len,
+                    "lowband scratch shorter than current band width"
+                );
                 scratch[..len].copy_from_slice(&slice[..len]);
                 let (head, _) = scratch.split_at_mut(len);
                 lowband_view = Some(head);
             } else {
-                let owned = slice[..len].to_vec();
-                _lowband_storage = Some(owned);
-                let buffer = _lowband_storage.as_mut().unwrap();
-                let (head, _) = buffer.split_at_mut(len);
+                assert!(
+                    len <= lowband_stack_storage.len(),
+                    "band width exceeds fixed lowband stack workspace"
+                );
+                lowband_stack_storage[..len].copy_from_slice(&slice[..len]);
+                let (head, _) = lowband_stack_storage.split_at_mut(len);
                 lowband_view = Some(head);
             }
         } else {
@@ -2592,6 +2511,61 @@ fn quant_band_stereo(
     cm
 }
 
+#[inline]
+fn lowband_window_mut<T>(buffer: &mut [T], offset: Option<usize>, len: usize) -> Option<&mut [T]> {
+    let start = offset?;
+    let end = start.checked_add(len)?;
+    if end > buffer.len() {
+        return None;
+    }
+    Some(&mut buffer[start..end])
+}
+
+#[inline]
+fn lowband_in_out_mut<T>(
+    buffer: &mut [T],
+    input_offset: Option<usize>,
+    output_offset: Option<usize>,
+    len: usize,
+) -> (Option<&mut [T]>, Option<&mut [T]>) {
+    match (input_offset, output_offset) {
+        (None, None) => (None, None),
+        (Some(input_start), None) => (lowband_window_mut(buffer, Some(input_start), len), None),
+        (None, Some(output_start)) => (None, lowband_window_mut(buffer, Some(output_start), len)),
+        (Some(input_start), Some(output_start)) => {
+            let Some(input_end) = input_start.checked_add(len) else {
+                return (None, None);
+            };
+            let Some(output_end) = output_start.checked_add(len) else {
+                return (None, None);
+            };
+            if input_end > buffer.len() || output_end > buffer.len() {
+                return (None, None);
+            }
+
+            if input_end <= output_start {
+                let (left, right) = buffer.split_at_mut(output_start);
+                (
+                    Some(&mut left[input_start..input_end]),
+                    Some(&mut right[..len]),
+                )
+            } else if output_end <= input_start {
+                let (left, right) = buffer.split_at_mut(input_start);
+                (
+                    Some(&mut right[..len]),
+                    Some(&mut left[output_start..output_end]),
+                )
+            } else {
+                debug_assert!(
+                    false,
+                    "lowband input/output windows unexpectedly overlap: input={input_start}..{input_end}, output={output_start}..{output_end}"
+                );
+                (None, None)
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn quant_all_bands(
     encode: bool,
@@ -2807,64 +2781,31 @@ pub(crate) fn quant_all_bands(
 
         if dual_stereo {
             let lowband_input_offset = effective_lowband;
-            let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some((offset, norm[offset..offset + n].to_vec()))
-                } else {
-                    None
-                }
-            });
-            let mut y_lowband_temp = lowband_input_offset.and_then(|offset| {
-                norm2.as_ref().and_then(|norm2_buf| {
-                    if offset + n <= norm2_buf.len() {
-                        Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
-                })
-            });
+            {
+                let (x_lowband_input, x_lowband_out) =
+                    lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
+                x_cm = quant_band(
+                    &mut ctx,
+                    x_band,
+                    n,
+                    b_allocation / 2,
+                    b_blocks_base,
+                    x_lowband_input,
+                    lm,
+                    x_lowband_out,
+                    1.0,
+                    lowband_scratch_storage.as_deref_mut(),
+                    x_cm,
+                    coder,
+                );
+            }
 
-            let x_lowband_input = x_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-            let y_lowband_input = y_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-
-            let x_lowband_out = lowband_out_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some(&mut norm[offset..offset + n])
-                } else {
-                    None
-                }
-            });
-            let y_lowband_out = lowband_out_offset.and_then(|offset| {
-                norm2.as_mut().and_then(|norm2_buf| {
-                    if offset + n <= norm2_buf.len() {
-                        Some(&mut norm2_buf[offset..offset + n])
-                    } else {
-                        None
-                    }
-                })
-            });
-
-            let scratch_a = lowband_scratch_storage.as_deref_mut();
-
-            x_cm = quant_band(
-                &mut ctx,
-                x_band,
-                n,
-                b_allocation / 2,
-                b_blocks_base,
-                x_lowband_input,
-                lm,
-                x_lowband_out,
-                1.0,
-                scratch_a,
-                x_cm,
-                coder,
-            );
-
-            let scratch_b = lowband_scratch_storage.as_deref_mut();
-
-            if let Some(y_band_slice_ref) = y_band.as_mut() {
+            if let Some(y_band_slice_ref) = y_band.as_mut()
+                && let Some(norm2_buf) = norm2.as_mut()
+            {
                 let y_band_slice = &mut **y_band_slice_ref;
+                let (y_lowband_input, y_lowband_out) =
+                    lowband_in_out_mut(norm2_buf, lowband_input_offset, lowband_out_offset, n);
                 y_cm = quant_band(
                     &mut ctx,
                     y_band_slice,
@@ -2875,22 +2816,10 @@ pub(crate) fn quant_all_bands(
                     lm,
                     y_lowband_out,
                     1.0,
-                    scratch_b,
+                    lowband_scratch_storage.as_deref_mut(),
                     y_cm,
                     coder,
                 );
-            }
-
-            if let Some((offset, data)) = x_lowband_temp.as_ref()
-                && *offset + data.len() <= norm.len()
-            {
-                norm[*offset..*offset + data.len()].copy_from_slice(data);
-            }
-            if let Some((offset, data)) = y_lowband_temp.as_ref()
-                && let Some(norm2_buf) = norm2.as_mut()
-                && *offset + data.len() <= norm2_buf.len()
-            {
-                norm2_buf[*offset..*offset + data.len()].copy_from_slice(data);
             }
         } else if let Some(y_band_slice_ref) = y_band.as_mut() {
             let y_band_slice = &mut **y_band_slice_ref;
@@ -2925,35 +2854,10 @@ pub(crate) fn quant_all_bands(
                     })
                 });
 
-                let mut x_lowband_input_first = lowband_input_offset.and_then(|offset| {
-                    if offset + n <= norm.len() {
-                        Some((offset, norm[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
-                });
-                let y_lowband_input_first = lowband_input_offset.and_then(|offset| {
-                    norm2.as_ref().and_then(|norm2_buf| {
-                        if offset + n <= norm2_buf.len() {
-                            Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                        } else {
-                            None
-                        }
-                    })
-                });
-
                 ctx.theta_round = -1;
                 let cm_first = {
-                    let x_lowband_input_slice = x_lowband_input_first
-                        .as_mut()
-                        .map(|(_, data)| data.as_mut_slice());
-                    let x_lowband_out_slice = lowband_out_offset.and_then(|offset| {
-                        if offset + n <= norm.len() {
-                            Some(&mut norm[offset..offset + n])
-                        } else {
-                            None
-                        }
-                    });
+                    let (x_lowband_input_slice, x_lowband_out_slice) =
+                        lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
                     quant_band_stereo(
                         &mut ctx,
                         x_band,
@@ -2995,17 +2899,6 @@ pub(crate) fn quant_all_bands(
                     })
                 });
 
-                if let Some((offset, data)) = x_lowband_input_first.as_ref() {
-                    let len = data.len().min(norm.len().saturating_sub(*offset));
-                    norm[*offset..*offset + len].copy_from_slice(&data[..len]);
-                }
-                if let Some((offset, data)) = y_lowband_input_first.as_ref()
-                    && let Some(norm2_buf) = norm2.as_mut()
-                {
-                    let len = data.len().min(norm2_buf.len().saturating_sub(*offset));
-                    norm2_buf[*offset..*offset + len].copy_from_slice(&data[..len]);
-                }
-
                 coder.restore_encoder_snapshot(&coder_initial);
                 ctx = ctx_initial.clone();
                 x_band[..n].copy_from_slice(&x_before[..n]);
@@ -3020,35 +2913,10 @@ pub(crate) fn quant_all_bands(
                     let len = data.len().min(norm2_buf.len().saturating_sub(*offset));
                     norm2_buf[*offset..*offset + len].copy_from_slice(&data[..len]);
                 }
-                let mut x_lowband_input_second = lowband_input_offset.and_then(|offset| {
-                    if offset + n <= norm.len() {
-                        Some((offset, norm[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
-                });
-                let y_lowband_input_second = lowband_input_offset.and_then(|offset| {
-                    norm2.as_ref().and_then(|norm2_buf| {
-                        if offset + n <= norm2_buf.len() {
-                            Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                        } else {
-                            None
-                        }
-                    })
-                });
-
                 ctx.theta_round = 1;
                 let cm_second = {
-                    let x_lowband_input_slice = x_lowband_input_second
-                        .as_mut()
-                        .map(|(_, data)| data.as_mut_slice());
-                    let x_lowband_out_slice = lowband_out_offset.and_then(|offset| {
-                        if offset + n <= norm.len() {
-                            Some(&mut norm[offset..offset + n])
-                        } else {
-                            None
-                        }
-                    });
+                    let (x_lowband_input_slice, x_lowband_out_slice) =
+                        lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
                     quant_band_stereo(
                         &mut ctx,
                         x_band,
@@ -3066,17 +2934,6 @@ pub(crate) fn quant_all_bands(
                 };
                 let dist1 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
                     + weights[1] * celt_inner_prod(&y_before[..n], &y_band_slice[..n]);
-
-                if let Some((offset, data)) = x_lowband_input_second.as_ref() {
-                    let len = data.len().min(norm.len().saturating_sub(*offset));
-                    norm[*offset..*offset + len].copy_from_slice(&data[..len]);
-                }
-                if let Some((offset, data)) = y_lowband_input_second.as_ref()
-                    && let Some(norm2_buf) = norm2.as_mut()
-                {
-                    let len = data.len().min(norm2_buf.len().saturating_sub(*offset));
-                    norm2_buf[*offset..*offset + len].copy_from_slice(&data[..len]);
-                }
 
                 if dist0 >= dist1 {
                     coder.restore_encoder_snapshot(&coder_after_first);
@@ -3100,33 +2957,8 @@ pub(crate) fn quant_all_bands(
                 y_cm = x_cm;
                 ctx.theta_round = 0;
             } else {
-                let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
-                    if offset + n <= norm.len() {
-                        Some((offset, norm[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
-                });
-                let y_lowband_temp = lowband_input_offset.and_then(|offset| {
-                    norm2.as_ref().and_then(|norm2_buf| {
-                        if offset + n <= norm2_buf.len() {
-                            Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                        } else {
-                            None
-                        }
-                    })
-                });
-
-                let x_lowband_input = x_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-
-                let x_lowband_out = lowband_out_offset.and_then(|offset| {
-                    if offset + n <= norm.len() {
-                        Some(&mut norm[offset..offset + n])
-                    } else {
-                        None
-                    }
-                });
-
+                let (x_lowband_input, x_lowband_out) =
+                    lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
                 x_cm = quant_band_stereo(
                     &mut ctx,
                     x_band,
@@ -3142,40 +2974,11 @@ pub(crate) fn quant_all_bands(
                     coder,
                 );
                 y_cm = x_cm;
-
-                if let Some((offset, data)) = x_lowband_temp.as_ref()
-                    && *offset + data.len() <= norm.len()
-                {
-                    norm[*offset..*offset + data.len()].copy_from_slice(data);
-                }
-                if let Some((offset, data)) = y_lowband_temp.as_ref()
-                    && let Some(norm2_buf) = norm2.as_mut()
-                    && *offset + data.len() <= norm2_buf.len()
-                {
-                    norm2_buf[*offset..*offset + data.len()].copy_from_slice(data);
-                }
             }
         } else {
             let lowband_input_offset = effective_lowband;
-            let mut x_lowband_temp = lowband_input_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some((offset, norm[offset..offset + n].to_vec()))
-                } else {
-                    None
-                }
-            });
-
-            let x_lowband_input = x_lowband_temp.as_mut().map(|(_, data)| data.as_mut_slice());
-            let x_lowband_out = lowband_out_offset.and_then(|offset| {
-                if offset + n <= norm.len() {
-                    Some(&mut norm[offset..offset + n])
-                } else {
-                    None
-                }
-            });
-
-            let scratch_inner = lowband_scratch_storage.as_deref_mut();
-
+            let (x_lowband_input, x_lowband_out) =
+                lowband_in_out_mut(norm, lowband_input_offset, lowband_out_offset, n);
             x_cm = quant_band(
                 &mut ctx,
                 x_band,
@@ -3186,17 +2989,11 @@ pub(crate) fn quant_all_bands(
                 lm,
                 x_lowband_out,
                 1.0,
-                scratch_inner,
+                lowband_scratch_storage.as_deref_mut(),
                 x_cm | y_cm,
                 coder,
             );
             y_cm = x_cm;
-
-            if let Some((offset, data)) = x_lowband_temp.as_ref()
-                && *offset + data.len() <= norm.len()
-            {
-                norm[*offset..*offset + data.len()].copy_from_slice(data);
-            }
         }
 
         if let Some(mask) = collapse_masks.get_mut(band * channels) {
