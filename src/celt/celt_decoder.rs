@@ -84,7 +84,7 @@ use crate::celt::quant_bands::{unquant_coarse_energy, unquant_fine_energy};
 use crate::celt::quant_bands::{
     unquant_coarse_energy_fixed, unquant_energy_finalise_fixed, unquant_fine_energy_fixed,
 };
-use crate::celt::rate::clt_compute_allocation;
+use crate::celt::rate::clt_compute_allocation_with_scratch;
 #[cfg(any(feature = "fixed_point", feature = "deep_plc"))]
 use crate::celt::types::OpusInt16;
 #[cfg(not(feature = "fixed_point"))]
@@ -2625,12 +2625,6 @@ pub(crate) fn validate_celt_decoder(decoder: &OpusCustomDecoder<'_>) {
 #[derive(Debug)]
 pub(crate) struct FramePreparation<'a> {
     pub range_decoder: Option<RangeDecoderHandle<'a>>,
-    pub tf_res: Vec<OpusInt32>,
-    pub cap: Vec<OpusInt32>,
-    pub offsets: Vec<OpusInt32>,
-    pub fine_quant: Vec<OpusInt32>,
-    pub pulses: Vec<OpusInt32>,
-    pub fine_priority: Vec<OpusInt32>,
     pub spread_decision: OpusInt32,
     pub is_transient: bool,
     pub short_blocks: OpusInt32,
@@ -2665,24 +2659,14 @@ impl<'a> FramePreparation<'a> {
         start: usize,
         end: usize,
         eff_end: usize,
-        nb_ebands: usize,
         lm: usize,
         m: usize,
         n: usize,
         c: usize,
         cc: usize,
     ) -> Self {
-        let tf_res = vec![0; nb_ebands];
-        let cap = vec![0; nb_ebands];
-        let zeros = vec![0; nb_ebands];
         Self {
             range_decoder: None,
-            tf_res,
-            cap,
-            offsets: zeros.clone(),
-            fine_quant: zeros.clone(),
-            pulses: zeros.clone(),
-            fine_priority: zeros,
             spread_decision: 0,
             is_transient: false,
             short_blocks: 0,
@@ -2880,7 +2864,7 @@ where
 
     if packet.len() <= 1 {
         return Ok(FramePreparation::new_packet_loss(
-            start, end, eff_end, nb_ebands, lm, m, n, c, cc,
+            start, end, eff_end, lm, m, n, c, cc,
         ));
     }
 
@@ -3009,8 +2993,9 @@ where
         );
     }
 
-    let mut tf_res = vec![0; nb_ebands];
-    tf_decode(start, end, is_transient, &mut tf_res, lm, dec);
+    let decode_tf_res = &mut decoder.decode_tf_res;
+    decode_tf_res.fill(0);
+    tf_decode(start, end, is_transient, decode_tf_res, lm, dec);
 
     tell = entcode::ec_tell(dec.ctx());
     let mut spread_decision = SPREAD_NORMAL;
@@ -3018,10 +3003,12 @@ where
         spread_decision = dec.dec_icdf(&SPREAD_ICDF, 5);
     }
 
-    let mut cap = vec![0; nb_ebands];
-    init_caps(mode, &mut cap, lm, c);
+    let decode_cap = &mut decoder.decode_cap;
+    decode_cap.fill(0);
+    init_caps(mode, decode_cap, lm, c);
 
-    let mut offsets = vec![0; nb_ebands];
+    let decode_offsets = &mut decoder.decode_offsets;
+    decode_offsets.fill(0);
     let mut dynalloc_logp = 6;
     let total_bits = len_bits << BITRES;
     let mut dynalloc_total_bits = total_bits;
@@ -3035,7 +3022,7 @@ where
         let mut dynalloc_loop_logp = dynalloc_logp;
         let mut boost = 0;
         while tell_frac + ((dynalloc_loop_logp as OpusInt32) << BITRES) < dynalloc_total_bits
-            && boost < cap[band]
+            && boost < decode_cap[band]
         {
             let flag = dec.dec_bit_logp(dynalloc_loop_logp as u32);
             tell_frac = entcode::ec_tell_frac(dec.ctx()) as OpusInt32;
@@ -3046,13 +3033,14 @@ where
             dynalloc_total_bits -= quanta;
             dynalloc_loop_logp = 1;
         }
-        offsets[band] = boost;
+        decode_offsets[band] = boost;
         if boost > 0 {
             dynalloc_logp = max(2, dynalloc_logp - 1);
         }
     }
 
-    let mut fine_quant = vec![0; nb_ebands];
+    let decode_fine_quant = &mut decoder.decode_fine_quant;
+    decode_fine_quant.fill(0);
     let alloc_trim = if tell_frac + ((6 << BITRES) as OpusInt32) <= dynalloc_total_bits {
         dec.dec_icdf(&TRIM_ICDF, 7)
     } else {
@@ -3073,32 +3061,42 @@ where
     };
     bits -= anti_collapse_rsv;
 
-    let mut pulses = vec![0; nb_ebands];
-    let mut fine_priority = vec![0; nb_ebands];
+    let decode_pulses = &mut decoder.decode_pulses;
+    let decode_fine_priority = &mut decoder.decode_fine_priority;
+    decode_pulses.fill(0);
+    decode_fine_priority.fill(0);
     let mut intensity = 0;
     let mut dual_stereo = 0;
     let mut balance = 0;
+    let decode_alloc_bits1 = &mut decoder.decode_alloc_bits1;
+    let decode_alloc_bits2 = &mut decoder.decode_alloc_bits2;
+    let decode_alloc_thresh = &mut decoder.decode_alloc_thresh;
+    let decode_alloc_trim_offset = &mut decoder.decode_alloc_trim_offset;
 
-    let coded_bands = clt_compute_allocation(
+    let coded_bands = clt_compute_allocation_with_scratch(
         mode,
         start,
         end,
-        &offsets,
-        &cap,
+        decode_offsets,
+        decode_cap,
         alloc_trim,
         &mut intensity,
         &mut dual_stereo,
         bits,
         &mut balance,
-        &mut pulses,
-        &mut fine_quant,
-        &mut fine_priority,
+        decode_pulses,
+        decode_fine_quant,
+        decode_fine_priority,
         c as OpusInt32,
         lm as OpusInt32,
         None,
         Some(dec),
         0,
         0,
+        decode_alloc_bits1,
+        decode_alloc_bits2,
+        decode_alloc_thresh,
+        decode_alloc_trim_offset,
     );
 
     #[cfg(feature = "fixed_point")]
@@ -3108,7 +3106,7 @@ where
             start,
             end,
             &mut decoder.old_ebands_fixed,
-            &fine_quant,
+            decode_fine_quant,
             dec,
             c,
         );
@@ -3121,7 +3119,7 @@ where
             start,
             end,
             &mut decoder.old_ebands,
-            &fine_quant,
+            decode_fine_quant,
             dec,
             c,
         );
@@ -3131,12 +3129,6 @@ where
 
     Ok(FramePreparation {
         range_decoder: Some(range_decoder),
-        tf_res,
-        cap,
-        offsets,
-        fine_quant,
-        pulses,
-        fine_priority,
         spread_decision,
         is_transient,
         short_blocks,
@@ -3319,12 +3311,6 @@ where
         .ok_or(CeltDecodeError::InvalidPacket)?;
     let FramePreparation {
         range_decoder: _,
-        tf_res,
-        cap: _,
-        offsets: _,
-        fine_quant,
-        pulses,
-        fine_priority,
         spread_decision,
         is_transient,
         short_blocks,
@@ -3352,6 +3338,10 @@ where
         cc,
         packet_loss: _,
     } = frame;
+    let tf_res = &decoder.decode_tf_res;
+    let fine_quant = &decoder.decode_fine_quant;
+    let pulses = &decoder.decode_pulses;
+    let fine_priority = &decoder.decode_fine_priority;
 
     let move_len = DECODE_BUFFER_SIZE
         .checked_sub(n)
@@ -6217,9 +6207,6 @@ mod tests {
             .expect("frame preparation should succeed");
         let super::FramePreparation {
             mut range_decoder,
-            tf_res,
-            fine_quant: _,
-            pulses,
             spread_decision,
             short_blocks,
             intra_ener: _,
@@ -6236,6 +6223,8 @@ mod tests {
             c,
             ..
         } = frame;
+        let tf_res = &decoder.decode_tf_res;
+        let pulses = &decoder.decode_pulses;
         let mut range_state = range_decoder.take().expect("range decoder must exist");
         let dec = range_state.decoder();
 
@@ -6324,7 +6313,6 @@ mod tests {
             .expect("frame preparation should succeed");
         let super::FramePreparation {
             mut range_decoder,
-            pulses,
             total_bits,
             anti_collapse_rsv,
             balance,
@@ -6333,6 +6321,7 @@ mod tests {
             lm,
             ..
         } = frame;
+        let pulses = &decoder.decode_pulses;
         let mut range_state = range_decoder.take().expect("range decoder must exist");
         let dec = range_state.decoder();
 
@@ -6392,12 +6381,12 @@ mod tests {
                 .expect("native decoder creation should succeed");
             let mut decoder_bridge = opus_custom_decoder_create(&mode, 1)
                 .expect("bridge decoder creation should succeed");
-            let tf_frame =
+            let _tf_frame =
                 prepare_frame(&mut decoder_tf, &first_packet, POSTFILTER_FRAME_SIZE, None)
                     .expect("frame preparation should succeed");
             crate::test_trace::trace_println!(
                 "frame0 tf_res_first4={:?}",
-                &tf_frame.tf_res[..4.min(tf_frame.tf_res.len())]
+                &decoder_tf.decode_tf_res[..4.min(decoder_tf.decode_tf_res.len())]
             );
             let (band0_n, band0_q, band0_index, band0_total, band0_pulses, band0_mask) =
                 debug_first_band_pulses(&mut decoder_native, &first_packet);

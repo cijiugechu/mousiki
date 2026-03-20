@@ -2,6 +2,7 @@
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use super::KissFftState;
@@ -691,6 +692,16 @@ pub struct OpusCustomDecoder<'a> {
     pub old_log_e: Box<[CeltGlog]>,
     pub old_log_e2: Box<[CeltGlog]>,
     pub background_log_e: Box<[CeltGlog]>,
+    pub decode_tf_res: Vec<OpusInt32>,
+    pub decode_cap: Vec<OpusInt32>,
+    pub decode_offsets: Vec<OpusInt32>,
+    pub decode_fine_quant: Vec<OpusInt32>,
+    pub decode_pulses: Vec<OpusInt32>,
+    pub decode_fine_priority: Vec<OpusInt32>,
+    pub decode_alloc_bits1: Vec<OpusInt32>,
+    pub decode_alloc_bits2: Vec<OpusInt32>,
+    pub decode_alloc_thresh: Vec<OpusInt32>,
+    pub decode_alloc_trim_offset: Vec<OpusInt32>,
     #[cfg(feature = "fixed_point")]
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
@@ -725,6 +736,7 @@ impl<'a> OpusCustomDecoder<'a> {
         debug_assert!(channels == 0 || decode_stride * channels == decode_mem.len());
         debug_assert!(decode_stride >= overlap);
         let band_count = 2 * mode.num_ebands;
+        let decode_band_count = mode.num_ebands;
         debug_assert_eq!(old_ebands.len(), band_count);
         debug_assert_eq!(old_log_e.len(), band_count);
         debug_assert_eq!(old_log_e2.len(), band_count);
@@ -797,6 +809,16 @@ impl<'a> OpusCustomDecoder<'a> {
             old_log_e,
             old_log_e2,
             background_log_e,
+            decode_tf_res: vec![0; decode_band_count],
+            decode_cap: vec![0; decode_band_count],
+            decode_offsets: vec![0; decode_band_count],
+            decode_fine_quant: vec![0; decode_band_count],
+            decode_pulses: vec![0; decode_band_count],
+            decode_fine_priority: vec![0; decode_band_count],
+            decode_alloc_bits1: vec![0; decode_band_count],
+            decode_alloc_bits2: vec![0; decode_band_count],
+            decode_alloc_thresh: vec![0; decode_band_count],
+            decode_alloc_trim_offset: vec![0; decode_band_count],
             #[cfg(feature = "fixed_point")]
             fixed_mdct,
             #[cfg(feature = "fixed_point")]
@@ -856,5 +878,15 @@ impl<'a> OpusCustomDecoder<'a> {
         self.old_log_e.fill(RESET_LOG_ENERGY);
         self.old_log_e2.fill(RESET_LOG_ENERGY);
         self.background_log_e.fill(0.0);
+        self.decode_tf_res.fill(0);
+        self.decode_cap.fill(0);
+        self.decode_offsets.fill(0);
+        self.decode_fine_quant.fill(0);
+        self.decode_pulses.fill(0);
+        self.decode_fine_priority.fill(0);
+        self.decode_alloc_bits1.fill(0);
+        self.decode_alloc_bits2.fill(0);
+        self.decode_alloc_thresh.fill(0);
+        self.decode_alloc_trim_offset.fill(0);
     }
 }

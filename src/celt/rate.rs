@@ -840,7 +840,7 @@ pub(crate) fn interp_bits2pulses(
 /// Computes the full band allocation curve for the supplied mode and bit budget.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
-pub(crate) fn clt_compute_allocation(
+fn clt_compute_allocation_impl(
     mode: &OpusCustomMode<'_>,
     start: usize,
     end: usize,
@@ -860,7 +860,20 @@ pub(crate) fn clt_compute_allocation(
     decoder: Option<&mut EcDec<'_>>,
     prev: OpusInt32,
     signal_bandwidth: OpusInt32,
+    bits1: &mut [OpusInt32],
+    bits2: &mut [OpusInt32],
+    thresh: &mut [OpusInt32],
+    trim_offset: &mut [OpusInt32],
 ) -> OpusInt32 {
+    debug_assert!(bits1.len() >= mode.num_ebands);
+    debug_assert!(bits2.len() >= mode.num_ebands);
+    debug_assert!(thresh.len() >= mode.num_ebands);
+    debug_assert!(trim_offset.len() >= mode.num_ebands);
+    bits1.fill(0);
+    bits2.fill(0);
+    thresh.fill(0);
+    trim_offset.fill(0);
+
     debug_assert!(offsets.len() >= end);
     debug_assert!(cap.len() >= end);
     debug_assert!(pulses.len() >= end);
@@ -893,11 +906,6 @@ pub(crate) fn clt_compute_allocation(
             }
         }
     }
-
-    let mut bits1 = vec![0; len];
-    let mut bits2 = vec![0; len];
-    let mut thresh = vec![0; len];
-    let mut trim_offset = vec![0; len];
 
     for j in start..end {
         let n = OpusInt32::from(mode.e_bands[j + 1] - mode.e_bands[j]);
@@ -979,9 +987,9 @@ pub(crate) fn clt_compute_allocation(
         start,
         end,
         skip_start,
-        &bits1,
-        &bits2,
-        &thresh,
+        bits1,
+        bits2,
+        thresh,
         cap,
         total,
         balance,
@@ -999,6 +1007,118 @@ pub(crate) fn clt_compute_allocation(
         decoder,
         prev,
         signal_bandwidth,
+    )
+}
+
+/// Computes the full band allocation curve while reusing caller-provided scratch
+/// buffers to avoid per-call heap allocations on hot paths.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+pub(crate) fn clt_compute_allocation_with_scratch(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    offsets: &[OpusInt32],
+    cap: &[OpusInt32],
+    alloc_trim: OpusInt32,
+    intensity: &mut OpusInt32,
+    dual_stereo: &mut OpusInt32,
+    total: OpusInt32,
+    balance: &mut OpusInt32,
+    pulses: &mut [OpusInt32],
+    ebits: &mut [OpusInt32],
+    fine_priority: &mut [OpusInt32],
+    channels: OpusInt32,
+    lm: OpusInt32,
+    encoder: Option<&mut EcEnc<'_>>,
+    decoder: Option<&mut EcDec<'_>>,
+    prev: OpusInt32,
+    signal_bandwidth: OpusInt32,
+    bits1: &mut [OpusInt32],
+    bits2: &mut [OpusInt32],
+    thresh: &mut [OpusInt32],
+    trim_offset: &mut [OpusInt32],
+) -> OpusInt32 {
+    clt_compute_allocation_impl(
+        mode,
+        start,
+        end,
+        offsets,
+        cap,
+        alloc_trim,
+        intensity,
+        dual_stereo,
+        total,
+        balance,
+        pulses,
+        ebits,
+        fine_priority,
+        channels,
+        lm,
+        encoder,
+        decoder,
+        prev,
+        signal_bandwidth,
+        bits1,
+        bits2,
+        thresh,
+        trim_offset,
+    )
+}
+
+/// Computes the full band allocation curve for the supplied mode and bit budget.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+pub(crate) fn clt_compute_allocation(
+    mode: &OpusCustomMode<'_>,
+    start: usize,
+    end: usize,
+    offsets: &[OpusInt32],
+    cap: &[OpusInt32],
+    alloc_trim: OpusInt32,
+    intensity: &mut OpusInt32,
+    dual_stereo: &mut OpusInt32,
+    total: OpusInt32,
+    balance: &mut OpusInt32,
+    pulses: &mut [OpusInt32],
+    ebits: &mut [OpusInt32],
+    fine_priority: &mut [OpusInt32],
+    channels: OpusInt32,
+    lm: OpusInt32,
+    encoder: Option<&mut EcEnc<'_>>,
+    decoder: Option<&mut EcDec<'_>>,
+    prev: OpusInt32,
+    signal_bandwidth: OpusInt32,
+) -> OpusInt32 {
+    let len = mode.num_ebands;
+    let mut bits1 = vec![0; len];
+    let mut bits2 = vec![0; len];
+    let mut thresh = vec![0; len];
+    let mut trim_offset = vec![0; len];
+    clt_compute_allocation_impl(
+        mode,
+        start,
+        end,
+        offsets,
+        cap,
+        alloc_trim,
+        intensity,
+        dual_stereo,
+        total,
+        balance,
+        pulses,
+        ebits,
+        fine_priority,
+        channels,
+        lm,
+        encoder,
+        decoder,
+        prev,
+        signal_bandwidth,
+        &mut bits1,
+        &mut bits2,
+        &mut thresh,
+        &mut trim_offset,
     )
 }
 
