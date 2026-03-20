@@ -102,6 +102,9 @@ fn pre_rotate_forward(
 ) -> Vec<KissFftCpx> {
     let (cos_part, sin_part) = twiddles.split_at(n4);
     let mut out = vec![KissFftCpx::default(); n4];
+    // Keep a single scalar implementation here: on current targets the compiler
+    // auto-vectorizes this loop effectively, and hand-written SIMD/arch
+    // dispatch did not show a reliable win over this form.
     for i in 0..n4 {
         let re = folded[2 * i];
         let im = folded[2 * i + 1];
@@ -196,6 +199,8 @@ fn pre_rotate_backward(input: &[f32], twiddles: &[f32], stride: usize) -> Vec<Ki
     let n4 = n2 / 2;
     let (cos_part, sin_part) = twiddles.split_at(n4);
     let mut out = vec![KissFftCpx::default(); n4];
+    // Same policy for inverse pre-rotation: keep this scalar loop and rely on
+    // auto-vectorization rather than adding platform-specific SIMD paths.
     let stride_isize = stride as isize;
     let mut xp1 = 0isize;
     let mut xp2 = (n2 as isize - 1) * stride_isize;

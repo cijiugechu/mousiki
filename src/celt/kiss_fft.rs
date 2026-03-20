@@ -705,6 +705,9 @@ impl KissFftState {
             fft_stage_trace::dump_bitrev_source(fin, self.bitrev.as_ref(), self.scale);
         }
 
+        // Keep this as a plain loop: LLVM auto-vectorizes this staging pass well
+        // on our target, and benchmarked manual SIMD/dynamic arch dispatch did
+        // not beat it in a stable way.
         for (src, &rev) in fin.iter().zip(self.bitrev.as_ref().iter()) {
             fout[rev] = KissFftCpx::new(src.r * self.scale, src.i * self.scale);
         }
@@ -731,6 +734,8 @@ impl KissFftState {
             "in-place FFT not supported"
         );
 
+        // Same rationale as the forward path: keep one scalar source that the
+        // compiler auto-vectorizes instead of maintaining per-arch SIMD stubs.
         for (src, &rev) in fin.iter().zip(self.bitrev.as_ref().iter()) {
             fout[rev] = KissFftCpx::new(src.r, -src.i);
         }
