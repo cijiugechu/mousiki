@@ -33,9 +33,9 @@ pub fn opus_pcm_soft_clip_impl(
 
     let samples = &mut pcm[..total_samples];
 
-    // Clamp to [-2, 2] and optionally skip out-of-bound checks when the SIMD
-    // implementation can guarantee all values already lay in [-1, 1]. The
-    // scalar helper always returns false for non-empty slices.
+    // Clamp to [-2, 2] and optionally skip out-of-bound checks when the
+    // platform helper can guarantee all values already lay in [-1, 1]. The
+    // scalar fallback returns false for non-empty slices.
     let all_within_neg1pos1 = opus_limit2_checkwithin1(samples);
 
     for channel in 0..channels {
