@@ -20,6 +20,7 @@ exclude = ["opus-go", "testdata", "opus-c"]
 [features]
 default = []
 fixed_point = []
+force-scalar = []
 enable_res24 = ["fixed_point"]
 deep_plc = ["dred"]
 deep_plc_weights = ["deep_plc", "mousiki-deep-plc-weights"]
@@ -33,6 +34,7 @@ silk_tic_toc = ["dep:spin"]
 
 [dependencies]
 libm = "0.2"
+cfg-if = "1.0"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }

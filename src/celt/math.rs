@@ -9,6 +9,8 @@
 
 use core::f32::consts::PI;
 
+use cfg_if::cfg_if;
+
 use crate::celt::entcode::ec_ilog;
 use crate::celt::float_cast;
 use crate::celt::types::OpusInt32;
@@ -371,13 +373,11 @@ pub(crate) fn celt_maxabs32(samples: &[f32]) -> f32 {
 
 /// Clamps samples to the `[-2, 2]` range as in `opus_limit2_checkwithin1_c()`.
 ///
-/// The C helper returns a hint indicating whether all samples were guaranteed to
-/// fall inside `[-1, 1]`. The scalar implementation always pessimistically
-/// returns `0` (false) when samples are present, because it cannot cheaply
-/// provide this guarantee after the clamping pass. The Rust port mirrors this
-/// behaviour by returning `false` for non-empty slices and `true` only when the
-/// slice is empty.
-pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
+/// The scalar implementation mirrors the C scalar fallback by returning `false`
+/// for any non-empty input, while the AArch64 NEON path mirrors the
+/// architecture-specific C helper and can return an exact in-range hint.
+#[inline]
+fn opus_limit2_checkwithin1_scalar(samples: &mut [f32]) -> bool {
     if samples.is_empty() {
         return true;
     }
@@ -397,15 +397,44 @@ pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
 /// uses the `FLOAT2INT16` macro from `float_cast.h`; this port matches its
 /// semantics so that callers relying on the float API can operate on Rust
 /// slices directly.
-pub(crate) fn celt_float2int16(input: &[f32], output: &mut [i16]) {
-    assert_eq!(
-        input.len(),
-        output.len(),
-        "input and output slices must have the same length"
-    );
-
+#[inline]
+fn celt_float2int16_scalar(input: &[f32], output: &mut [i16]) {
     for (dst, &sample) in output.iter_mut().zip(input.iter()) {
         *dst = float_cast::float2int16(sample);
+    }
+}
+
+cfg_if! {
+    if #[cfg(all(target_arch = "aarch64", not(feature = "force-scalar")))] {
+        mod aarch64_neon;
+
+        /// Platform-specific fast path for AArch64 with NEON.
+        pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
+            aarch64_neon::opus_limit2_checkwithin1(samples)
+        }
+
+        /// Platform-specific fast path for AArch64 with NEON.
+        pub(crate) fn celt_float2int16(input: &[f32], output: &mut [i16]) {
+            assert_eq!(
+                input.len(),
+                output.len(),
+                "input and output slices must have the same length"
+            );
+            aarch64_neon::celt_float2int16(input, output);
+        }
+    } else {
+        pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
+            opus_limit2_checkwithin1_scalar(samples)
+        }
+
+        pub(crate) fn celt_float2int16(input: &[f32], output: &mut [i16]) {
+            assert_eq!(
+                input.len(),
+                output.len(),
+                "input and output slices must have the same length"
+            );
+            celt_float2int16_scalar(input, output);
+        }
     }
 }
 
