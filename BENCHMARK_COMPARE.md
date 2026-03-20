@@ -17,6 +17,9 @@ It does not use `hyperfine` or any external process-level timing tool as the
 primary measurement mechanism. Timing happens inside the benchmark binaries so
 the numbers reflect codec work more directly.
 
+`hyperfine` is used as a secondary cross-check to validate process-level
+wall-clock differences between Rust and C decode binaries.
+
 ## Components
 
 Rust side:
@@ -154,6 +157,53 @@ This script:
 3. runs Rust/C encode on the same PCM
 4. runs Rust/C decode on the same corpus
 5. prints one CSV table
+
+## Hyperfine Validation (Decode)
+
+Use this when you want an independent process-level A/B check for Rust vs C
+decode speed on exactly the same packet corpus.
+
+1. Build the benchmark binaries:
+
+```bash
+cargo build --release --bin codec_bench
+cmake -S ctests -B ctests/build-bench -DOPUS_CTESTS_FIXED_POINT=OFF -DOPUS_CTESTS_ENABLE_FLOAT_API=ON
+cmake --build ctests/build-bench --target opus_codec_bench
+```
+
+2. Generate a shared decode corpus from the C benchmark (example case:
+   `audio_48k_stereo_20ms_128kbps`):
+
+```bash
+ctests/build-bench/opus_codec_bench packets \
+  --input testdata/ehren-paper_lights-96.pcm \
+  --output target/codec-bench/decode-corpus-48000-2ch-960-audio-128000.opusbench \
+  --sample-rate 48000 \
+  --channels 2 \
+  --frame-size 960 \
+  --application audio \
+  --bitrate 128000 \
+  --complexity 10 \
+  --bitrate-mode cvbr \
+  --max-frames 4000
+```
+
+3. Run `hyperfine` against Rust/C decode commands:
+
+```bash
+hyperfine --warmup 3 --runs 20 \
+  --export-json target/codec-bench/profile-tuning/hyperfine_rust_vs_c_decode.json \
+  --export-markdown target/codec-bench/profile-tuning/hyperfine_rust_vs_c_decode.md \
+  'target/release/codec_bench decode --packets target/codec-bench/decode-corpus-48000-2ch-960-audio-128000.opusbench --warmup 0 --measure 10 --max-frames 4000 --format csv --no-header > /dev/null' \
+  'ctests/build-bench/opus_codec_bench decode --packets target/codec-bench/decode-corpus-48000-2ch-960-audio-128000.opusbench --warmup 0 --measure 10 --max-frames 4000 --format csv --no-header > /dev/null'
+```
+
+Notes:
+
+- Keep both commands on the same packet corpus path.
+- Keep decode arguments (`--measure`, `--max-frames`) identical.
+- Redirect output to `/dev/null` to avoid terminal output overhead.
+- Prefer at least 20 runs and inspect the exported markdown/json for outliers.
 
 ## Multi-Case Run
 
