@@ -31,6 +31,7 @@ custom_modes = []
 silk_strict_asserts = []
 silk_debug = ["dep:spin"]
 silk_tic_toc = ["dep:spin"]
+dhat_alloc = ["dep:dhat"]
 
 [dependencies]
 libm = "0.2"
@@ -40,6 +41,7 @@ bitflags = "2"
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
 mousiki-deep-plc-weights = { path = "mousiki-deep-plc-weights", optional = true }
 mousiki-dred-weights = { path = "mousiki-dred-weights", optional = true }
+dhat = { version = "0.3", optional = true }
 
 
 [lints.clippy]

@@ -12,7 +12,14 @@ use std::time::Instant;
 const MAGIC: [u8; 8] = *b"OPUSBEN1";
 const MAX_PACKET_SIZE: usize = 3 * 1276;
 
+#[cfg(feature = "dhat_alloc")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() {
+    #[cfg(feature = "dhat_alloc")]
+    let _profiler = dhat::Profiler::new_heap();
+
     if let Err(err) = run() {
         eprintln!("{err}");
         std::process::exit(1);
