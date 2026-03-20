@@ -55,6 +55,41 @@ const EPSILON: OpusVal32 = 1e-15;
 // lets the decoder mirror the C stack allocation here without heap traffic.
 const MAX_PVQ_BAND_SIZE: usize = 208;
 
+#[inline]
+fn select_pvq_candidate_float(
+    best_id: &mut usize,
+    best_den: &mut OpusVal16,
+    best_num: &mut OpusVal16,
+    candidate_id: usize,
+    candidate_den: OpusVal16,
+    candidate_num: OpusVal16,
+) {
+    if *best_den * candidate_num > candidate_den * *best_num {
+        *best_id = candidate_id;
+        *best_den = candidate_den;
+        *best_num = candidate_num;
+    }
+}
+
+#[cfg(feature = "fixed_point")]
+#[inline]
+fn select_pvq_candidate_fixed(
+    best_id: &mut usize,
+    best_den: &mut FixedOpusVal16,
+    best_num: &mut OpusInt32,
+    candidate_id: usize,
+    candidate_den: FixedOpusVal16,
+    candidate_num: FixedOpusVal16,
+) {
+    let left = mult16_16(*best_den, candidate_num);
+    let right = i32::from(candidate_den).wrapping_mul(*best_num);
+    if left > right {
+        *best_id = candidate_id;
+        *best_den = candidate_den;
+        *best_num = i32::from(candidate_num);
+    }
+}
+
 #[cfg(feature = "fixed_point")]
 #[inline]
 fn add16(a: FixedOpusVal16, b: FixedOpusVal16) -> FixedOpusVal16 {
@@ -417,15 +452,67 @@ pub(crate) fn op_pvq_search(
         let mut best_den = yy + y[0];
         let mut best_num = (xy + x[0]) * (xy + x[0]);
 
-        for idx in 1..n {
+        let x_tail = &x[1..n];
+        let y_tail = &y[1..n];
+        let mut x_chunks = x_tail.chunks_exact(4);
+        let mut y_chunks = y_tail.chunks_exact(4);
+        for (chunk_idx, (x_chunk, y_chunk)) in (&mut x_chunks).zip(&mut y_chunks).enumerate() {
+            let base = 1 + chunk_idx * 4;
+            let rxy0 = xy + x_chunk[0];
+            let ryy0 = yy + y_chunk[0];
+            let num0 = rxy0 * rxy0;
+            select_pvq_candidate_float(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base,
+                ryy0,
+                num0,
+            );
+
+            let rxy1 = xy + x_chunk[1];
+            let ryy1 = yy + y_chunk[1];
+            let num1 = rxy1 * rxy1;
+            select_pvq_candidate_float(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 1,
+                ryy1,
+                num1,
+            );
+
+            let rxy2 = xy + x_chunk[2];
+            let ryy2 = yy + y_chunk[2];
+            let num2 = rxy2 * rxy2;
+            select_pvq_candidate_float(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 2,
+                ryy2,
+                num2,
+            );
+
+            let rxy3 = xy + x_chunk[3];
+            let ryy3 = yy + y_chunk[3];
+            let num3 = rxy3 * rxy3;
+            select_pvq_candidate_float(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 3,
+                ryy3,
+                num3,
+            );
+        }
+
+        let rem_start = n - x_chunks.remainder().len();
+        for idx in rem_start..n {
             let rxy = xy + x[idx];
             let ryy = yy + y[idx];
             let num = rxy * rxy;
-            if best_den * num > ryy * best_num {
-                best_den = ryy;
-                best_num = num;
-                best_id = idx;
-            }
+            select_pvq_candidate_float(&mut best_id, &mut best_den, &mut best_num, idx, ryy, num);
         }
 
         xy += x[best_id];
@@ -522,23 +609,74 @@ pub(crate) fn op_pvq_search_fixed(
         yy = add16(yy, 1);
 
         let mut best_id = 0usize;
-        let mut rxy = extract16(shr32(add32(xy, i32::from(x[0])), rshift as u32));
-        let mut ryy = add16(yy, y[0]);
-        let mut rxy_sq = mult16_16_q15(rxy, rxy);
+        let rxy = extract16(shr32(add32(xy, i32::from(x[0])), rshift as u32));
+        let ryy = add16(yy, y[0]);
+        let rxy_sq = mult16_16_q15(rxy, rxy);
         let mut best_den = ryy;
         let mut best_num: i32 = i32::from(rxy_sq);
 
-        for j in 1..n {
-            rxy = extract16(shr32(add32(xy, i32::from(x[j])), rshift as u32));
-            ryy = add16(yy, y[j]);
-            rxy_sq = mult16_16_q15(rxy, rxy);
-            let left = mult16_16(best_den, rxy_sq);
-            let right = i32::from(ryy).wrapping_mul(best_num);
-            if left > right {
-                best_den = ryy;
-                best_num = i32::from(rxy_sq);
-                best_id = j;
-            }
+        let x_tail = &x[1..n];
+        let y_tail = &y[1..n];
+        let mut x_chunks = x_tail.chunks_exact(4);
+        let mut y_chunks = y_tail.chunks_exact(4);
+        for (chunk_idx, (x_chunk, y_chunk)) in (&mut x_chunks).zip(&mut y_chunks).enumerate() {
+            let base = 1 + chunk_idx * 4;
+
+            let rxy0 = extract16(shr32(add32(xy, i32::from(x_chunk[0])), rshift as u32));
+            let ryy0 = add16(yy, y_chunk[0]);
+            let num0 = mult16_16_q15(rxy0, rxy0);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base,
+                ryy0,
+                num0,
+            );
+
+            let rxy1 = extract16(shr32(add32(xy, i32::from(x_chunk[1])), rshift as u32));
+            let ryy1 = add16(yy, y_chunk[1]);
+            let num1 = mult16_16_q15(rxy1, rxy1);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 1,
+                ryy1,
+                num1,
+            );
+
+            let rxy2 = extract16(shr32(add32(xy, i32::from(x_chunk[2])), rshift as u32));
+            let ryy2 = add16(yy, y_chunk[2]);
+            let num2 = mult16_16_q15(rxy2, rxy2);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 2,
+                ryy2,
+                num2,
+            );
+
+            let rxy3 = extract16(shr32(add32(xy, i32::from(x_chunk[3])), rshift as u32));
+            let ryy3 = add16(yy, y_chunk[3]);
+            let num3 = mult16_16_q15(rxy3, rxy3);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 3,
+                ryy3,
+                num3,
+            );
+        }
+
+        let rem_start = n - x_chunks.remainder().len();
+        for j in rem_start..n {
+            let rxy = extract16(shr32(add32(xy, i32::from(x[j])), rshift as u32));
+            let ryy = add16(yy, y[j]);
+            let rxy_sq = mult16_16_q15(rxy, rxy);
+            select_pvq_candidate_fixed(&mut best_id, &mut best_den, &mut best_num, j, ryy, rxy_sq);
         }
 
         xy = add32(xy, i32::from(x[best_id]));
