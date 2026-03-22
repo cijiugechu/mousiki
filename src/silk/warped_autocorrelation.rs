@@ -6,11 +6,13 @@
 //! used by the SILK encoder's noise-shaping analysis when deriving warped LPC
 //! coefficients.
 
+use cfg_if::cfg_if;
+
 /// Maximum LPC order supported by the warped autocorrelation helper.
 pub const MAX_SHAPE_LPC_ORDER: usize = 24;
 
-const QC: i32 = 10;
-const QS: i32 = 13;
+pub(super) const QC: i32 = 10;
+pub(super) const QS: i32 = 13;
 const CORR_SHIFT_QC: i32 = 2 * QS - QC; // equals 16 in the reference code
 
 /// Computes warped autocorrelations for a Q0 input vector.
@@ -36,6 +38,37 @@ pub fn warped_autocorrelation(
         order + 1
     );
 
+    warped_autocorrelation_impl(corr, input, warping_q16, order)
+}
+
+#[inline]
+pub(super) fn clz64(value: i64) -> i32 {
+    if value == 0 {
+        64
+    } else {
+        (value as u64).leading_zeros() as i32
+    }
+}
+
+#[inline]
+fn smlawb(acc: i32, b: i32, c: i32) -> i32 {
+    let c16 = i32::from(c as i16);
+    let product = (i64::from(b) * i64::from(c16)) >> 16;
+    acc.wrapping_add(product as i32)
+}
+
+#[inline]
+fn mul_qc(a: i32, b: i32) -> i64 {
+    (i64::from(a) * i64::from(b)) >> CORR_SHIFT_QC
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+pub(super) fn warped_autocorrelation_scalar(
+    corr: &mut [i32],
+    input: &[i16],
+    warping_q16: i32,
+    order: usize,
+) -> i32 {
     let mut state_qs = [0i32; MAX_SHAPE_LPC_ORDER + 1];
     let mut corr_qc = [0i64; MAX_SHAPE_LPC_ORDER + 1];
 
@@ -105,29 +138,35 @@ pub fn warped_autocorrelation(
     scale
 }
 
-fn clz64(value: i64) -> i32 {
-    if value == 0 {
-        64
+cfg_if! {
+    if #[cfg(all(target_arch = "aarch64", not(feature = "force-scalar")))] {
+        mod aarch64_neon;
+
+        #[inline]
+        fn warped_autocorrelation_impl(
+            corr: &mut [i32],
+            input: &[i16],
+            warping_q16: i32,
+            order: usize,
+        ) -> i32 {
+            aarch64_neon::warped_autocorrelation(corr, input, warping_q16, order)
+        }
     } else {
-        (value as u64).leading_zeros() as i32
+        #[inline]
+        fn warped_autocorrelation_impl(
+            corr: &mut [i32],
+            input: &[i16],
+            warping_q16: i32,
+            order: usize,
+        ) -> i32 {
+            warped_autocorrelation_scalar(corr, input, warping_q16, order)
+        }
     }
-}
-
-#[inline]
-fn smlawb(acc: i32, b: i32, c: i32) -> i32 {
-    let c16 = i32::from(c as i16);
-    let product = (i64::from(b) * i64::from(c16)) >> 16;
-    acc.wrapping_add(product as i32)
-}
-
-#[inline]
-fn mul_qc(a: i32, b: i32) -> i64 {
-    (i64::from(a) * i64::from(b)) >> CORR_SHIFT_QC
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SHAPE_LPC_ORDER, warped_autocorrelation};
+    use super::{MAX_SHAPE_LPC_ORDER, warped_autocorrelation, warped_autocorrelation_scalar};
 
     #[test]
     fn matches_reference_values() {
@@ -179,5 +218,29 @@ mod tests {
 
         assert_eq!(scale, -30);
         assert!(corr.iter().take(5).all(|&v| v == 0));
+    }
+
+    #[test]
+    fn dispatch_matches_scalar_across_orders() {
+        let mut input = [0i16; 240];
+        for (idx, sample) in input.iter_mut().enumerate() {
+            let val = ((idx as i32 * 73) % 32_767) - 16_000;
+            *sample = val as i16;
+        }
+
+        for &order in &[4usize, 6, 8, 10, 12, 16, 20, 24] {
+            let mut corr_dispatch = [0i32; MAX_SHAPE_LPC_ORDER + 1];
+            let mut corr_scalar = [0i32; MAX_SHAPE_LPC_ORDER + 1];
+            let scale_dispatch = warped_autocorrelation(&mut corr_dispatch, &input, 20_000, order);
+            let scale_scalar =
+                warped_autocorrelation_scalar(&mut corr_scalar, &input, 20_000, order);
+
+            assert_eq!(scale_dispatch, scale_scalar, "order={order}");
+            assert_eq!(
+                &corr_dispatch[..=order],
+                &corr_scalar[..=order],
+                "order={order}"
+            );
+        }
     }
 }
