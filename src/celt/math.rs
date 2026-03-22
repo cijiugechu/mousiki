@@ -422,6 +422,23 @@ cfg_if! {
             );
             aarch64_neon::celt_float2int16(input, output);
         }
+    } else if #[cfg(all(target_arch = "arm", target_feature = "neon", not(feature = "force-scalar")))] {
+        mod arm_neon;
+
+        /// Platform-specific fast path for 32-bit ARM with NEON.
+        pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
+            arm_neon::opus_limit2_checkwithin1(samples)
+        }
+
+        /// Platform-specific fast path for 32-bit ARM with NEON.
+        pub(crate) fn celt_float2int16(input: &[f32], output: &mut [i16]) {
+            assert_eq!(
+                input.len(),
+                output.len(),
+                "input and output slices must have the same length"
+            );
+            arm_neon::celt_float2int16(input, output);
+        }
     } else {
         pub(crate) fn opus_limit2_checkwithin1(samples: &mut [f32]) -> bool {
             opus_limit2_checkwithin1_scalar(samples)
