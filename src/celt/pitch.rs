@@ -6,6 +6,14 @@
 //! that can be ported in isolation before the full pitch search is
 //! reimplemented.  These helpers expose the same behaviour for the float build
 //! of CELT while leveraging Rust's slice-based APIs for memory safety.
+//!
+//! NOTE:
+//! A hand-written NEON SIMD trial was evaluated for the hot helpers in this
+//! module (`celt_inner_prod`, `dual_inner_prod`, `celt_pitch_xcorr`) and then
+//! reverted. Under the repository benchmark method (`BENCHMARK_COMPARE.md`),
+//! it did not show stable end-to-end wins over the scalar path.
+//! Keep scalar as the default reference here unless a future SIMD revision
+//! demonstrates repeatable gains under the same benchmark protocol.
 
 use crate::celt::math::{celt_sqrt, frac_div32};
 use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
