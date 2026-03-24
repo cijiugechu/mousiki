@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Build-time deep PLC weights blob for Mousiki."
+homepage = "https://github.com/cijiugechu/mousiki"
+repository = "https://github.com/cijiugechu/mousiki"
+readme = "README.md"
+keywords = ["audio", "opus", "weights", "plc"]
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 build = "build.rs"
 
 [features]

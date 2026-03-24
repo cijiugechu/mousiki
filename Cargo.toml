@@ -5,17 +5,35 @@ resolver = "3"
 
 [package]
 name = "mousiki"
-description = "Pure Rust Opus decoder."
+description = "Pure Rust Opus codec."
 homepage = "https://github.com/cijiugechu/mousiki"
 repository = "https://github.com/cijiugechu/mousiki"
 authors = ["nemurubaka <cijiugechu@gmail.com>"]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 readme = "README.md"
 categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 keywords = ["audio", "codec", "decoder", "opus"]
-exclude = ["opus-go", "testdata", "opus-c"]
+exclude = [
+    ".claude",
+    ".github",
+    ".DS_Store",
+    "AGENTS.md",
+    "BENCHMARK_COMPARE.md",
+    "CLAUDE.md",
+    "Dockerfile.opus-fuzz",
+    "FIXED_POINT_ALIGN_PLAN.md",
+    "ctests",
+    "opus-c",
+    "opus-go",
+    "opus_decode_fuzzer",
+    "scripts",
+    "testdata",
+    "*.opuspkt",
+    "*.pcm",
+    "*.wav",
+]
 
 [features]
 default = []

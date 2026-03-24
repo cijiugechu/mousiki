@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Build-time downloader and generator for DRED weights."
+homepage = "https://github.com/cijiugechu/mousiki"
 repository = "https://github.com/cijiugechu/mousiki"
+readme = "README.md"
+keywords = ["audio", "opus", "weights", "dred"]
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
+build = "build.rs"
 
 [features]
 fetch = []
