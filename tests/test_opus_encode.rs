@@ -1,21 +1,21 @@
-use mousiki::opus_decoder::{
+use mousiki::c_style_api::opus_decoder::{
     OpusDecoderCtlRequest, opus_decode, opus_decoder_create, opus_decoder_ctl,
 };
-use mousiki::opus_encoder::{
+use mousiki::c_style_api::opus_encoder::{
     OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, opus_encode, opus_encoder_create,
     opus_encoder_ctl,
 };
-use mousiki::opus_multistream::{
+use mousiki::c_style_api::opus_multistream::{
     OpusMultistreamDecoderCtlRequest, OpusMultistreamEncoderCtlRequest,
     OpusMultistreamEncoderError, opus_multistream_decode, opus_multistream_decoder_create,
     opus_multistream_decoder_ctl, opus_multistream_encode, opus_multistream_encoder_create,
     opus_multistream_encoder_ctl, opus_multistream_encoder_get_encoder_state,
 };
-use mousiki::packet::{
+use mousiki::c_style_api::packet::{
     Mode, opus_packet_get_mode, opus_packet_get_nb_frames, opus_packet_get_samples_per_frame,
     opus_packet_parse,
 };
-use mousiki::repacketizer::{
+use mousiki::c_style_api::repacketizer::{
     opus_multistream_packet_pad, opus_multistream_packet_unpad, opus_packet_pad, opus_packet_unpad,
 };
 
@@ -205,16 +205,16 @@ fn is_bad_arg_multistream_create(err: &OpusMultistreamEncoderError) -> bool {
         err,
         OpusMultistreamEncoderError::BadArgument
             | OpusMultistreamEncoderError::EncoderInit(
-                mousiki::opus_encoder::OpusEncoderInitError::BadArgument
+                mousiki::c_style_api::opus_encoder::OpusEncoderInitError::BadArgument
             )
     )
 }
 
 fn test_encode(
-    enc: &mut mousiki::opus_encoder::OpusEncoder<'_>,
+    enc: &mut mousiki::c_style_api::opus_encoder::OpusEncoder<'_>,
     channels: usize,
     frame_size: usize,
-    dec: &mut mousiki::opus_decoder::OpusDecoder<'_>,
+    dec: &mut mousiki::c_style_api::opus_decoder::OpusDecoder<'_>,
     rng: &mut FastRand,
 ) -> Result<(), String> {
     let mut samp_count = 0usize;
@@ -1077,7 +1077,7 @@ fn run_test1(no_fuzz: bool, rng: &mut FastRand) -> Result<(), String> {
         let compare_range = allow_silk_final_range
             && matches!(
                 opus_packet_get_mode(&packet[..len]),
-                Ok(mousiki::packet::Mode::SILK)
+                Ok(mousiki::c_style_api::packet::Mode::SILK)
             );
         if compare_range && frame_size <= silk_range_limit && dec_final_range != enc_final_range {
             return Err(format!(

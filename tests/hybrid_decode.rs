@@ -1,7 +1,7 @@
-use mousiki::opus_decoder::{
+use mousiki::c_style_api::opus_decoder::{
     OpusDecoderCtlRequest, opus_decode_float, opus_decoder_create, opus_decoder_ctl,
 };
-use mousiki::packet::{
+use mousiki::c_style_api::packet::{
     Bandwidth, Mode, opus_packet_get_bandwidth, opus_packet_get_mode,
     opus_packet_get_samples_per_frame,
 };

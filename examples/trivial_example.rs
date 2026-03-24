@@ -1,9 +1,6 @@
-use mousiki::opus_decoder::{
-    OpusDecodeError, OpusDecoderInitError, opus_decode, opus_decoder_create,
-};
-use mousiki::opus_encoder::{
-    OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode,
-    opus_encoder_create, opus_encoder_ctl,
+use mousiki::{
+    Application, Bitrate, Channels, Decoder, Encoder, EncoderBuilderError, OpusDecodeError,
+    OpusDecoderInitError, OpusEncodeError,
 };
 use std::env;
 use std::fs::File;
@@ -11,10 +8,10 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 const FRAME_SIZE: usize = 960;
-const SAMPLE_RATE: i32 = 48_000;
-const CHANNELS: i32 = 2;
-const APPLICATION: i32 = 2049; // OPUS_APPLICATION_AUDIO
-const BITRATE: i32 = 64_000;
+const SAMPLE_RATE: u32 = 48_000;
+const CHANNELS: Channels = Channels::Stereo;
+const APPLICATION: Application = Application::Audio;
+const BITRATE: Bitrate = Bitrate::Bits(64_000);
 
 const MAX_FRAME_SIZE: usize = 6 * 960;
 const MAX_PACKET_SIZE: usize = 3 * 1276;
@@ -43,14 +40,13 @@ fn run() -> Result<(), ExampleError> {
     let mut output_file =
         File::create(output_path).map_err(|err| ExampleError::Io("create output", err.kind()))?;
 
-    let mut encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, APPLICATION)
-        .map_err(ExampleError::EncoderInit)?;
-    opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetBitrate(BITRATE))
-        .map_err(ExampleError::EncoderCtl)?;
-    let mut decoder =
-        opus_decoder_create(SAMPLE_RATE, CHANNELS).map_err(ExampleError::DecoderInit)?;
+    let mut encoder = Encoder::builder(SAMPLE_RATE, CHANNELS, APPLICATION)
+        .bitrate(BITRATE)
+        .build()
+        .map_err(ExampleError::EncoderBuild)?;
+    let mut decoder = Decoder::new(SAMPLE_RATE, CHANNELS).map_err(ExampleError::DecoderInit)?;
 
-    let channels = CHANNELS as usize;
+    let channels = CHANNELS.count();
     let mut input_bytes = vec![0u8; FRAME_SIZE * channels * 2];
     let mut input_pcm = vec![0i16; FRAME_SIZE * channels];
     let mut output_pcm = vec![0i16; MAX_FRAME_SIZE * channels];
@@ -68,18 +64,13 @@ fn run() -> Result<(), ExampleError> {
             *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
         }
 
-        let packet_len = opus_encode(&mut encoder, &input_pcm, FRAME_SIZE, &mut packet)
+        let packet_len = encoder
+            .encode(&input_pcm, &mut packet)
             .map_err(ExampleError::Encode)?;
 
-        let decoded = opus_decode(
-            &mut decoder,
-            Some(&packet[..packet_len]),
-            packet_len,
-            &mut output_pcm,
-            MAX_FRAME_SIZE,
-            false,
-        )
-        .map_err(ExampleError::Decode)?;
+        let decoded = decoder
+            .decode(&packet[..packet_len], &mut output_pcm, false)
+            .map_err(ExampleError::Decode)?;
 
         let total_samples = decoded * channels;
         for (chunk, &sample) in output_bytes
@@ -109,14 +100,11 @@ fn report_error(err: ExampleError) {
         ExampleError::Io(context, kind) => {
             eprintln!("IO error ({context}): {kind:?}");
         }
-        ExampleError::EncoderInit(err) => {
-            eprintln!("failed to create encoder: {err:?}");
-        }
         ExampleError::DecoderInit(err) => {
             eprintln!("failed to create decoder: {err:?}");
         }
-        ExampleError::EncoderCtl(err) => {
-            eprintln!("failed to set bitrate: {err:?}");
+        ExampleError::EncoderBuild(err) => {
+            eprintln!("failed to create encoder: {err:?}");
         }
         ExampleError::Encode(err) => {
             eprintln!("encode failed: {err:?}");
@@ -130,9 +118,8 @@ fn report_error(err: ExampleError) {
 enum ExampleError {
     Usage,
     Io(&'static str, io::ErrorKind),
-    EncoderInit(OpusEncoderInitError),
+    EncoderBuild(EncoderBuilderError),
     DecoderInit(OpusDecoderInitError),
-    EncoderCtl(OpusEncoderCtlError),
     Encode(OpusEncodeError),
     Decode(OpusDecodeError),
 }

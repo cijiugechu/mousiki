@@ -19,11 +19,11 @@ use std::process;
 #[cfg(feature = "deep_plc")]
 use libm::{cosf, powf, sqrtf};
 #[cfg(feature = "deep_plc")]
-use mousiki::dred::DredVectorDecoder;
+use mousiki::c_style_api::dred::DredVectorDecoder;
+#[cfg(feature = "deep_plc")]
+use mousiki::c_style_api::opus_decoder::{opus_decode, opus_decoder_create};
 #[cfg(feature = "deep_plc")]
 use mousiki::fargan::{FARGAN_CONT_SAMPLES, FARGAN_FRAME_SIZE, FarganState};
-#[cfg(feature = "deep_plc")]
-use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
 #[cfg(feature = "deep_plc_weights")]
 use mousiki_deep_plc_weights::DNN_BLOB;
 

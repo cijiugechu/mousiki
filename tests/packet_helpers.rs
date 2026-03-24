@@ -1,5 +1,5 @@
-use mousiki::opus_decoder::{opus_decoder_create, opus_decoder_get_nb_samples};
-use mousiki::packet::{
+use mousiki::c_style_api::opus_decoder::{opus_decoder_create, opus_decoder_get_nb_samples};
+use mousiki::c_style_api::packet::{
     Bandwidth, Mode, PacketError, opus_packet_get_bandwidth, opus_packet_get_mode,
     opus_packet_get_nb_channels, opus_packet_get_nb_frames, opus_packet_get_nb_samples,
     opus_packet_get_samples_per_frame, opus_packet_parse_impl,

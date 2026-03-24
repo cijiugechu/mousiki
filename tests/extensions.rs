@@ -1,10 +1,10 @@
-use mousiki::extensions::{
+use mousiki::c_style_api::extensions::{
     ExtensionError, OpusExtensionData, opus_packet_extensions_count,
     opus_packet_extensions_count_ext, opus_packet_extensions_generate,
     opus_packet_extensions_parse, opus_packet_extensions_parse_ext,
 };
-use mousiki::packet::opus_packet_parse_impl;
-use mousiki::repacketizer::OpusRepacketizer;
+use mousiki::c_style_api::packet::opus_packet_parse_impl;
+use mousiki::c_style_api::repacketizer::OpusRepacketizer;
 
 fn extension_with_len<'a>(id: u8, frame: i32, data: &'a [u8], len: i32) -> OpusExtensionData<'a> {
     OpusExtensionData {

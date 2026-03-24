@@ -1,9 +1,9 @@
 #![cfg(not(feature = "fixed_point"))]
 
-use mousiki::opus_encoder::{
+use mousiki::c_style_api::opus_encoder::{
     OpusEncoderCtlRequest, opus_encode, opus_encoder_create, opus_encoder_ctl,
 };
-use mousiki::packet::{Mode, opus_packet_get_mode};
+use mousiki::c_style_api::packet::{Mode, opus_packet_get_mode};
 
 const OPUS_APPLICATION_VOIP: i32 = 2048;
 const OPUS_APPLICATION_AUDIO: i32 = 2049;

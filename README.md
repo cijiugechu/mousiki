@@ -99,45 +99,38 @@ rustup run nightly cargo fuzz run decode_fuzzer
 Seed corpus lives in `fuzz/corpus/decode_fuzzer/`.
 
 ### Use in your code
-The full Opus front-end (SILK/CELT/Hybrid, stereo) is exposed via
-`opus_encoder`/`opus_decoder`, matching the `trivial_example` round-trip:
+The preferred high-level API is exported at the crate root and wraps the full
+Opus front-end (SILK/CELT/Hybrid, stereo) with typed enums and method-based
+state:
 
 ```rust
-use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
-use mousiki::opus_encoder::{
-    opus_encode, opus_encoder_create, opus_encoder_ctl, OpusEncoderCtlRequest,
-};
+use mousiki::{Application, Bitrate, Channels, Decoder, Encoder};
 
-const SAMPLE_RATE: i32 = 48_000;
-const CHANNELS: i32 = 2;
-const APPLICATION: i32 = 2049; // OPUS_APPLICATION_AUDIO
-const FRAME_SIZE: usize = 960; // 20 ms at 48 kHz
+const SAMPLE_RATE: u32 = 48_000;
+const FRAME_SIZE: usize = 960;
 const MAX_FRAME_SIZE: usize = 6 * 960;
 const MAX_PACKET_SIZE: usize = 3 * 1276;
 
-let mut encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, APPLICATION)?;
-opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetBitrate(64_000))?;
-let mut decoder = opus_decoder_create(SAMPLE_RATE, CHANNELS)?;
+let mut encoder = Encoder::builder(SAMPLE_RATE, Channels::Stereo, Application::Audio)
+    .bitrate(Bitrate::Bits(64_000))
+    .build()?;
+let mut decoder = Decoder::new(SAMPLE_RATE, Channels::Stereo)?;
 
-let pcm_in = [0i16; FRAME_SIZE * 2]; // interleaved stereo
+let pcm_in = [0i16; FRAME_SIZE * Channels::Stereo.count()];
 let mut packet = [0u8; MAX_PACKET_SIZE];
-let packet_len = opus_encode(&mut encoder, &pcm_in, FRAME_SIZE, &mut packet)?;
+let packet_len = encoder.encode(&pcm_in, &mut packet)?;
 
-let mut pcm_out = [0i16; MAX_FRAME_SIZE * 2];
-let decoded = opus_decode(
-    &mut decoder,
-    Some(&packet[..packet_len]),
-    packet_len,
-    &mut pcm_out,
-    MAX_FRAME_SIZE,
-    false,
-)?;
-let total_samples = decoded * CHANNELS as usize;
+let mut pcm_out = [0i16; MAX_FRAME_SIZE * Channels::Stereo.count()];
+let decoded = decoder.decode(&packet[..packet_len], &mut pcm_out, false)?;
+let total_samples = decoded * Channels::Stereo.count();
 let _decoded_pcm = &pcm_out[..total_samples];
 ```
 
-If you only need the lightweight SILK-only, single-frame decoder (mono, 48 kHz),
-use `decoder::Decoder` directly:
+If you need API parity with the C entry points, use
+`mousiki::c_style_api::*`.
+
+If you only need the lightweight SILK-only, single-frame decoder (mono,
+48 kHz), use `decoder::Decoder` directly:
 
 ```rust
 use mousiki::decoder::Decoder;
@@ -158,7 +151,7 @@ For `f32` output, use `decode_float32` and a buffer of length 960 for a 20 ms fr
 For Ogg input, see the `oggreader` example to extract raw Opus packets.
 
 ## TODO
-- Make the public API more Rust-idiomatic.
+- Expand the high-level `codec` wrapper to cover more specialised controls.
 
 ## License and acknowledgements
 - License: MIT (see `LICENSE`).

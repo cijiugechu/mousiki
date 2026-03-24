@@ -1,4 +1,4 @@
-use mousiki::repacketizer::{
+use mousiki::c_style_api::repacketizer::{
     OpusRepacketizer, RepacketizerError, opus_multistream_packet_pad,
     opus_multistream_packet_unpad, opus_packet_pad, opus_packet_unpad,
 };

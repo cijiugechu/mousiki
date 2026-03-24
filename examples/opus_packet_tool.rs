@@ -1,7 +1,7 @@
-use mousiki::opus_decoder::{
+use mousiki::c_style_api::opus_decoder::{
     OpusDecodeError, OpusDecoderInitError, opus_decode, opus_decoder_create,
 };
-use mousiki::opus_encoder::{
+use mousiki::c_style_api::opus_encoder::{
     OpusEncodeError, OpusEncoderCtlError, OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode,
     opus_encoder_create, opus_encoder_ctl,
 };

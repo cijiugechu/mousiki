@@ -1,5 +1,5 @@
-use mousiki::opus_decoder::{opus_decode, opus_decoder_create};
-use mousiki::opus_encoder::{
+use mousiki::c_style_api::opus_decoder::{opus_decode, opus_decoder_create};
+use mousiki::c_style_api::opus_encoder::{
     OpusEncoderCtlRequest, opus_encode, opus_encoder_create, opus_encoder_ctl,
 };
 use std::env;
@@ -703,7 +703,7 @@ fn run_decode_iteration(
 
 fn create_encoder(
     config: EncodeConfig,
-) -> Result<mousiki::opus_encoder::OpusEncoder<'static>, BenchError> {
+) -> Result<mousiki::c_style_api::opus_encoder::OpusEncoder<'static>, BenchError> {
     let mut encoder = opus_encoder_create(
         config.sample_rate,
         config.channels,
@@ -922,11 +922,11 @@ enum BenchError {
     Input(String),
     Corpus(String),
     Io(std::io::Error),
-    EncodeInit(mousiki::opus_encoder::OpusEncoderInitError),
-    EncodeCtl(mousiki::opus_encoder::OpusEncoderCtlError),
-    Encode(mousiki::opus_encoder::OpusEncodeError),
-    DecodeInit(mousiki::opus_decoder::OpusDecoderInitError),
-    Decode(mousiki::opus_decoder::OpusDecodeError),
+    EncodeInit(mousiki::c_style_api::opus_encoder::OpusEncoderInitError),
+    EncodeCtl(mousiki::c_style_api::opus_encoder::OpusEncoderCtlError),
+    Encode(mousiki::c_style_api::opus_encoder::OpusEncodeError),
+    DecodeInit(mousiki::c_style_api::opus_decoder::OpusDecoderInitError),
+    Decode(mousiki::c_style_api::opus_decoder::OpusDecodeError),
 }
 
 impl From<std::io::Error> for BenchError {

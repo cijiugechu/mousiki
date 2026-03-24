@@ -4,8 +4,8 @@
 //! - Creation argument validation for all channel counts
 //! - Full encode/decode pipeline with generated audio
 
-use mousiki::opus_multistream::OpusMultistreamEncoderCtlRequest;
-use mousiki::projection::{
+use mousiki::c_style_api::opus_multistream::OpusMultistreamEncoderCtlRequest;
+use mousiki::c_style_api::projection::{
     OpusProjectionEncoderCtlRequest, opus_projection_ambisonics_encoder_create,
     opus_projection_decode, opus_projection_decoder_create, opus_projection_encode,
     opus_projection_encoder_ctl,
