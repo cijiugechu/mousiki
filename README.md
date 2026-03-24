@@ -3,20 +3,8 @@
 A Rust port of the Xiph `opus-c` reference implementation. The core crate is
 `#![no_std]` and uses `alloc` (some APIs allocate).
 
-### Current coverage (high level)
-- Opus decode path mirrors `opus_decode_native`, including SILK/CELT/Hybrid, PLC/FEC,
-  final-range reporting, and packet parsing; multistream decode and projection
-  front-ends are wired.
-- Opus encode front-end supports SILK-only 10/20/40/60 ms packets (plus repacketized
-  >60 ms frames), CELT-only multiframe packing, and hybrid single-frame 10/20 ms
-  payloads. The full encode/decode loop can run the `examples/trivial_example`
-  round-trip on `testdata/ehren-paper_lights-96.pcm`.
-- Repacketizer, packet helpers, extension padding, mapping/projection matrices, and
-  tonality analysis are available.
-
 ### Known gaps
-- Fixed-point decode backend, SIMD back-ends are not complete.
-- See `PORTING_STATUS.md` for detailed status.
+- Fixed-point decode backend
 
 
 ## Quick start
@@ -31,7 +19,7 @@ cargo run --example decode -- testdata/tiny.ogg output_mono.pcm
 - Play directly (requires an audio output device; uses `cpal`):
 
 ```bash
-cargo run --example playback -- testdata/tiny.ogg
+cargo run -p playback -- testdata/tiny.ogg
 ```
 
 - Round-trip a full 48 kHz stereo PCM sample through the trivial encoder/decoder:
@@ -56,7 +44,8 @@ ffmpeg -y -f s16le -ar 48000 -ac 2 \
 cargo test --all-features
 ```
 
-- Default-build golden regression check for the README `trivial_example` round-trip path:
+- Default-build golden regression check for the trivial 48 kHz stereo round-trip
+  configuration:
 
 ```bash
 cargo test --test trivial_example trivial_example_default_build_golden_hash
@@ -148,10 +137,9 @@ assert!(!stereo, "mono only for now");
 ```
 
 For `f32` output, use `decode_float32` and a buffer of length 960 for a 20 ms frame.
-For Ogg input, see the `oggreader` example to extract raw Opus packets.
+For Ogg input, see the `decode` example and the `mousiki::oggreader` module to
+extract raw Opus packets.
 
-## TODO
-- Expand the high-level `codec` wrapper to cover more specialised controls.
 
 ## License and acknowledgements
 - License: MIT (see `LICENSE`).
