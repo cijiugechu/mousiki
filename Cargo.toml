@@ -57,8 +57,8 @@ cfg-if = "1.0"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
-mousiki-deep-plc-weights = { path = "mousiki-deep-plc-weights", optional = true }
-mousiki-dred-weights = { path = "mousiki-dred-weights", optional = true }
+mousiki-deep-plc-weights = { version = "0.1.0", path = "mousiki-deep-plc-weights", optional = true }
+mousiki-dred-weights = { version = "0.1.0", path = "mousiki-dred-weights", optional = true }
 dhat = { version = "0.3", optional = true }
 
 
