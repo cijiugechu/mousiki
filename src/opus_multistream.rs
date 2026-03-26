@@ -1260,6 +1260,8 @@ fn build_stream_encoders(
 
 /// Strongly-typed replacement for the multistream encoder CTL dispatcher.
 pub enum OpusMultistreamEncoderCtlRequest<'req> {
+    SetApplication(i32),
+    GetApplication(&'req mut i32),
     SetBitrate(i32),
     GetBitrate(&'req mut i32),
     SetForceChannels(i32),
@@ -1276,12 +1278,14 @@ pub enum OpusMultistreamEncoderCtlRequest<'req> {
     GetComplexity(&'req mut i32),
     SetSignal(i32),
     GetSignal(&'req mut i32),
+    GetVoiceRatio(&'req mut i32),
     SetPacketLossPerc(i32),
     GetPacketLossPerc(&'req mut i32),
     SetInbandFec(bool),
     GetInbandFec(&'req mut bool),
     SetDtx(bool),
     GetDtx(&'req mut bool),
+    GetInDtx(&'req mut bool),
     SetLsbDepth(i32),
     GetLsbDepth(&'req mut i32),
     SetExpertFrameDuration(i32),
@@ -1294,6 +1298,8 @@ pub enum OpusMultistreamEncoderCtlRequest<'req> {
     GetDredDuration(&'req mut i32),
     SetDnnBlob(&'req [u8]),
     SetForceMode(i32),
+    GetSampleRate(&'req mut i32),
+    GetLookahead(&'req mut i32),
     GetFinalRange(&'req mut u32),
     ResetState,
 }
@@ -1308,6 +1314,28 @@ pub fn opus_multistream_encoder_ctl<'req>(
     }
 
     match request {
+        OpusMultistreamEncoderCtlRequest::SetApplication(value) => {
+            for enc in &mut encoder.encoders {
+                opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetApplication(value)).map_err(
+                    |err| match err {
+                        OpusEncoderCtlError::BadArgument => {
+                            OpusMultistreamEncoderError::BadArgument
+                        }
+                        _ => OpusMultistreamEncoderError::EncoderCtl(err),
+                    },
+                )?;
+            }
+            encoder.application = value;
+        }
+        OpusMultistreamEncoderCtlRequest::GetApplication(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetApplication(out),
+            )?;
+        }
         OpusMultistreamEncoderCtlRequest::SetBitrate(value) => {
             if value != OPUS_AUTO && value != OPUS_BITRATE_MAX && value <= 0 {
                 return Err(OpusMultistreamEncoderError::BadArgument);
@@ -1430,6 +1458,15 @@ pub fn opus_multistream_encoder_ctl<'req>(
                 OpusEncoderCtlRequest::GetSignal(out),
             )?;
         }
+        OpusMultistreamEncoderCtlRequest::GetVoiceRatio(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetVoiceRatio(out),
+            )?;
+        }
         OpusMultistreamEncoderCtlRequest::SetPacketLossPerc(value) => {
             for enc in &mut encoder.encoders {
                 opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetPacketLossPerc(value))?;
@@ -1470,6 +1507,15 @@ pub fn opus_multistream_encoder_ctl<'req>(
                     .first_mut()
                     .ok_or(OpusMultistreamEncoderError::InternalError)?,
                 OpusEncoderCtlRequest::GetDtx(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::GetInDtx(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetInDtx(out),
             )?;
         }
         OpusMultistreamEncoderCtlRequest::SetLsbDepth(value) => {
@@ -1543,6 +1589,24 @@ pub fn opus_multistream_encoder_ctl<'req>(
             for enc in &mut encoder.encoders {
                 opus_encoder_ctl(enc, OpusEncoderCtlRequest::SetForceMode(value))?;
             }
+        }
+        OpusMultistreamEncoderCtlRequest::GetSampleRate(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetSampleRate(out),
+            )?;
+        }
+        OpusMultistreamEncoderCtlRequest::GetLookahead(out) => {
+            opus_encoder_ctl(
+                encoder
+                    .encoders
+                    .first_mut()
+                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                OpusEncoderCtlRequest::GetLookahead(out),
+            )?;
         }
         OpusMultistreamEncoderCtlRequest::GetFinalRange(out) => {
             let mut acc = 0u32;

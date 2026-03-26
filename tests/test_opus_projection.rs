@@ -204,6 +204,24 @@ fn encode_decode_pipeline() {
     assert_eq!(out_samples, BUFFER_SIZE);
 }
 
+#[test]
+fn projection_multistream_ctl_exposes_encoder_getters() {
+    let channels = 18;
+    let (mut encoder, _, _) =
+        opus_projection_ambisonics_encoder_create(48_000, channels, 3, OPUS_APPLICATION_AUDIO)
+            .expect("encoder creation");
+
+    let mut application = 0;
+    opus_projection_encoder_ctl(
+        &mut encoder,
+        OpusProjectionEncoderCtlRequest::Multistream(
+            OpusMultistreamEncoderCtlRequest::GetApplication(&mut application),
+        ),
+    )
+    .expect("get application via projection");
+    assert_eq!(application, OPUS_APPLICATION_AUDIO);
+}
+
 /// Tests various valid Ambisonics configurations.
 #[test]
 fn encode_decode_various_orders() {

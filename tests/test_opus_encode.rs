@@ -1470,6 +1470,225 @@ fn opus_encode_hybrid_to_celt_transition_emits_bridge_frame() {
 }
 
 #[test]
+fn opus_encoder_ctl_application_lookahead_and_dtx_parity() {
+    let sample_rate = 48_000;
+    let channels = 1;
+    let frame_size = sample_rate as usize / 50;
+
+    let mut encoder =
+        opus_encoder_create(sample_rate, channels, OPUS_APPLICATION_AUDIO).expect("encoder");
+
+    let mut application = 0;
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::GetApplication(&mut application),
+    )
+    .expect("get application");
+    assert_eq!(application, OPUS_APPLICATION_AUDIO);
+
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::SetApplication(OPUS_APPLICATION_VOIP),
+    )
+    .expect("set application before first encode");
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::GetApplication(&mut application),
+    )
+    .expect("get application after set");
+    assert_eq!(application, OPUS_APPLICATION_VOIP);
+
+    let mut sample_rate_out = 0;
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::GetSampleRate(&mut sample_rate_out),
+    )
+    .expect("get sample rate");
+    assert_eq!(sample_rate_out, sample_rate);
+
+    let mut lookahead = 0;
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::GetLookahead(&mut lookahead),
+    )
+    .expect("get lookahead");
+    assert_eq!(lookahead, sample_rate / 400 + sample_rate / 250);
+
+    let mut voice_ratio = 0;
+    opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetVoiceRatio(37))
+        .expect("set voice ratio");
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::GetVoiceRatio(&mut voice_ratio),
+    )
+    .expect("get voice ratio");
+    assert_eq!(voice_ratio, 37);
+
+    let mut rld_encoder =
+        opus_encoder_create(sample_rate, channels, OPUS_APPLICATION_RESTRICTED_LOWDELAY)
+            .expect("rld encoder");
+    opus_encoder_ctl(
+        &mut rld_encoder,
+        OpusEncoderCtlRequest::GetLookahead(&mut lookahead),
+    )
+    .expect("get rld lookahead");
+    assert_eq!(lookahead, sample_rate / 400);
+
+    opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::SetDtx(true)).expect("enable dtx");
+    opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::SetForceMode(MODE_SILK_ONLY),
+    )
+    .expect("force silk");
+
+    let quiet_frame = vec![0i16; frame_size * channels as usize];
+    let mut packet = vec![0u8; MAX_PACKET];
+    for _ in 0..12 {
+        opus_encode(&mut encoder, &quiet_frame, frame_size, &mut packet).expect("encode quiet");
+    }
+
+    let mut in_dtx = false;
+    opus_encoder_ctl(&mut encoder, OpusEncoderCtlRequest::GetInDtx(&mut in_dtx))
+        .expect("get in dtx");
+    assert!(in_dtx);
+
+    let invalid = opus_encoder_ctl(
+        &mut encoder,
+        OpusEncoderCtlRequest::SetApplication(OPUS_APPLICATION_AUDIO),
+    );
+    assert!(matches!(invalid, Err(OpusEncoderCtlError::BadArgument)));
+}
+
+#[test]
+fn opus_multistream_encoder_ctl_matches_first_stream_for_new_getters() {
+    let sample_rate = 48_000;
+    let mapping = [0u8, 1u8];
+    let frame_size = sample_rate as usize / 50;
+
+    let mut encoder =
+        opus_multistream_encoder_create(sample_rate, 2, 2, 0, &mapping, OPUS_APPLICATION_AUDIO)
+            .expect("multistream encoder");
+
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::SetApplication(OPUS_APPLICATION_VOIP),
+    )
+    .expect("set multistream application");
+
+    let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut encoder, 0)
+        .expect("get first stream encoder");
+
+    let mut stream_application = 0;
+    opus_encoder_ctl(
+        stream_encoder,
+        OpusEncoderCtlRequest::GetApplication(&mut stream_application),
+    )
+    .expect("get stream application");
+    assert_eq!(stream_application, OPUS_APPLICATION_VOIP);
+
+    let mut application = 0;
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::GetApplication(&mut application),
+    )
+    .expect("get multistream application");
+    assert_eq!(application, stream_application);
+
+    let mut sample_rate_out = 0;
+    let mut stream_sample_rate = 0;
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::GetSampleRate(&mut sample_rate_out),
+    )
+    .expect("get multistream sample rate");
+    let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut encoder, 0)
+        .expect("get first stream encoder");
+    opus_encoder_ctl(
+        stream_encoder,
+        OpusEncoderCtlRequest::GetSampleRate(&mut stream_sample_rate),
+    )
+    .expect("get stream sample rate");
+    assert_eq!(sample_rate_out, stream_sample_rate);
+
+    let mut lookahead = 0;
+    let mut stream_lookahead = 0;
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::GetLookahead(&mut lookahead),
+    )
+    .expect("get multistream lookahead");
+    let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut encoder, 0)
+        .expect("get first stream encoder");
+    opus_encoder_ctl(
+        stream_encoder,
+        OpusEncoderCtlRequest::GetLookahead(&mut stream_lookahead),
+    )
+    .expect("get stream lookahead");
+    assert_eq!(lookahead, stream_lookahead);
+
+    let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut encoder, 0)
+        .expect("get first stream encoder");
+    opus_encoder_ctl(stream_encoder, OpusEncoderCtlRequest::SetVoiceRatio(55))
+        .expect("set stream voice ratio");
+    let mut voice_ratio = 0;
+    let mut stream_voice_ratio = 0;
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::GetVoiceRatio(&mut voice_ratio),
+    )
+    .expect("get multistream voice ratio");
+    let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut encoder, 0)
+        .expect("get first stream encoder");
+    opus_encoder_ctl(
+        stream_encoder,
+        OpusEncoderCtlRequest::GetVoiceRatio(&mut stream_voice_ratio),
+    )
+    .expect("get stream voice ratio");
+    assert_eq!(voice_ratio, stream_voice_ratio);
+
+    opus_multistream_encoder_ctl(&mut encoder, OpusMultistreamEncoderCtlRequest::SetDtx(true))
+        .expect("enable multistream dtx");
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::SetForceMode(MODE_SILK_ONLY),
+    )
+    .expect("force multistream silk");
+
+    let quiet_frame = vec![0i16; frame_size * 2];
+    let mut packet = vec![0u8; MAX_PACKET];
+    for _ in 0..12 {
+        opus_multistream_encode(&mut encoder, &quiet_frame, frame_size, &mut packet)
+            .expect("encode quiet multistream frame");
+    }
+
+    let mut in_dtx = false;
+    let mut stream_in_dtx = false;
+    opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::GetInDtx(&mut in_dtx),
+    )
+    .expect("get multistream in dtx");
+    let stream_encoder = opus_multistream_encoder_get_encoder_state(&mut encoder, 0)
+        .expect("get first stream encoder");
+    opus_encoder_ctl(
+        stream_encoder,
+        OpusEncoderCtlRequest::GetInDtx(&mut stream_in_dtx),
+    )
+    .expect("get stream in dtx");
+    assert_eq!(in_dtx, stream_in_dtx);
+    assert!(in_dtx);
+
+    let invalid = opus_multistream_encoder_ctl(
+        &mut encoder,
+        OpusMultistreamEncoderCtlRequest::SetApplication(OPUS_APPLICATION_AUDIO),
+    );
+    assert!(matches!(
+        invalid,
+        Err(OpusMultistreamEncoderError::BadArgument)
+    ));
+}
+
+#[test]
 fn opus_encode_run_test1() {
     let mut rng = FastRand::new(seed_from_env());
     run_test1(no_fuzz(), &mut rng).expect("run_test1 should succeed");

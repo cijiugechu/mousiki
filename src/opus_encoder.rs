@@ -37,7 +37,11 @@ use crate::silk::enc_api::{PrefillMode, silk_encode, silk_init_encoder};
 use crate::silk::errors::SilkError;
 use crate::silk::lin2log::lin2log;
 use crate::silk::log2lin::log2lin;
-use crate::silk::tuning_parameters::{VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2};
+#[cfg(not(feature = "fixed_point"))]
+use crate::silk::tuning_parameters::MAX_CONSECUTIVE_DTX;
+use crate::silk::tuning_parameters::{
+    NB_SPEECH_FRAMES_BEFORE_DTX, VARIABLE_HP_MIN_CUTOFF_HZ, VARIABLE_HP_SMTH_COEF2,
+};
 #[cfg(feature = "dred")]
 use crate::{
     dred_constants::{DRED_MAX_DATA_SIZE, DRED_MIN_BYTES},
@@ -622,7 +626,6 @@ impl OpusApplication {
     }
 
     #[inline]
-    #[cfg(not(feature = "fixed_point"))]
     const fn to_opus_int(self) -> i32 {
         match self {
             Self::Voip => 2048,
@@ -692,6 +695,8 @@ impl From<CeltEncoderCtlError> for OpusEncoderCtlError {
 }
 
 pub enum OpusEncoderCtlRequest<'req> {
+    SetApplication(i32),
+    GetApplication(&'req mut i32),
     SetBitrate(i32),
     GetBitrate(&'req mut i32),
     SetForceChannels(i32),
@@ -708,12 +713,15 @@ pub enum OpusEncoderCtlRequest<'req> {
     GetComplexity(&'req mut i32),
     SetSignal(i32),
     GetSignal(&'req mut i32),
+    SetVoiceRatio(i32),
+    GetVoiceRatio(&'req mut i32),
     SetPacketLossPerc(i32),
     GetPacketLossPerc(&'req mut i32),
     SetInbandFec(bool),
     GetInbandFec(&'req mut bool),
     SetDtx(bool),
     GetDtx(&'req mut bool),
+    GetInDtx(&'req mut bool),
     SetLsbDepth(i32),
     GetLsbDepth(&'req mut i32),
     SetExpertFrameDuration(i32),
@@ -726,6 +734,8 @@ pub enum OpusEncoderCtlRequest<'req> {
     GetDredDuration(&'req mut i32),
     SetDnnBlob(&'req [u8]),
     SetForceMode(i32),
+    GetSampleRate(&'req mut i32),
+    GetLookahead(&'req mut i32),
     GetFinalRange(&'req mut u32),
     ResetState,
     SetLfe(bool),
@@ -958,6 +968,10 @@ pub struct OpusEncoder<'mode> {
     delay_buffer: [OpusRes; DELAY_BUFFER_SAMPLES],
     #[cfg(not(feature = "fixed_point"))]
     detected_bandwidth: i32,
+    #[cfg(not(feature = "fixed_point"))]
+    nb_no_activity_ms_q1: i32,
+    #[cfg(not(feature = "fixed_point"))]
+    peak_signal_energy: f32,
     nonfinal_frame: bool,
     range_final: u32,
     dred_duration: i32,
@@ -1086,6 +1100,8 @@ impl<'mode> OpusEncoder<'mode> {
         #[cfg(not(feature = "fixed_point"))]
         {
             self.detected_bandwidth = 0;
+            self.nb_no_activity_ms_q1 = 0;
+            self.peak_signal_energy = 0.0;
         }
         self.nonfinal_frame = false;
         self.range_final = 0;
@@ -1143,6 +1159,8 @@ impl<'mode> OpusEncoder<'mode> {
         #[cfg(not(feature = "fixed_point"))]
         {
             self.detected_bandwidth = 0;
+            self.nb_no_activity_ms_q1 = 0;
+            self.peak_signal_energy = 0.0;
         }
         self.nonfinal_frame = false;
         self.range_final = 0;
@@ -3375,9 +3393,25 @@ fn encode_frame_native<'mode>(
         _ => return Err(OpusEncodeError::BadArgument),
     };
 
+    #[cfg(not(feature = "fixed_point"))]
+    if encoder.use_dtx && (encoder.analysis_info.valid || is_silence) {
+        let frame_size_ms_q1 = 2 * 1000 * frame_size_i32 / encoder.fs;
+        if decide_dtx_mode(
+            activity,
+            &mut encoder.nb_no_activity_ms_q1,
+            frame_size_ms_q1,
+        ) {
+            encoder.range_final = 0;
+            data[0] = gen_toc(mode, frame_rate, bandwidth, encoder.stream_channels);
+            ret = 1;
+        }
+    } else {
+        encoder.nb_no_activity_ms_q1 = 0;
+    }
+
     #[cfg(feature = "dred")]
     {
-        if encoder.dred_duration > 0 && encoder.dred_loaded && first_frame {
+        if ret > 1 && encoder.dred_duration > 0 && encoder.dred_loaded && first_frame {
             let mut dred_chunks =
                 ((encoder.dred_duration + 5) / 4).min(DRED_NUM_REDUNDANCY_FRAMES / 2);
             if encoder.use_vbr {
@@ -3500,6 +3534,10 @@ pub fn opus_encoder_create<'mode>(
         delay_buffer: [OpusRes::default(); DELAY_BUFFER_SAMPLES],
         #[cfg(not(feature = "fixed_point"))]
         detected_bandwidth: 0,
+        #[cfg(not(feature = "fixed_point"))]
+        nb_no_activity_ms_q1: 0,
+        #[cfg(not(feature = "fixed_point"))]
+        peak_signal_energy: 0.0,
         nonfinal_frame: false,
         range_final: 0,
         dred_duration: 0,
@@ -3574,6 +3612,21 @@ pub fn opus_encoder_ctl<'req>(
     request: OpusEncoderCtlRequest<'req>,
 ) -> Result<(), OpusEncoderCtlError> {
     match request {
+        OpusEncoderCtlRequest::SetApplication(value) => {
+            let application =
+                OpusApplication::from_opus_int(value).ok_or(OpusEncoderCtlError::BadArgument)?;
+            if !encoder.first && encoder.application != application {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.application = application;
+            #[cfg(not(feature = "fixed_point"))]
+            {
+                encoder.analysis.application = value;
+            }
+        }
+        OpusEncoderCtlRequest::GetApplication(out) => {
+            *out = encoder.application.to_opus_int();
+        }
         OpusEncoderCtlRequest::SetBitrate(value) => {
             if value != OPUS_AUTO && value != OPUS_BITRATE_MAX && value <= 0 {
                 return Err(OpusEncoderCtlError::BadArgument);
@@ -3655,6 +3708,15 @@ pub fn opus_encoder_ctl<'req>(
         OpusEncoderCtlRequest::GetSignal(out) => {
             *out = encoder.signal_type;
         }
+        OpusEncoderCtlRequest::SetVoiceRatio(value) => {
+            if !(-1..=100).contains(&value) {
+                return Err(OpusEncoderCtlError::BadArgument);
+            }
+            encoder.voice_ratio = value;
+        }
+        OpusEncoderCtlRequest::GetVoiceRatio(out) => {
+            *out = encoder.voice_ratio;
+        }
         OpusEncoderCtlRequest::SetPacketLossPerc(value) => {
             if !(0..=100).contains(&value) {
                 return Err(OpusEncoderCtlError::BadArgument);
@@ -3675,6 +3737,9 @@ pub fn opus_encoder_ctl<'req>(
         }
         OpusEncoderCtlRequest::GetDtx(out) => {
             *out = encoder.use_dtx;
+        }
+        OpusEncoderCtlRequest::GetInDtx(out) => {
+            *out = encoder_in_dtx(encoder);
         }
         OpusEncoderCtlRequest::SetLsbDepth(value) => {
             if !(8..=24).contains(&value) {
@@ -3751,6 +3816,16 @@ pub fn opus_encoder_ctl<'req>(
             }
             encoder.user_forced_mode = value;
         }
+        OpusEncoderCtlRequest::GetSampleRate(out) => {
+            *out = encoder.fs;
+        }
+        OpusEncoderCtlRequest::GetLookahead(out) => {
+            let mut lookahead = encoder.fs / 400;
+            if !matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
+                lookahead += encoder.delay_compensation;
+            }
+            *out = lookahead;
+        }
         OpusEncoderCtlRequest::GetFinalRange(out) => {
             *out = encoder.range_final;
         }
@@ -3766,6 +3841,48 @@ pub fn opus_encoder_ctl<'req>(
         }
     }
     Ok(())
+}
+
+fn encoder_in_dtx(encoder: &OpusEncoder<'_>) -> bool {
+    if encoder.silk_mode.use_dtx != 0 && matches!(encoder.prev_mode, MODE_SILK_ONLY | MODE_HYBRID) {
+        let first_in_dtx =
+            encoder.silk.state_fxx[0].common.no_speech_counter >= NB_SPEECH_FRAMES_BEFORE_DTX;
+        if !first_in_dtx {
+            return false;
+        }
+
+        if encoder.silk.n_channels_internal == 2 && !encoder.silk.prev_decode_only_middle {
+            return encoder.silk.state_fxx[1].common.no_speech_counter
+                >= NB_SPEECH_FRAMES_BEFORE_DTX;
+        }
+
+        return true;
+    }
+
+    #[cfg(not(feature = "fixed_point"))]
+    if encoder.use_dtx {
+        return encoder.nb_no_activity_ms_q1 >= NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2;
+    }
+
+    false
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn decide_dtx_mode(activity: i32, nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> bool {
+    if activity == 0 {
+        *nb_no_activity_ms_q1 += frame_size_ms_q1;
+        if *nb_no_activity_ms_q1 > NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2 {
+            if *nb_no_activity_ms_q1 <= (NB_SPEECH_FRAMES_BEFORE_DTX + MAX_CONSECUTIVE_DTX) * 20 * 2
+            {
+                return true;
+            }
+            *nb_no_activity_ms_q1 = NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2;
+        }
+    } else {
+        *nb_no_activity_ms_q1 = 0;
+    }
+
+    false
 }
 
 pub fn opus_encode_with_options(
