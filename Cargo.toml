@@ -79,3 +79,8 @@ excessive_precision = "allow"
 
 [dev-dependencies]
 sha2 = "0.10"
+
+[[example]]
+name = "libopusenc_example"
+path = "examples/libopusenc_example.rs"
+required-features = ["libopusenc"]
