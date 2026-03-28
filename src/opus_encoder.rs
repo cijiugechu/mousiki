@@ -19,6 +19,7 @@ use crate::analysis::{
     TonalityAnalysisState, run_analysis, tonality_analysis_init, tonality_analysis_reset,
     tonality_get_info,
 };
+use crate::analysis::DownmixInput;
 use crate::celt::AnalysisInfo;
 use crate::celt::{
     CELT_SIG_SCALE, CeltCoef, CeltEncodeError, CeltEncoderCtlError, CeltEncoderInitError,
@@ -1376,6 +1377,86 @@ fn compute_stereo_width(
     (20.0 * mem.max_follower).min(1.0)
 }
 
+#[cfg(not(feature = "fixed_point"))]
+fn compute_stereo_width_float(
+    pcm: &[f32],
+    frame_size: usize,
+    fs: i32,
+    mem: &mut StereoWidthState,
+) -> f32 {
+    let frame_rate = fs / frame_size as i32;
+    if frame_rate <= 0 {
+        return 0.0;
+    }
+    let short_alpha = 1.0 - 25.0 / (frame_rate.max(50) as f32);
+    let mut xx = 0.0f32;
+    let mut xy = 0.0f32;
+    let mut yy = 0.0f32;
+
+    for i in (0..frame_size.saturating_sub(3)).step_by(4) {
+        let mut pxx = 0.0f32;
+        let mut pxy = 0.0f32;
+        let mut pyy = 0.0f32;
+
+        let x0 = pcm[2 * i];
+        let y0 = pcm[2 * i + 1];
+        pxx += x0 * x0;
+        pxy += x0 * y0;
+        pyy += y0 * y0;
+
+        let x1 = pcm[2 * i + 2];
+        let y1 = pcm[2 * i + 3];
+        pxx += x1 * x1;
+        pxy += x1 * y1;
+        pyy += y1 * y1;
+
+        let x2 = pcm[2 * i + 4];
+        let y2 = pcm[2 * i + 5];
+        pxx += x2 * x2;
+        pxy += x2 * y2;
+        pyy += y2 * y2;
+
+        let x3 = pcm[2 * i + 6];
+        let y3 = pcm[2 * i + 7];
+        pxx += x3 * x3;
+        pxy += x3 * y3;
+        pyy += y3 * y3;
+
+        xx += pxx * 0.25;
+        xy += pxy * 0.25;
+        yy += pyy * 0.25;
+    }
+
+    if !(xx < 1e9) || xx.is_nan() || !(yy < 1e9) || yy.is_nan() {
+        xx = 0.0;
+        xy = 0.0;
+        yy = 0.0;
+    }
+
+    mem.xx += short_alpha * (xx - mem.xx);
+    mem.xy += short_alpha * (xy - mem.xy);
+    mem.yy += short_alpha * (yy - mem.yy);
+    mem.xx = mem.xx.max(0.0);
+    mem.xy = mem.xy.max(0.0);
+    mem.yy = mem.yy.max(0.0);
+
+    const EPSILON: f32 = 1.0e-15;
+    if mem.xx > 8e-4 || mem.yy > 8e-4 {
+        let sqrt_xx = celt_sqrt(mem.xx);
+        let sqrt_yy = celt_sqrt(mem.yy);
+        let qrrt_xx = celt_sqrt(sqrt_xx);
+        let qrrt_yy = celt_sqrt(sqrt_yy);
+        mem.xy = mem.xy.min(sqrt_xx * sqrt_yy);
+        let corr = frac_div32(mem.xy, EPSILON + sqrt_xx * sqrt_yy);
+        let ldiff = (qrrt_xx - qrrt_yy).abs() / (EPSILON + qrrt_xx + qrrt_yy);
+        let width = celt_sqrt((1.0 - corr * corr).max(0.0)).min(1.0) * ldiff;
+        mem.smoothed_width += (width - mem.smoothed_width) / frame_rate as f32;
+        mem.max_follower = (mem.max_follower - 0.02 / frame_rate as f32).max(mem.smoothed_width);
+    }
+
+    (20.0 * mem.max_follower).min(1.0)
+}
+
 fn decide_fec(
     use_in_band_fec: bool,
     packet_loss_perc: i32,
@@ -1684,6 +1765,24 @@ fn is_digital_silence(pcm: &[i16], frame_size: usize, channels: usize, lsb_depth
     }
 }
 
+#[cfg(not(feature = "fixed_point"))]
+fn is_digital_silence_float(
+    pcm: &[f32],
+    frame_size: usize,
+    channels: usize,
+    lsb_depth: i32,
+) -> bool {
+    let total = frame_size.saturating_mul(channels);
+    if pcm.len() < total || lsb_depth <= 0 {
+        return false;
+    }
+    let mut sample_max = 0.0f32;
+    for &sample in &pcm[..total] {
+        sample_max = sample_max.max(sample.abs());
+    }
+    sample_max <= 1.0 / ((1u32 << lsb_depth.min(30)) as f32)
+}
+
 #[allow(dead_code)]
 fn compute_redundancy_bytes(
     max_data_bytes: i32,
@@ -1805,6 +1904,86 @@ fn prepare_pcm_buffer(
                 0,
             );
         }
+    }
+
+    Ok(needed)
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn prepare_pcm_buffer_float(
+    encoder: &OpusEncoder<'_>,
+    pcm: &[f32],
+    frame_size: usize,
+    channels: usize,
+    scratch: &mut [OpusRes],
+) -> Result<usize, OpusEncodeError> {
+    let total_buffer = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
+        0
+    } else {
+        encoder.delay_compensation
+    };
+    let total_buffer = usize::try_from(total_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let needed_per_channel = total_buffer
+        .checked_add(frame_size)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let needed = needed_per_channel
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if needed > scratch.len() {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    let delay_len = total_buffer
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if delay_len > 0 {
+        let encoder_buffer =
+            usize::try_from(encoder.encoder_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+        debug_assert!(encoder_buffer >= total_buffer);
+        let delay_start = encoder_buffer.saturating_sub(total_buffer);
+        let delay_start = delay_start
+            .checked_mul(channels)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        let delay_end = delay_start
+            .checked_add(delay_len)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        if delay_end > encoder.delay_buffer.len() {
+            return Err(OpusEncodeError::BadArgument);
+        }
+        scratch[..delay_len].copy_from_slice(&encoder.delay_buffer[delay_start..delay_end]);
+    }
+
+    #[cfg(test)]
+    if total_buffer > 0 {
+        if let Some(frame_idx) = opus_pcm_trace::current_frame() {
+            opus_pcm_trace::dump(
+                "delay_copy",
+                frame_idx,
+                &scratch[..delay_len],
+                channels,
+                total_buffer,
+            );
+        }
+    }
+
+    let pcm_len = frame_size
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if pcm.len() < pcm_len {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    scratch[delay_len..delay_len + pcm_len].copy_from_slice(&pcm[..pcm_len]);
+
+    #[cfg(test)]
+    if let Some(frame_idx) = opus_pcm_trace::current_frame() {
+        opus_pcm_trace::dump(
+            "input_copy",
+            frame_idx,
+            &scratch[delay_len..delay_len + pcm_len],
+            channels,
+            frame_size,
+        );
     }
 
     Ok(needed)
@@ -1980,6 +2159,80 @@ fn hp_cutoff(
         let mut s1 = hp_mem[1];
         for i in 0..len {
             let x = f32::from(input[i]) * scale;
+            let vout = s0 + b0 * x;
+            s0 = s1 - vout * a0 + b1 * x;
+            s1 = -vout * a1 + b2 * x + VERY_SMALL;
+            output[i] = vout;
+        }
+        hp_mem[0] = s0;
+        hp_mem[1] = s1;
+    }
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn hp_cutoff_float(
+    input: &[f32],
+    cutoff_hz: i32,
+    output: &mut [OpusRes],
+    hp_mem: &mut [f32; 4],
+    len: usize,
+    channels: usize,
+    fs: i32,
+) {
+    assert!(channels == 1 || channels == 2, "unsupported channel count");
+    let expected = len.saturating_mul(channels);
+    assert!(input.len() >= expected, "input buffer too small");
+    assert!(output.len() >= expected, "output buffer too small");
+
+    debug_assert!(fs > 0);
+    let fs_div = fs / 1000;
+    debug_assert!(fs_div > 0);
+    debug_assert!(cutoff_hz <= i32::MAX / HP_CUTOFF_COEF_Q19);
+    let fc_q19 = (HP_CUTOFF_COEF_Q19 * cutoff_hz) / fs_div;
+    debug_assert!(fc_q19 > 0 && fc_q19 < 32768);
+
+    let r_q28 = (1 << 28) - (HP_CUTOFF_R_COEF_Q9 * fc_q19);
+    let b_q28 = [r_q28, -2 * r_q28, r_q28];
+    let r_q22 = r_q28 >> 6;
+    let fc_sq_q22 = smulww(fc_q19, fc_q19);
+    let a_q28 = [smulww(r_q22, fc_sq_q22 - (2 << 22)), smulww(r_q22, r_q22)];
+
+    let scale_q28 = 1.0 / ((1u64 << 28) as f32);
+    let b0 = b_q28[0] as f32 * scale_q28;
+    let b1 = b_q28[1] as f32 * scale_q28;
+    let b2 = b_q28[2] as f32 * scale_q28;
+    let a0 = a_q28[0] as f32 * scale_q28;
+    let a1 = a_q28[1] as f32 * scale_q28;
+
+    if channels == 2 {
+        let mut s0 = hp_mem[0];
+        let mut s1 = hp_mem[1];
+        let mut s2 = hp_mem[2];
+        let mut s3 = hp_mem[3];
+        for i in 0..len {
+            let idx = i * 2;
+            let x0 = input[idx];
+            let x1 = input[idx + 1];
+
+            let vout0 = s0 + b0 * x0;
+            s0 = s1 - vout0 * a0 + b1 * x0;
+            s1 = -vout0 * a1 + b2 * x0 + VERY_SMALL;
+            output[idx] = vout0;
+
+            let vout1 = s2 + b0 * x1;
+            s2 = s3 - vout1 * a0 + b1 * x1;
+            s3 = -vout1 * a1 + b2 * x1 + VERY_SMALL;
+            output[idx + 1] = vout1;
+        }
+        hp_mem[0] = s0;
+        hp_mem[1] = s1;
+        hp_mem[2] = s2;
+        hp_mem[3] = s3;
+    } else {
+        let mut s0 = hp_mem[0];
+        let mut s1 = hp_mem[1];
+        for i in 0..len {
+            let x = input[i];
             let vout = s0 + b0 * x;
             s0 = s1 - vout * a0 + b1 * x;
             s1 = -vout * a1 + b2 * x + VERY_SMALL;
@@ -2197,6 +2450,55 @@ fn dc_reject(
                     }
                 }
             }
+        }
+        hp_mem[0] = m0;
+    }
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn dc_reject_float(
+    input: &[f32],
+    cutoff_hz: i32,
+    output: &mut [OpusRes],
+    hp_mem: &mut [f32; 4],
+    len: usize,
+    channels: usize,
+    fs: i32,
+) {
+    assert!(channels == 1 || channels == 2, "unsupported channel count");
+    let expected = len.saturating_mul(channels);
+    assert!(input.len() >= expected, "input buffer too small");
+    assert!(output.len() >= expected, "output buffer too small");
+
+    let coef = 6.3f32 * cutoff_hz as f32 / fs as f32;
+    let coef2 = 1.0 - coef;
+
+    if channels == 2 {
+        let mut m0 = hp_mem[0];
+        let mut m2 = hp_mem[2];
+        for i in 0..len {
+            let idx = i * 2;
+            let x0 = input[idx];
+            let x1 = input[idx + 1];
+            let out0 = x0 - m0;
+            let out1 = x1 - m2;
+            let acc0 = fmaf(coef, x0, VERY_SMALL);
+            let acc1 = fmaf(coef, x1, VERY_SMALL);
+            m0 = fmaf(coef2, m0, acc0);
+            m2 = fmaf(coef2, m2, acc1);
+            output[idx] = out0;
+            output[idx + 1] = out1;
+        }
+        hp_mem[0] = m0;
+        hp_mem[2] = m2;
+    } else {
+        let mut m0 = hp_mem[0];
+        for i in 0..len {
+            let x = input[i];
+            let y = x - m0;
+            let acc = fmaf(coef, x, VERY_SMALL);
+            m0 = fmaf(coef2, m0, acc);
+            output[i] = y;
         }
         hp_mem[0] = m0;
     }
@@ -2425,18 +2727,6 @@ fn encode_frame_native<'mode>(
     first_frame: bool,
     dred_bitrate_bps: i32,
 ) -> Result<usize, OpusEncodeError> {
-    if data.len() < 2 {
-        return Err(OpusEncodeError::BufferTooSmall);
-    }
-
-    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
-    let required = channels
-        .checked_mul(frame_size)
-        .ok_or(OpusEncodeError::BadArgument)?;
-    if pcm.len() < required {
-        return Err(OpusEncodeError::BadArgument);
-    }
-
     #[cfg(test)]
     let _trace_pcm_frame = opus_pcm_trace::begin_frame();
     #[cfg(test)]
@@ -2448,13 +2738,14 @@ fn encode_frame_native<'mode>(
         crate::range::set_range_done_trace_frame(frame_idx);
     }
 
-    let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
-    let frame_rate = encoder
-        .fs
-        .checked_div(frame_size_i32)
+    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
+    let required = channels
+        .checked_mul(frame_size)
         .ok_or(OpusEncodeError::BadArgument)?;
-    let mut max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
-    max_data_bytes = max_data_bytes.min(1276);
+    if pcm.len() < required || data.len() < 2 {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
     let mut pcm_buf_storage = [OpusRes::default(); MAX_PCM_BUF_SAMPLES];
     let pcm_buf_len = prepare_pcm_buffer(encoder, pcm, frame_size, channels, &mut pcm_buf_storage)?;
     let pcm_buf = &mut pcm_buf_storage[..pcm_buf_len];
@@ -2501,6 +2792,197 @@ fn encode_frame_native<'mode>(
             total_buffer + frame_size,
         );
     }
+
+    encode_frame_native_prepared(
+        encoder,
+        energy_masking,
+        pcm,
+        pcm_buf,
+        frame_size,
+        data,
+        lsb_depth,
+        silk_use_dtx,
+        is_silence,
+        redundancy,
+        celt_to_silk,
+        prefill,
+        bandwidth_int,
+        mode,
+        to_celt,
+        equiv_rate,
+        first_frame,
+        dred_bitrate_bps,
+        #[cfg(test)]
+        trace_budget_frame_idx,
+    )
+}
+
+#[cfg(not(feature = "fixed_point"))]
+fn encode_frame_native_float<'mode>(
+    encoder: &mut OpusEncoder<'mode>,
+    energy_masking: Option<&[f32]>,
+    pcm: &[f32],
+    frame_size: usize,
+    data: &mut [u8],
+    lsb_depth: i32,
+    silk_use_dtx: bool,
+    is_silence: bool,
+    redundancy: bool,
+    celt_to_silk: bool,
+    prefill: PrefillMode,
+    bandwidth_int: i32,
+    mode: i32,
+    to_celt: bool,
+    equiv_rate: i32,
+    first_frame: bool,
+    dred_bitrate_bps: i32,
+) -> Result<usize, OpusEncodeError> {
+    #[cfg(test)]
+    let _trace_pcm_frame = opus_pcm_trace::begin_frame();
+    #[cfg(test)]
+    let trace_budget_frame_idx = opus_celt_budget_trace::begin_frame();
+    #[cfg(test)]
+    let trace_range_frame_idx = crate::range::begin_range_done_trace_frame();
+    #[cfg(test)]
+    if let Some(frame_idx) = trace_range_frame_idx {
+        crate::range::set_range_done_trace_frame(frame_idx);
+    }
+
+    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
+    let required = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if pcm.len() < required || data.len() < 2 {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    let mut pcm_buf_storage = [OpusRes::default(); MAX_PCM_BUF_SAMPLES];
+    let pcm_buf_len =
+        prepare_pcm_buffer_float(encoder, pcm, frame_size, channels, &mut pcm_buf_storage)?;
+    let pcm_buf = &mut pcm_buf_storage[..pcm_buf_len];
+    let total_buffer = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
+        0
+    } else {
+        encoder.delay_compensation
+    };
+    let total_buffer = usize::try_from(total_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let delay_len = total_buffer
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let cutoff_hz = update_high_pass_state(encoder, mode);
+    let filtered_pcm = &mut pcm_buf[delay_len..delay_len + required];
+    if encoder.application == OpusApplication::Voip {
+        hp_cutoff_float(
+            pcm,
+            cutoff_hz,
+            filtered_pcm,
+            &mut encoder.hp_mem,
+            frame_size,
+            channels,
+            encoder.fs,
+        );
+    } else {
+        dc_reject_float(
+            pcm,
+            3,
+            filtered_pcm,
+            &mut encoder.hp_mem,
+            frame_size,
+            channels,
+            encoder.fs,
+        );
+    }
+
+    #[cfg(test)]
+    if let Some(frame_idx) = opus_pcm_trace::current_frame() {
+        opus_pcm_trace::dump(
+            "pcm_buf",
+            frame_idx,
+            pcm_buf,
+            channels,
+            total_buffer + frame_size,
+        );
+    }
+
+    let mut silk_pcm_storage = [0i16; MAX_FRAME_SAMPLES * MAX_CHANNELS];
+    for (dst, &sample) in silk_pcm_storage[..required].iter_mut().zip(&pcm[..required]) {
+        let scaled = libm::roundf(sample * CELT_SIG_SCALE);
+        *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+    }
+
+    encode_frame_native_prepared(
+        encoder,
+        energy_masking,
+        &silk_pcm_storage[..required],
+        pcm_buf,
+        frame_size,
+        data,
+        lsb_depth,
+        silk_use_dtx,
+        is_silence,
+        redundancy,
+        celt_to_silk,
+        prefill,
+        bandwidth_int,
+        mode,
+        to_celt,
+        equiv_rate,
+        first_frame,
+        dred_bitrate_bps,
+        #[cfg(test)]
+        trace_budget_frame_idx,
+    )
+}
+
+fn encode_frame_native_prepared<'mode>(
+    encoder: &mut OpusEncoder<'mode>,
+    energy_masking: Option<&[f32]>,
+    silk_pcm: &[i16],
+    pcm_buf: &mut [OpusRes],
+    frame_size: usize,
+    data: &mut [u8],
+    lsb_depth: i32,
+    silk_use_dtx: bool,
+    is_silence: bool,
+    redundancy: bool,
+    celt_to_silk: bool,
+    prefill: PrefillMode,
+    bandwidth_int: i32,
+    mode: i32,
+    to_celt: bool,
+    equiv_rate: i32,
+    first_frame: bool,
+    dred_bitrate_bps: i32,
+    #[cfg(test)] trace_budget_frame_idx: Option<usize>,
+) -> Result<usize, OpusEncodeError> {
+    if data.len() < 2 {
+        return Err(OpusEncodeError::BufferTooSmall);
+    }
+
+    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
+    let required = channels
+        .checked_mul(frame_size)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    if silk_pcm.len() < required {
+        return Err(OpusEncodeError::BadArgument);
+    }
+
+    let frame_size_i32 = i32::try_from(frame_size).map_err(|_| OpusEncodeError::BadArgument)?;
+    let frame_rate = encoder
+        .fs
+        .checked_div(frame_size_i32)
+        .ok_or(OpusEncodeError::BadArgument)?;
+    let mut max_data_bytes = i32::try_from(data.len()).map_err(|_| OpusEncodeError::BadArgument)?;
+    max_data_bytes = max_data_bytes.min(1276);
+    let total_buffer = if matches!(encoder.application, OpusApplication::RestrictedLowDelay) {
+        0
+    } else {
+        encoder.delay_compensation
+    };
+    let total_buffer = usize::try_from(total_buffer).map_err(|_| OpusEncodeError::BadArgument)?;
+    let delay_len = total_buffer
+        .checked_mul(channels)
+        .ok_or(OpusEncodeError::BadArgument)?;
 
     #[cfg(feature = "fixed_point")]
     let _ = is_silence;
@@ -2605,7 +3087,7 @@ fn encode_frame_native<'mode>(
             silk_encode(
                 &mut encoder.silk,
                 &mut encoder.silk_mode,
-                &pcm[..required],
+                &silk_pcm[..required],
                 &mut range_encoder,
                 &mut bytes_out,
                 PrefillMode::None,
@@ -2919,7 +3401,7 @@ fn encode_frame_native<'mode>(
             silk_encode(
                 &mut encoder.silk,
                 &mut encoder.silk_mode,
-                &pcm[..required],
+                &silk_pcm[..required],
                 &mut range_encoder,
                 &mut bytes_out,
                 PrefillMode::None,
@@ -3885,13 +4367,188 @@ fn decide_dtx_mode(activity: i32, nb_no_activity_ms_q1: &mut i32, frame_size_ms_
     false
 }
 
-pub fn opus_encode_with_options(
+#[allow(dead_code)]
+trait EncodeInputSample: Copy {
+    fn compute_stereo_width(
+        pcm: &[Self],
+        frame_size: usize,
+        fs: i32,
+        mem: &mut StereoWidthState,
+    ) -> f32;
+    fn is_digital_silence(
+        pcm: &[Self],
+        frame_size: usize,
+        channels: usize,
+        lsb_depth: i32,
+    ) -> bool;
+    fn encode_frame_native<'mode>(
+        encoder: &mut OpusEncoder<'mode>,
+        energy_masking: Option<&[f32]>,
+        pcm: &[Self],
+        frame_size: usize,
+        data: &mut [u8],
+        lsb_depth: i32,
+        silk_use_dtx: bool,
+        is_silence: bool,
+        redundancy: bool,
+        celt_to_silk: bool,
+        prefill: PrefillMode,
+        bandwidth_int: i32,
+        mode: i32,
+        to_celt: bool,
+        equiv_rate: i32,
+        first_frame: bool,
+        dred_bitrate_bps: i32,
+    ) -> Result<usize, OpusEncodeError>;
+}
+
+impl EncodeInputSample for i16 {
+    #[inline]
+    fn compute_stereo_width(
+        pcm: &[Self],
+        frame_size: usize,
+        fs: i32,
+        mem: &mut StereoWidthState,
+    ) -> f32 {
+        compute_stereo_width(pcm, frame_size, fs, mem)
+    }
+
+    #[inline]
+    fn is_digital_silence(
+        pcm: &[Self],
+        frame_size: usize,
+        channels: usize,
+        lsb_depth: i32,
+    ) -> bool {
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            is_digital_silence(pcm, frame_size, channels, lsb_depth)
+        }
+        #[cfg(feature = "fixed_point")]
+        {
+            let _ = (pcm, frame_size, channels, lsb_depth);
+            false
+        }
+    }
+
+    #[inline]
+    fn encode_frame_native<'mode>(
+        encoder: &mut OpusEncoder<'mode>,
+        energy_masking: Option<&[f32]>,
+        pcm: &[Self],
+        frame_size: usize,
+        data: &mut [u8],
+        lsb_depth: i32,
+        silk_use_dtx: bool,
+        is_silence: bool,
+        redundancy: bool,
+        celt_to_silk: bool,
+        prefill: PrefillMode,
+        bandwidth_int: i32,
+        mode: i32,
+        to_celt: bool,
+        equiv_rate: i32,
+        first_frame: bool,
+        dred_bitrate_bps: i32,
+    ) -> Result<usize, OpusEncodeError> {
+        encode_frame_native(
+            encoder,
+            energy_masking,
+            pcm,
+            frame_size,
+            data,
+            lsb_depth,
+            silk_use_dtx,
+            is_silence,
+            redundancy,
+            celt_to_silk,
+            prefill,
+            bandwidth_int,
+            mode,
+            to_celt,
+            equiv_rate,
+            first_frame,
+            dred_bitrate_bps,
+        )
+    }
+}
+
+#[cfg(not(feature = "fixed_point"))]
+impl EncodeInputSample for f32 {
+    #[inline]
+    fn compute_stereo_width(
+        pcm: &[Self],
+        frame_size: usize,
+        fs: i32,
+        mem: &mut StereoWidthState,
+    ) -> f32 {
+        compute_stereo_width_float(pcm, frame_size, fs, mem)
+    }
+
+    #[inline]
+    fn is_digital_silence(
+        pcm: &[Self],
+        frame_size: usize,
+        channels: usize,
+        lsb_depth: i32,
+    ) -> bool {
+        is_digital_silence_float(pcm, frame_size, channels, lsb_depth)
+    }
+
+    #[inline]
+    fn encode_frame_native<'mode>(
+        encoder: &mut OpusEncoder<'mode>,
+        energy_masking: Option<&[f32]>,
+        pcm: &[Self],
+        frame_size: usize,
+        data: &mut [u8],
+        lsb_depth: i32,
+        silk_use_dtx: bool,
+        is_silence: bool,
+        redundancy: bool,
+        celt_to_silk: bool,
+        prefill: PrefillMode,
+        bandwidth_int: i32,
+        mode: i32,
+        to_celt: bool,
+        equiv_rate: i32,
+        first_frame: bool,
+        dred_bitrate_bps: i32,
+    ) -> Result<usize, OpusEncodeError> {
+        encode_frame_native_float(
+            encoder,
+            energy_masking,
+            pcm,
+            frame_size,
+            data,
+            lsb_depth,
+            silk_use_dtx,
+            is_silence,
+            redundancy,
+            celt_to_silk,
+            prefill,
+            bandwidth_int,
+            mode,
+            to_celt,
+            equiv_rate,
+            first_frame,
+            dred_bitrate_bps,
+        )
+    }
+}
+
+fn opus_encode_with_options_impl<PCM>(
     encoder: &mut OpusEncoder<'_>,
-    pcm: &[i16],
+    pcm: &[PCM],
     frame_size: usize,
     data: &mut [u8],
     options: OpusEncodeOptions<'_>,
-) -> Result<usize, OpusEncodeError> {
+    lsb_depth: i32,
+) -> Result<usize, OpusEncodeError>
+where
+    PCM: EncodeInputSample,
+    [PCM]: DownmixInput,
+{
     let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
     if channels == 0 || channels > MAX_CHANNELS || frame_size == 0 {
         return Err(OpusEncodeError::BadArgument);
@@ -3926,11 +4583,9 @@ pub fn opus_encode_with_options(
     max_data_bytes = max_data_bytes.min(MAX_PACKET_BYTES);
     encoder.bitrate_bps = user_bitrate_to_bitrate(encoder, frame_size_i32, max_data_bytes);
 
-    let lsb_depth = encoder.lsb_depth.min(16);
-
     let mut stereo_width = 0.0f32;
     if encoder.channels == 2 && encoder.force_channels != 1 {
-        stereo_width = compute_stereo_width(
+        stereo_width = PCM::compute_stereo_width(
             &pcm[..required],
             frame_size,
             encoder.fs,
@@ -3950,7 +4605,7 @@ pub fn opus_encode_with_options(
     {
         encoder.analysis_info.valid = false;
         if encoder.silk_mode.complexity >= 7 && encoder.fs >= 16_000 {
-            is_silence = is_digital_silence(&pcm[..required], frame_size, channels, lsb_depth);
+            is_silence = PCM::is_digital_silence(&pcm[..required], frame_size, channels, lsb_depth);
             analysis_read_state = Some(encoder.analysis.snapshot_read_state());
             encoder.analysis.application = encoder.application.to_opus_int();
             run_analysis(
@@ -4433,7 +5088,7 @@ pub fn opus_encode_with_options(
                 .checked_add(enc_frame_size * channels)
                 .ok_or(OpusEncodeError::BadArgument)?;
             let frame_buf = &mut tmp_data[tot_size_usize..tot_size_usize + max_len_per_frame_usize];
-            let len = match encode_frame_native(
+            let len = match PCM::encode_frame_native(
                 encoder,
                 options.energy_masking,
                 &pcm[start..end],
@@ -4454,7 +5109,7 @@ pub fn opus_encode_with_options(
             ) {
                 Ok(len) => len,
                 Err(OpusEncodeError::BufferTooSmall) if curr_max < max_len_per_frame => {
-                    encode_frame_native(
+                    PCM::encode_frame_native(
                         encoder,
                         options.energy_masking,
                         &pcm[start..end],
@@ -4512,7 +5167,7 @@ pub fn opus_encode_with_options(
     }
 
     encoder.nonfinal_frame = false;
-    encode_frame_native(
+    PCM::encode_frame_native(
         encoder,
         options.energy_masking,
         &pcm[..required],
@@ -4531,6 +5186,16 @@ pub fn opus_encode_with_options(
         true,
         dred_bitrate_bps,
     )
+}
+
+pub fn opus_encode_with_options(
+    encoder: &mut OpusEncoder<'_>,
+    pcm: &[i16],
+    frame_size: usize,
+    data: &mut [u8],
+    options: OpusEncodeOptions<'_>,
+) -> Result<usize, OpusEncodeError> {
+    opus_encode_with_options_impl(encoder, pcm, frame_size, data, options, encoder.lsb_depth.min(16))
 }
 
 pub fn opus_encode(
@@ -4583,6 +5248,13 @@ pub fn opus_encode_float_with_options(
     data: &mut [u8],
     options: OpusEncodeOptions<'_>,
 ) -> Result<usize, OpusEncodeError> {
+    #[cfg(not(feature = "fixed_point"))]
+    {
+        return opus_encode_with_options_impl(encoder, pcm, frame_size, data, options, encoder.lsb_depth);
+    }
+
+    #[cfg(feature = "fixed_point")]
+    {
     let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
     let required = channels
         .checked_mul(frame_size)
@@ -4597,7 +5269,8 @@ pub fn opus_encode_float_with_options(
         tmp.push(scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
     }
 
-    opus_encode_with_options(encoder, &tmp, frame_size, data, options)
+        opus_encode_with_options(encoder, &tmp, frame_size, data, options)
+    }
 }
 
 pub fn opus_encode_float(
