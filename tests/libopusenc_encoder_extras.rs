@@ -58,7 +58,7 @@ fn packet_callback_receives_header_comment_and_audio_packets() {
 
     let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
         .expect("builder")
-        .packet_callback(move |packet, _flags| {
+        .packet_callback(move |packet: &[u8], _flags: u32| {
             seen.borrow_mut().push(packet.to_vec());
         })
         .build_pull()

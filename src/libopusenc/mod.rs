@@ -8,7 +8,7 @@ pub(crate) mod picture;
 pub(crate) mod resample;
 
 pub use encoder::{
-    MappingFamily, MuxingDelaySamples, OggOpusComments, OggOpusEncoder, OggOpusEncoderBuilder,
-    OggOpusPullEncoder, PacketCallback, PictureType, get_version_string,
+    MappingFamily, MuxingDelaySamples, NoPacketHandler, OggOpusComments, OggOpusEncoder,
+    OggOpusEncoderBuilder, OggOpusPullEncoder, PacketHandler, PictureType, get_version_string,
 };
 pub use error::{LibopusencError, PictureErrorKind};

@@ -1,6 +1,5 @@
 extern crate std;
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::vec;
@@ -36,7 +35,25 @@ const MAX_PACKET_SIZE: usize = 1277 * 6 * 255 + 2;
 const MAX_LOOKAHEAD: u32 = 96_000;
 const LPC_PADDING: usize = 120;
 
-pub type PacketCallback = dyn FnMut(&[u8], u32);
+pub trait PacketHandler {
+    fn on_packet(&mut self, packet: &[u8], flags: u32);
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NoPacketHandler;
+
+impl PacketHandler for NoPacketHandler {
+    fn on_packet(&mut self, _packet: &[u8], _flags: u32) {}
+}
+
+impl<F> PacketHandler for F
+where
+    F: FnMut(&[u8], u32),
+{
+    fn on_packet(&mut self, packet: &[u8], flags: u32) {
+        self(packet, flags);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MappingFamily {
@@ -175,7 +192,7 @@ struct ExplicitMapping {
     mapping: Vec<u8>,
 }
 
-pub struct OggOpusEncoderBuilder {
+pub struct OggOpusEncoderBuilder<C = NoPacketHandler> {
     comments: OggOpusComments,
     sample_rate: u32,
     channels: u8,
@@ -186,10 +203,10 @@ pub struct OggOpusEncoderBuilder {
     serialno: Option<i32>,
     header_gain: i16,
     muxing_delay: MuxingDelaySamples,
-    packet_callback: Option<Box<PacketCallback>>,
+    packet_handler: C,
 }
 
-impl OggOpusEncoderBuilder {
+impl OggOpusEncoderBuilder<NoPacketHandler> {
     pub fn new(
         comments: OggOpusComments,
         sample_rate: u32,
@@ -210,10 +227,12 @@ impl OggOpusEncoderBuilder {
             serialno: None,
             header_gain: 0,
             muxing_delay: MuxingDelaySamples(48_000),
-            packet_callback: None,
+            packet_handler: NoPacketHandler,
         })
     }
+}
 
+impl<C: PacketHandler> OggOpusEncoderBuilder<C> {
     #[must_use]
     pub fn decision_delay(mut self, value: u32) -> Self {
         self.decision_delay = value.min(MAX_LOOKAHEAD);
@@ -245,12 +264,23 @@ impl OggOpusEncoderBuilder {
     }
 
     #[must_use]
-    pub fn packet_callback<F>(mut self, callback: F) -> Self
+    pub fn packet_callback<N>(self, callback: N) -> OggOpusEncoderBuilder<N>
     where
-        F: FnMut(&[u8], u32) + 'static,
+        N: PacketHandler,
     {
-        self.packet_callback = Some(Box::new(callback));
-        self
+        OggOpusEncoderBuilder {
+            comments: self.comments,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            family: self.family,
+            explicit_mapping: self.explicit_mapping,
+            decision_delay: self.decision_delay,
+            comment_padding: self.comment_padding,
+            serialno: self.serialno,
+            header_gain: self.header_gain,
+            muxing_delay: self.muxing_delay,
+            packet_handler: callback,
+        }
     }
 
     pub fn mapping(
@@ -281,10 +311,7 @@ impl OggOpusEncoderBuilder {
         Ok(self)
     }
 
-    pub fn build_writer<W: Write>(
-        self,
-        writer: W,
-    ) -> Result<OggOpusEncoder<W>, LibopusencError> {
+    pub fn build_writer<W: Write>(self, writer: W) -> Result<OggOpusEncoder<W, C>, LibopusencError> {
         Ok(OggOpusEncoder {
             core: EncoderCore::new(self, WriterOutput::new(writer))?,
         })
@@ -293,23 +320,23 @@ impl OggOpusEncoderBuilder {
     pub fn build_file(
         self,
         path: impl AsRef<Path>,
-    ) -> Result<OggOpusEncoder<BufWriter<File>>, LibopusencError> {
+    ) -> Result<OggOpusEncoder<BufWriter<File>, C>, LibopusencError> {
         let writer = BufWriter::new(File::create(path).map_err(LibopusencError::Io)?);
         self.build_writer(writer)
     }
 
-    pub fn build_pull(self) -> Result<OggOpusPullEncoder, LibopusencError> {
+    pub fn build_pull(self) -> Result<OggOpusPullEncoder<C>, LibopusencError> {
         Ok(OggOpusPullEncoder {
             core: EncoderCore::new(self, PullOutput::default())?,
         })
     }
 }
 
-pub struct OggOpusEncoder<W: Write> {
-    core: EncoderCore<WriterOutput<W>>,
+pub struct OggOpusEncoder<W: Write, C: PacketHandler = NoPacketHandler> {
+    core: EncoderCore<WriterOutput<W>, C>,
 }
 
-impl<W: Write> OggOpusEncoder<W> {
+impl<W: Write, C: PacketHandler> OggOpusEncoder<W, C> {
     pub fn flush_headers(&mut self) -> Result<(), LibopusencError> {
         self.core.flush_headers()
     }
@@ -339,11 +366,11 @@ impl<W: Write> OggOpusEncoder<W> {
     }
 }
 
-pub struct OggOpusPullEncoder {
-    core: EncoderCore<PullOutput>,
+pub struct OggOpusPullEncoder<C: PacketHandler = NoPacketHandler> {
+    core: EncoderCore<PullOutput, C>,
 }
 
-impl OggOpusPullEncoder {
+impl<C: PacketHandler> OggOpusPullEncoder<C> {
     pub fn flush_headers(&mut self) -> Result<(), LibopusencError> {
         self.core.flush_headers()
     }
@@ -563,7 +590,7 @@ impl EncoderBackend {
     }
 }
 
-struct EncoderCore<O: OutputTarget> {
+struct EncoderCore<O: OutputTarget, C: PacketHandler> {
     backend: EncoderBackend,
     oggp: Option<OggPacker>,
     output: O,
@@ -588,13 +615,13 @@ struct EncoderCore<O: OutputTarget> {
     curr_granule: usize,
     global_granule_offset: Option<usize>,
     drained: bool,
-    packet_callback: Option<Box<PacketCallback>>,
+    packet_handler: C,
     chaining_keyframe: Option<Vec<u8>>,
     next_generated_serial: i32,
 }
 
-impl<O: OutputTarget> EncoderCore<O> {
-    fn new(builder: OggOpusEncoderBuilder, output: O) -> Result<Self, LibopusencError> {
+impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
+    fn new(builder: OggOpusEncoderBuilder<C>, output: O) -> Result<Self, LibopusencError> {
         let explicit_mapping = builder.explicit_mapping.clone();
         let mut backend = create_backend(
             usize::from(builder.channels),
@@ -653,7 +680,7 @@ impl<O: OutputTarget> EncoderCore<O> {
             curr_granule: 0,
             global_granule_offset: None,
             drained: false,
-            packet_callback: builder.packet_callback,
+            packet_handler: builder.packet_handler,
             chaining_keyframe: None,
             next_generated_serial: 0,
         })
@@ -872,9 +899,7 @@ impl<O: OutputTarget> EncoderCore<O> {
         granulepos: u64,
         eos: bool,
     ) -> Result<(), LibopusencError> {
-        if let Some(callback) = &mut self.packet_callback {
-            callback(packet, 0);
-        }
+        self.packet_handler.on_packet(packet, 0);
         let oggp = self.oggp.as_mut().ok_or(LibopusencError::Internal)?;
         let buffer = oggp
             .get_packet_buffer(packet.len())
