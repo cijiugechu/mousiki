@@ -33,6 +33,7 @@ const FRAME_SIZE_20_MS: usize = 960;
 const MAX_PACKET_SIZE: usize = 1277 * 6 * 255 + 2;
 const OPE_ABI_VERSION: i32 = 0;
 const MAX_LOOKAHEAD: i32 = 96_000;
+const LPC_PADDING: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpeError {
@@ -296,6 +297,7 @@ pub struct OggOpusEnc {
     comment_padding: i32,
     max_ogg_delay: i32,
     pcm_buffer: Vec<f32>,
+    pcm_buffer_start: usize,
     resampler: Option<SpeexResampler>,
     write_granule: usize,
     resampled_granule: usize,
@@ -304,6 +306,7 @@ pub struct OggOpusEnc {
     drained: bool,
     fatal_error: Option<OpeError>,
     packet_callback: Option<Box<PacketCallback>>,
+    chaining_keyframe: Option<Vec<u8>>,
     next_generated_serial: i32,
 }
 
@@ -398,6 +401,7 @@ impl OggOpusEnc {
             comment_padding: 512,
             max_ogg_delay: 48_000,
             pcm_buffer: Vec::new(),
+            pcm_buffer_start: 0,
             resampler: resampler.take(),
             write_granule: 0,
             resampled_granule: 0,
@@ -410,6 +414,7 @@ impl OggOpusEnc {
                 None
             },
             packet_callback: None,
+            chaining_keyframe: None,
             next_generated_serial: 0,
         };
         if let Some(backend) = encoder.backend.as_mut() {
@@ -505,7 +510,8 @@ impl OggOpusEnc {
             converted.push(sample as f32 / 32768.0);
         }
         self.write_granule += samples_per_channel;
-        self.append_pcm(&converted, samples_per_channel)
+        self.append_pcm(&converted, samples_per_channel)?;
+        self.process_ready_packets(false)
     }
 
     pub fn write_float(&mut self, pcm: &[f32], samples_per_channel: usize) -> Result<(), OpeError> {
@@ -525,7 +531,8 @@ impl OggOpusEnc {
             self.init_stream()?;
         }
         self.write_granule += samples_per_channel;
-        self.append_pcm(&pcm[..samples_per_channel * self.channels], samples_per_channel)
+        self.append_pcm(&pcm[..samples_per_channel * self.channels], samples_per_channel)?;
+        self.process_ready_packets(false)
     }
 
     pub fn drain(&mut self) -> Result<(), OpeError> {
@@ -544,74 +551,13 @@ impl OggOpusEnc {
         if self.resampled_granule < target_frames {
             self.flush_resampler(target_frames)?;
         }
-
-        let global_offset = self.global_granule_offset.unwrap_or(0);
-        let mut pcm_offset_frames = 0usize;
-        let mut chaining_keyframe: Option<Vec<u8>> = None;
-
-        while let Some(active_end_input) = self.streams.front().map(|stream| stream.end_granule) {
-            let active_end_audio = self.input_samples_to_granule(active_end_input)?;
-            let active_end_granule = active_end_audio
-                .checked_add(global_offset)
-                .ok_or(OpeError::InternalError)?;
-            let has_next_stream = self.streams.len() > 1;
-
-            while pcm_offset_frames < active_end_audio {
-                let remaining_audio = active_end_audio - pcm_offset_frames;
-                let actual_take = remaining_audio.min(self.frame_size);
-                let packet_is_last = actual_take == remaining_audio;
-                let is_keyframe = packet_is_last && has_next_stream;
-
-                let previous_prediction = if is_keyframe {
-                    let prev = self.backend_mut()?.prediction_disabled()?;
-                    self.backend_mut()?.set_prediction_disabled(true)?;
-                    Some(prev)
-                } else {
-                    None
-                };
-
-                let frame_samples = self.frame_size * self.channels;
-                let mut frame = vec![0.0f32; frame_samples];
-                let src_start = pcm_offset_frames * self.channels;
-                let src_end = src_start + actual_take * self.channels;
-                frame[..actual_take * self.channels]
-                    .copy_from_slice(&self.pcm_buffer[src_start..src_end]);
-
-                let packet_len = {
-                    let frame_size = self.frame_size;
-                    let backend = self.backend_mut()?;
-                    let mut packet = vec![0u8; MAX_PACKET_SIZE];
-                    let packet_len = backend.encode_float(&frame, frame_size, &mut packet)?;
-                    packet.truncate(packet_len);
-                    if let Some(prev) = previous_prediction {
-                        self.backend_mut()?.set_prediction_disabled(prev)?;
-                    }
-                    self.curr_granule = self
-                        .curr_granule
-                        .checked_add(self.frame_size)
-                        .ok_or(OpeError::InternalError)?;
-                    let granulepos = {
-                        let stream = self.streams.front().ok_or(OpeError::TooLate)?;
-                        if packet_is_last {
-                            adjusted_granule(active_end_granule, stream.granule_offset)?
-                        } else {
-                            adjusted_granule(self.curr_granule, stream.granule_offset)?
-                        }
-                    };
-                    self.commit_packet(&packet, granulepos, packet_is_last)?;
-                    if is_keyframe {
-                        chaining_keyframe = Some(packet);
-                    }
-                    packet_len
-                };
-                let _ = packet_len;
-                pcm_offset_frames += actual_take;
-            }
-
-            self.finish_active_stream(active_end_granule, chaining_keyframe.take())?;
+        self.pad_for_drain()?;
+        self.process_ready_packets(true)?;
+        if !self.streams.is_empty() {
+            return Err(OpeError::InternalError);
         }
-
         self.pcm_buffer.clear();
+        self.pcm_buffer_start = 0;
         self.emit_pages(false)?;
         self.close_output()?;
         self.drained = true;
@@ -926,6 +872,117 @@ impl OggOpusEnc {
         Ok(())
     }
 
+    fn buffered_frames(&self) -> usize {
+        self.pcm_buffer
+            .len()
+            .checked_div(self.channels)
+            .unwrap_or(0)
+            .saturating_sub(self.pcm_buffer_start)
+    }
+
+    fn compact_pcm_buffer(&mut self) {
+        if self.pcm_buffer_start == 0 {
+            return;
+        }
+        let consumed_samples = self.pcm_buffer_start * self.channels;
+        if consumed_samples >= self.pcm_buffer.len() {
+            self.pcm_buffer.clear();
+            self.pcm_buffer_start = 0;
+            return;
+        }
+        self.pcm_buffer.copy_within(consumed_samples.., 0);
+        self.pcm_buffer.truncate(self.pcm_buffer.len() - consumed_samples);
+        self.pcm_buffer_start = 0;
+    }
+
+    fn process_ready_packets(&mut self, draining: bool) -> Result<(), OpeError> {
+        let decision_delay = if draining {
+            0
+        } else {
+            self.decision_delay.max(0) as usize
+        };
+
+        while !self.streams.is_empty() && self.buffered_frames() > self.frame_size + decision_delay {
+            let active_end_input = self.streams.front().ok_or(OpeError::TooLate)?.end_granule;
+            let active_end_audio = self.input_samples_to_granule(active_end_input)?;
+            let active_end_granule = active_end_audio
+                .checked_add(self.global_granule_offset.unwrap_or(0))
+                .ok_or(OpeError::InternalError)?;
+            let has_next_stream = self.streams.len() > 1;
+            let is_keyframe = has_next_stream
+                && self
+                    .curr_granule
+                    .saturating_add(self.frame_size.saturating_mul(2))
+                    >= active_end_granule;
+
+            let previous_prediction = if is_keyframe {
+                let prev = self.backend_mut()?.prediction_disabled()?;
+                self.backend_mut()?.set_prediction_disabled(true)?;
+                Some(prev)
+            } else {
+                None
+            };
+
+            let frame_samples = self.frame_size * self.channels;
+            let src_start = self.pcm_buffer_start * self.channels;
+            let src_end = src_start + frame_samples;
+            let mut frame = vec![0.0f32; frame_samples];
+            frame.copy_from_slice(&self.pcm_buffer[src_start..src_end]);
+
+            let packet = {
+                let frame_size = self.frame_size;
+                let backend = self.backend_mut()?;
+                let mut packet = vec![0u8; MAX_PACKET_SIZE];
+                let packet_len = backend.encode_float(&frame, frame_size, &mut packet)?;
+                packet.truncate(packet_len);
+                packet
+            };
+
+            if let Some(prev) = previous_prediction {
+                self.backend_mut()?.set_prediction_disabled(prev)?;
+            }
+
+            self.curr_granule = self
+                .curr_granule
+                .checked_add(self.frame_size)
+                .ok_or(OpeError::InternalError)?;
+            self.pcm_buffer_start += self.frame_size;
+
+            let packet_is_last = self.curr_granule >= active_end_granule;
+            let granulepos = {
+                let stream = self.streams.front().ok_or(OpeError::TooLate)?;
+                if packet_is_last {
+                    adjusted_granule(active_end_granule, stream.granule_offset)?
+                } else {
+                    adjusted_granule(self.curr_granule, stream.granule_offset)?
+                }
+            };
+
+            if is_keyframe {
+                self.chaining_keyframe = Some(packet.clone());
+            } else if !packet_is_last {
+                self.chaining_keyframe = None;
+            }
+
+            self.commit_packet(&packet, granulepos, packet_is_last)?;
+            if packet_is_last {
+                let chaining_keyframe = self.chaining_keyframe.take();
+                self.finish_active_stream(active_end_granule, chaining_keyframe)?;
+            } else {
+                self.emit_pages(false)?;
+            }
+
+            if self.pcm_buffer_start >= self.frame_size * 8 {
+                self.compact_pcm_buffer();
+            }
+        }
+
+        if self.streams.is_empty() {
+            self.compact_pcm_buffer();
+        }
+        Ok(())
+    }
+
     fn flush_resampler(&mut self, target_frames: usize) -> Result<(), OpeError> {
         let Some(resampler) = &mut self.resampler else {
             return Ok(());
@@ -954,6 +1011,28 @@ impl OggOpusEnc {
                 .extend_from_slice(&out[..take_frames * self.channels]);
             self.resampled_granule += take_frames;
         }
+        Ok(())
+    }
+
+    fn pad_for_drain(&mut self) -> Result<(), OpeError> {
+        let resampler_drain = self
+            .resampler
+            .as_ref()
+            .map_or(0usize, |resampler| resampler.output_latency() as usize);
+        let pad_frames = LPC_PADDING.max(
+            self.global_granule_offset
+                .unwrap_or(0)
+                .checked_add(self.frame_size)
+                .and_then(|value| value.checked_add(resampler_drain))
+                .and_then(|value| value.checked_add(1))
+                .ok_or(OpeError::InternalError)?,
+        );
+        self.pcm_buffer
+            .resize(self.pcm_buffer.len() + pad_frames * self.channels, 0.0);
+        self.resampled_granule = self
+            .resampled_granule
+            .checked_add(pad_frames)
+            .ok_or(OpeError::InternalError)?;
         Ok(())
     }
 
