@@ -1113,6 +1113,10 @@ pub struct OpusMultistreamEncoder<'mode> {
     application: i32,
     bitrate_bps: i32,
     variable_duration: i32,
+    rate_buffer: Vec<i32>,
+    packet_buffer: Vec<u8>,
+    channel_buffer: Vec<i16>,
+    convert_buffer: Vec<i16>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1215,6 +1219,10 @@ pub fn opus_multistream_encoder_create(
         application,
         bitrate_bps: OPUS_AUTO,
         variable_duration: OPUS_FRAMESIZE_ARG,
+        rate_buffer: Vec::new(),
+        packet_buffer: Vec::new(),
+        channel_buffer: Vec::new(),
+        convert_buffer: Vec::new(),
     })
 }
 
@@ -1707,105 +1715,124 @@ pub fn opus_multistream_encode_with_options(
         return Err(OpusMultistreamEncoderError::BufferTooSmall);
     }
 
-    let mut rates = vec![0i32; nb_streams];
-    let _ = rate_allocation(
-        &encoder.layout,
-        encoder.mapping_type,
-        encoder.bitrate_bps,
-        encoder.lfe_stream,
-        frame_size,
-        encoder.sample_rate,
-        &mut rates,
-    );
+    let mut rate_buffer = core::mem::take(&mut encoder.rate_buffer);
+    let mut packet_buffer = core::mem::take(&mut encoder.packet_buffer);
+    let mut channel_buffer = core::mem::take(&mut encoder.channel_buffer);
+    let result = (|| {
+        if rate_buffer.len() != nb_streams {
+            rate_buffer.resize(nb_streams, 0);
+        }
+        let _ = rate_allocation(
+            &encoder.layout,
+            encoder.mapping_type,
+            encoder.bitrate_bps,
+            encoder.lfe_stream,
+            frame_size,
+            encoder.sample_rate,
+            &mut rate_buffer,
+        );
 
-    let mut total_written = 0usize;
-    for stream in 0..nb_streams {
-        let self_delimited = stream + 1 != nb_streams;
-        let remaining_streams = nb_streams - stream - 1;
-        let reserve_min = remaining_streams
-            .checked_mul(2)
-            .and_then(|value| value.checked_sub(1))
-            .unwrap_or(0);
-        let available = data
-            .len()
-            .checked_sub(total_written)
-            .and_then(|value| value.checked_sub(reserve_min))
+        let mut total_written = 0usize;
+        for stream in 0..nb_streams {
+            let self_delimited = stream + 1 != nb_streams;
+            let remaining_streams = nb_streams - stream - 1;
+            let reserve_min = remaining_streams
+                .checked_mul(2)
+                .and_then(|value| value.checked_sub(1))
+                .unwrap_or(0);
+            let available = data
+                .len()
+                .checked_sub(total_written)
+                .and_then(|value| value.checked_sub(reserve_min))
+                .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
+
+            let size_overhead = if self_delimited { 2 } else { 0 };
+            if available <= size_overhead + 1 {
+                return Err(OpusMultistreamEncoderError::BufferTooSmall);
+            }
+            let packet_capacity = available - size_overhead;
+            if packet_buffer.len() < packet_capacity {
+                packet_buffer.resize(packet_capacity, 0);
+            }
+
+            if let Some(rate) = rate_buffer.get(stream).copied() {
+                let _ = opus_encoder_ctl(
+                    encoder
+                        .encoders
+                        .get_mut(stream)
+                        .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                    OpusEncoderCtlRequest::SetBitrate(rate),
+                );
+            }
+            let encode_options = OpusEncodeOptions {
+                energy_masking: options
+                    .stream_energy_masks
+                    .and_then(|masks| masks.get(stream))
+                    .copied()
+                    .flatten(),
+            };
+
+            let pcm_len = if stream < encoder.layout.nb_coupled_streams {
+                frame_size
+                    .checked_mul(2)
+                    .ok_or(OpusMultistreamEncoderError::BadArgument)?
+            } else {
+                frame_size
+            };
+            if channel_buffer.len() < pcm_len {
+                channel_buffer.resize(pcm_len, 0);
+            }
+
+            let len = if stream < encoder.layout.nb_coupled_streams {
+                let left = get_left_channel(&encoder.layout, stream, None)
+                    .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+                let right = get_right_channel(&encoder.layout, stream, None)
+                    .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+                let coupled_pcm = &mut channel_buffer[..pcm_len];
+                extract_i16_channel(pcm, channels, left, frame_size, coupled_pcm, 2, 0)?;
+                extract_i16_channel(pcm, channels, right, frame_size, coupled_pcm, 2, 1)?;
+                opus_encode_with_options(
+                    encoder
+                        .encoders
+                        .get_mut(stream)
+                        .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                    coupled_pcm,
+                    frame_size,
+                    &mut packet_buffer[..packet_capacity],
+                    encode_options,
+                )?
+            } else {
+                let chan = get_mono_channel(&encoder.layout, stream, None)
+                    .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+                let mono_pcm = &mut channel_buffer[..pcm_len];
+                extract_i16_channel(pcm, channels, chan, frame_size, mono_pcm, 1, 0)?;
+                opus_encode_with_options(
+                    encoder
+                        .encoders
+                        .get_mut(stream)
+                        .ok_or(OpusMultistreamEncoderError::InternalError)?,
+                    mono_pcm,
+                    frame_size,
+                    &mut packet_buffer[..packet_capacity],
+                    encode_options,
+                )?
+            };
+
+            let written = write_stream_packet(
+                &packet_buffer[..len],
+                self_delimited,
+                &mut data[total_written..],
+            )
             .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
-
-        // Worst-case 2 bytes for the self-delimiting size.
-        let size_overhead = if self_delimited { 2 } else { 0 };
-        if available <= size_overhead + 1 {
-            return Err(OpusMultistreamEncoderError::BufferTooSmall);
-        }
-        let mut tmp = vec![0u8; available - size_overhead];
-
-        if let Some(rate) = rates.get(stream).copied() {
-            let _ = opus_encoder_ctl(
-                encoder
-                    .encoders
-                    .get_mut(stream)
-                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
-                OpusEncoderCtlRequest::SetBitrate(rate),
-            );
-        }
-        let encode_options = OpusEncodeOptions {
-            energy_masking: options
-                .stream_energy_masks
-                .and_then(|masks| masks.get(stream))
-                .copied()
-                .flatten(),
-        };
-
-        if stream < encoder.layout.nb_coupled_streams {
-            let left = get_left_channel(&encoder.layout, stream, None)
-                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
-            let right = get_right_channel(&encoder.layout, stream, None)
-                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
-
-            let mut coupled_pcm = vec![0i16; frame_size * 2];
-            extract_i16_channel(pcm, channels, left, frame_size, &mut coupled_pcm, 2, 0)?;
-            extract_i16_channel(pcm, channels, right, frame_size, &mut coupled_pcm, 2, 1)?;
-
-            let len = opus_encode_with_options(
-                encoder
-                    .encoders
-                    .get_mut(stream)
-                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
-                &coupled_pcm,
-                frame_size,
-                &mut tmp,
-                encode_options,
-            )?;
-
-            let written =
-                write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
-                    .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
-            total_written += written;
-        } else {
-            let chan = get_mono_channel(&encoder.layout, stream, None)
-                .ok_or(OpusMultistreamEncoderError::BadArgument)?;
-            let mut mono_pcm = vec![0i16; frame_size];
-            extract_i16_channel(pcm, channels, chan, frame_size, &mut mono_pcm, 1, 0)?;
-
-            let len = opus_encode_with_options(
-                encoder
-                    .encoders
-                    .get_mut(stream)
-                    .ok_or(OpusMultistreamEncoderError::InternalError)?,
-                &mono_pcm,
-                frame_size,
-                &mut tmp,
-                encode_options,
-            )?;
-
-            let written =
-                write_stream_packet(&tmp[..len], self_delimited, &mut data[total_written..])
-                    .ok_or(OpusMultistreamEncoderError::BufferTooSmall)?;
             total_written += written;
         }
-    }
 
-    Ok(total_written)
+        Ok(total_written)
+    })();
+    encoder.rate_buffer = rate_buffer;
+    encoder.packet_buffer = packet_buffer;
+    encoder.channel_buffer = channel_buffer;
+    result
 }
 
 pub fn opus_multistream_encode(
@@ -1867,12 +1894,18 @@ pub fn opus_multistream_encode_float_with_options(
     if pcm.len() < required_pcm {
         return Err(OpusMultistreamEncoderError::BadArgument);
     }
-    let mut tmp = vec![0i16; required_pcm];
-    for (dst, &sample) in tmp.iter_mut().zip(pcm.iter().take(required_pcm)) {
+    let mut convert_buffer = core::mem::take(&mut encoder.convert_buffer);
+    if convert_buffer.len() != required_pcm {
+        convert_buffer.resize(required_pcm, 0);
+    }
+    for (dst, &sample) in convert_buffer.iter_mut().zip(pcm.iter().take(required_pcm)) {
         let scaled = libm::roundf(sample * 32_768.0);
         *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
     }
-    opus_multistream_encode_with_options(encoder, &tmp, frame_size, data, options)
+    let result =
+        opus_multistream_encode_with_options(encoder, &convert_buffer, frame_size, data, options);
+    encoder.convert_buffer = convert_buffer;
+    result
 }
 
 pub fn opus_multistream_encode_float(
@@ -1904,12 +1937,18 @@ pub fn opus_multistream_encode24_with_options(
     if pcm.len() < required_pcm {
         return Err(OpusMultistreamEncoderError::BadArgument);
     }
-    let mut tmp = vec![0i16; required_pcm];
-    for (dst, &sample) in tmp.iter_mut().zip(pcm.iter().take(required_pcm)) {
+    let mut convert_buffer = core::mem::take(&mut encoder.convert_buffer);
+    if convert_buffer.len() != required_pcm {
+        convert_buffer.resize(required_pcm, 0);
+    }
+    for (dst, &sample) in convert_buffer.iter_mut().zip(pcm.iter().take(required_pcm)) {
         let shifted = (sample >> 8).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
         *dst = shifted as i16;
     }
-    opus_multistream_encode_with_options(encoder, &tmp, frame_size, data, options)
+    let result =
+        opus_multistream_encode_with_options(encoder, &convert_buffer, frame_size, data, options);
+    encoder.convert_buffer = convert_buffer;
+    result
 }
 
 pub fn opus_multistream_encode24(

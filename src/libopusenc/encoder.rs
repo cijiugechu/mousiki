@@ -298,8 +298,11 @@ pub struct OggOpusEnc {
     max_ogg_delay: i32,
     pcm_buffer: Vec<f32>,
     pcm_buffer_start: usize,
+    input_buffer: Vec<f32>,
     frame_buffer: Vec<f32>,
     packet_buffer: Vec<u8>,
+    resampler_output_buffer: Vec<f32>,
+    resampler_zero_buffer: Vec<f32>,
     resampler: Option<SpeexResampler>,
     write_granule: usize,
     resampled_granule: usize,
@@ -404,8 +407,11 @@ impl OggOpusEnc {
             max_ogg_delay: 48_000,
             pcm_buffer: Vec::new(),
             pcm_buffer_start: 0,
+            input_buffer: Vec::new(),
             frame_buffer: vec![0.0; FRAME_SIZE_20_MS * channels as usize],
             packet_buffer: vec![0; MAX_PACKET_SIZE],
+            resampler_output_buffer: Vec::new(),
+            resampler_zero_buffer: Vec::new(),
             resampler: resampler.take(),
             write_granule: 0,
             resampled_granule: 0,
@@ -509,12 +515,17 @@ impl OggOpusEnc {
         }
 
         let sample_count = samples_per_channel * self.channels;
-        let mut converted = Vec::with_capacity(sample_count);
-        for &sample in &pcm[..sample_count] {
-            converted.push(sample as f32 / 32768.0);
+        let mut input_buffer = core::mem::take(&mut self.input_buffer);
+        if input_buffer.len() != sample_count {
+            input_buffer.resize(sample_count, 0.0);
+        }
+        for (dst, &sample) in input_buffer.iter_mut().zip(&pcm[..sample_count]) {
+            *dst = sample as f32 / 32768.0;
         }
         self.write_granule += samples_per_channel;
-        self.append_pcm(&converted, samples_per_channel)?;
+        let append_result = self.append_pcm(&input_buffer, samples_per_channel);
+        self.input_buffer = input_buffer;
+        append_result?;
         self.process_ready_packets(false)
     }
 
@@ -840,6 +851,7 @@ impl OggOpusEnc {
     }
 
     fn append_pcm(&mut self, pcm: &[f32], samples_per_channel: usize) -> Result<(), OpeError> {
+        let mut resampler_output_buffer = core::mem::take(&mut self.resampler_output_buffer);
         if let Some(resampler) = &mut self.resampler {
             let mut start = 0usize;
             let mut remaining = samples_per_channel;
@@ -848,22 +860,30 @@ impl OggOpusEnc {
                     / self.rate as u64) as usize
                     + resampler.output_latency() as usize
                     + 16;
-                let mut out = vec![0.0f32; out_capacity_frames * self.channels];
+                let out_capacity_samples = out_capacity_frames * self.channels;
+                if resampler_output_buffer.len() < out_capacity_samples {
+                    resampler_output_buffer.resize(out_capacity_samples, 0.0);
+                }
                 let mut in_len = remaining as u32;
                 let mut out_len = out_capacity_frames as u32;
-                resampler
+                let resample_result = resampler
                     .process_interleaved_float(
                         Some(&pcm[start * self.channels..]),
                         &mut in_len,
-                        &mut out,
+                        &mut resampler_output_buffer,
                         &mut out_len,
                     )
-                    .map_err(|_| OpeError::InternalError)?;
+                    .map_err(|_| OpeError::InternalError);
+                if let Err(err) = resample_result {
+                    self.resampler_output_buffer = resampler_output_buffer;
+                    return Err(err);
+                }
                 if in_len == 0 && out_len == 0 {
+                    self.resampler_output_buffer = resampler_output_buffer;
                     return Err(OpeError::InternalError);
                 }
                 self.pcm_buffer
-                    .extend_from_slice(&out[..out_len as usize * self.channels]);
+                    .extend_from_slice(&resampler_output_buffer[..out_len as usize * self.channels]);
                 self.resampled_granule += out_len as usize;
                 start += in_len as usize;
                 remaining -= in_len as usize;
@@ -873,6 +893,7 @@ impl OggOpusEnc {
                 .extend_from_slice(&pcm[..samples_per_channel * self.channels]);
             self.resampled_granule += samples_per_channel;
         }
+        self.resampler_output_buffer = resampler_output_buffer;
         Ok(())
     }
 
@@ -996,7 +1017,11 @@ impl OggOpusEnc {
     }
 
     fn flush_resampler(&mut self, target_frames: usize) -> Result<(), OpeError> {
+        let mut resampler_output_buffer = core::mem::take(&mut self.resampler_output_buffer);
+        let mut resampler_zero_buffer = core::mem::take(&mut self.resampler_zero_buffer);
         let Some(resampler) = &mut self.resampler else {
+            self.resampler_output_buffer = resampler_output_buffer;
+            self.resampler_zero_buffer = resampler_zero_buffer;
             return Ok(());
         };
         while self.resampled_granule < target_frames {
@@ -1004,25 +1029,45 @@ impl OggOpusEnc {
             let zero_in_frames = (((remaining as u64) * self.rate as u64 + 47_999) / 48_000) as usize
                 + resampler.input_latency() as usize
                 + 1;
-            let input = vec![0.0f32; zero_in_frames * self.channels];
+            let zero_in_samples = zero_in_frames * self.channels;
+            if resampler_zero_buffer.len() < zero_in_samples {
+                resampler_zero_buffer.resize(zero_in_samples, 0.0);
+            }
             let out_capacity_frames = (((zero_in_frames as u64) * 48_000 + self.rate as u64 - 1)
                 / self.rate as u64) as usize
                 + resampler.output_latency() as usize
                 + 16;
-            let mut out = vec![0.0f32; out_capacity_frames * self.channels];
+            let out_capacity_samples = out_capacity_frames * self.channels;
+            if resampler_output_buffer.len() < out_capacity_samples {
+                resampler_output_buffer.resize(out_capacity_samples, 0.0);
+            }
             let mut in_len = zero_in_frames as u32;
             let mut out_len = out_capacity_frames as u32;
-            resampler
-                .process_interleaved_float(Some(&input), &mut in_len, &mut out, &mut out_len)
-                .map_err(|_| OpeError::InternalError)?;
+            let resample_result = resampler
+                .process_interleaved_float(
+                    Some(&resampler_zero_buffer[..zero_in_samples]),
+                    &mut in_len,
+                    &mut resampler_output_buffer,
+                    &mut out_len,
+                )
+                .map_err(|_| OpeError::InternalError);
+            if let Err(err) = resample_result {
+                self.resampler_output_buffer = resampler_output_buffer;
+                self.resampler_zero_buffer = resampler_zero_buffer;
+                return Err(err);
+            }
             if in_len == 0 && out_len == 0 {
+                self.resampler_output_buffer = resampler_output_buffer;
+                self.resampler_zero_buffer = resampler_zero_buffer;
                 return Err(OpeError::InternalError);
             }
             let take_frames = remaining.min(out_len as usize);
             self.pcm_buffer
-                .extend_from_slice(&out[..take_frames * self.channels]);
+                .extend_from_slice(&resampler_output_buffer[..take_frames * self.channels]);
             self.resampled_granule += take_frames;
         }
+        self.resampler_output_buffer = resampler_output_buffer;
+        self.resampler_zero_buffer = resampler_zero_buffer;
         Ok(())
     }
 
