@@ -1,6 +1,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 mod test_trace;
 
@@ -29,6 +31,8 @@ mod dred_stats_data;
 mod extensions;
 #[cfg(feature = "deep_plc")]
 pub mod fargan;
+#[cfg(feature = "libopusenc")]
+pub mod libopusenc;
 #[cfg(feature = "dred")]
 mod lpcnet_enc;
 mod mapping_matrix;

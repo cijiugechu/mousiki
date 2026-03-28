@@ -37,6 +37,7 @@ exclude = [
 
 [features]
 default = []
+std = []
 fixed_point = []
 force-scalar = []
 enable_res24 = ["fixed_point"]
@@ -50,6 +51,7 @@ silk_strict_asserts = []
 silk_debug = ["dep:spin"]
 silk_tic_toc = ["dep:spin"]
 dhat_alloc = ["dep:dhat"]
+libopusenc = ["std"]
 
 [dependencies]
 libm = "0.2"

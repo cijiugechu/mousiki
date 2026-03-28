@@ -1,6 +1,8 @@
 use mousiki::decoder::Decoder;
 use mousiki::oggreader::{OggRead, OggReader, OggReaderError, ReadError};
 
+pub mod libopusenc;
+
 pub const MAX_PCM_BYTES: usize = 1920;
 pub const OPUS_TAGS_SIGNATURE: &[u8] = b"OpusTags";
 pub const TINY_OGG: &[u8] =
