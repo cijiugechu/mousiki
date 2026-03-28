@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod common;
 
 use crate::common::libopusenc::{BehaviorManifest, TestBuffer};
-use mousiki::libopusenc::encoder::{OggOpusComments, OggOpusEnc, OpusEncCallbacks, OpeError};
+use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, OpusEncCallbacks};
 
 const RESAMPLE_SERIALNO: i32 = 4242;
 const RESAMPLE_RATE: usize = 44_100;
@@ -77,7 +77,9 @@ fn create_temp_output_path() -> PathBuf {
         .expect("system time")
         .as_nanos();
     let suffix = UNIQUE_SUFFIX.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("mousiki-libopusenc-resample-{unique}-{suffix}.opus"))
+    std::env::temp_dir().join(format!(
+        "mousiki-libopusenc-resample-{unique}-{suffix}.opus"
+    ))
 }
 
 fn collect_pull(enc: &mut OggOpusEnc) -> Vec<u8> {
@@ -210,10 +212,7 @@ fn assert_resample_manifest(manifest: &BehaviorManifest, expected_granule: usize
     assert_ne!(0, manifest.pages[0].flags & 0x02);
     assert_ne!(0, manifest.pages[manifest.pages.len() - 1].flags & 0x04);
     assert_eq!(RESAMPLE_SERIALNO, manifest.pages[0].serialno as i32);
-    assert_eq!(
-        expected_granule,
-        manifest.head.preskip as usize + 4800
-    );
+    assert_eq!(expected_granule, manifest.head.preskip as usize + 4800);
     assert!(manifest.pages[manifest.pages.len() - 1].granulepos > manifest.head.preskip as u64);
     if exact {
         assert_eq!(
@@ -335,8 +334,14 @@ fn short_input_resample_outputs_match_ctest() {
     assert!(pull_manifest.head.valid);
     assert!(pull_manifest.tags.valid);
     assert!(pull_manifest.packets.len() >= 3);
-    assert_ne!(0, pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04);
-    assert!(pull_manifest.pages[pull_manifest.pages.len() - 1].granulepos > pull_manifest.head.preskip as u64);
+    assert_ne!(
+        0,
+        pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04
+    );
+    assert!(
+        pull_manifest.pages[pull_manifest.pages.len() - 1].granulepos
+            > pull_manifest.head.preskip as u64
+    );
 }
 
 #[test]

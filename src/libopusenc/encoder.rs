@@ -20,8 +20,8 @@ use crate::libopusenc::picture::{
 use crate::libopusenc::resample::SpeexResampler;
 use crate::opus_multistream::{
     OpusMultistreamEncoder, OpusMultistreamEncoderCtlRequest, OpusMultistreamEncoderError,
-    opus_multistream_encode_float, opus_multistream_encoder_create,
-    opus_multistream_encoder_ctl, opus_multistream_surround_encoder_create,
+    opus_multistream_encode_float, opus_multistream_encoder_create, opus_multistream_encoder_ctl,
+    opus_multistream_surround_encoder_create,
 };
 use crate::projection::{
     OpusProjectionEncoder, OpusProjectionEncoderCtlRequest, OpusProjectionEncoderError,
@@ -196,7 +196,12 @@ enum EncoderBackend {
 }
 
 impl EncoderBackend {
-    fn encode_float(&mut self, pcm: &[f32], frame_size: usize, data: &mut [u8]) -> Result<usize, OpeError> {
+    fn encode_float(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        data: &mut [u8],
+    ) -> Result<usize, OpeError> {
         match self {
             Self::Multistream(encoder) => {
                 opus_multistream_encode_float(encoder, pcm, frame_size, data)
@@ -332,7 +337,13 @@ impl OggOpusEnc {
         channels: i32,
         family: i32,
     ) -> Result<Self, OpeError> {
-        Self::create(OutputMode::Callbacks(callbacks), comments, rate, channels, family)
+        Self::create(
+            OutputMode::Callbacks(callbacks),
+            comments,
+            rate,
+            channels,
+            family,
+        )
     }
 
     pub fn create_file(
@@ -382,7 +393,9 @@ impl OggOpusEnc {
         let mut resampler = if rate != 48_000 {
             let mut resampler = SpeexResampler::new(channels as u32, rate as u32, 48_000, 5)
                 .map_err(|_| OpeError::BadArg)?;
-            resampler.skip_zeros().map_err(|_| OpeError::InternalError)?;
+            resampler
+                .skip_zeros()
+                .map_err(|_| OpeError::InternalError)?;
             Some(resampler)
         } else {
             None
@@ -455,8 +468,14 @@ impl OggOpusEnc {
         {
             return Err(OpeError::BadArg);
         }
-        if self.streams.front().is_some_and(|stream| stream.stream_is_init)
-            || self.streams.back().is_some_and(|stream| stream.header_is_frozen)
+        if self
+            .streams
+            .front()
+            .is_some_and(|stream| stream.stream_is_init)
+            || self
+                .streams
+                .back()
+                .is_some_and(|stream| stream.header_is_frozen)
         {
             return Err(OpeError::TooLate);
         }
@@ -510,7 +529,11 @@ impl OggOpusEnc {
         };
         last.header_is_frozen = true;
         last.end_granule = self.write_granule.saturating_add(samples_per_channel);
-        if !self.streams.front().is_some_and(|stream| stream.stream_is_init) {
+        if !self
+            .streams
+            .front()
+            .is_some_and(|stream| stream.stream_is_init)
+        {
             self.init_stream()?;
         }
 
@@ -542,11 +565,18 @@ impl OggOpusEnc {
         };
         last.header_is_frozen = true;
         last.end_granule = self.write_granule.saturating_add(samples_per_channel);
-        if !self.streams.front().is_some_and(|stream| stream.stream_is_init) {
+        if !self
+            .streams
+            .front()
+            .is_some_and(|stream| stream.stream_is_init)
+        {
             self.init_stream()?;
         }
         self.write_granule += samples_per_channel;
-        self.append_pcm(&pcm[..samples_per_channel * self.channels], samples_per_channel)?;
+        self.append_pcm(
+            &pcm[..samples_per_channel * self.channels],
+            samples_per_channel,
+        )?;
         self.process_ready_packets(false)
     }
 
@@ -558,7 +588,11 @@ impl OggOpusEnc {
         if self.streams.is_empty() {
             return Err(OpeError::TooLate);
         }
-        if !self.streams.front().is_some_and(|stream| stream.stream_is_init) {
+        if !self
+            .streams
+            .front()
+            .is_some_and(|stream| stream.stream_is_init)
+        {
             self.init_stream()?;
         }
 
@@ -630,7 +664,11 @@ impl OggOpusEnc {
         let Some(_) = self.streams.back() else {
             return Err(OpeError::TooLate);
         };
-        if self.streams.back().is_some_and(|stream| stream.serialno.is_none()) {
+        if self
+            .streams
+            .back()
+            .is_some_and(|stream| stream.serialno.is_none())
+        {
             let serialno = self.generate_serialno();
             if let Some(last) = self.streams.back_mut() {
                 last.serialno = Some(serialno);
@@ -683,7 +721,10 @@ impl OggOpusEnc {
         self.header.nb_coupled
     }
 
-    pub fn set_packet_callback(&mut self, callback: Option<Box<PacketCallback>>) -> Result<(), OpeError> {
+    pub fn set_packet_callback(
+        &mut self,
+        callback: Option<Box<PacketCallback>>,
+    ) -> Result<(), OpeError> {
         self.ensure_not_fatal()?;
         self.packet_callback = callback;
         Ok(())
@@ -749,10 +790,18 @@ impl OggOpusEnc {
         let Some(_) = self.streams.front() else {
             return Err(OpeError::TooLate);
         };
-        if self.streams.front().is_some_and(|stream| stream.stream_is_init) {
+        if self
+            .streams
+            .front()
+            .is_some_and(|stream| stream.stream_is_init)
+        {
             return Ok(());
         }
-        if self.streams.front().is_some_and(|stream| stream.serialno.is_none()) {
+        if self
+            .streams
+            .front()
+            .is_some_and(|stream| stream.serialno.is_none())
+        {
             let serialno = self.generate_serialno();
             if let Some(current) = self.streams.front_mut() {
                 current.serialno = Some(serialno);
@@ -882,8 +931,9 @@ impl OggOpusEnc {
                     self.resampler_output_buffer = resampler_output_buffer;
                     return Err(OpeError::InternalError);
                 }
-                self.pcm_buffer
-                    .extend_from_slice(&resampler_output_buffer[..out_len as usize * self.channels]);
+                self.pcm_buffer.extend_from_slice(
+                    &resampler_output_buffer[..out_len as usize * self.channels],
+                );
                 self.resampled_granule += out_len as usize;
                 start += in_len as usize;
                 remaining -= in_len as usize;
@@ -916,7 +966,8 @@ impl OggOpusEnc {
             return;
         }
         self.pcm_buffer.copy_within(consumed_samples.., 0);
-        self.pcm_buffer.truncate(self.pcm_buffer.len() - consumed_samples);
+        self.pcm_buffer
+            .truncate(self.pcm_buffer.len() - consumed_samples);
         self.pcm_buffer_start = 0;
     }
 
@@ -927,7 +978,8 @@ impl OggOpusEnc {
             self.decision_delay.max(0) as usize
         };
 
-        while !self.streams.is_empty() && self.buffered_frames() > self.frame_size + decision_delay {
+        while !self.streams.is_empty() && self.buffered_frames() > self.frame_size + decision_delay
+        {
             let active_end_input = self.streams.front().ok_or(OpeError::TooLate)?.end_granule;
             let active_end_audio = self.input_samples_to_granule(active_end_input)?;
             let active_end_granule = active_end_audio
@@ -1026,7 +1078,8 @@ impl OggOpusEnc {
         };
         while self.resampled_granule < target_frames {
             let remaining = target_frames - self.resampled_granule;
-            let zero_in_frames = (((remaining as u64) * self.rate as u64 + 47_999) / 48_000) as usize
+            let zero_in_frames = (((remaining as u64) * self.rate as u64 + 47_999) / 48_000)
+                as usize
                 + resampler.input_latency() as usize
                 + 1;
             let zero_in_samples = zero_in_frames * self.channels;
@@ -1135,7 +1188,10 @@ impl OggOpusEnc {
                     .ok_or(OpeError::InternalError)?;
                 let granulepos = adjusted_granule(
                     granulepos,
-                    self.streams.front().ok_or(OpeError::TooLate)?.granule_offset,
+                    self.streams
+                        .front()
+                        .ok_or(OpeError::TooLate)?
+                        .granule_offset,
                 )?;
                 self.commit_packet(&packet, granulepos, false)?;
             }

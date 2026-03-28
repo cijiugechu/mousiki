@@ -1,4 +1,4 @@
-use mousiki::libopusenc::encoder::{OggOpusComments, OggOpusEnc, OpeError, strerror};
+use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, strerror};
 use std::env;
 use std::fs::File;
 use std::io::{self, Read};

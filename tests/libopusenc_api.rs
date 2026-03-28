@@ -1,6 +1,6 @@
 #![cfg(feature = "libopusenc")]
 
-use mousiki::libopusenc::encoder::{
+use mousiki::libopusenc::{
     OggOpusComments, OggOpusEnc, OpeError, get_abi_version, get_version_string, strerror,
 };
 
@@ -19,7 +19,10 @@ fn invalid_arguments_match_ctest() {
     let mut comments = OggOpusComments::create().expect("comments");
 
     assert_eq!(Err(OpeError::BadArg), comments.add("BAD=TAG", "value"));
-    assert_eq!(Err(OpeError::BadArg), comments.add_string("MISSING_SEPARATOR"));
+    assert_eq!(
+        Err(OpeError::BadArg),
+        comments.add_string("MISSING_SEPARATOR")
+    );
 
     assert!(OggOpusEnc::create_pull(&comments, 0, 2, 0).is_err());
     assert!(OggOpusEnc::create_pull(&comments, 48_000, 2, -2).is_err());

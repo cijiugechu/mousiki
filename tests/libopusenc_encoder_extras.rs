@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mousiki::libopusenc::encoder::{OggOpusComments, OggOpusEnc, OpusEncCallbacks, OpeError};
+use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, OpusEncCallbacks};
 
 #[derive(Default)]
 struct MemorySink {
@@ -135,14 +135,9 @@ fn continue_new_callbacks_switches_to_new_sink() {
 
     let sink1 = Rc::new(RefCell::new(MemorySink::default()));
     let sink2 = Rc::new(RefCell::new(MemorySink::default()));
-    let mut enc = OggOpusEnc::create_callbacks(
-        Box::new(SharedSink(sink1.clone())),
-        &first,
-        48_000,
-        2,
-        0,
-    )
-    .expect("encoder");
+    let mut enc =
+        OggOpusEnc::create_callbacks(Box::new(SharedSink(sink1.clone())), &first, 48_000, 2, 0)
+            .expect("encoder");
     let pcm = silence(960, 2);
 
     enc.write(&pcm, 960).expect("first write");
@@ -170,8 +165,8 @@ fn continue_new_file_switches_to_new_output_file() {
 
     let path1 = temp_path("mousiki-libopusenc-first");
     let path2 = temp_path("mousiki-libopusenc-second");
-    let mut enc = OggOpusEnc::create_file(path1.to_str().unwrap(), &first, 48_000, 2, 0)
-        .expect("encoder");
+    let mut enc =
+        OggOpusEnc::create_file(path1.to_str().unwrap(), &first, 48_000, 2, 0).expect("encoder");
     let pcm = silence(960, 2);
 
     enc.write(&pcm, 960).expect("first write");

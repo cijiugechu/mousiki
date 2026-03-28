@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::vec::Vec;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TestBuffer {

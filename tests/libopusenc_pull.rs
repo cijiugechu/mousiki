@@ -1,6 +1,6 @@
 #![cfg(feature = "libopusenc")]
 
-use mousiki::libopusenc::encoder::{OggOpusComments, OggOpusEnc, OpeError};
+use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError};
 
 mod common;
 

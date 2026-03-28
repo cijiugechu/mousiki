@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod common;
 
 use crate::common::libopusenc::{BehaviorManifest, TestBuffer};
-use mousiki::libopusenc::encoder::{OggOpusComments, OggOpusEnc, OpusEncCallbacks, OpeError};
+use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, OpusEncCallbacks};
 
 #[derive(Clone, Copy)]
 struct IntegrationScenario {
@@ -75,10 +75,7 @@ fn collect_pull(enc: &mut OggOpusEnc) -> Vec<u8> {
     encoded.data
 }
 
-fn encode_with_pull(
-    scenario: IntegrationScenario,
-    pcm: &[i16],
-) -> BehaviorManifest {
+fn encode_with_pull(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
     let comments = create_shared_comments();
     let mut enc = OggOpusEnc::create_pull(&comments, 48_000, 2, 0).expect("pull encoder");
     enc.set_serialno(4242).expect("serial");
@@ -96,10 +93,7 @@ fn encode_with_pull(
     BehaviorManifest::build(&collect_pull(&mut enc)).expect("pull manifest")
 }
 
-fn encode_with_callbacks(
-    scenario: IntegrationScenario,
-    pcm: &[i16],
-) -> (BehaviorManifest, usize) {
+fn encode_with_callbacks(scenario: IntegrationScenario, pcm: &[i16]) -> (BehaviorManifest, usize) {
     let comments = create_shared_comments();
     let sink = Rc::new(RefCell::new(CallbackSinkState::default()));
     let callbacks = Box::new(SharedCallbackSink(sink.clone()));
@@ -125,10 +119,7 @@ fn encode_with_callbacks(
     )
 }
 
-fn encode_with_file(
-    scenario: IntegrationScenario,
-    pcm: &[i16],
-) -> BehaviorManifest {
+fn encode_with_file(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
     let path = create_temp_output_path();
     let comments = create_shared_comments();
     let mut enc = OggOpusEnc::create_file(path.to_str().unwrap(), &comments, 48_000, 2, 0)
@@ -169,7 +160,10 @@ fn assert_three_way_parity(
     assert_eq!(b"ARTIST=Smoke", pull_manifest.tags.comments[0].as_slice());
     assert_eq!(b"TITLE=Parity", pull_manifest.tags.comments[1].as_slice());
     assert_ne!(0, pull_manifest.pages[0].flags & 0x02);
-    assert_ne!(0, pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04);
+    assert_ne!(
+        0,
+        pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04
+    );
     assert_eq!(4242, pull_manifest.pages[0].serialno as i32);
 }
 

@@ -22,47 +22,102 @@ const QUALITY_MAP: [QualityMapping; 11] = [
 const RESAMPLE_FULL_SINC_TABLE: bool = true;
 
 const KAISER12_TABLE: [f64; 68] = [
-    0.99859849, 1.00000000, 0.99859849, 0.99440475, 0.98745105, 0.97779076, 0.96549770,
-    0.95066529, 0.93340547, 0.91384741, 0.89213598, 0.86843014, 0.84290116, 0.81573067,
-    0.78710866, 0.75723148, 0.72629970, 0.69451601, 0.66208321, 0.62920216, 0.59606986,
-    0.56287762, 0.52980938, 0.49704014, 0.46473455, 0.43304576, 0.40211431, 0.37206735,
-    0.34301800, 0.31506490, 0.28829195, 0.26276832, 0.23854851, 0.21567274, 0.19416736,
-    0.17404546, 0.15530766, 0.13794294, 0.12192957, 0.10723616, 0.09382272, 0.08164178,
-    0.07063950, 0.06075685, 0.05193064, 0.04409466, 0.03718069, 0.03111947, 0.02584161,
-    0.02127838, 0.01736250, 0.01402878, 0.01121463, 0.00886058, 0.00691064, 0.00531256,
-    0.00401805, 0.00298291, 0.00216702, 0.00153438, 0.00105297, 0.00069463, 0.00043489,
-    0.00025272, 0.00013031, 0.0000527734, 0.00001000, 0.00000000,
+    0.99859849,
+    1.00000000,
+    0.99859849,
+    0.99440475,
+    0.98745105,
+    0.97779076,
+    0.96549770,
+    0.95066529,
+    0.93340547,
+    0.91384741,
+    0.89213598,
+    0.86843014,
+    0.84290116,
+    0.81573067,
+    0.78710866,
+    0.75723148,
+    0.72629970,
+    0.69451601,
+    0.66208321,
+    0.62920216,
+    0.59606986,
+    0.56287762,
+    0.52980938,
+    0.49704014,
+    0.46473455,
+    0.43304576,
+    0.40211431,
+    0.37206735,
+    0.34301800,
+    0.31506490,
+    0.28829195,
+    0.26276832,
+    0.23854851,
+    0.21567274,
+    0.19416736,
+    0.17404546,
+    0.15530766,
+    0.13794294,
+    0.12192957,
+    0.10723616,
+    0.09382272,
+    0.08164178,
+    0.07063950,
+    0.06075685,
+    0.05193064,
+    0.04409466,
+    0.03718069,
+    0.03111947,
+    0.02584161,
+    0.02127838,
+    0.01736250,
+    0.01402878,
+    0.01121463,
+    0.00886058,
+    0.00691064,
+    0.00531256,
+    0.00401805,
+    0.00298291,
+    0.00216702,
+    0.00153438,
+    0.00105297,
+    0.00069463,
+    0.00043489,
+    0.00025272,
+    0.00013031,
+    0.0000527734,
+    0.00001000,
+    0.00000000,
 ];
 
 const KAISER10_TABLE: [f64; 36] = [
-    0.99537781, 1.00000000, 0.99537781, 0.98162644, 0.95908712, 0.92831446, 0.89005583,
-    0.84522401, 0.79486424, 0.74011713, 0.68217934, 0.62226347, 0.56155915, 0.50119680,
-    0.44221549, 0.38553619, 0.33194107, 0.28205962, 0.23636152, 0.19515633, 0.15859932,
-    0.12670280, 0.09935205, 0.07632451, 0.05731132, 0.04193980, 0.02979584, 0.02044510,
-    0.01345224, 0.00839739, 0.00488951, 0.00257636, 0.00115101, 0.00035515, 0.00000000,
-    0.00000000,
+    0.99537781, 1.00000000, 0.99537781, 0.98162644, 0.95908712, 0.92831446, 0.89005583, 0.84522401,
+    0.79486424, 0.74011713, 0.68217934, 0.62226347, 0.56155915, 0.50119680, 0.44221549, 0.38553619,
+    0.33194107, 0.28205962, 0.23636152, 0.19515633, 0.15859932, 0.12670280, 0.09935205, 0.07632451,
+    0.05731132, 0.04193980, 0.02979584, 0.02044510, 0.01345224, 0.00839739, 0.00488951, 0.00257636,
+    0.00115101, 0.00035515, 0.00000000, 0.00000000,
 ];
 
 const KAISER8_TABLE: [f64; 36] = [
-    0.99635258, 1.00000000, 0.99635258, 0.98548012, 0.96759014, 0.94302200, 0.91223751,
-    0.87580811, 0.83439927, 0.78875245, 0.73966538, 0.68797126, 0.63451750, 0.58014482,
-    0.52566725, 0.47185369, 0.41941150, 0.36897272, 0.32108304, 0.27619388, 0.23465776,
-    0.19672670, 0.16255380, 0.13219758, 0.10562887, 0.08273982, 0.06335451, 0.04724088,
-    0.03412321, 0.02369490, 0.01563093, 0.00959968, 0.00527363, 0.00233883, 0.00050000,
-    0.00000000,
+    0.99635258, 1.00000000, 0.99635258, 0.98548012, 0.96759014, 0.94302200, 0.91223751, 0.87580811,
+    0.83439927, 0.78875245, 0.73966538, 0.68797126, 0.63451750, 0.58014482, 0.52566725, 0.47185369,
+    0.41941150, 0.36897272, 0.32108304, 0.27619388, 0.23465776, 0.19672670, 0.16255380, 0.13219758,
+    0.10562887, 0.08273982, 0.06335451, 0.04724088, 0.03412321, 0.02369490, 0.01563093, 0.00959968,
+    0.00527363, 0.00233883, 0.00050000, 0.00000000,
 ];
 
 const KAISER6_TABLE: [f64; 36] = [
-    0.99733006, 1.00000000, 0.99733006, 0.98935595, 0.97618418, 0.95799003, 0.93501423,
-    0.90755855, 0.87598009, 0.84068475, 0.80211977, 0.76076565, 0.71712752, 0.67172623,
-    0.62508937, 0.57774224, 0.53019925, 0.48295561, 0.43647969, 0.39120616, 0.34752997,
-    0.30580127, 0.26632152, 0.22934058, 0.19505503, 0.16360756, 0.13508755, 0.10953262,
-    0.08693120, 0.06722600, 0.05031820, 0.03607231, 0.02432151, 0.01487334, 0.00752000,
-    0.00000000,
+    0.99733006, 1.00000000, 0.99733006, 0.98935595, 0.97618418, 0.95799003, 0.93501423, 0.90755855,
+    0.87598009, 0.84068475, 0.80211977, 0.76076565, 0.71712752, 0.67172623, 0.62508937, 0.57774224,
+    0.53019925, 0.48295561, 0.43647969, 0.39120616, 0.34752997, 0.30580127, 0.26632152, 0.22934058,
+    0.19505503, 0.16360756, 0.13508755, 0.10953262, 0.08693120, 0.06722600, 0.05031820, 0.03607231,
+    0.02432151, 0.01487334, 0.00752000, 0.00000000,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResamplerError {
+pub(crate) enum ResamplerError {
     Success = 0,
     AllocFailed = 1,
     BadState = 2,
@@ -73,7 +128,7 @@ pub enum ResamplerError {
 
 impl ResamplerError {
     #[must_use]
-    pub const fn strerror(self) -> &'static str {
+    pub(crate) const fn strerror(self) -> &'static str {
         match self {
             Self::Success => "Success.",
             Self::AllocFailed => "Memory allocation failed.",
@@ -148,7 +203,7 @@ enum ResamplerImpl {
 }
 
 #[derive(Debug, Clone)]
-pub struct SpeexResampler {
+pub(crate) struct SpeexResampler {
     in_rate: u32,
     out_rate: u32,
     num_rate: u32,
@@ -175,7 +230,7 @@ pub struct SpeexResampler {
 }
 
 impl SpeexResampler {
-    pub fn new(
+    pub(crate) fn new(
         nb_channels: u32,
         in_rate: u32,
         out_rate: u32,
@@ -184,7 +239,7 @@ impl SpeexResampler {
         Self::new_frac(nb_channels, in_rate, out_rate, in_rate, out_rate, quality)
     }
 
-    pub fn new_frac(
+    pub(crate) fn new_frac(
         nb_channels: u32,
         ratio_num: u32,
         ratio_den: u32,
@@ -228,11 +283,11 @@ impl SpeexResampler {
     }
 
     #[must_use]
-    pub const fn quality(&self) -> i32 {
+    pub(crate) const fn quality(&self) -> i32 {
         self.quality
     }
 
-    pub fn set_quality(&mut self, quality: i32) -> Result<(), ResamplerError> {
+    pub(crate) fn set_quality(&mut self, quality: i32) -> Result<(), ResamplerError> {
         if !(0..=10).contains(&quality) {
             return Err(ResamplerError::InvalidArg);
         }
@@ -247,15 +302,15 @@ impl SpeexResampler {
     }
 
     #[must_use]
-    pub const fn rates(&self) -> (u32, u32) {
+    pub(crate) const fn rates(&self) -> (u32, u32) {
         (self.in_rate, self.out_rate)
     }
 
-    pub fn set_rate(&mut self, in_rate: u32, out_rate: u32) -> Result<(), ResamplerError> {
+    pub(crate) fn set_rate(&mut self, in_rate: u32, out_rate: u32) -> Result<(), ResamplerError> {
         self.set_rate_frac(in_rate, out_rate, in_rate, out_rate)
     }
 
-    pub fn set_rate_frac(
+    pub(crate) fn set_rate_frac(
         &mut self,
         ratio_num: u32,
         ratio_den: u32,
@@ -298,39 +353,39 @@ impl SpeexResampler {
     }
 
     #[must_use]
-    pub const fn ratio(&self) -> (u32, u32) {
+    pub(crate) const fn ratio(&self) -> (u32, u32) {
         (self.num_rate, self.den_rate)
     }
 
-    pub fn set_input_stride(&mut self, stride: u32) {
+    pub(crate) fn set_input_stride(&mut self, stride: u32) {
         self.in_stride = stride;
     }
 
     #[must_use]
-    pub const fn input_stride(&self) -> u32 {
+    pub(crate) const fn input_stride(&self) -> u32 {
         self.in_stride
     }
 
-    pub fn set_output_stride(&mut self, stride: u32) {
+    pub(crate) fn set_output_stride(&mut self, stride: u32) {
         self.out_stride = stride;
     }
 
     #[must_use]
-    pub const fn output_stride(&self) -> u32 {
+    pub(crate) const fn output_stride(&self) -> u32 {
         self.out_stride
     }
 
     #[must_use]
-    pub const fn input_latency(&self) -> u32 {
+    pub(crate) const fn input_latency(&self) -> u32 {
         self.filt_len / 2
     }
 
     #[must_use]
-    pub const fn output_latency(&self) -> u32 {
+    pub(crate) const fn output_latency(&self) -> u32 {
         ((self.filt_len / 2) * self.den_rate + (self.num_rate >> 1)) / self.num_rate
     }
 
-    pub fn skip_zeros(&mut self) -> Result<(), ResamplerError> {
+    pub(crate) fn skip_zeros(&mut self) -> Result<(), ResamplerError> {
         let last = (self.filt_len / 2) as i32;
         for item in &mut self.last_sample {
             *item = last;
@@ -338,7 +393,7 @@ impl SpeexResampler {
         Ok(())
     }
 
-    pub fn reset_mem(&mut self) -> Result<(), ResamplerError> {
+    pub(crate) fn reset_mem(&mut self) -> Result<(), ResamplerError> {
         for last in &mut self.last_sample {
             *last = 0;
         }
@@ -353,7 +408,7 @@ impl SpeexResampler {
         Ok(())
     }
 
-    pub fn process_float(
+    pub(crate) fn process_float(
         &mut self,
         channel_index: u32,
         input: Option<&[f32]>,
@@ -364,7 +419,7 @@ impl SpeexResampler {
         self.process(channel_index, input, in_len, output, out_len)
     }
 
-    pub fn process_int(
+    pub(crate) fn process_int(
         &mut self,
         channel_index: u32,
         input: Option<&[i16]>,
@@ -375,7 +430,7 @@ impl SpeexResampler {
         self.process(channel_index, input, in_len, output, out_len)
     }
 
-    pub fn process_interleaved_float(
+    pub(crate) fn process_interleaved_float(
         &mut self,
         input: Option<&[f32]>,
         in_len: &mut u32,
@@ -385,7 +440,7 @@ impl SpeexResampler {
         self.process_interleaved(input, in_len, output, out_len, Self::process_float)
     }
 
-    pub fn process_interleaved_int(
+    pub(crate) fn process_interleaved_int(
         &mut self,
         input: Option<&[i16]>,
         in_len: &mut u32,
@@ -536,15 +591,19 @@ impl SpeexResampler {
     {
         self.started = true;
         let produced = match self.mode {
-            ResamplerImpl::DirectSingle => self.resampler_basic_direct_single(channel, *in_len, output, out_offset, *out_len),
-            ResamplerImpl::DirectDouble => self.resampler_basic_direct_double(channel, *in_len, output, out_offset, *out_len),
-            ResamplerImpl::InterpolateSingle => {
-                self.resampler_basic_interpolate_single(channel, *in_len, output, out_offset, *out_len)
+            ResamplerImpl::DirectSingle => {
+                self.resampler_basic_direct_single(channel, *in_len, output, out_offset, *out_len)
             }
-            ResamplerImpl::InterpolateDouble => {
-                self.resampler_basic_interpolate_double(channel, *in_len, output, out_offset, *out_len)
+            ResamplerImpl::DirectDouble => {
+                self.resampler_basic_direct_double(channel, *in_len, output, out_offset, *out_len)
             }
-            ResamplerImpl::Zero => self.resampler_basic_zero(channel, *in_len, output, out_offset, *out_len),
+            ResamplerImpl::InterpolateSingle => self
+                .resampler_basic_interpolate_single(channel, *in_len, output, out_offset, *out_len),
+            ResamplerImpl::InterpolateDouble => self
+                .resampler_basic_interpolate_double(channel, *in_len, output, out_offset, *out_len),
+            ResamplerImpl::Zero => {
+                self.resampler_basic_zero(channel, *in_len, output, out_offset, *out_len)
+            }
         };
 
         if self.last_sample[channel] < *in_len as i32 {
@@ -688,7 +747,8 @@ impl SpeexResampler {
         while last_sample < in_len as i32 && out_sample < out_len {
             let input_offset = mem_offset + last_sample as usize;
             let offset = samp_frac_num as usize * oversample / den_rate as usize;
-            let frac = ((samp_frac_num as usize * oversample) % den_rate as usize) as f32 / den_rate as f32;
+            let frac = ((samp_frac_num as usize * oversample) % den_rate as usize) as f32
+                / den_rate as f32;
             let interp = cubic_coef(frac);
             let mut accum = [0.0f32; 4];
             let sinc_base = 4usize + oversample - offset;
@@ -747,7 +807,8 @@ impl SpeexResampler {
         while last_sample < in_len as i32 && out_sample < out_len {
             let input_offset = mem_offset + last_sample as usize;
             let offset = samp_frac_num as usize * oversample / den_rate as usize;
-            let frac = ((samp_frac_num as usize * oversample) % den_rate as usize) as f32 / den_rate as f32;
+            let frac = ((samp_frac_num as usize * oversample) % den_rate as usize) as f32
+                / den_rate as f32;
             let interp = cubic_coef(frac);
             let mut accum = [0.0f64; 4];
             let sinc_base = 4usize + oversample - offset;
@@ -825,7 +886,8 @@ impl SpeexResampler {
         self.filt_len = QUALITY_MAP[self.quality as usize].base_length;
 
         if self.num_rate > self.den_rate {
-            self.cutoff = QUALITY_MAP[self.quality as usize].downsample_bandwidth * self.den_rate as f32
+            self.cutoff = QUALITY_MAP[self.quality as usize].downsample_bandwidth
+                * self.den_rate as f32
                 / self.num_rate as f32;
             self.filt_len = multiply_frac(self.filt_len, self.num_rate, self.den_rate)?;
             self.filt_len = ((self.filt_len - 1) & !0x7) + 8;
@@ -850,7 +912,10 @@ impl SpeexResampler {
             true
         } else {
             self.filt_len.saturating_mul(self.den_rate)
-                <= self.filt_len.saturating_mul(self.oversample).saturating_add(8)
+                <= self
+                    .filt_len
+                    .saturating_mul(self.oversample)
+                    .saturating_add(8)
         };
         let min_sinc_table_length = if use_direct {
             self.filt_len.saturating_mul(self.den_rate) as usize
@@ -868,7 +933,8 @@ impl SpeexResampler {
                 for j in 0..self.filt_len as usize {
                     self.sinc_table[i * self.filt_len as usize + j] = sinc(
                         self.cutoff,
-                        (j as i32 - self.filt_len as i32 / 2 + 1) as f32 - i as f32 / self.den_rate as f32,
+                        (j as i32 - self.filt_len as i32 / 2 + 1) as f32
+                            - i as f32 / self.den_rate as f32,
                         self.filt_len as usize,
                         QUALITY_MAP[self.quality as usize].window_func,
                     );
@@ -895,11 +961,16 @@ impl SpeexResampler {
             };
         }
 
-        let min_alloc_size = self.filt_len.saturating_sub(1).saturating_add(self.buffer_size);
+        let min_alloc_size = self
+            .filt_len
+            .saturating_sub(1)
+            .saturating_add(self.buffer_size);
         if min_alloc_size > self.mem_alloc_size {
             self.mem_alloc_size = min_alloc_size;
-            self.mem
-                .resize(self.nb_channels as usize * self.mem_alloc_size as usize, 0.0);
+            self.mem.resize(
+                self.nb_channels as usize * self.mem_alloc_size as usize,
+                0.0,
+            );
         }
 
         if !self.started {
@@ -910,7 +981,9 @@ impl SpeexResampler {
                 if self.magic_samples[i] > 0 {
                     olen = old_length + 2 * self.magic_samples[i];
                     for j in (0..old_length as usize - 1 + self.magic_samples[i] as usize).rev() {
-                        self.mem[i * self.mem_alloc_size as usize + j + self.magic_samples[i] as usize] =
+                        self.mem[i * self.mem_alloc_size as usize
+                            + j
+                            + self.magic_samples[i] as usize] =
                             self.mem[i * old_alloc_size as usize + j];
                     }
                     for j in 0..self.magic_samples[i] as usize {
@@ -921,12 +994,14 @@ impl SpeexResampler {
                 if self.filt_len > olen {
                     let mut j = 0usize;
                     while j < olen as usize - 1 {
-                        self.mem[i * self.mem_alloc_size as usize + (self.filt_len as usize - 2 - j)] =
+                        self.mem
+                            [i * self.mem_alloc_size as usize + (self.filt_len as usize - 2 - j)] =
                             self.mem[i * self.mem_alloc_size as usize + (olen as usize - 2 - j)];
                         j += 1;
                     }
                     while j < self.filt_len as usize - 1 {
-                        self.mem[i * self.mem_alloc_size as usize + (self.filt_len as usize - 2 - j)] =
+                        self.mem
+                            [i * self.mem_alloc_size as usize + (self.filt_len as usize - 2 - j)] =
                             0.0;
                         j += 1;
                     }
@@ -947,8 +1022,8 @@ impl SpeexResampler {
                     + self.magic_samples[i] as usize
                     + old_magic as usize)
                 {
-                    self.mem[i * self.mem_alloc_size as usize + j] =
-                        self.mem[i * self.mem_alloc_size as usize + j + self.magic_samples[i] as usize];
+                    self.mem[i * self.mem_alloc_size as usize + j] = self.mem
+                        [i * self.mem_alloc_size as usize + j + self.magic_samples[i] as usize];
                 }
                 self.magic_samples[i] += old_magic;
             }
@@ -1045,4 +1120,508 @@ fn cubic_coef(frac: f32) -> [f32; 4] {
     let interp3 = -0.33333 * frac + 0.5 * frac * frac - 0.16667 * frac * frac * frac;
     let interp2 = 1.0 - interp0 - interp1 - interp3;
     [interp0, interp1, interp2, interp3]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResamplerError, SpeexResampler};
+
+    const FLOAT_TOL: f32 = 1e-4;
+    const COMPARE_TOL: f32 = 1e-5;
+    const SENTINEL_FLOAT: f32 = -1234.5;
+    const SENTINEL_INT: i16 = 0x5a5a;
+
+    fn assert_close(expected: f32, actual: f32, tol: f32) {
+        let diff = (expected - actual).abs();
+        assert!(
+            diff <= tol,
+            "expected {expected:.9} got {actual:.9} (tol {tol:.9})"
+        );
+    }
+
+    fn assert_all_close(expected: &[f32], actual: &[f32], tol: f32) {
+        assert_eq!(expected.len(), actual.len());
+        for (index, (&lhs, &rhs)) in expected.iter().zip(actual.iter()).enumerate() {
+            let diff = (lhs - rhs).abs();
+            assert!(
+                diff <= tol,
+                "index {index}: expected {lhs:.9} got {rhs:.9} (tol {tol:.9})"
+            );
+        }
+    }
+
+    fn fill_impulse(buffer: &mut [f32], at: usize, amplitude: f32) {
+        for (i, sample) in buffer.iter_mut().enumerate() {
+            *sample = if i == at { amplitude } else { 0.0 };
+        }
+    }
+
+    fn fill_sine(buffer: &mut [f32], scale: f32) {
+        for (i, sample) in buffer.iter_mut().enumerate() {
+            *sample = scale * libm::sinf(i as f32 * 0.17);
+        }
+    }
+
+    fn fill_stereo_asymmetric(buffer: &mut [f32], frames: usize) {
+        for i in 0..frames {
+            buffer[2 * i] = if i == 0 { 1.0 } else { 0.0 };
+            buffer[2 * i + 1] = if i < 24 { 0.5 } else { -0.5 };
+        }
+    }
+
+    fn first_nonzero_index(buffer: &[f32], threshold: f32) -> Option<usize> {
+        buffer.iter().position(|sample| sample.abs() > threshold)
+    }
+
+    fn peak_abs(buffer: &[f32]) -> f32 {
+        buffer.iter().map(|sample| sample.abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn init_and_configuration_contracts_match_ctest() {
+        assert_eq!(
+            ResamplerError::InvalidArg,
+            SpeexResampler::new(0, 44_100, 48_000, 5).unwrap_err()
+        );
+        assert_eq!(
+            ResamplerError::InvalidArg,
+            SpeexResampler::new_frac(1, 0, 1, 0, 1, 5).unwrap_err()
+        );
+        assert_eq!(
+            ResamplerError::InvalidArg,
+            SpeexResampler::new_frac(1, 1, 0, 1, 0, 5).unwrap_err()
+        );
+        assert_eq!(
+            ResamplerError::InvalidArg,
+            SpeexResampler::new(1, 44_100, 48_000, -1).unwrap_err()
+        );
+        assert_eq!(
+            ResamplerError::InvalidArg,
+            SpeexResampler::new(1, 44_100, 48_000, 11).unwrap_err()
+        );
+
+        let mut st = SpeexResampler::new(1, 44_100, 48_000, 5).expect("resampler");
+        assert_eq!((44_100, 48_000), st.rates());
+        assert_eq!((147, 160), st.ratio());
+
+        st.set_quality(10).expect("set quality");
+        assert_eq!(10, st.quality());
+
+        assert_eq!(Err(ResamplerError::InvalidArg), st.set_quality(-1));
+        assert_eq!(Err(ResamplerError::InvalidArg), st.set_quality(11));
+        assert_eq!(10, st.quality());
+
+        assert_eq!(
+            Err(ResamplerError::InvalidArg),
+            st.set_rate_frac(0, 1, 0, 1)
+        );
+        assert_eq!(
+            Err(ResamplerError::InvalidArg),
+            st.set_rate_frac(1, 0, 1, 0)
+        );
+
+        st.set_rate(48_000, 32_000).expect("set rate");
+        assert_eq!((48_000, 32_000), st.rates());
+        assert_eq!((3, 2), st.ratio());
+        st.set_rate_frac(48_000, 32_000, 48_000, 32_000)
+            .expect("set rate frac");
+
+        st.set_input_stride(7);
+        assert_eq!(7, st.input_stride());
+        st.set_output_stride(9);
+        assert_eq!(9, st.output_stride());
+    }
+
+    #[test]
+    fn strerror_and_latency_match_ctest() {
+        assert_eq!("Success.", ResamplerError::Success.strerror());
+        assert_eq!("Invalid argument.", ResamplerError::InvalidArg.strerror());
+        assert_eq!(
+            "Input and output buffers overlap.",
+            ResamplerError::PtrOverlap.strerror()
+        );
+        assert_eq!(
+            "Unknown error. Bad error code or strange version mismatch.",
+            ResamplerError::Overflow.strerror()
+        );
+
+        let st = SpeexResampler::new(1, 44_100, 48_000, 5).expect("resampler");
+        let input_latency = st.input_latency();
+        let output_latency = st.output_latency();
+        assert!(input_latency > 0);
+        assert!(output_latency > 0);
+
+        let (ratio_num, ratio_den) = st.ratio();
+        let expected_output_latency = (input_latency * ratio_den + (ratio_num >> 1)) / ratio_num;
+        assert_eq!(expected_output_latency, output_latency);
+    }
+
+    #[test]
+    fn mono_baseline_numeric_matches_ctest() {
+        let indices = [0usize, 1, 2, 17, 63, 127, 235];
+        let expected = [
+            0.002053946,
+            0.120288044,
+            0.249981761,
+            0.373679519,
+            -0.322577417,
+            0.667169452,
+            -0.671027243,
+        ];
+
+        let mut st = SpeexResampler::new(1, 44_100, 48_000, 5).expect("resampler");
+        let mut input = [0.0f32; 256];
+        let mut output = [0.0f32; 512];
+        fill_sine(&mut input, 0.8);
+        st.skip_zeros().expect("skip zeros");
+
+        let mut in_len = 256;
+        let mut out_len = 512;
+        st.process_float(0, Some(&input), &mut in_len, &mut output, &mut out_len)
+            .expect("process");
+        assert_eq!(256, in_len);
+        assert_eq!(236, out_len);
+
+        for (index, expected_value) in indices.into_iter().zip(expected) {
+            assert_close(expected_value, output[index], FLOAT_TOL);
+        }
+    }
+
+    #[test]
+    fn partial_output_and_resume_match_ctest() {
+        let mut full_state = SpeexResampler::new(1, 44_100, 48_000, 5).expect("full");
+        let mut split_state = SpeexResampler::new(1, 44_100, 48_000, 5).expect("split");
+        let mut input = [0.0f32; 256];
+        let mut full_out = [0.0f32; 512];
+        let mut part1_out = [SENTINEL_FLOAT; 16];
+        let mut part2_out = [SENTINEL_FLOAT; 512];
+        let mut combined = [0.0f32; 236];
+        fill_sine(&mut input, 0.8);
+        full_state.skip_zeros().expect("skip zeros");
+        split_state.skip_zeros().expect("skip zeros");
+
+        let mut full_in_len = 256;
+        let mut full_out_len = 512;
+        full_state
+            .process_float(
+                0,
+                Some(&input),
+                &mut full_in_len,
+                &mut full_out,
+                &mut full_out_len,
+            )
+            .expect("full process");
+        assert_eq!(256, full_in_len);
+        assert_eq!(236, full_out_len);
+
+        let mut first_in_len = 256;
+        let mut first_out_len = 10;
+        split_state
+            .process_float(
+                0,
+                Some(&input),
+                &mut first_in_len,
+                &mut part1_out,
+                &mut first_out_len,
+            )
+            .expect("part1");
+        assert_eq!(49, first_in_len);
+        assert_eq!(10, first_out_len);
+        for sample in &part1_out[10..] {
+            assert_close(SENTINEL_FLOAT, *sample, 0.0);
+        }
+
+        let consumed_first = first_in_len as usize;
+        let mut second_in_len = 256 - consumed_first as u32;
+        let mut second_out_len = 512;
+        split_state
+            .process_float(
+                0,
+                Some(&input[consumed_first..]),
+                &mut second_in_len,
+                &mut part2_out,
+                &mut second_out_len,
+            )
+            .expect("part2");
+        assert_eq!(207, second_in_len);
+        assert_eq!(226, second_out_len);
+
+        combined[..10].copy_from_slice(&part1_out[..10]);
+        combined[10..].copy_from_slice(&part2_out[..226]);
+        assert_all_close(&full_out[..236], &combined, COMPARE_TOL);
+    }
+
+    #[test]
+    fn skip_zeros_and_reset_mem_match_ctest() {
+        let mut no_skip = SpeexResampler::new(1, 44_100, 48_000, 5).expect("no_skip");
+        let mut skip = SpeexResampler::new(1, 44_100, 48_000, 5).expect("skip");
+        let mut reset = SpeexResampler::new(1, 44_100, 48_000, 5).expect("reset");
+        let mut fresh = SpeexResampler::new(1, 44_100, 48_000, 5).expect("fresh");
+        let mut input = [0.0f32; 256];
+        fill_sine(&mut input, 0.8);
+
+        let mut out_no_skip = [0.0f32; 512];
+        let mut in_len = 256;
+        let mut out_len_no_skip = 512;
+        no_skip
+            .process_float(
+                0,
+                Some(&input),
+                &mut in_len,
+                &mut out_no_skip,
+                &mut out_len_no_skip,
+            )
+            .expect("no skip process");
+        assert_eq!(256, in_len);
+        assert_eq!(279, out_len_no_skip);
+        assert!(first_nonzero_index(&out_no_skip[..out_len_no_skip as usize], 1e-5).unwrap() > 0);
+        assert!(peak_abs(&out_no_skip[..out_len_no_skip as usize]) > 0.1);
+
+        skip.skip_zeros().expect("skip zeros");
+        let mut out_skip = [0.0f32; 512];
+        let mut in_len = 256;
+        let mut out_len_skip = 512;
+        skip.process_float(
+            0,
+            Some(&input),
+            &mut in_len,
+            &mut out_skip,
+            &mut out_len_skip,
+        )
+        .expect("skip process");
+        assert_eq!(256, in_len);
+        assert_eq!(236, out_len_skip);
+        assert_eq!(
+            Some(0),
+            first_nonzero_index(&out_skip[..out_len_skip as usize], 1e-5)
+        );
+
+        let mut out_after_reset = [0.0f32; 512];
+        let mut in_len = 256;
+        let mut out_len_reset = 512;
+        reset
+            .process_float(
+                0,
+                Some(&input),
+                &mut in_len,
+                &mut out_after_reset,
+                &mut out_len_reset,
+            )
+            .expect("reset warmup");
+        reset.reset_mem().expect("reset mem");
+
+        out_after_reset.fill(0.0);
+        in_len = 256;
+        out_len_reset = 512;
+        reset
+            .process_float(
+                0,
+                Some(&input),
+                &mut in_len,
+                &mut out_after_reset,
+                &mut out_len_reset,
+            )
+            .expect("after reset");
+
+        let mut out_fresh = [0.0f32; 512];
+        let mut in_len_fresh = 256;
+        let mut out_len_fresh = 512;
+        fresh
+            .process_float(
+                0,
+                Some(&input),
+                &mut in_len_fresh,
+                &mut out_fresh,
+                &mut out_len_fresh,
+            )
+            .expect("fresh process");
+
+        assert_eq!(out_len_fresh, out_len_reset);
+        assert_all_close(
+            &out_fresh[..out_len_fresh as usize],
+            &out_after_reset[..out_len_reset as usize],
+            COMPARE_TOL,
+        );
+    }
+
+    #[test]
+    fn stateful_rate_change_matches_ctest() {
+        let mut st = SpeexResampler::new(1, 48_000, 48_000, 5).expect("resampler");
+        st.skip_zeros().expect("skip zeros");
+
+        let mut impulse = [0.0f32; 128];
+        let mut out = [0.0f32; 512];
+        fill_impulse(&mut impulse, 0, 1.0);
+        let mut in_len = 128;
+        let mut out_len = 512;
+        st.process_float(0, Some(&impulse), &mut in_len, &mut out, &mut out_len)
+            .expect("48k process");
+        assert!(out_len > 0);
+
+        st.set_rate_frac(48_000, 32_000, 48_000, 32_000)
+            .expect("set rate frac");
+        assert_eq!((3, 2), st.ratio());
+        assert_eq!(60, st.input_latency());
+        assert_eq!(40, st.output_latency());
+
+        fill_impulse(&mut impulse, 0, 1.0);
+        out.fill(0.0);
+        in_len = 128;
+        out_len = 512;
+        st.process_float(0, Some(&impulse), &mut in_len, &mut out, &mut out_len)
+            .expect("32k process");
+        assert_eq!(128, in_len);
+        assert_eq!(72, out_len);
+        assert_close(0.000699097, out[0], FLOAT_TOL);
+        assert_close(-0.000801697, out[1], FLOAT_TOL);
+        assert_close(0.000838438, out[2], FLOAT_TOL);
+    }
+
+    #[test]
+    fn stride_processing_matches_ctest() {
+        let mut reference = SpeexResampler::new(1, 16_000, 48_000, 5).expect("reference");
+        let mut stride = SpeexResampler::new(1, 16_000, 48_000, 5).expect("stride");
+
+        let mut compact_in = [0.0f32; 96];
+        let mut sparse_in = [SENTINEL_FLOAT; 192];
+        let mut reference_out = [0.0f32; 512];
+        let mut sparse_out = [SENTINEL_FLOAT; 1536];
+        fill_sine(&mut compact_in, 0.6);
+        for (i, sample) in compact_in.iter().enumerate() {
+            sparse_in[2 * i] = *sample;
+        }
+
+        reference.skip_zeros().expect("reference skip");
+        stride.skip_zeros().expect("stride skip");
+        stride.set_input_stride(2);
+        stride.set_output_stride(3);
+        assert_eq!(2, stride.input_stride());
+        assert_eq!(3, stride.output_stride());
+
+        let mut in_len_ref = 96;
+        let mut out_len_ref = 512;
+        reference
+            .process_float(
+                0,
+                Some(&compact_in),
+                &mut in_len_ref,
+                &mut reference_out,
+                &mut out_len_ref,
+            )
+            .expect("reference process");
+
+        let mut in_len_stride = 96;
+        let mut out_len_stride = 512;
+        stride
+            .process_float(
+                0,
+                Some(&sparse_in),
+                &mut in_len_stride,
+                &mut sparse_out,
+                &mut out_len_stride,
+            )
+            .expect("stride process");
+        assert_eq!(in_len_ref, in_len_stride);
+        assert_eq!(out_len_ref, out_len_stride);
+
+        for i in 0..out_len_stride as usize {
+            assert_close(reference_out[i], sparse_out[3 * i], COMPARE_TOL);
+            assert_close(SENTINEL_FLOAT, sparse_out[3 * i + 1], 0.0);
+            assert_close(SENTINEL_FLOAT, sparse_out[3 * i + 2], 0.0);
+        }
+        for sample in &sparse_out[out_len_stride as usize * 3..] {
+            assert_close(SENTINEL_FLOAT, *sample, 0.0);
+        }
+    }
+
+    #[test]
+    fn interleaved_float_channel_isolation_matches_ctest() {
+        let mut stereo = SpeexResampler::new(2, 44_100, 48_000, 5).expect("stereo");
+        let mut left = SpeexResampler::new(1, 44_100, 48_000, 5).expect("left");
+        let mut right = SpeexResampler::new(1, 44_100, 48_000, 5).expect("right");
+        let mut interleaved_in = [0.0f32; 96];
+        let mut left_in = [0.0f32; 48];
+        let mut right_in = [0.0f32; 48];
+        let mut stereo_out = [0.0f32; 512];
+        let mut left_out = [0.0f32; 256];
+        let mut right_out = [0.0f32; 256];
+        fill_stereo_asymmetric(&mut interleaved_in, 48);
+        for i in 0..48 {
+            left_in[i] = interleaved_in[2 * i];
+            right_in[i] = interleaved_in[2 * i + 1];
+        }
+
+        stereo.skip_zeros().expect("stereo skip");
+        left.skip_zeros().expect("left skip");
+        right.skip_zeros().expect("right skip");
+
+        let mut stereo_in_len = 48;
+        let mut stereo_out_len = 256;
+        stereo
+            .process_interleaved_float(
+                Some(&interleaved_in),
+                &mut stereo_in_len,
+                &mut stereo_out,
+                &mut stereo_out_len,
+            )
+            .expect("stereo process");
+
+        let mut mono_in_len = 48;
+        let mut left_out_len = 256;
+        left.process_float(
+            0,
+            Some(&left_in),
+            &mut mono_in_len,
+            &mut left_out,
+            &mut left_out_len,
+        )
+        .expect("left process");
+        assert_eq!(48, mono_in_len);
+
+        mono_in_len = 48;
+        let mut right_out_len = 256;
+        right
+            .process_float(
+                0,
+                Some(&right_in),
+                &mut mono_in_len,
+                &mut right_out,
+                &mut right_out_len,
+            )
+            .expect("right process");
+        assert_eq!(48, mono_in_len);
+
+        assert_eq!(left_out_len, stereo_out_len);
+        assert_eq!(right_out_len, stereo_out_len);
+        for i in 0..stereo_out_len as usize {
+            assert_close(left_out[i], stereo_out[2 * i], 1e-6);
+            assert_close(right_out[i], stereo_out[2 * i + 1], 1e-6);
+        }
+    }
+
+    #[test]
+    fn interleaved_int_smoke_matches_ctest() {
+        let mut st = SpeexResampler::new(2, 16_000, 48_000, 5).expect("resampler");
+        let mut input = [0i16; 256];
+        let mut output = [SENTINEL_INT; 1032];
+        for i in 0..128 {
+            input[2 * i] = if i < 64 { 12_000 } else { -12_000 };
+            input[2 * i + 1] = 0;
+        }
+        st.skip_zeros().expect("skip zeros");
+
+        let mut in_len = 128;
+        let mut out_len = 512;
+        st.process_interleaved_int(Some(&input), &mut in_len, &mut output, &mut out_len)
+            .expect("process");
+        assert_eq!(128, in_len);
+        assert!(out_len > 0);
+        for i in 0..out_len as usize {
+            assert_eq!(0, output[2 * i + 1]);
+        }
+        assert!(output[0] != 0 || output[2] != 0);
+        for sample in &output[2 * out_len as usize..] {
+            assert_eq!(SENTINEL_INT, *sample);
+        }
+    }
 }
