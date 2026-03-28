@@ -9,13 +9,13 @@ use crate::opus_decoder::{
     OpusDecodeError, OpusDecoder, OpusDecoderCtlError, OpusDecoderCtlRequest, OpusDecoderInitError,
     opus_decode_native, opus_decoder_create, opus_decoder_ctl, opus_decoder_get_size,
 };
+#[cfg(not(feature = "fixed_point"))]
+use crate::opus_encoder::opus_encode_float_with_options;
 use crate::opus_encoder::{
     OPUS_FRAMESIZE_ARG, OpusEncodeError, OpusEncodeOptions, OpusEncoder, OpusEncoderCtlError,
     OpusEncoderCtlRequest, OpusEncoderInitError, opus_encode_with_options, opus_encoder_create,
     opus_encoder_ctl, opus_encoder_get_size,
 };
-#[cfg(not(feature = "fixed_point"))]
-use crate::opus_encoder::opus_encode_float_with_options;
 use crate::packet::{PacketError, opus_packet_get_nb_samples, opus_packet_parse_impl};
 
 /// Sentinel used by the reference encoder when auto-selecting the bitrate.
@@ -1923,25 +1923,30 @@ pub fn opus_multistream_encode_float_with_options(
 ) -> Result<usize, OpusMultistreamEncoderError> {
     #[cfg(feature = "fixed_point")]
     {
-    let channels = encoder.layout.nb_channels;
-    let required_pcm = channels
-        .checked_mul(frame_size)
-        .ok_or(OpusMultistreamEncoderError::BadArgument)?;
-    if pcm.len() < required_pcm {
-        return Err(OpusMultistreamEncoderError::BadArgument);
-    }
-    let mut convert_buffer = core::mem::take(&mut encoder.convert_buffer);
-    if convert_buffer.len() != required_pcm {
-        convert_buffer.resize(required_pcm, 0);
-    }
-    for (dst, &sample) in convert_buffer.iter_mut().zip(pcm.iter().take(required_pcm)) {
-        let scaled = libm::roundf(sample * 32_768.0);
-        *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
-    }
-    let result =
-        opus_multistream_encode_with_options(encoder, &convert_buffer, frame_size, data, options);
-    encoder.convert_buffer = convert_buffer;
-    result
+        let channels = encoder.layout.nb_channels;
+        let required_pcm = channels
+            .checked_mul(frame_size)
+            .ok_or(OpusMultistreamEncoderError::BadArgument)?;
+        if pcm.len() < required_pcm {
+            return Err(OpusMultistreamEncoderError::BadArgument);
+        }
+        let mut convert_buffer = core::mem::take(&mut encoder.convert_buffer);
+        if convert_buffer.len() != required_pcm {
+            convert_buffer.resize(required_pcm, 0);
+        }
+        for (dst, &sample) in convert_buffer.iter_mut().zip(pcm.iter().take(required_pcm)) {
+            let scaled = libm::roundf(sample * 32_768.0);
+            *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+        }
+        let result = opus_multistream_encode_with_options(
+            encoder,
+            &convert_buffer,
+            frame_size,
+            data,
+            options,
+        );
+        encoder.convert_buffer = convert_buffer;
+        result
     }
 
     #[cfg(not(feature = "fixed_point"))]

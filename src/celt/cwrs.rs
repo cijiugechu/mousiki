@@ -388,7 +388,10 @@ pub(crate) fn encode_pulses(y: &[OpusInt32], n: usize, k: usize, enc: &mut EcEnc
     debug_assert!(k > 0);
     debug_assert!(n >= 2);
     debug_assert!(y.len() >= n);
-    debug_assert!(k <= MAX_PVQ_PULSES, "pulse workspace exceeds reference bound");
+    debug_assert!(
+        k <= MAX_PVQ_PULSES,
+        "pulse workspace exceeds reference bound"
+    );
 
     let mut workspace = [0u32; MAX_PVQ_PULSES + 2];
     let (index, total) = icwrs(y, n, k, &mut workspace[..k + 2]);
@@ -404,7 +407,10 @@ pub(crate) fn decode_pulses(
     debug_assert!(k > 0);
     debug_assert!(n >= 2);
     debug_assert!(y.len() >= n);
-    debug_assert!(k <= MAX_PVQ_PULSES, "pulse workspace exceeds reference bound");
+    debug_assert!(
+        k <= MAX_PVQ_PULSES,
+        "pulse workspace exceeds reference bound"
+    );
 
     if let Some(total) = pvq_v(n, k) {
         let index = dec.dec_uint(total);

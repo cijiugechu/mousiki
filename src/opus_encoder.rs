@@ -14,12 +14,12 @@ extern crate std;
 
 use libm::fmaf;
 
+use crate::analysis::DownmixInput;
 #[cfg(not(feature = "fixed_point"))]
 use crate::analysis::{
     TonalityAnalysisState, run_analysis, tonality_analysis_init, tonality_analysis_reset,
     tonality_get_info,
 };
-use crate::analysis::DownmixInput;
 use crate::celt::AnalysisInfo;
 use crate::celt::{
     CELT_SIG_SCALE, CeltCoef, CeltEncodeError, CeltEncoderCtlError, CeltEncoderInitError,
@@ -2905,7 +2905,10 @@ fn encode_frame_native_float<'mode>(
     }
 
     let mut silk_pcm_storage = [0i16; MAX_FRAME_SAMPLES * MAX_CHANNELS];
-    for (dst, &sample) in silk_pcm_storage[..required].iter_mut().zip(&pcm[..required]) {
+    for (dst, &sample) in silk_pcm_storage[..required]
+        .iter_mut()
+        .zip(&pcm[..required])
+    {
         let scaled = libm::roundf(sample * CELT_SIG_SCALE);
         *dst = scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
     }
@@ -4375,12 +4378,8 @@ trait EncodeInputSample: Copy {
         fs: i32,
         mem: &mut StereoWidthState,
     ) -> f32;
-    fn is_digital_silence(
-        pcm: &[Self],
-        frame_size: usize,
-        channels: usize,
-        lsb_depth: i32,
-    ) -> bool;
+    fn is_digital_silence(pcm: &[Self], frame_size: usize, channels: usize, lsb_depth: i32)
+    -> bool;
     fn encode_frame_native<'mode>(
         encoder: &mut OpusEncoder<'mode>,
         energy_masking: Option<&[f32]>,
@@ -5195,7 +5194,14 @@ pub fn opus_encode_with_options(
     data: &mut [u8],
     options: OpusEncodeOptions<'_>,
 ) -> Result<usize, OpusEncodeError> {
-    opus_encode_with_options_impl(encoder, pcm, frame_size, data, options, encoder.lsb_depth.min(16))
+    opus_encode_with_options_impl(
+        encoder,
+        pcm,
+        frame_size,
+        data,
+        options,
+        encoder.lsb_depth.min(16),
+    )
 }
 
 pub fn opus_encode(
@@ -5250,24 +5256,32 @@ pub fn opus_encode_float_with_options(
 ) -> Result<usize, OpusEncodeError> {
     #[cfg(not(feature = "fixed_point"))]
     {
-        return opus_encode_with_options_impl(encoder, pcm, frame_size, data, options, encoder.lsb_depth);
+        return opus_encode_with_options_impl(
+            encoder,
+            pcm,
+            frame_size,
+            data,
+            options,
+            encoder.lsb_depth,
+        );
     }
 
     #[cfg(feature = "fixed_point")]
     {
-    let channels = usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
-    let required = channels
-        .checked_mul(frame_size)
-        .ok_or(OpusEncodeError::BadArgument)?;
-    if pcm.len() < required {
-        return Err(OpusEncodeError::BadArgument);
-    }
+        let channels =
+            usize::try_from(encoder.channels).map_err(|_| OpusEncodeError::BadArgument)?;
+        let required = channels
+            .checked_mul(frame_size)
+            .ok_or(OpusEncodeError::BadArgument)?;
+        if pcm.len() < required {
+            return Err(OpusEncodeError::BadArgument);
+        }
 
-    let mut tmp = Vec::with_capacity(required);
-    for &sample in pcm.iter().take(required) {
-        let scaled = libm::roundf(sample * 32768.0);
-        tmp.push(scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
-    }
+        let mut tmp = Vec::with_capacity(required);
+        for &sample in pcm.iter().take(required) {
+            let scaled = libm::roundf(sample * 32768.0);
+            tmp.push(scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16);
+        }
 
         opus_encode_with_options(encoder, &tmp, frame_size, data, options)
     }
