@@ -7,7 +7,6 @@
 //! map closely to their C counterparts, making them ideal candidates for early
 //! porting efforts.
 
-use alloc::vec;
 use core::convert::TryFrom;
 use core::f32::consts::FRAC_2_PI;
 
@@ -386,9 +385,10 @@ pub(crate) fn op_pvq_search(
     assert!(k >= 0, "pulse count must be non-negative");
     assert!(x.len() >= n, "coefficient buffer shorter than band size");
     assert!(pulses.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut y = vec![0.0f32; n];
-    let mut sign = vec![false; n];
+    let mut y = [0.0f32; MAX_PVQ_BAND_SIZE];
+    let mut sign = [false; MAX_PVQ_BAND_SIZE];
 
     for (idx, sample) in x.iter_mut().enumerate().take(n) {
         let value = *sample;
@@ -542,9 +542,10 @@ pub(crate) fn op_pvq_search_fixed(
     assert!(k >= 0, "pulse count must be non-negative");
     assert!(x.len() >= n, "coefficient buffer shorter than band size");
     assert!(pulses.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut y = vec![0i16; n];
-    let mut signx = vec![0i32; n];
+    let mut y = [0i16; MAX_PVQ_BAND_SIZE];
+    let mut signx = [0i32; MAX_PVQ_BAND_SIZE];
 
     for j in 0..n {
         let value = x[j];
@@ -709,12 +710,13 @@ pub(crate) fn alg_quant(
     assert!(k > 0, "alg_quant requires at least one pulse");
     assert!(n > 1, "alg_quant requires at least two dimensions");
     assert!(x.len() >= n, "input vector shorter than band size");
+    debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut pulses = vec![0i32; n + 3];
+    let mut pulses = [0i32; MAX_PVQ_BAND_SIZE + 3];
 
     exp_rotation(x, n, 1, b, k, spread);
 
-    let yy = op_pvq_search(x, &mut pulses, n, k, arch);
+    let yy = op_pvq_search(x, &mut pulses[..n + 3], n, k, arch);
 
     let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
     encode_pulses(&pulses[..n], n, total_pulses, enc);
@@ -743,12 +745,13 @@ pub(crate) fn alg_quant_fixed(
     assert!(k > 0, "alg_quant requires at least one pulse");
     assert!(n > 1, "alg_quant requires at least two dimensions");
     assert!(x.len() >= n, "input vector shorter than band size");
+    debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut pulses = vec![0i32; n + 3];
+    let mut pulses = [0i32; MAX_PVQ_BAND_SIZE + 3];
 
     exp_rotation_fixed(x, n, 1, b, k, spread);
 
-    let yy = op_pvq_search_fixed(x, &mut pulses, n, k, arch);
+    let yy = op_pvq_search_fixed(x, &mut pulses[..n + 3], n, k, arch);
 
     let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
     encode_pulses(&pulses[..n], n, total_pulses, enc);

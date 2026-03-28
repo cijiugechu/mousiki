@@ -19,6 +19,9 @@ mod pvq_data;
 
 use pvq_data::{CELT_PVQ_U_DATA, CELT_PVQ_U_ROW_LENGTHS, CELT_PVQ_U_ROW_OFFSETS};
 
+// `get_pulses(MAX_PSEUDO)` tops out at 128 in the reference CELT rate tables.
+const MAX_PVQ_PULSES: usize = 128;
+
 /// Returns a conservatively large estimate of `log2(val)` with `frac` fractional bits.
 ///
 /// Mirrors `log2_frac()` from `celt/cwrs.c`. The routine assumes `val > 0` and that
@@ -385,9 +388,10 @@ pub(crate) fn encode_pulses(y: &[OpusInt32], n: usize, k: usize, enc: &mut EcEnc
     debug_assert!(k > 0);
     debug_assert!(n >= 2);
     debug_assert!(y.len() >= n);
+    debug_assert!(k <= MAX_PVQ_PULSES, "pulse workspace exceeds reference bound");
 
-    let mut workspace = vec![0u32; k + 2];
-    let (index, total) = icwrs(y, n, k, &mut workspace);
+    let mut workspace = [0u32; MAX_PVQ_PULSES + 2];
+    let (index, total) = icwrs(y, n, k, &mut workspace[..k + 2]);
     enc.enc_uint(index, total);
 }
 
@@ -400,6 +404,7 @@ pub(crate) fn decode_pulses(
     debug_assert!(k > 0);
     debug_assert!(n >= 2);
     debug_assert!(y.len() >= n);
+    debug_assert!(k <= MAX_PVQ_PULSES, "pulse workspace exceeds reference bound");
 
     if let Some(total) = pvq_v(n, k) {
         let index = dec.dec_uint(total);
@@ -408,10 +413,10 @@ pub(crate) fn decode_pulses(
         }
     }
 
-    let mut workspace = vec![0u32; k + 2];
-    let total = ncwrs_urow(n, k, &mut workspace);
+    let mut workspace = [0u32; MAX_PVQ_PULSES + 2];
+    let total = ncwrs_urow(n, k, &mut workspace[..k + 2]);
     let index = dec.dec_uint(total);
-    cwrsi(n, k, index, y, &mut workspace)
+    cwrsi(n, k, index, y, &mut workspace[..k + 2])
 }
 
 #[cfg(test)]
