@@ -17,6 +17,10 @@ const QUALITY_MAP: [QualityMapping; 11] = [
     QualityMapping::new(256, 32, 0.975, 0.975, WindowFunction::Kaiser12),
 ];
 
+// Upstream libopusenc enables RESAMPLE_FULL_SINC_TABLE in configure.ac/config.h.
+// Match that build configuration so the port selects the same direct sinc kernels.
+const RESAMPLE_FULL_SINC_TABLE: bool = true;
+
 const KAISER12_TABLE: [f64; 68] = [
     0.99859849, 1.00000000, 0.99859849, 0.99440475, 0.98745105, 0.97779076, 0.96549770,
     0.95066529, 0.93340547, 0.91384741, 0.89213598, 0.86843014, 0.84290116, 0.81573067,
@@ -551,8 +555,10 @@ impl SpeexResampler {
 
         let mem_offset = channel * self.mem_alloc_size as usize;
         let n = self.filt_len as usize;
-        for j in 0..n.saturating_sub(1) {
-            self.mem[mem_offset + j] = self.mem[mem_offset + j + *in_len];
+        if n > 1 {
+            let src_start = mem_offset + *in_len;
+            let src_end = src_start + (n - 1);
+            self.mem.copy_within(src_start..src_end, mem_offset);
         }
         Ok(())
     }
@@ -582,8 +588,14 @@ impl SpeexResampler {
             let sinc_offset = samp_frac_num as usize * n;
             let input_offset = mem_offset + last_sample as usize;
             let mut sum = 0.0f32;
-            for j in 0..n {
-                sum += self.sinc_table[sinc_offset + j] * self.mem[input_offset + j];
+            unsafe {
+                // The resampler keeps `filt_len - 1 + in_len` samples in `mem`,
+                // so this contiguous FIR window is guaranteed in-bounds here.
+                let sinc_ptr = self.sinc_table.as_ptr().add(sinc_offset);
+                let mem_ptr = self.mem.as_ptr().add(input_offset);
+                for j in 0..n {
+                    sum += *sinc_ptr.add(j) * *mem_ptr.add(j);
+                }
             }
             output[out_offset + out_sample * out_stride].write_resampler_f32(sum);
             out_sample += 1;
@@ -625,15 +637,16 @@ impl SpeexResampler {
             let input_offset = mem_offset + last_sample as usize;
             let mut accum = [0.0f64; 4];
             let mut j = 0usize;
-            while j < n {
-                accum[0] += self.sinc_table[sinc_offset + j] as f64 * self.mem[input_offset + j] as f64;
-                accum[1] += self.sinc_table[sinc_offset + j + 1] as f64
-                    * self.mem[input_offset + j + 1] as f64;
-                accum[2] += self.sinc_table[sinc_offset + j + 2] as f64
-                    * self.mem[input_offset + j + 2] as f64;
-                accum[3] += self.sinc_table[sinc_offset + j + 3] as f64
-                    * self.mem[input_offset + j + 3] as f64;
-                j += 4;
+            unsafe {
+                let sinc_ptr = self.sinc_table.as_ptr().add(sinc_offset);
+                let mem_ptr = self.mem.as_ptr().add(input_offset);
+                while j < n {
+                    accum[0] += *sinc_ptr.add(j) as f64 * *mem_ptr.add(j) as f64;
+                    accum[1] += *sinc_ptr.add(j + 1) as f64 * *mem_ptr.add(j + 1) as f64;
+                    accum[2] += *sinc_ptr.add(j + 2) as f64 * *mem_ptr.add(j + 2) as f64;
+                    accum[3] += *sinc_ptr.add(j + 3) as f64 * *mem_ptr.add(j + 3) as f64;
+                    j += 4;
+                }
             }
             output[out_offset + out_sample * out_stride]
                 .write_resampler_f32((accum[0] + accum[1] + accum[2] + accum[3]) as f32);
@@ -678,12 +691,18 @@ impl SpeexResampler {
             let frac = ((samp_frac_num as usize * oversample) % den_rate as usize) as f32 / den_rate as f32;
             let interp = cubic_coef(frac);
             let mut accum = [0.0f32; 4];
-            for j in 0..n {
-                let curr_in = self.mem[input_offset + j];
-                accum[0] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset - 2];
-                accum[1] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset - 1];
-                accum[2] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset];
-                accum[3] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset + 1];
+            let sinc_base = 4usize + oversample - offset;
+            unsafe {
+                let sinc_ptr = self.sinc_table.as_ptr();
+                let mem_ptr = self.mem.as_ptr().add(input_offset);
+                for j in 0..n {
+                    let curr_in = *mem_ptr.add(j);
+                    let sinc_index = sinc_base + j * oversample;
+                    accum[0] += curr_in * *sinc_ptr.add(sinc_index - 2);
+                    accum[1] += curr_in * *sinc_ptr.add(sinc_index - 1);
+                    accum[2] += curr_in * *sinc_ptr.add(sinc_index);
+                    accum[3] += curr_in * *sinc_ptr.add(sinc_index + 1);
+                }
             }
             let sum = interp[0] * accum[0]
                 + interp[1] * accum[1]
@@ -731,12 +750,18 @@ impl SpeexResampler {
             let frac = ((samp_frac_num as usize * oversample) % den_rate as usize) as f32 / den_rate as f32;
             let interp = cubic_coef(frac);
             let mut accum = [0.0f64; 4];
-            for j in 0..n {
-                let curr_in = self.mem[input_offset + j] as f64;
-                accum[0] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset - 2] as f64;
-                accum[1] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset - 1] as f64;
-                accum[2] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset] as f64;
-                accum[3] += curr_in * self.sinc_table[4 + (j + 1) * oversample - offset + 1] as f64;
+            let sinc_base = 4usize + oversample - offset;
+            unsafe {
+                let sinc_ptr = self.sinc_table.as_ptr();
+                let mem_ptr = self.mem.as_ptr().add(input_offset);
+                for j in 0..n {
+                    let curr_in = *mem_ptr.add(j) as f64;
+                    let sinc_index = sinc_base + j * oversample;
+                    accum[0] += curr_in * *sinc_ptr.add(sinc_index - 2) as f64;
+                    accum[1] += curr_in * *sinc_ptr.add(sinc_index - 1) as f64;
+                    accum[2] += curr_in * *sinc_ptr.add(sinc_index) as f64;
+                    accum[3] += curr_in * *sinc_ptr.add(sinc_index + 1) as f64;
+                }
             }
             let sum = interp[0] as f64 * accum[0]
                 + interp[1] as f64 * accum[1]
@@ -821,8 +846,12 @@ impl SpeexResampler {
             self.cutoff = QUALITY_MAP[self.quality as usize].upsample_bandwidth;
         }
 
-        let use_direct = self.filt_len.saturating_mul(self.den_rate)
-            <= self.filt_len.saturating_mul(self.oversample).saturating_add(8);
+        let use_direct = if RESAMPLE_FULL_SINC_TABLE {
+            true
+        } else {
+            self.filt_len.saturating_mul(self.den_rate)
+                <= self.filt_len.saturating_mul(self.oversample).saturating_add(8)
+        };
         let min_sinc_table_length = if use_direct {
             self.filt_len.saturating_mul(self.den_rate) as usize
         } else {
