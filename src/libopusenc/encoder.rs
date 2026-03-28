@@ -298,6 +298,8 @@ pub struct OggOpusEnc {
     max_ogg_delay: i32,
     pcm_buffer: Vec<f32>,
     pcm_buffer_start: usize,
+    frame_buffer: Vec<f32>,
+    packet_buffer: Vec<u8>,
     resampler: Option<SpeexResampler>,
     write_granule: usize,
     resampled_granule: usize,
@@ -402,6 +404,8 @@ impl OggOpusEnc {
             max_ogg_delay: 48_000,
             pcm_buffer: Vec::new(),
             pcm_buffer_start: 0,
+            frame_buffer: vec![0.0; FRAME_SIZE_20_MS * channels as usize],
+            packet_buffer: vec![0; MAX_PACKET_SIZE],
             resampler: resampler.take(),
             write_granule: 0,
             resampled_granule: 0,
@@ -926,16 +930,20 @@ impl OggOpusEnc {
             let frame_samples = self.frame_size * self.channels;
             let src_start = self.pcm_buffer_start * self.channels;
             let src_end = src_start + frame_samples;
-            let mut frame = vec![0.0f32; frame_samples];
-            frame.copy_from_slice(&self.pcm_buffer[src_start..src_end]);
+            let mut frame_buffer = core::mem::take(&mut self.frame_buffer);
+            if frame_buffer.len() != frame_samples {
+                frame_buffer.resize(frame_samples, 0.0);
+            }
+            frame_buffer.copy_from_slice(&self.pcm_buffer[src_start..src_end]);
 
-            let packet = {
+            let mut packet_buffer = core::mem::take(&mut self.packet_buffer);
+            if packet_buffer.len() != MAX_PACKET_SIZE {
+                packet_buffer.resize(MAX_PACKET_SIZE, 0);
+            }
+            let packet_len = {
                 let frame_size = self.frame_size;
                 let backend = self.backend_mut()?;
-                let mut packet = vec![0u8; MAX_PACKET_SIZE];
-                let packet_len = backend.encode_float(&frame, frame_size, &mut packet)?;
-                packet.truncate(packet_len);
-                packet
+                backend.encode_float(&frame_buffer, frame_size, &mut packet_buffer)?
             };
 
             if let Some(prev) = previous_prediction {
@@ -959,12 +967,16 @@ impl OggOpusEnc {
             };
 
             if is_keyframe {
-                self.chaining_keyframe = Some(packet.clone());
+                self.chaining_keyframe = Some(packet_buffer[..packet_len].to_vec());
             } else if !packet_is_last {
                 self.chaining_keyframe = None;
             }
 
-            self.commit_packet(&packet, granulepos, packet_is_last)?;
+            let commit_result =
+                self.commit_packet(&packet_buffer[..packet_len], granulepos, packet_is_last);
+            self.frame_buffer = frame_buffer;
+            self.packet_buffer = packet_buffer;
+            commit_result?;
             if packet_is_last {
                 let chaining_keyframe = self.chaining_keyframe.take();
                 self.finish_active_stream(active_end_granule, chaining_keyframe)?;
