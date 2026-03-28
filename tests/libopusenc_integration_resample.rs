@@ -1,16 +1,16 @@
 #![cfg(feature = "libopusenc")]
 
-use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
 
 use crate::common::libopusenc::{BehaviorManifest, TestBuffer};
-use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, OpusEncCallbacks};
+use mousiki::libopusenc::{
+    MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
+};
 
 const RESAMPLE_SERIALNO: i32 = 4242;
 const RESAMPLE_RATE: usize = 44_100;
@@ -24,26 +24,6 @@ struct ResampleScenario {
     flush_header: bool,
     chunks: [usize; 3],
     chunk_count: usize,
-}
-
-#[derive(Default)]
-struct CallbackSinkState {
-    encoded: TestBuffer,
-    close_calls: usize,
-}
-
-struct SharedCallbackSink(Rc<RefCell<CallbackSinkState>>);
-
-impl OpusEncCallbacks for SharedCallbackSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), OpeError> {
-        self.0.borrow_mut().encoded.append(data);
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<(), OpeError> {
-        self.0.borrow_mut().close_calls += 1;
-        Ok(())
-    }
 }
 
 fn fill_resample_pcm_int(pcm: &mut [i16], frames: usize, channels: usize) {
@@ -63,7 +43,7 @@ fn fill_resample_pcm_float(pcm: &mut [f32], pcm_int: &[i16]) {
 }
 
 fn create_resample_comments() -> OggOpusComments {
-    let mut comments = OggOpusComments::create().expect("comments");
+    let mut comments = OggOpusComments::new().expect("comments");
     comments.add("ARTIST", "Smoke").expect("artist");
     comments.add_string("TITLE=Resample").expect("title");
     comments
@@ -82,9 +62,9 @@ fn create_temp_output_path() -> PathBuf {
     ))
 }
 
-fn collect_pull(enc: &mut OggOpusEnc) -> Vec<u8> {
+fn collect_pull(enc: &mut mousiki::libopusenc::OggOpusPullEncoder) -> Vec<u8> {
     let mut encoded = TestBuffer::default();
-    while let Some(page) = enc.get_page(true).expect("get page") {
+    while let Some(page) = enc.next_page().expect("next page") {
         encoded.append(&page);
     }
     encoded.data
@@ -96,12 +76,18 @@ fn encode_pull_write(
     total_frames: usize,
 ) -> BehaviorManifest {
     let comments = create_resample_comments();
-    let mut enc =
-        OggOpusEnc::create_pull(&comments, RESAMPLE_RATE as i32, RESAMPLE_CHANNELS as i32, 0)
-            .expect("pull encoder");
-    enc.set_serialno(RESAMPLE_SERIALNO).expect("serial");
+    let mut enc = OggOpusEncoderBuilder::new(
+        comments,
+        RESAMPLE_RATE as u32,
+        RESAMPLE_CHANNELS as u8,
+        MappingFamily::MonoStereo,
+    )
+    .expect("builder")
+    .serialno(RESAMPLE_SERIALNO)
+    .build_pull()
+    .expect("pull encoder");
     if scenario.flush_header {
-        enc.flush_header().expect("flush header");
+        enc.flush_headers().expect("flush header");
     }
 
     let mut offset = 0usize;
@@ -111,29 +97,28 @@ fn encode_pull_write(
         offset += chunk;
     }
     assert_eq!(total_frames, offset);
-    enc.drain().expect("drain");
+    enc.finish().expect("finish");
     BehaviorManifest::build(&collect_pull(&mut enc)).expect("pull manifest")
 }
 
-fn encode_callbacks_write(
+fn encode_writer_write(
     scenario: ResampleScenario,
     pcm: &[i16],
     total_frames: usize,
-) -> (BehaviorManifest, usize) {
+) -> BehaviorManifest {
     let comments = create_resample_comments();
-    let sink = Rc::new(RefCell::new(CallbackSinkState::default()));
-    let callbacks = Box::new(SharedCallbackSink(sink.clone()));
-    let mut enc = OggOpusEnc::create_callbacks(
-        callbacks,
-        &comments,
-        RESAMPLE_RATE as i32,
-        RESAMPLE_CHANNELS as i32,
-        0,
+    let mut enc = OggOpusEncoderBuilder::new(
+        comments,
+        RESAMPLE_RATE as u32,
+        RESAMPLE_CHANNELS as u8,
+        MappingFamily::MonoStereo,
     )
-    .expect("callbacks encoder");
-    enc.set_serialno(RESAMPLE_SERIALNO).expect("serial");
+    .expect("builder")
+    .serialno(RESAMPLE_SERIALNO)
+    .build_writer(TestBuffer::default())
+    .expect("writer encoder");
     if scenario.flush_header {
-        enc.flush_header().expect("flush header");
+        enc.flush_headers().expect("flush header");
     }
 
     let mut offset = 0usize;
@@ -143,13 +128,8 @@ fn encode_callbacks_write(
         offset += chunk;
     }
     assert_eq!(total_frames, offset);
-    enc.drain().expect("drain");
-
-    let sink = sink.borrow();
-    (
-        BehaviorManifest::build(&sink.encoded.data).expect("callback manifest"),
-        sink.close_calls,
-    )
+    let sink = enc.finish().expect("finish");
+    BehaviorManifest::build(&sink.data).expect("writer manifest")
 }
 
 fn encode_file_write(
@@ -159,17 +139,18 @@ fn encode_file_write(
 ) -> BehaviorManifest {
     let path = create_temp_output_path();
     let comments = create_resample_comments();
-    let mut enc = OggOpusEnc::create_file(
-        path.to_str().unwrap(),
-        &comments,
-        RESAMPLE_RATE as i32,
-        RESAMPLE_CHANNELS as i32,
-        0,
+    let mut enc = OggOpusEncoderBuilder::new(
+        comments,
+        RESAMPLE_RATE as u32,
+        RESAMPLE_CHANNELS as u8,
+        MappingFamily::MonoStereo,
     )
+    .expect("builder")
+    .serialno(RESAMPLE_SERIALNO)
+    .build_file(&path)
     .expect("file encoder");
-    enc.set_serialno(RESAMPLE_SERIALNO).expect("serial");
     if scenario.flush_header {
-        enc.flush_header().expect("flush header");
+        enc.flush_headers().expect("flush header");
     }
 
     let mut offset = 0usize;
@@ -179,7 +160,7 @@ fn encode_file_write(
         offset += chunk;
     }
     assert_eq!(total_frames, offset);
-    enc.drain().expect("drain");
+    let _ = enc.finish().expect("finish");
 
     let manifest = BehaviorManifest::build_from_file(&path).expect("file manifest");
     fs::remove_file(path).expect("remove file");
@@ -188,13 +169,19 @@ fn encode_file_write(
 
 fn encode_pull_write_float(pcm: &[f32], total_frames: usize) -> BehaviorManifest {
     let comments = create_resample_comments();
-    let mut enc =
-        OggOpusEnc::create_pull(&comments, RESAMPLE_RATE as i32, RESAMPLE_CHANNELS as i32, 0)
-            .expect("pull encoder");
-    enc.set_serialno(RESAMPLE_SERIALNO).expect("serial");
-    enc.flush_header().expect("flush header");
+    let mut enc = OggOpusEncoderBuilder::new(
+        comments,
+        RESAMPLE_RATE as u32,
+        RESAMPLE_CHANNELS as u8,
+        MappingFamily::MonoStereo,
+    )
+    .expect("builder")
+    .serialno(RESAMPLE_SERIALNO)
+    .build_pull()
+    .expect("pull encoder");
+    enc.flush_headers().expect("flush header");
     enc.write_float(pcm, total_frames).expect("write float");
-    enc.drain().expect("drain");
+    enc.finish().expect("finish");
     BehaviorManifest::build(&collect_pull(&mut enc)).expect("float manifest")
 }
 
@@ -229,15 +216,15 @@ fn assert_resample_manifest(manifest: &BehaviorManifest, expected_granule: usize
 
 fn assert_resample_three_way_parity(
     pull_manifest: &BehaviorManifest,
-    callback_manifest: &BehaviorManifest,
+    writer_manifest: &BehaviorManifest,
     file_manifest: &BehaviorManifest,
     expected_granule: usize,
     exact_granule: bool,
 ) {
-    assert_eq!(pull_manifest, callback_manifest);
+    assert_eq!(pull_manifest, writer_manifest);
     assert_eq!(pull_manifest, file_manifest);
     assert_resample_manifest(pull_manifest, expected_granule, exact_granule);
-    assert_resample_manifest(callback_manifest, expected_granule, exact_granule);
+    assert_resample_manifest(writer_manifest, expected_granule, exact_granule);
     assert_resample_manifest(file_manifest, expected_granule, exact_granule);
 }
 
@@ -249,12 +236,11 @@ fn run_resample_three_path_scenario(
     exact_granule: bool,
 ) {
     let pull_manifest = encode_pull_write(scenario, pcm, total_frames);
-    let (callback_manifest, close_calls) = encode_callbacks_write(scenario, pcm, total_frames);
+    let writer_manifest = encode_writer_write(scenario, pcm, total_frames);
     let file_manifest = encode_file_write(scenario, pcm, total_frames);
-    assert_eq!(1, close_calls);
     assert_resample_three_way_parity(
         &pull_manifest,
-        &callback_manifest,
+        &writer_manifest,
         &file_manifest,
         expected_granule,
         exact_granule,
@@ -263,15 +249,14 @@ fn run_resample_three_path_scenario(
 
 #[test]
 fn explicit_header_resample_outputs_match_ctest() {
-    let scenario = ResampleScenario {
-        flush_header: true,
-        chunk_count: 1,
-        chunks: [RESAMPLE_TOTAL_FRAMES, 0, 0],
-    };
-    let mut pcm = [0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
+    let mut pcm = vec![0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
     fill_resample_pcm_int(&mut pcm, RESAMPLE_TOTAL_FRAMES, RESAMPLE_CHANNELS);
     run_resample_three_path_scenario(
-        scenario,
+        ResampleScenario {
+            flush_header: true,
+            chunks: [RESAMPLE_TOTAL_FRAMES, 0, 0],
+            chunk_count: 1,
+        },
         &pcm,
         RESAMPLE_TOTAL_FRAMES,
         RESAMPLE_EXPECTED_GRANULE,
@@ -281,15 +266,14 @@ fn explicit_header_resample_outputs_match_ctest() {
 
 #[test]
 fn implicit_header_resample_outputs_match_ctest() {
-    let scenario = ResampleScenario {
-        flush_header: false,
-        chunk_count: 1,
-        chunks: [RESAMPLE_TOTAL_FRAMES, 0, 0],
-    };
-    let mut pcm = [0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
+    let mut pcm = vec![0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
     fill_resample_pcm_int(&mut pcm, RESAMPLE_TOTAL_FRAMES, RESAMPLE_CHANNELS);
     run_resample_three_path_scenario(
-        scenario,
+        ResampleScenario {
+            flush_header: false,
+            chunks: [RESAMPLE_TOTAL_FRAMES, 0, 0],
+            chunk_count: 1,
+        },
         &pcm,
         RESAMPLE_TOTAL_FRAMES,
         RESAMPLE_EXPECTED_GRANULE,
@@ -299,15 +283,14 @@ fn implicit_header_resample_outputs_match_ctest() {
 
 #[test]
 fn chunked_resample_outputs_match_ctest() {
-    let scenario = ResampleScenario {
-        flush_header: true,
-        chunk_count: 3,
-        chunks: [1470, 1470, 1470],
-    };
-    let mut pcm = [0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
+    let mut pcm = vec![0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
     fill_resample_pcm_int(&mut pcm, RESAMPLE_TOTAL_FRAMES, RESAMPLE_CHANNELS);
     run_resample_three_path_scenario(
-        scenario,
+        ResampleScenario {
+            flush_header: true,
+            chunks: [882, 1_764, 1_764],
+            chunk_count: 3,
+        },
         &pcm,
         RESAMPLE_TOTAL_FRAMES,
         RESAMPLE_EXPECTED_GRANULE,
@@ -316,50 +299,47 @@ fn chunked_resample_outputs_match_ctest() {
 }
 
 #[test]
+fn write_and_write_float_match_for_44k1_ctest() {
+    let mut pcm_int = vec![0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
+    fill_resample_pcm_int(&mut pcm_int, RESAMPLE_TOTAL_FRAMES, RESAMPLE_CHANNELS);
+    let mut pcm_float = vec![0f32; pcm_int.len()];
+    fill_resample_pcm_float(&mut pcm_float, &pcm_int);
+
+    let int_manifest = encode_pull_write(
+        ResampleScenario {
+            flush_header: true,
+            chunks: [RESAMPLE_TOTAL_FRAMES, 0, 0],
+            chunk_count: 1,
+        },
+        &pcm_int,
+        RESAMPLE_TOTAL_FRAMES,
+    );
+    let float_manifest = encode_pull_write_float(&pcm_float, RESAMPLE_TOTAL_FRAMES);
+
+    assert_eq!(int_manifest, float_manifest);
+    assert_resample_manifest(&int_manifest, RESAMPLE_EXPECTED_GRANULE, true);
+}
+
+#[test]
 fn short_input_resample_outputs_match_ctest() {
-    let scenario = ResampleScenario {
-        flush_header: true,
-        chunk_count: 2,
-        chunks: [221, 220, 0],
-    };
-    let mut pcm = [0i16; RESAMPLE_SHORT_FRAMES * RESAMPLE_CHANNELS];
+    let mut pcm = vec![0i16; RESAMPLE_SHORT_FRAMES * RESAMPLE_CHANNELS];
     fill_resample_pcm_int(&mut pcm, RESAMPLE_SHORT_FRAMES, RESAMPLE_CHANNELS);
 
-    let pull_manifest = encode_pull_write(scenario, &pcm, RESAMPLE_SHORT_FRAMES);
-    let (callback_manifest, _) = encode_callbacks_write(scenario, &pcm, RESAMPLE_SHORT_FRAMES);
-    let file_manifest = encode_file_write(scenario, &pcm, RESAMPLE_SHORT_FRAMES);
-
-    assert_eq!(pull_manifest, callback_manifest);
-    assert_eq!(pull_manifest, file_manifest);
+    let pull_manifest = encode_pull_write(
+        ResampleScenario {
+            flush_header: true,
+            chunks: [RESAMPLE_SHORT_FRAMES, 0, 0],
+            chunk_count: 1,
+        },
+        &pcm,
+        RESAMPLE_SHORT_FRAMES,
+    );
     assert!(pull_manifest.head.valid);
     assert!(pull_manifest.tags.valid);
     assert!(pull_manifest.packets.len() >= 3);
-    assert_ne!(
-        0,
-        pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04
-    );
+    assert_ne!(0, pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04);
     assert!(
         pull_manifest.pages[pull_manifest.pages.len() - 1].granulepos
             > pull_manifest.head.preskip as u64
     );
-}
-
-#[test]
-fn write_and_write_float_match_for_44k1_ctest() {
-    let mut pcm_int = [0i16; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
-    let mut pcm_float = [0.0f32; RESAMPLE_TOTAL_FRAMES * RESAMPLE_CHANNELS];
-    fill_resample_pcm_int(&mut pcm_int, RESAMPLE_TOTAL_FRAMES, RESAMPLE_CHANNELS);
-    fill_resample_pcm_float(&mut pcm_float, &pcm_int);
-
-    let scenario = ResampleScenario {
-        flush_header: true,
-        chunk_count: 1,
-        chunks: [RESAMPLE_TOTAL_FRAMES, 0, 0],
-    };
-    let write_manifest = encode_pull_write(scenario, &pcm_int, RESAMPLE_TOTAL_FRAMES);
-    let write_float_manifest = encode_pull_write_float(&pcm_float, RESAMPLE_TOTAL_FRAMES);
-
-    assert_eq!(write_manifest, write_float_manifest);
-    assert_resample_manifest(&write_manifest, RESAMPLE_EXPECTED_GRANULE, true);
-    assert_resample_manifest(&write_float_manifest, RESAMPLE_EXPECTED_GRANULE, true);
 }

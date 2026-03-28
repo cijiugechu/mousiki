@@ -1,42 +1,22 @@
 #![cfg(feature = "libopusenc")]
 
-use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
 
 use crate::common::libopusenc::{BehaviorManifest, TestBuffer};
-use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, OpusEncCallbacks};
+use mousiki::libopusenc::{
+    LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
+};
 
 #[derive(Clone, Copy)]
 struct IntegrationScenario {
     flush_header: bool,
     chunks: [usize; 3],
     chunk_count: usize,
-}
-
-#[derive(Default)]
-struct CallbackSinkState {
-    encoded: TestBuffer,
-    close_calls: usize,
-}
-
-struct SharedCallbackSink(Rc<RefCell<CallbackSinkState>>);
-
-impl OpusEncCallbacks for SharedCallbackSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), OpeError> {
-        self.0.borrow_mut().encoded.append(data);
-        Ok(())
-    }
-
-    fn close(&mut self) -> Result<(), OpeError> {
-        self.0.borrow_mut().close_calls += 1;
-        Ok(())
-    }
 }
 
 fn fill_pcm_pattern(pcm: &mut [i16], frames: usize, channels: usize) {
@@ -50,7 +30,7 @@ fn fill_pcm_pattern(pcm: &mut [i16], frames: usize, channels: usize) {
 }
 
 fn create_shared_comments() -> OggOpusComments {
-    let mut comments = OggOpusComments::create().expect("comments");
+    let mut comments = OggOpusComments::new().expect("comments");
     comments.add("ARTIST", "Smoke").expect("artist");
     comments.add_string("TITLE=Parity").expect("title");
     comments
@@ -67,20 +47,26 @@ fn create_temp_output_path() -> PathBuf {
     std::env::temp_dir().join(format!("mousiki-libopusenc-{unique}-{suffix}.opus"))
 }
 
-fn collect_pull(enc: &mut OggOpusEnc) -> Vec<u8> {
+fn collect_pull(enc: &mut mousiki::libopusenc::OggOpusPullEncoder) -> Vec<u8> {
     let mut encoded = TestBuffer::default();
-    while let Some(page) = enc.get_page(true).expect("get page") {
+    while let Some(page) = enc.next_page().expect("next page") {
         encoded.append(&page);
     }
     encoded.data
 }
 
-fn encode_with_pull(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
+fn apply_scenario_to_pull(
+    scenario: IntegrationScenario,
+    pcm: &[i16],
+) -> BehaviorManifest {
     let comments = create_shared_comments();
-    let mut enc = OggOpusEnc::create_pull(&comments, 48_000, 2, 0).expect("pull encoder");
-    enc.set_serialno(4242).expect("serial");
+    let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
+        .expect("builder")
+        .serialno(4242)
+        .build_pull()
+        .expect("pull encoder");
     if scenario.flush_header {
-        enc.flush_header().expect("flush header");
+        enc.flush_headers().expect("flush header");
     }
 
     let mut offset = 0usize;
@@ -89,19 +75,22 @@ fn encode_with_pull(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManif
         offset += chunk;
     }
     assert_eq!(960, offset);
-    enc.drain().expect("drain");
+    enc.finish().expect("finish");
     BehaviorManifest::build(&collect_pull(&mut enc)).expect("pull manifest")
 }
 
-fn encode_with_callbacks(scenario: IntegrationScenario, pcm: &[i16]) -> (BehaviorManifest, usize) {
+fn apply_scenario_to_writer(
+    scenario: IntegrationScenario,
+    pcm: &[i16],
+) -> BehaviorManifest {
     let comments = create_shared_comments();
-    let sink = Rc::new(RefCell::new(CallbackSinkState::default()));
-    let callbacks = Box::new(SharedCallbackSink(sink.clone()));
-    let mut enc =
-        OggOpusEnc::create_callbacks(callbacks, &comments, 48_000, 2, 0).expect("callback encoder");
-    enc.set_serialno(4242).expect("serial");
+    let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
+        .expect("builder")
+        .serialno(4242)
+        .build_writer(TestBuffer::default())
+        .expect("writer encoder");
     if scenario.flush_header {
-        enc.flush_header().expect("flush header");
+        enc.flush_headers().expect("flush header");
     }
 
     let mut offset = 0usize;
@@ -110,23 +99,23 @@ fn encode_with_callbacks(scenario: IntegrationScenario, pcm: &[i16]) -> (Behavio
         offset += chunk;
     }
     assert_eq!(960, offset);
-    enc.drain().expect("drain");
-
-    let sink = sink.borrow();
-    (
-        BehaviorManifest::build(&sink.encoded.data).expect("callback manifest"),
-        sink.close_calls,
-    )
+    let sink = enc.finish().expect("finish");
+    BehaviorManifest::build(&sink.data).expect("writer manifest")
 }
 
-fn encode_with_file(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
+fn apply_scenario_to_file(
+    scenario: IntegrationScenario,
+    pcm: &[i16],
+) -> BehaviorManifest {
     let path = create_temp_output_path();
     let comments = create_shared_comments();
-    let mut enc = OggOpusEnc::create_file(path.to_str().unwrap(), &comments, 48_000, 2, 0)
+    let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
+        .expect("builder")
+        .serialno(4242)
+        .build_file(&path)
         .expect("file encoder");
-    enc.set_serialno(4242).expect("serial");
     if scenario.flush_header {
-        enc.flush_header().expect("flush header");
+        enc.flush_headers().expect("flush header");
     }
 
     let mut offset = 0usize;
@@ -135,7 +124,7 @@ fn encode_with_file(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManif
         offset += chunk;
     }
     assert_eq!(960, offset);
-    enc.drain().expect("drain");
+    let _ = enc.finish().expect("finish");
 
     let manifest = BehaviorManifest::build_from_file(&path).expect("file manifest");
     fs::remove_file(path).expect("remove temp file");
@@ -144,10 +133,10 @@ fn encode_with_file(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManif
 
 fn assert_three_way_parity(
     pull_manifest: &BehaviorManifest,
-    callback_manifest: &BehaviorManifest,
+    writer_manifest: &BehaviorManifest,
     file_manifest: &BehaviorManifest,
 ) {
-    assert_eq!(pull_manifest, callback_manifest);
+    assert_eq!(pull_manifest, writer_manifest);
     assert_eq!(pull_manifest, file_manifest);
     assert!(pull_manifest.pages.len() >= 3);
     assert!(pull_manifest.packets.len() >= 3);
@@ -160,10 +149,7 @@ fn assert_three_way_parity(
     assert_eq!(b"ARTIST=Smoke", pull_manifest.tags.comments[0].as_slice());
     assert_eq!(b"TITLE=Parity", pull_manifest.tags.comments[1].as_slice());
     assert_ne!(0, pull_manifest.pages[0].flags & 0x02);
-    assert_ne!(
-        0,
-        pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04
-    );
+    assert_ne!(0, pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04);
     assert_eq!(4242, pull_manifest.pages[0].serialno as i32);
 }
 
@@ -171,12 +157,11 @@ fn run_three_path_scenario(scenario: IntegrationScenario) {
     let mut pcm = [0i16; 960 * 2];
     fill_pcm_pattern(&mut pcm, 960, 2);
 
-    let pull_manifest = encode_with_pull(scenario, &pcm);
-    let (callback_manifest, close_calls) = encode_with_callbacks(scenario, &pcm);
-    let file_manifest = encode_with_file(scenario, &pcm);
+    let pull_manifest = apply_scenario_to_pull(scenario, &pcm);
+    let writer_manifest = apply_scenario_to_writer(scenario, &pcm);
+    let file_manifest = apply_scenario_to_file(scenario, &pcm);
 
-    assert_eq!(1, close_calls);
-    assert_three_way_parity(&pull_manifest, &callback_manifest, &file_manifest);
+    assert_three_way_parity(&pull_manifest, &writer_manifest, &file_manifest);
 }
 
 #[test]
@@ -209,6 +194,11 @@ fn chunked_writes_three_way_parity_matches_ctest() {
 #[test]
 fn unwritable_path_fails_cleanly_matches_ctest() {
     let comments = create_shared_comments();
-    let enc = OggOpusEnc::create_file("ctests/no-such-dir/out.opus", &comments, 48_000, 2, 0);
-    assert!(matches!(enc, Err(OpeError::CannotOpen)));
+    let enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
+        .expect("builder")
+        .build_file("ctests/no-such-dir/out.opus");
+    assert!(matches!(
+        enc,
+        Err(LibopusencError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound
+    ));
 }

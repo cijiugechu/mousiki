@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use std::fs;
 
-use crate::libopusenc::encoder::OpeError;
+use crate::libopusenc::{LibopusencError, PictureErrorKind};
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\x0D\x0A\x1A\x0A";
@@ -15,12 +15,12 @@ pub(crate) fn parse_picture_specification(
     picture_type: i32,
     description: Option<&str>,
     seen_file_icons: &mut i32,
-) -> Result<String, OpeError> {
+) -> Result<String, LibopusencError> {
     let picture_type = normalize_picture_type(picture_type);
     if !validate_picture_type(picture_type, *seen_file_icons) {
-        return Err(OpeError::InvalidPicture);
+        return Err(LibopusencError::Picture(PictureErrorKind::InvalidPicture));
     }
-    let data = fs::read(filename).map_err(|_| OpeError::CannotOpen)?;
+    let data = fs::read(filename).map_err(LibopusencError::Io)?;
     parse_picture_specification_from_memory(&data, picture_type, description, seen_file_icons)
 }
 
@@ -29,16 +29,16 @@ pub(crate) fn parse_picture_specification_from_memory(
     picture_type: i32,
     description: Option<&str>,
     seen_file_icons: &mut i32,
-) -> Result<String, OpeError> {
+) -> Result<String, LibopusencError> {
     let picture_type = normalize_picture_type(picture_type);
     if !validate_picture_type(picture_type, *seen_file_icons) {
-        return Err(OpeError::InvalidPicture);
+        return Err(LibopusencError::Picture(PictureErrorKind::InvalidPicture));
     }
     let description = description.unwrap_or("");
     let (mime_type, width, height, depth, colors) =
-        parse_image(mem).ok_or(OpeError::InvalidPicture)?;
+        parse_image(mem).ok_or(LibopusencError::Picture(PictureErrorKind::InvalidPicture))?;
     if picture_type == 1 && (width != 32 || height != 32 || mime_type != "image/png") {
-        return Err(OpeError::InvalidIcon);
+        return Err(LibopusencError::Picture(PictureErrorKind::InvalidIcon));
     }
 
     let mut block = Vec::with_capacity(32 + mime_type.len() + description.len() + mem.len());
@@ -252,7 +252,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{parse_picture_specification, parse_picture_specification_from_memory};
-    use crate::libopusenc::OpeError;
+    use crate::libopusenc::{LibopusencError, PictureErrorKind};
 
     static PNG_32X32_RGBA: &[u8] = &[
         0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
@@ -472,7 +472,7 @@ mod tests {
     fn invalid_inputs_match_ctest() {
         let mut seen_file_icons = 0;
         assert_eq!(
-            Err(OpeError::InvalidPicture),
+            Err(LibopusencError::Picture(PictureErrorKind::InvalidPicture)),
             parse_picture_specification_from_memory(
                 INVALID_BYTES,
                 3,
@@ -481,7 +481,7 @@ mod tests {
             )
         );
         assert_eq!(
-            Err(OpeError::InvalidPicture),
+            Err(LibopusencError::Picture(PictureErrorKind::InvalidPicture)),
             parse_picture_specification_from_memory(
                 PNG_32X32_RGBA,
                 21,
@@ -490,7 +490,7 @@ mod tests {
             )
         );
         assert_eq!(
-            Err(OpeError::CannotOpen),
+            Err(LibopusencError::Io(std::io::Error::from(std::io::ErrorKind::NotFound))),
             parse_picture_specification(
                 "/tmp/definitely-missing-libopusenc-picture",
                 3,
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(b"image/png", parsed.mime.as_slice());
 
         assert_eq!(
-            Err(OpeError::InvalidPicture),
+            Err(LibopusencError::Picture(PictureErrorKind::InvalidPicture)),
             parse_picture_specification_from_memory(
                 PNG_32X32_RGBA,
                 1,
@@ -527,7 +527,7 @@ mod tests {
 
         let mut fresh_seen_file_icons = 0;
         assert_eq!(
-            Err(OpeError::InvalidIcon),
+            Err(LibopusencError::Picture(PictureErrorKind::InvalidIcon)),
             parse_picture_specification_from_memory(
                 PNG_16X16_RGBA,
                 1,
@@ -536,7 +536,7 @@ mod tests {
             )
         );
         assert_eq!(
-            Err(OpeError::InvalidIcon),
+            Err(LibopusencError::Picture(PictureErrorKind::InvalidIcon)),
             parse_picture_specification_from_memory(
                 JPEG_32X16,
                 1,
@@ -554,7 +554,7 @@ mod tests {
         .expect("parse other icon");
         assert_eq!(3, seen_file_icons);
         assert_eq!(
-            Err(OpeError::InvalidPicture),
+            Err(LibopusencError::Picture(PictureErrorKind::InvalidPicture)),
             parse_picture_specification_from_memory(
                 PNG_32X32_RGBA,
                 2,

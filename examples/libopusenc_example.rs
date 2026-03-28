@@ -1,4 +1,6 @@
-use mousiki::libopusenc::{OggOpusComments, OggOpusEnc, OpeError, strerror};
+use mousiki::libopusenc::{
+    LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
+};
 use std::env;
 use std::fs::File;
 use std::io::{self, Read};
@@ -7,7 +9,6 @@ use std::process;
 
 const CHANNELS: usize = 2;
 const SAMPLE_RATE: i32 = 44_100;
-const FAMILY: i32 = 0;
 const READ_SIZE: usize = 256;
 
 fn main() {
@@ -36,7 +37,7 @@ fn run() -> Result<(), ExampleError> {
     let mut input_file =
         File::open(input_path).map_err(|err| ExampleError::Io("open input", err.kind()))?;
 
-    let mut comments = OggOpusComments::create().map_err(ExampleError::Encode)?;
+    let mut comments = OggOpusComments::new().map_err(ExampleError::Encode)?;
     comments
         .add("ARTIST", "Someone")
         .map_err(ExampleError::Encode)?;
@@ -44,14 +45,14 @@ fn run() -> Result<(), ExampleError> {
         .add("TITLE", "Some track")
         .map_err(ExampleError::Encode)?;
 
-    let output_string = output_path.to_string_lossy();
-    let mut encoder = OggOpusEnc::create_file(
-        &output_string,
-        &comments,
-        SAMPLE_RATE,
-        CHANNELS as i32,
-        FAMILY,
+    let mut encoder = OggOpusEncoderBuilder::new(
+        comments,
+        SAMPLE_RATE as u32,
+        CHANNELS as u8,
+        MappingFamily::MonoStereo,
     )
+    .map_err(ExampleError::Encode)?
+    .build_file(output_path)
     .map_err(ExampleError::Encode)?;
 
     let mut input_bytes = [0u8; READ_SIZE * CHANNELS * 2];
@@ -82,7 +83,7 @@ fn run() -> Result<(), ExampleError> {
             .map_err(ExampleError::Encode)?;
     }
 
-    encoder.drain().map_err(ExampleError::Encode)?;
+    let _ = encoder.finish().map_err(ExampleError::Encode)?;
     Ok(())
 }
 
@@ -100,7 +101,7 @@ fn report_error(err: ExampleError) {
             eprintln!("IO error ({context}): {kind:?}");
         }
         ExampleError::Encode(err) => {
-            eprintln!("encoding failed: {}", strerror(err));
+            eprintln!("encoding failed: {err}");
         }
         ExampleError::PartialFrame(bytes) => {
             eprintln!("input length is not aligned to a stereo PCM frame: {bytes} bytes");
@@ -111,6 +112,6 @@ fn report_error(err: ExampleError) {
 enum ExampleError {
     Usage(std::ffi::OsString),
     Io(&'static str, io::ErrorKind),
-    Encode(OpeError),
+    Encode(LibopusencError),
     PartialFrame(usize),
 }

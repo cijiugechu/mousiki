@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{self, Write};
 use std::path::Path;
 use std::vec::Vec;
 
@@ -28,6 +29,17 @@ impl TestBuffer {
             .windows(needle.len())
             .filter(|window| *window == needle)
             .count()
+    }
+}
+
+impl Write for TestBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.append(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
