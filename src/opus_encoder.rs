@@ -5,6 +5,8 @@
 //! SILK-only packets. Hybrid/CELT modes will be wired once the remaining CELT
 //! bitstream packing path is ported.
 
+#![allow(clippy::too_many_arguments)]
+
 #[cfg(feature = "dred")]
 use alloc::boxed::Box;
 use alloc::vec::Vec;

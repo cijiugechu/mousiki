@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
 
 //! Neural PLC helpers used by the decoder when `ENABLE_DEEP_PLC` is active.
 //!
@@ -858,7 +859,7 @@ fn silk_burg_analysis(
             inv_gain = tmp;
         }
 
-        for k in 0..(n + 1) / 2 {
+        for k in 0..n.div_ceil(2) {
             let tmp1 = a_f[k];
             let tmp2 = a_f[n - k - 1];
             a_f[k] = tmp1 + rc * tmp2;

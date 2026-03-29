@@ -1336,6 +1336,7 @@ fn fill_header_layout(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn map_multistream_error(error: OpusMultistreamEncoderError) -> LibopusencError {
     match error.code() {
         -1 => LibopusencError::InvalidArgument,

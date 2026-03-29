@@ -142,6 +142,15 @@ impl ResamplerError {
     }
 }
 
+type ProcessChannelFn<TIn, TOut> = fn(
+    &mut SpeexResampler,
+    u32,
+    Option<&[TIn]>,
+    &mut u32,
+    &mut [TOut],
+    &mut u32,
+) -> Result<(), ResamplerError>;
+
 #[derive(Debug, Clone, Copy)]
 struct QualityMapping {
     base_length: u32,
@@ -526,14 +535,7 @@ impl SpeexResampler {
         in_len: &mut u32,
         output: &mut [TOut],
         out_len: &mut u32,
-        process_fn: fn(
-            &mut Self,
-            u32,
-            Option<&[TIn]>,
-            &mut u32,
-            &mut [TOut],
-            &mut u32,
-        ) -> Result<(), ResamplerError>,
+        process_fn: ProcessChannelFn<TIn, TOut>,
     ) -> Result<(), ResamplerError>
     where
         TIn: ResamplerSampleIn,

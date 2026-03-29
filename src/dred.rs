@@ -135,6 +135,13 @@ pub struct DredVectorDecoder {
 }
 
 #[cfg(feature = "dred")]
+impl Default for DredVectorDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "dred")]
 impl DredVectorDecoder {
     #[must_use]
     pub fn new() -> Self {
@@ -154,7 +161,7 @@ impl DredVectorDecoder {
         if nb_chunks == 0 {
             return Ok(0);
         }
-        if nb_chunks % 2 != 0 {
+        if !nb_chunks.is_multiple_of(2) {
             return Err(OpusDredError::BadArgument);
         }
         let frames = nb_chunks.checked_mul(2).ok_or(OpusDredError::BadArgument)?;
@@ -179,8 +186,8 @@ impl DredVectorDecoder {
             return Err(OpusDredError::BadArgument);
         }
 
-        let mut buffer = payload.to_vec();
-        let mut ec = EcDec::new(&mut buffer);
+        let buffer = payload.to_vec();
+        let mut ec = EcDec::new(&buffer);
         let mut initial_state = [0.0f32; DRED_STATE_DIM];
         dred_decode_latents(
             &mut ec,
@@ -268,17 +275,12 @@ fn dred_ec_decode(
     min_feature_frames: i32,
     dred_frame_offset: i32,
 ) -> Result<i32, OpusDredError> {
-    debug_assert!(
-        DRED_NUM_REDUNDANCY_FRAMES % 2 == 0,
-        "redundancy frame count must be even"
-    );
-
     let mut buffer = [0u8; DRED_MAX_DATA_SIZE];
     if bytes.len() > buffer.len() {
         return Err(OpusDredError::BufferTooSmall);
     }
     buffer[..bytes.len()].copy_from_slice(bytes);
-    let mut ec = EcDec::new(&mut buffer[..bytes.len()]);
+    let mut ec = EcDec::new(&buffer[..bytes.len()]);
 
     let q0 = ec.dec_uint(16) as i32;
     let d_q = ec.dec_uint(8) as i32;
@@ -407,6 +409,7 @@ pub enum OpusDredDecoderCtlRequest<'req> {
 }
 
 /// Mirrors `opus_dred_decoder_ctl`.
+#[allow(clippy::needless_pass_by_value)]
 pub fn opus_dred_decoder_ctl(
     decoder: &mut OpusDredDecoder,
     request: OpusDredDecoderCtlRequest<'_>,

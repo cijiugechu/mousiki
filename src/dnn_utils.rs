@@ -1,4 +1,4 @@
-#![cfg(feature = "deep_plc")]
+#![allow(clippy::too_many_arguments)]
 
 use crate::dnn_weights::{WeightArray, WeightBlob, WeightError};
 use crate::nnet::LinearLayer;
@@ -14,14 +14,14 @@ fn find_array<'a>(
 
 #[allow(dead_code)]
 fn array_len(array: &WeightArray<'_>, elem_size: usize) -> Result<usize, WeightError> {
-    if array.size == 0 || array.size % elem_size != 0 {
+    if array.size == 0 || !array.size.is_multiple_of(elem_size) {
         return Err(WeightError::InvalidBlob);
     }
     Ok(array.size / elem_size)
 }
 
 fn leak_f32(data: &[u8]) -> Result<&'static [f32], WeightError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(WeightError::InvalidBlob);
     }
     let mut values = Vec::with_capacity(data.len() / 4);
@@ -41,7 +41,7 @@ fn leak_i8(data: &[u8]) -> Result<&'static [i8], WeightError> {
 }
 
 fn leak_i32(data: &[u8]) -> Result<&'static [i32], WeightError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(WeightError::InvalidBlob);
     }
     let mut values = Vec::with_capacity(data.len() / 4);
@@ -122,13 +122,13 @@ pub(crate) fn linear_layer_from_blob(
         .or_else(|| len_optional(subias))
         .or_else(|| len_optional(scale));
 
-    if nb_outputs.is_none() {
-        if let Some(inputs) = expected_inputs {
-            if inputs == 0 || weight_len % inputs != 0 {
-                return Err(WeightError::InvalidBlob);
-            }
-            nb_outputs = Some(weight_len / inputs);
+    if nb_outputs.is_none()
+        && let Some(inputs) = expected_inputs
+    {
+        if inputs == 0 || !weight_len.is_multiple_of(inputs) {
+            return Err(WeightError::InvalidBlob);
         }
+        nb_outputs = Some(weight_len / inputs);
     }
 
     let Some(nb_outputs) = nb_outputs else {
@@ -141,7 +141,7 @@ pub(crate) fn linear_layer_from_blob(
     let nb_inputs = if let Some(inputs) = expected_inputs {
         inputs
     } else {
-        if weight_len % nb_outputs != 0 {
+        if !weight_len.is_multiple_of(nb_outputs) {
             return Err(WeightError::InvalidBlob);
         }
         weight_len / nb_outputs
@@ -151,25 +151,25 @@ pub(crate) fn linear_layer_from_blob(
         return Err(WeightError::InvalidBlob);
     }
 
-    if let Some(bias) = bias {
-        if bias.len() != nb_outputs {
-            return Err(WeightError::InvalidBlob);
-        }
+    if let Some(bias) = bias
+        && bias.len() != nb_outputs
+    {
+        return Err(WeightError::InvalidBlob);
     }
-    if let Some(subias) = subias {
-        if subias.len() != nb_outputs {
-            return Err(WeightError::InvalidBlob);
-        }
+    if let Some(subias) = subias
+        && subias.len() != nb_outputs
+    {
+        return Err(WeightError::InvalidBlob);
     }
-    if let Some(scale) = scale {
-        if scale.len() != nb_outputs {
-            return Err(WeightError::InvalidBlob);
-        }
+    if let Some(scale) = scale
+        && scale.len() != nb_outputs
+    {
+        return Err(WeightError::InvalidBlob);
     }
-    if let Some(diag) = diag {
-        if diag.len() % 3 != 0 {
-            return Err(WeightError::InvalidBlob);
-        }
+    if let Some(diag) = diag
+        && !diag.len().is_multiple_of(3)
+    {
+        return Err(WeightError::InvalidBlob);
     }
 
     Ok(LinearLayer {

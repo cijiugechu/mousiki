@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]
+
 use crate::celt::{
     KissFftCpx, KissFftState, celt_fir, celt_inner_prod, celt_log2, celt_pitch_xcorr,
 };
@@ -245,9 +247,7 @@ fn inverse_transform(
 ) {
     let mut x = [KissFftCpx::default(); WINDOW_SIZE];
     let mut y = [KissFftCpx::default(); WINDOW_SIZE];
-    for i in 0..FREQ_SIZE {
-        x[i] = input[i];
-    }
+    x[..FREQ_SIZE].copy_from_slice(input);
     for i in FREQ_SIZE..WINDOW_SIZE {
         let mirror = WINDOW_SIZE - i;
         x[i].r = x[mirror].r;
@@ -492,9 +492,11 @@ fn compute_frame_features(state: &mut LpcNetEncState, input: &[f32; FRAME_SIZE],
 
     let lp_out = &mut state.lp_buf[PITCH_MAX_PERIOD..PITCH_MAX_PERIOD + FRAME_SIZE];
     celt_fir(&x, &state.lpc, lp_out);
-    for i in 0..FRAME_SIZE {
-        let value = lp_out[i];
-        state.exc_buf[PITCH_MAX_PERIOD + i] = value + 0.7 * state.pitch_filt;
+    for (dst, &value) in state.exc_buf[PITCH_MAX_PERIOD..PITCH_MAX_PERIOD + FRAME_SIZE]
+        .iter_mut()
+        .zip(lp_out.iter())
+    {
+        *dst = value + 0.7 * state.pitch_filt;
         state.pitch_filt = value;
     }
     biquad(lp_out, &mut state.lp_mem);

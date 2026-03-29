@@ -1,5 +1,3 @@
-#![cfg(feature = "deep_plc")]
-
 use crate::celt::opus_select_arch;
 use crate::dnn_utils::linear_layer_from_blob;
 use crate::dnn_weights::{WeightBlob, WeightError};
@@ -175,7 +173,12 @@ impl FarganState {
     }
 
     fn resize_buffers(&mut self) -> Result<(), WeightError> {
-        if self.model.cond_net_fdense2.nb_outputs % FARGAN_NB_SUBFRAMES != 0 {
+        if !self
+            .model
+            .cond_net_fdense2
+            .nb_outputs
+            .is_multiple_of(FARGAN_NB_SUBFRAMES)
+        {
             return Err(WeightError::InvalidBlob);
         }
 
@@ -605,7 +608,7 @@ fn init_fargan_from_weights(
         Some(272),
         Some(480),
     )?;
-    if model.sig_net_gru1_input.nb_outputs % 3 != 0 {
+    if !model.sig_net_gru1_input.nb_outputs.is_multiple_of(3) {
         return Err(WeightError::InvalidBlob);
     }
     let gru1_units = model.sig_net_gru1_input.nb_outputs / 3;
@@ -646,7 +649,7 @@ fn init_fargan_from_weights(
         Some(240),
         Some(384),
     )?;
-    if model.sig_net_gru2_input.nb_outputs % 3 != 0 {
+    if !model.sig_net_gru2_input.nb_outputs.is_multiple_of(3) {
         return Err(WeightError::InvalidBlob);
     }
     let gru2_units = model.sig_net_gru2_input.nb_outputs / 3;
@@ -687,7 +690,7 @@ fn init_fargan_from_weights(
         Some(208),
         Some(384),
     )?;
-    if model.sig_net_gru3_input.nb_outputs % 3 != 0 {
+    if !model.sig_net_gru3_input.nb_outputs.is_multiple_of(3) {
         return Err(WeightError::InvalidBlob);
     }
     let gru3_units = model.sig_net_gru3_input.nb_outputs / 3;

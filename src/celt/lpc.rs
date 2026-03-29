@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::manual_midpoint)]
 
 //! Linear prediction helpers mirrored from `celt/celt_lpc.c`.
 //!

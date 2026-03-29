@@ -1,3 +1,6 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop)]
+
 use crate::celt::{EcEnc, EcEncSnapshot, ec_tell, float2int16};
 use crate::dnn_weights::WeightError;
 use crate::dred_constants::{

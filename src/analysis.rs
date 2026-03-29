@@ -882,7 +882,7 @@ fn tonality_analysis<PCM: DownmixInput + ?Sized>(
         max_frame_tonality = max_frame_tonality.max(weighted);
         let slope_delta = (b as i32 - 8) as f32;
         let slope_term = band_tonality[b] * slope_delta;
-        slope = slope + slope_term;
+        slope += slope_term;
         tonal.prev_band_tonality[b] = band_tonality[b];
     }
 

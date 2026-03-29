@@ -1,3 +1,7 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::identity_op)]
+
 //! Neural network helpers for DRED/PLC inference.
 //!
 //! This is a scalar-only port of the C helpers in `dnn/nnet.c` and `dnn/vec.h`.
@@ -100,7 +104,7 @@ fn vec_swish_inplace(output: &mut [f32]) {
     tmp[..count].copy_from_slice(output);
     vec_sigmoid_inplace(&mut tmp[..count]);
     for idx in 0..count {
-        output[idx] = output[idx] * tmp[idx];
+        output[idx] *= tmp[idx];
     }
 }
 
@@ -288,7 +292,7 @@ fn sgemv(out: &mut [f32], weights: &[f32], rows: usize, cols: usize, input: &[f3
 
 fn sparse_sgemv8x4(out: &mut [f32], weights: &[f32], idx: &[i32], rows: usize, input: &[f32]) {
     out.fill(0.0);
-    debug_assert!(rows % 8 == 0);
+    debug_assert!(rows.is_multiple_of(8));
 
     let mut w_pos = 0usize;
     let mut idx_pos = 0usize;
@@ -361,7 +365,7 @@ fn sparse_cgemv8x4(
     input: &[f32],
 ) {
     out.fill(0.0);
-    debug_assert!(rows % 8 == 0);
+    debug_assert!(rows.is_multiple_of(8));
     debug_assert!(cols <= MAX_INPUTS);
 
     let mut x = [0i8; MAX_INPUTS];
@@ -432,7 +436,7 @@ fn cgemv8x4(
     input: &[f32],
 ) {
     out.fill(0.0);
-    debug_assert!(rows % 8 == 0);
+    debug_assert!(rows.is_multiple_of(8));
     debug_assert!(cols <= MAX_INPUTS);
 
     let mut x = [0i8; MAX_INPUTS];
@@ -620,12 +624,12 @@ pub(crate) fn compute_generic_conv1d(
     debug_assert!(total_inputs <= tmp.len());
     debug_assert_eq!(input_size, input.len());
 
-    if total_inputs != input_size {
+    if total_inputs == input_size {
+        tmp[..input_size].copy_from_slice(input);
+    } else {
         let offset = total_inputs - input_size;
         tmp[..offset].copy_from_slice(&mem[..offset]);
         tmp[offset..offset + input_size].copy_from_slice(input);
-    } else {
-        tmp[..input_size].copy_from_slice(input);
     }
 
     compute_linear(layer, output, &tmp[..total_inputs]);

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
 
 //! Pitch analysis helpers translated from `celt/pitch.c`.
 //!

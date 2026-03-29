@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! RDOVAE decoder model and inference helpers.
 
 use crate::dnn_weights::{WeightBlob, WeightError, optional_bytes, require_bytes};
@@ -636,7 +638,7 @@ fn init_rdovaedec_from_weights(
 }
 
 fn leak_f32(data: &[u8]) -> Result<&'static [f32], WeightError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(WeightError::InvalidBlob);
     }
     let mut values = Vec::with_capacity(data.len() / 4);
@@ -654,7 +656,7 @@ fn leak_i8(data: &[u8]) -> Result<&'static [i8], WeightError> {
 }
 
 fn leak_i32(data: &[u8]) -> Result<&'static [i32], WeightError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(WeightError::InvalidBlob);
     }
     let mut values = Vec::with_capacity(data.len() / 4);

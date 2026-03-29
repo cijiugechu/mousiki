@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! RDOVAE encoder model and inference helpers.
 
 use crate::dnn_weights::{WeightBlob, WeightError, optional_bytes, require_bytes};

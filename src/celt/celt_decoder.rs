@@ -1,4 +1,8 @@
 #![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::needless_option_as_deref)]
+#![allow(clippy::collapsible_if)]
 
 //! Decoder scaffolding ported from `celt/celt_decoder.c`.
 //!

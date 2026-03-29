@@ -1,3 +1,6 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop)]
+
 use crate::dnn_weights::{WeightBlob, WeightError, optional_bytes, require_bytes};
 use crate::nnet::{
     ACTIVATION_LINEAR, ACTIVATION_TANH, Conv2dLayer, LinearLayer, compute_conv2d,
@@ -657,7 +660,7 @@ fn sparse_block_count(idx: &[i32], nb_inputs: usize, nb_outputs: usize) -> usize
 }
 
 fn leak_f32(data: &[u8]) -> Result<&'static [f32], WeightError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(WeightError::InvalidBlob);
     }
     let mut values = Vec::with_capacity(data.len() / 4);
@@ -675,7 +678,7 @@ fn leak_i8(data: &[u8]) -> Result<&'static [i8], WeightError> {
 }
 
 fn leak_i32(data: &[u8]) -> Result<&'static [i32], WeightError> {
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return Err(WeightError::InvalidBlob);
     }
     let mut values = Vec::with_capacity(data.len() / 4);

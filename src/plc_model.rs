@@ -1,5 +1,3 @@
-#![cfg(feature = "deep_plc")]
-
 use crate::dnn_utils::linear_layer_from_blob;
 use crate::dnn_weights::{WeightBlob, WeightError};
 use crate::dred_constants::DRED_NUM_FEATURES;
@@ -56,7 +54,7 @@ fn init_plc_model_from_weights(
         Some(model.plc_dense_in.nb_outputs),
         None,
     )?;
-    if model.plc_gru1_input.nb_outputs % 3 != 0 {
+    if !model.plc_gru1_input.nb_outputs.is_multiple_of(3) {
         return Err(WeightError::InvalidBlob);
     }
     let gru1_units = model.plc_gru1_input.nb_outputs / 3;
@@ -85,7 +83,7 @@ fn init_plc_model_from_weights(
         Some(gru1_units),
         None,
     )?;
-    if model.plc_gru2_input.nb_outputs % 3 != 0 {
+    if !model.plc_gru2_input.nb_outputs.is_multiple_of(3) {
         return Err(WeightError::InvalidBlob);
     }
     let gru2_units = model.plc_gru2_input.nb_outputs / 3;

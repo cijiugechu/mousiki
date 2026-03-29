@@ -348,10 +348,8 @@ fn clean_value(raw: &str, rust_type: &str) -> String {
         return value;
     }
 
-    if matches!(rust_type, "f32" | "f64") {
-        if value.ends_with('f') || value.ends_with('F') {
-            value.pop();
-        }
+    if matches!(rust_type, "f32" | "f64") && (value.ends_with('f') || value.ends_with('F')) {
+        value.pop();
     }
 
     while matches!(value.chars().last(), Some('u' | 'U' | 'l' | 'L')) {
@@ -505,17 +503,11 @@ fn parse_values(values_str: &str, array_type: ArrayType, len: usize) -> io::Resu
             }
             ArrayType::I64 => {
                 let parsed = parse_int_signed(&value)?;
-                let value = i64::try_from(parsed).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("Invalid i64: {value}"))
-                })?;
-                bytes.extend_from_slice(&value.to_le_bytes());
+                bytes.extend_from_slice(&parsed.to_le_bytes());
             }
             ArrayType::U64 => {
                 let parsed = parse_int_unsigned(&value)?;
-                let value = u64::try_from(parsed).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u64: {value}"))
-                })?;
-                bytes.extend_from_slice(&value.to_le_bytes());
+                bytes.extend_from_slice(&parsed.to_le_bytes());
             }
         }
         count += 1;
@@ -750,15 +742,13 @@ fn extract_entries(list_body: &str) -> Vec<&str> {
                 depth += 1;
             }
             '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-                if depth == 0 {
-                    if let Some(start_idx) = start.take() {
-                        let entry = list_body[start_idx..idx].trim();
-                        if !entry.is_empty() {
-                            entries.push(entry);
-                        }
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some(start_idx) = start.take()
+                {
+                    let entry = list_body[start_idx..idx].trim();
+                    if !entry.is_empty() {
+                        entries.push(entry);
                     }
                 }
             }
@@ -785,9 +775,7 @@ fn split_fields(entry: &str) -> Vec<&str> {
                 paren_depth += 1;
             }
             ')' if !in_string => {
-                if paren_depth > 0 {
-                    paren_depth -= 1;
-                }
+                paren_depth = paren_depth.saturating_sub(1);
             }
             ',' if !in_string && paren_depth == 0 => {
                 fields.push(entry[start..idx].trim());
@@ -949,7 +937,7 @@ fn write_weight_entry(
             format!("Empty weight array: {}", entry.name),
         ));
     }
-    let block_size = ((size + WEIGHT_BLOCK_SIZE - 1) / WEIGHT_BLOCK_SIZE) * WEIGHT_BLOCK_SIZE;
+    let block_size = size.div_ceil(WEIGHT_BLOCK_SIZE) * WEIGHT_BLOCK_SIZE;
 
     let size_i32 = i32::try_from(size).map_err(|_| {
         io::Error::new(

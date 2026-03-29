@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
 
 //! Helper routines from `celt/bands.c` that are self-contained enough to port
 //! ahead of the rest of the band analysis logic.
@@ -1801,10 +1802,10 @@ pub(crate) fn quant_all_bands_decode_fixed(
             }
         }
 
-        let lowband_out_offset = if !last {
-            Some(band_start.saturating_sub(norm_offset))
-        } else {
+        let lowband_out_offset = if last {
             None
+        } else {
+            Some(band_start.saturating_sub(norm_offset))
         };
 
         if dual_stereo {

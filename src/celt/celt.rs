@@ -186,8 +186,8 @@ fn slices_overlap<T>(lhs: &[T], rhs: &[T]) -> bool {
 
     let lhs_start = lhs.as_ptr() as usize;
     let rhs_start = rhs.as_ptr() as usize;
-    let lhs_end = lhs_start + lhs.len() * elem_size;
-    let rhs_end = rhs_start + rhs.len() * elem_size;
+    let lhs_end = lhs_start + core::mem::size_of_val(lhs);
+    let rhs_end = rhs_start + core::mem::size_of_val(rhs);
 
     lhs_start < rhs_end && rhs_start < lhs_end
 }
@@ -444,13 +444,7 @@ pub(crate) fn comb_filter_in_place(
 
 #[cfg(feature = "fixed_point")]
 fn saturate_sig(value: FixedCeltSig) -> FixedCeltSig {
-    if value > SIG_SAT {
-        SIG_SAT
-    } else if value < -SIG_SAT {
-        -SIG_SAT
-    } else {
-        value
-    }
+    value.clamp(-SIG_SAT, SIG_SAT)
 }
 
 /// Fixed-point constant-coefficient comb filter.

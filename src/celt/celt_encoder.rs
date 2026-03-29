@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 #![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::needless_range_loop)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
 
 //! Encoder scaffolding ported from `celt/celt_encoder.c`.
 //!
@@ -2228,18 +2230,18 @@ pub(crate) fn celt_preemphasis_fixed(
         inp[i * upsample] = float2sig(pcmp[channels * i]);
     }
 
-    if coef[1] != 0.0 {
+    if coef[1] == 0.0 {
+        for value in &mut inp[..n] {
+            let x = *value;
+            *value = sub32(x, m);
+            m = mult16_32_q15(coef0, x);
+        }
+    } else {
         for value in &mut inp[..n] {
             let x = *value;
             let tmp = shl32(mult16_32_q15(coef2, x), (15 - SIG_SHIFT) as u32);
             *value = add32(tmp, m);
             m = sub32(mult16_32_q15(coef1, *value), mult16_32_q15(coef0, tmp));
-        }
-    } else {
-        for value in &mut inp[..n] {
-            let x = *value;
-            *value = sub32(x, m);
-            m = mult16_32_q15(coef0, x);
         }
     }
 
@@ -2696,7 +2698,7 @@ fn transient_analysis(
             debug_assert!(!norm.is_nan());
             let product = 64.0f64 * f64::from(norm) * (f64::from(tmp[i]) + 1e-15f64);
             let scaled = floor(product);
-            let clamped = scaled.max(0.0).min(127.0) as usize;
+            let clamped = scaled.clamp(0.0, 127.0) as usize;
             unmask += i32::from(INV_TABLE[clamped]);
             #[cfg(test)]
             if let Some(frame_idx) = trace_frame_idx {
@@ -5171,11 +5173,7 @@ fn celt_encode_with_ec_inner<'a>(
         pitch_change = true;
     }
 
-    if !pf_on {
-        if !hybrid && tell + 16 <= total_bits {
-            enc.enc_bit_logp(0, 1);
-        }
-    } else {
+    if pf_on {
         enc.enc_bit_logp(1, 1);
         pitch_index += 1;
         let octave = ec_ilog(pitch_index as u32) - 5;
@@ -5184,6 +5182,8 @@ fn celt_encode_with_ec_inner<'a>(
         pitch_index -= 1;
         enc.enc_bits(qg as u32, 3);
         enc.enc_icdf(prefilter_tapset.max(0) as usize, &TAPSET_ICDF, 2);
+    } else if !hybrid && tell + 16 <= total_bits {
+        enc.enc_bit_logp(0, 1);
     }
 
     let mut transient_got_disabled = false;
@@ -5652,83 +5652,81 @@ fn celt_encode_with_ec_inner<'a>(
         && encoder.complexity >= 5
         && !encoder.lfe
         && !hybrid
-    {
-        if patch_transient_decision(
+        && patch_transient_decision(
             &band_log_e,
             &encoder.old_band_e,
             nb_ebands,
             start,
             end as usize,
             c,
-        ) {
-            is_transient = true;
-            short_blocks = m;
-            compute_mdcts(
+        )
+    {
+        is_transient = true;
+        short_blocks = m;
+        compute_mdcts(
+            mode,
+            short_blocks,
+            &input,
+            &mut freq,
+            c,
+            cc,
+            lm,
+            upsample,
+            encoder.arch,
+        );
+        compute_band_energies(
+            mode,
+            &freq[..c * n],
+            &mut band_e,
+            eff_end,
+            c,
+            lm,
+            encoder.arch,
+        );
+        #[cfg(feature = "fixed_point")]
+        {
+            compute_mdcts_fixed(
                 mode,
+                &encoder.fixed_mdct,
+                &encoder.fixed_window,
                 short_blocks,
-                &input,
-                &mut freq,
+                &input_fixed,
+                &mut fixed_freq,
                 c,
                 cc,
                 lm,
                 upsample,
-                encoder.arch,
             );
-            compute_band_energies(
+            compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
+            amp2_log2_fixed(
                 mode,
-                &freq[..c * n],
-                &mut band_e,
                 eff_end,
+                end as usize,
+                &band_e_fixed,
+                &mut band_log_e_fixed,
                 c,
-                lm,
-                encoder.arch,
             );
-            #[cfg(feature = "fixed_point")]
-            {
-                compute_mdcts_fixed(
-                    mode,
-                    &encoder.fixed_mdct,
-                    &encoder.fixed_window,
-                    short_blocks,
-                    &input_fixed,
-                    &mut fixed_freq,
-                    c,
-                    cc,
-                    lm,
-                    upsample,
-                );
-                compute_band_energies_fixed(mode, &fixed_freq, &mut band_e_fixed, eff_end, c, lm);
-                amp2_log2_fixed(
-                    mode,
-                    eff_end,
-                    end as usize,
-                    &band_e_fixed,
-                    &mut band_log_e_fixed,
-                    c,
-                );
-                sync_loge_from_fixed(&mut band_log_e, &band_log_e_fixed);
-                let offset = lm_offset_fixed(lm);
-                for channel in 0..c {
-                    let base = channel * nb_ebands;
-                    for band in 0..end as usize {
-                        band_log_e2_fixed[base + band] =
-                            add32(band_log_e2_fixed[base + band], offset);
-                    }
-                }
-                sync_loge_from_fixed(&mut band_log_e2, &band_log_e2_fixed);
-            }
-            #[cfg(not(feature = "fixed_point"))]
-            {
-                amp2_log2(mode, eff_end, end as usize, &band_e, &mut band_log_e, c);
-                for channel in 0..c {
-                    let base = channel * nb_ebands;
-                    for band in 0..end as usize {
-                        band_log_e2[base + band] += 0.5 * lm as f32;
-                    }
+            sync_loge_from_fixed(&mut band_log_e, &band_log_e_fixed);
+            let offset = lm_offset_fixed(lm);
+            for channel in 0..c {
+                let base = channel * nb_ebands;
+                for band in 0..end as usize {
+                    band_log_e2_fixed[base + band] = add32(band_log_e2_fixed[base + band], offset);
                 }
             }
-            tf_estimate = 0.2;
+            sync_loge_from_fixed(&mut band_log_e2, &band_log_e2_fixed);
         }
+        #[cfg(not(feature = "fixed_point"))]
+        {
+            amp2_log2(mode, eff_end, end as usize, &band_e, &mut band_log_e, c);
+            for channel in 0..c {
+                let base = channel * nb_ebands;
+                for band in 0..end as usize {
+                    band_log_e2[base + band] += 0.5 * lm as f32;
+                }
+            }
+        }
+        tf_estimate = 0.2;
     }
 
     if lm > 0 && ec_tell(enc.ctx()) + 3 <= total_bits {
@@ -6162,10 +6160,10 @@ fn celt_encode_with_ec_inner<'a>(
     if vbr_rate > 0 {
         let lm_diff = mode.max_lm as i32 - lm as i32;
         let lm_shift = lm_diff.max(0) as u32;
-        let mut base_target = if !hybrid {
-            vbr_rate - ((40 * c as i32 + 20) << BITRES)
-        } else {
+        let mut base_target = if hybrid {
             max(0, vbr_rate - ((9 * c as i32 + 4) << BITRES))
+        } else {
+            vbr_rate - ((40 * c as i32 + 20) << BITRES)
         };
         if encoder.constrained_vbr {
             base_target += encoder.vbr_offset >> lm_shift;
@@ -6188,7 +6186,21 @@ fn celt_encode_with_ec_inner<'a>(
             );
         }
 
-        let mut target = if !hybrid {
+        let mut target = if hybrid {
+            let mut target = base_target;
+            let frame_shift = 3u32.saturating_sub(lm as u32);
+            if encoder.silk_info.offset < 100 {
+                target += (12 << BITRES) >> frame_shift;
+            }
+            if encoder.silk_info.offset > 100 {
+                target -= (18 << BITRES) >> frame_shift;
+            }
+            target += ((tf_estimate - 0.25) * (50 << BITRES) as f32) as i32;
+            if tf_estimate > 0.7 {
+                target = max(target, 50 << BITRES);
+            }
+            target
+        } else {
             compute_vbr(
                 mode,
                 &encoder.analysis,
@@ -6209,20 +6221,6 @@ fn celt_encode_with_ec_inner<'a>(
                 surround_masking,
                 temporal_vbr,
             )
-        } else {
-            let mut target = base_target;
-            let frame_shift = 3u32.saturating_sub(lm as u32);
-            if encoder.silk_info.offset < 100 {
-                target += (12 << BITRES) >> frame_shift;
-            }
-            if encoder.silk_info.offset > 100 {
-                target -= (18 << BITRES) >> frame_shift;
-            }
-            target += ((tf_estimate - 0.25) * (50 << BITRES) as f32) as i32;
-            if tf_estimate > 0.7 {
-                target = max(target, 50 << BITRES);
-            }
-            target
         };
 
         target += tell_frac;
@@ -6607,14 +6605,14 @@ fn celt_encode_with_ec_inner<'a>(
         }
     }
 
-    if !is_transient {
-        let span = cc * nb_ebands;
-        encoder.old_log_e2[..span].copy_from_slice(&encoder.old_log_e[..span]);
-        encoder.old_log_e[..span].copy_from_slice(&encoder.old_band_e[..span]);
-    } else {
+    if is_transient {
         for idx in 0..cc * nb_ebands {
             encoder.old_log_e[idx] = encoder.old_log_e[idx].min(encoder.old_band_e[idx]);
         }
+    } else {
+        let span = cc * nb_ebands;
+        encoder.old_log_e2[..span].copy_from_slice(&encoder.old_log_e[..span]);
+        encoder.old_log_e[..span].copy_from_slice(&encoder.old_band_e[..span]);
     }
 
     for channel in 0..cc {
