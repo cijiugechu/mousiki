@@ -7,9 +7,7 @@ use std::rc::Rc;
 mod common;
 
 use crate::common::libopusenc::TestBuffer;
-use mousiki::libopusenc::{
-    MappingFamily, OggOpusComments, OggOpusEncoderBuilder, OggOpusEncoder,
-};
+use mousiki::libopusenc::{MappingFamily, OggOpusComments, OggOpusEncoder, OggOpusEncoderBuilder};
 
 #[derive(Default)]
 struct MemorySink {

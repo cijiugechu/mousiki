@@ -490,7 +490,9 @@ mod tests {
             )
         );
         assert_eq!(
-            Err(LibopusencError::Io(std::io::Error::from(std::io::ErrorKind::NotFound))),
+            Err(LibopusencError::Io(std::io::Error::from(
+                std::io::ErrorKind::NotFound
+            ))),
             parse_picture_specification(
                 "/tmp/definitely-missing-libopusenc-picture",
                 3,

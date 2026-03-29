@@ -8,9 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod common;
 
 use crate::common::libopusenc::{BehaviorManifest, TestBuffer};
-use mousiki::libopusenc::{
-    LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
-};
+use mousiki::libopusenc::{LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder};
 
 #[derive(Clone, Copy)]
 struct IntegrationScenario {
@@ -55,10 +53,7 @@ fn collect_pull(enc: &mut mousiki::libopusenc::OggOpusPullEncoder) -> Vec<u8> {
     encoded.data
 }
 
-fn apply_scenario_to_pull(
-    scenario: IntegrationScenario,
-    pcm: &[i16],
-) -> BehaviorManifest {
+fn apply_scenario_to_pull(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
     let comments = create_shared_comments();
     let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
         .expect("builder")
@@ -79,10 +74,7 @@ fn apply_scenario_to_pull(
     BehaviorManifest::build(&collect_pull(&mut enc)).expect("pull manifest")
 }
 
-fn apply_scenario_to_writer(
-    scenario: IntegrationScenario,
-    pcm: &[i16],
-) -> BehaviorManifest {
+fn apply_scenario_to_writer(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
     let comments = create_shared_comments();
     let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
         .expect("builder")
@@ -103,10 +95,7 @@ fn apply_scenario_to_writer(
     BehaviorManifest::build(&sink.data).expect("writer manifest")
 }
 
-fn apply_scenario_to_file(
-    scenario: IntegrationScenario,
-    pcm: &[i16],
-) -> BehaviorManifest {
+fn apply_scenario_to_file(scenario: IntegrationScenario, pcm: &[i16]) -> BehaviorManifest {
     let path = create_temp_output_path();
     let comments = create_shared_comments();
     let mut enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
@@ -149,7 +138,10 @@ fn assert_three_way_parity(
     assert_eq!(b"ARTIST=Smoke", pull_manifest.tags.comments[0].as_slice());
     assert_eq!(b"TITLE=Parity", pull_manifest.tags.comments[1].as_slice());
     assert_ne!(0, pull_manifest.pages[0].flags & 0x02);
-    assert_ne!(0, pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04);
+    assert_ne!(
+        0,
+        pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04
+    );
     assert_eq!(4242, pull_manifest.pages[0].serialno as i32);
 }
 

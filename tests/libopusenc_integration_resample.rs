@@ -8,9 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod common;
 
 use crate::common::libopusenc::{BehaviorManifest, TestBuffer};
-use mousiki::libopusenc::{
-    MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
-};
+use mousiki::libopusenc::{MappingFamily, OggOpusComments, OggOpusEncoderBuilder};
 
 const RESAMPLE_SERIALNO: i32 = 4242;
 const RESAMPLE_RATE: usize = 44_100;
@@ -337,7 +335,10 @@ fn short_input_resample_outputs_match_ctest() {
     assert!(pull_manifest.head.valid);
     assert!(pull_manifest.tags.valid);
     assert!(pull_manifest.packets.len() >= 3);
-    assert_ne!(0, pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04);
+    assert_ne!(
+        0,
+        pull_manifest.pages[pull_manifest.pages.len() - 1].flags & 0x04
+    );
     assert!(
         pull_manifest.pages[pull_manifest.pages.len() - 1].granulepos
             > pull_manifest.head.preskip as u64

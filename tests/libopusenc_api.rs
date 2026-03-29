@@ -23,26 +23,19 @@ fn comments_api_matches_ctest() {
 fn invalid_arguments_match_ctest() {
     let mut comments = OggOpusComments::new().expect("comments");
 
-    assert_eq!(Err(LibopusencError::InvalidArgument), comments.add("BAD=TAG", "value"));
+    assert_eq!(
+        Err(LibopusencError::InvalidArgument),
+        comments.add("BAD=TAG", "value")
+    );
     assert_eq!(
         Err(LibopusencError::InvalidArgument),
         comments.add_string("MISSING_SEPARATOR")
     );
 
-    assert!(OggOpusEncoderBuilder::new(
-        comments.clone(),
-        0,
-        2,
-        MappingFamily::MonoStereo
-    )
-    .is_err());
-    assert!(OggOpusEncoderBuilder::new(
-        comments.clone(),
-        48_000,
-        0,
-        MappingFamily::MonoStereo
-    )
-    .is_err());
+    assert!(OggOpusEncoderBuilder::new(comments.clone(), 0, 2, MappingFamily::MonoStereo).is_err());
+    assert!(
+        OggOpusEncoderBuilder::new(comments.clone(), 48_000, 0, MappingFamily::MonoStereo).is_err()
+    );
 
     let enc = OggOpusEncoderBuilder::new(comments, 48_000, 2, MappingFamily::MonoStereo)
         .expect("builder")

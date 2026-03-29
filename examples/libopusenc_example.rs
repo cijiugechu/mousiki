@@ -1,6 +1,4 @@
-use mousiki::libopusenc::{
-    LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
-};
+use mousiki::libopusenc::{LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder};
 use std::env;
 use std::fs::File;
 use std::io::{self, Read};

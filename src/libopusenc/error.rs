@@ -47,12 +47,12 @@ impl fmt::Display for LibopusencError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidArgument => f.write_str("invalid argument"),
-            Self::InvalidState => f.write_str("operation is not valid in the current encoder state"),
+            Self::InvalidState => {
+                f.write_str("operation is not valid in the current encoder state")
+            }
             Self::Unsupported => f.write_str("unsupported libopusenc configuration"),
             Self::Io(err) => write!(f, "{err}"),
-            Self::Picture(PictureErrorKind::InvalidPicture) => {
-                f.write_str("invalid picture data")
-            }
+            Self::Picture(PictureErrorKind::InvalidPicture) => f.write_str("invalid picture data"),
             Self::Picture(PictureErrorKind::InvalidIcon) => {
                 f.write_str("invalid icon data (type 1 must be a 32x32 PNG)")
             }

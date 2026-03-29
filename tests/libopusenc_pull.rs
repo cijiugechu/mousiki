@@ -1,8 +1,6 @@
 #![cfg(feature = "libopusenc")]
 
-use mousiki::libopusenc::{
-    LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder,
-};
+use mousiki::libopusenc::{LibopusencError, MappingFamily, OggOpusComments, OggOpusEncoderBuilder};
 
 mod common;
 

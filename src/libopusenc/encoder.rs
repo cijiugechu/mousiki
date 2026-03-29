@@ -311,7 +311,10 @@ impl<C: PacketHandler> OggOpusEncoderBuilder<C> {
         Ok(self)
     }
 
-    pub fn build_writer<W: Write>(self, writer: W) -> Result<OggOpusEncoder<W, C>, LibopusencError> {
+    pub fn build_writer<W: Write>(
+        self,
+        writer: W,
+    ) -> Result<OggOpusEncoder<W, C>, LibopusencError> {
         Ok(OggOpusEncoder {
             core: EncoderCore::new(self, WriterOutput::new(writer))?,
         })
@@ -341,7 +344,11 @@ impl<W: Write, C: PacketHandler> OggOpusEncoder<W, C> {
         self.core.flush_headers()
     }
 
-    pub fn write(&mut self, pcm: &[i16], samples_per_channel: usize) -> Result<(), LibopusencError> {
+    pub fn write(
+        &mut self,
+        pcm: &[i16],
+        samples_per_channel: usize,
+    ) -> Result<(), LibopusencError> {
         self.core.write(pcm, samples_per_channel)
     }
 
@@ -353,10 +360,7 @@ impl<W: Write, C: PacketHandler> OggOpusEncoder<W, C> {
         self.core.write_float(pcm, samples_per_channel)
     }
 
-    pub fn start_next_stream(
-        &mut self,
-        comments: OggOpusComments,
-    ) -> Result<(), LibopusencError> {
+    pub fn start_next_stream(&mut self, comments: OggOpusComments) -> Result<(), LibopusencError> {
         self.core.start_next_stream(comments)
     }
 
@@ -375,7 +379,11 @@ impl<C: PacketHandler> OggOpusPullEncoder<C> {
         self.core.flush_headers()
     }
 
-    pub fn write(&mut self, pcm: &[i16], samples_per_channel: usize) -> Result<(), LibopusencError> {
+    pub fn write(
+        &mut self,
+        pcm: &[i16],
+        samples_per_channel: usize,
+    ) -> Result<(), LibopusencError> {
         self.core.write(pcm, samples_per_channel)
     }
 
@@ -387,10 +395,7 @@ impl<C: PacketHandler> OggOpusPullEncoder<C> {
         self.core.write_float(pcm, samples_per_channel)
     }
 
-    pub fn start_next_stream(
-        &mut self,
-        comments: OggOpusComments,
-    ) -> Result<(), LibopusencError> {
+    pub fn start_next_stream(&mut self, comments: OggOpusComments) -> Result<(), LibopusencError> {
         self.core.start_next_stream(comments)
     }
 
@@ -429,13 +434,17 @@ impl<W: Write> WriterOutput<W> {
     }
 
     fn into_inner(mut self) -> W {
-        self.writer.take().expect("writer still present after finish")
+        self.writer
+            .take()
+            .expect("writer still present after finish")
     }
 }
 
 impl<W: Write> OutputTarget for WriterOutput<W> {
     fn write_page(&mut self, page: Vec<u8>) -> Result<(), LibopusencError> {
-        self.writer_mut()?.write_all(&page).map_err(LibopusencError::Io)
+        self.writer_mut()?
+            .write_all(&page)
+            .map_err(LibopusencError::Io)
     }
 
     fn finish(&mut self) -> Result<(), LibopusencError> {
@@ -644,7 +653,9 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             let mut resampler =
                 SpeexResampler::new(builder.channels as u32, builder.sample_rate, 48_000, 5)
                     .map_err(|_| LibopusencError::InvalidArgument)?;
-            resampler.skip_zeros().map_err(|_| LibopusencError::Internal)?;
+            resampler
+                .skip_zeros()
+                .map_err(|_| LibopusencError::Internal)?;
             Some(resampler)
         };
 
@@ -761,10 +772,7 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
 
     fn start_next_stream(&mut self, comments: OggOpusComments) -> Result<(), LibopusencError> {
         self.ensure_can_write()?;
-        let last = self
-            .streams
-            .back()
-            .ok_or(LibopusencError::InvalidState)?;
+        let last = self.streams.back().ok_or(LibopusencError::InvalidState)?;
         if !last.stream_is_init && !last.header_is_frozen {
             return Err(LibopusencError::InvalidState);
         }
@@ -868,9 +876,11 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
         let header_size = opus_header_get_size(&header);
         let mut header_packet = vec![0u8; header_size];
         let packet_size = match &self.backend {
-            EncoderBackend::Projection(encoder) => {
-                opus_header_to_packet(&header, &mut header_packet, Some(encoder.projection_layout()))
-            }
+            EncoderBackend::Projection(encoder) => opus_header_to_packet(
+                &header,
+                &mut header_packet,
+                Some(encoder.projection_layout()),
+            ),
             _ => opus_header_to_packet(&header, &mut header_packet, None),
         }
         .map_err(|_| LibopusencError::Internal)?;
@@ -939,8 +949,8 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             let mut start = 0usize;
             let mut remaining = samples_per_channel;
             while remaining > 0 {
-                let out_capacity_frames = ((remaining as u64) * 48_000)
-                    .div_ceil(self.rate as u64) as usize
+                let out_capacity_frames = ((remaining as u64) * 48_000).div_ceil(self.rate as u64)
+                    as usize
                     + resampler.output_latency() as usize
                     + 16;
                 let out_capacity_samples = out_capacity_frames * self.channels;
@@ -1051,9 +1061,9 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             if packet_buffer.len() != MAX_PACKET_SIZE {
                 packet_buffer.resize(MAX_PACKET_SIZE, 0);
             }
-            let packet_len = self
-                .backend
-                .encode_float(&frame_buffer, self.frame_size, &mut packet_buffer)?;
+            let packet_len =
+                self.backend
+                    .encode_float(&frame_buffer, self.frame_size, &mut packet_buffer)?;
 
             if let Some(prev) = previous_prediction {
                 self.backend.set_prediction_disabled(prev)?;
@@ -1067,10 +1077,7 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
 
             let packet_is_last = self.curr_granule >= active_end_granule;
             let granulepos = {
-                let stream = self
-                    .streams
-                    .front()
-                    .ok_or(LibopusencError::InvalidState)?;
+                let stream = self.streams.front().ok_or(LibopusencError::InvalidState)?;
                 if packet_is_last {
                     adjusted_granule(active_end_granule, stream.granule_offset)?
                 } else {
@@ -1117,16 +1124,15 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
         };
         while self.resampled_granule < target_frames {
             let remaining = target_frames - self.resampled_granule;
-            let zero_in_frames = ((remaining as u64) * self.rate as u64).div_ceil(48_000)
-                as usize
+            let zero_in_frames = ((remaining as u64) * self.rate as u64).div_ceil(48_000) as usize
                 + resampler.input_latency() as usize
                 + 1;
             let zero_in_samples = zero_in_frames * self.channels;
             if resampler_zero_buffer.len() < zero_in_samples {
                 resampler_zero_buffer.resize(zero_in_samples, 0.0);
             }
-            let out_capacity_frames = ((zero_in_frames as u64) * 48_000)
-                .div_ceil(self.rate as u64) as usize
+            let out_capacity_frames = ((zero_in_frames as u64) * 48_000).div_ceil(self.rate as u64)
+                as usize
                 + resampler.output_latency() as usize
                 + 16;
             let out_capacity_samples = out_capacity_frames * self.channels;

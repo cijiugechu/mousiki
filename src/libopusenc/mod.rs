@@ -1,7 +1,7 @@
 //! Feature-gated high-level Ogg Opus encoder utilities ported from libopusenc.
 
-mod error;
 mod encoder;
+mod error;
 pub(crate) mod ogg_packer;
 pub(crate) mod opus_header;
 pub(crate) mod picture;
