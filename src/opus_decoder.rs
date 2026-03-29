@@ -1422,6 +1422,7 @@ impl<'mode> OpusDecoder<'mode> {
         self.arch
     }
 
+    #[cfg(feature = "deep_plc")]
     #[inline]
     pub(crate) fn sample_rate(&self) -> i32 {
         self.fs

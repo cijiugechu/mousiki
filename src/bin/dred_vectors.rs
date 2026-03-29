@@ -83,11 +83,11 @@ const FARGAN_THRESHOLDS: (f32, f32, f32) = (0.25, 1.0, 0.15);
 #[cfg(feature = "deep_plc")]
 const OPUS_THRESHOLDS: (f32, f32, f32) = (0.5, 1.5, 0.25);
 
-#[cfg(feature = "deep_plc_weights")]
+#[cfg(all(feature = "deep_plc", feature = "deep_plc_weights"))]
 const USAGE: &str = "usage: dred_vectors [--dnn-blob <path>] <vector path>\n\
        dred_vectors [--dnn-blob <path>] <exec path> <vector path>\n\
        (defaults to embedded weights; or set DRED_VECTORS_PATH)";
-#[cfg(not(feature = "deep_plc_weights"))]
+#[cfg(all(feature = "deep_plc", not(feature = "deep_plc_weights")))]
 const USAGE: &str = "usage: dred_vectors --dnn-blob <path> <vector path>\n\
        dred_vectors --dnn-blob <path> <exec path> <vector path>\n\
        (set DRED_VECTORS_PATH to skip positional args)";

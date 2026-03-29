@@ -116,6 +116,7 @@ const KAISER6_TABLE: [f64; 36] = [
     0.02432151, 0.01487334, 0.00752000, 0.00000000,
 ];
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResamplerError {
     Success = 0,
@@ -128,6 +129,7 @@ pub(crate) enum ResamplerError {
 
 impl ResamplerError {
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn strerror(self) -> &'static str {
         match self {
             Self::Success => "Success.",
@@ -283,6 +285,7 @@ impl SpeexResampler {
     }
 
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn quality(&self) -> i32 {
         self.quality
     }
@@ -302,10 +305,12 @@ impl SpeexResampler {
     }
 
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn rates(&self) -> (u32, u32) {
         (self.in_rate, self.out_rate)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_rate(&mut self, in_rate: u32, out_rate: u32) -> Result<(), ResamplerError> {
         self.set_rate_frac(in_rate, out_rate, in_rate, out_rate)
     }
@@ -353,24 +358,29 @@ impl SpeexResampler {
     }
 
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn ratio(&self) -> (u32, u32) {
         (self.num_rate, self.den_rate)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_input_stride(&mut self, stride: u32) {
         self.in_stride = stride;
     }
 
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn input_stride(&self) -> u32 {
         self.in_stride
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_output_stride(&mut self, stride: u32) {
         self.out_stride = stride;
     }
 
     #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn output_stride(&self) -> u32 {
         self.out_stride
     }
@@ -393,6 +403,7 @@ impl SpeexResampler {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reset_mem(&mut self) -> Result<(), ResamplerError> {
         for last in &mut self.last_sample {
             *last = 0;
@@ -419,6 +430,7 @@ impl SpeexResampler {
         self.process(channel_index, input, in_len, output, out_len)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn process_int(
         &mut self,
         channel_index: u32,
@@ -440,6 +452,7 @@ impl SpeexResampler {
         self.process_interleaved(input, in_len, output, out_len, Self::process_float)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn process_interleaved_int(
         &mut self,
         input: Option<&[i16]>,

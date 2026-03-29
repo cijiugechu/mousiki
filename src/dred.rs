@@ -104,6 +104,7 @@ pub struct OpusDredDecoder {
 /// Opaque DRED packet state.
 #[derive(Debug, Clone)]
 pub struct OpusDred {
+    #[cfg_attr(not(feature = "deep_plc"), allow(dead_code))]
     fec_features: [f32; DRED_FEC_FEATURES_LEN],
     state: [f32; DRED_STATE_DIM],
     latents: [f32; DRED_LATENTS_LEN],
@@ -411,6 +412,7 @@ pub fn opus_dred_decoder_ctl(
     request: OpusDredDecoderCtlRequest<'_>,
 ) -> Result<(), OpusDredError> {
     if !cfg!(feature = "dred") {
+        let _ = decoder;
         return Err(OpusDredError::Unimplemented);
     }
 

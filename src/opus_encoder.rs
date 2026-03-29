@@ -2986,6 +2986,8 @@ fn encode_frame_native_prepared<'mode>(
     let delay_len = total_buffer
         .checked_mul(channels)
         .ok_or(OpusEncodeError::BadArgument)?;
+    #[cfg(not(feature = "dred"))]
+    let _ = delay_len;
 
     #[cfg(feature = "fixed_point")]
     let _ = is_silence;
@@ -2998,7 +3000,7 @@ fn encode_frame_native_prepared<'mode>(
     let max_payload_bytes = max_frame_bytes.saturating_sub(1);
 
     #[cfg(not(feature = "dred"))]
-    let _ = dred_bitrate_bps;
+    let _ = (dred_bitrate_bps, first_frame);
 
     #[cfg(feature = "fixed_point")]
     let activity = 1i32;
@@ -3457,7 +3459,12 @@ fn encode_frame_native_prepared<'mode>(
                     redundancy_bytes = 0;
                 }
 
+                #[cfg(feature = "dred")]
                 let mut nb_compr_bytes =
+                    usize::try_from((max_frame_bytes_i32 - 1 - redundancy_bytes).max(0))
+                        .map_err(|_| OpusEncodeError::BadArgument)?;
+                #[cfg(not(feature = "dred"))]
+                let nb_compr_bytes =
                     usize::try_from((max_frame_bytes_i32 - 1 - redundancy_bytes).max(0))
                         .map_err(|_| OpusEncodeError::BadArgument)?;
                 #[cfg(test)]
