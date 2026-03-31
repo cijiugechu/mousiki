@@ -1,6 +1,7 @@
 #![no_std]
 
 extern crate alloc;
+pub use mousiki_ogg as ogg;
 #[cfg(test)]
 extern crate self as mousiki;
 #[cfg(feature = "std")]

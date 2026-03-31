@@ -56,8 +56,7 @@ fn run() -> Result<(), ExampleError> {
 
     let input_file =
         File::open(input_path).map_err(|err| ExampleError::Io("open input", err.kind()))?;
-    let (mut ogg_reader, _) =
-        OggReader::new_with(FileStream::new(input_file)).map_err(ExampleError::Ogg)?;
+    let mut ogg_reader = OggReader::new(FileStream::new(input_file)).map_err(ExampleError::Ogg)?;
 
     let mut output_file =
         File::create(output_path).map_err(|err| ExampleError::Io("create output", err.kind()))?;
@@ -65,19 +64,20 @@ fn run() -> Result<(), ExampleError> {
     let mut pcm = [0u8; PCM_BYTES_PER_FRAME];
 
     loop {
-        let (segments, _) = match ogg_reader.parse_next_page() {
+        let page = match ogg_reader.next_page() {
             Ok(result) => result,
             Err(OggReaderError::Read(ReadError::UnexpectedEof)) => break,
             Err(err) => return Err(ExampleError::Ogg(err)),
         };
 
-        if let Some(first) = segments.get(0)
+        let mut segments = page.segments();
+        if let Some(first) = segments.next()
             && first.starts_with(OPUS_TAGS_SIGNATURE)
         {
             continue;
         }
 
-        for segment in segments.into_iter() {
+        for segment in page.segments() {
             if segment.is_empty() {
                 continue;
             }

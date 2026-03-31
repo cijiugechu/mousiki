@@ -40,24 +40,25 @@ pub fn fuzz_decoder(data: &[u8]) {
 pub fn decode_stream(data: &[u8]) -> Result<usize, ()> {
     let mut out = [0u8; MAX_PCM_BYTES];
 
-    let (mut ogg, _) = OggReader::new_with(SliceReader::new(data)).map_err(|_| ())?;
+    let mut ogg = OggReader::new(SliceReader::new(data)).map_err(|_| ())?;
     let mut decoder = Decoder::new();
     let mut decoded_frames = 0usize;
 
     loop {
-        let (segments, _) = match ogg.parse_next_page() {
+        let page = match ogg.next_page() {
             Ok(result) => result,
             Err(OggReaderError::Read(ReadError::UnexpectedEof)) => break,
             Err(_) => return Err(()),
         };
 
-        if let Some(first_segment) = segments.get(0)
+        let mut segments = page.segments();
+        if let Some(first_segment) = segments.next()
             && first_segment.starts_with(OPUS_TAGS_SIGNATURE)
         {
             continue;
         }
 
-        for segment in segments.into_iter() {
+        for segment in page.segments() {
             if segment.is_empty() {
                 continue;
             }

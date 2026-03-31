@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "examples/playback", "mousiki-dred-weights", "mousiki-deep-plc-weights"]
+members = [".", "examples/playback", "mousiki-dred-weights", "mousiki-deep-plc-weights", "mousiki-ogg"]
 exclude = ["fuzz"]
 resolver = "3"
 
@@ -58,6 +58,7 @@ libm = "0.2"
 cfg-if = "1.0"
 log = { version = "0.4", default-features = false }
 bitflags = "2"
+mousiki-ogg = { version = "0.1.0", path = "mousiki-ogg" }
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
 mousiki-deep-plc-weights = { version = "0.1.0", path = "mousiki-deep-plc-weights", optional = true }
 mousiki-dred-weights = { version = "0.1.0", path = "mousiki-dred-weights", optional = true }

@@ -220,22 +220,21 @@ impl Player {
 
     fn load_next_page(&mut self) -> Result<bool, ExampleError> {
         loop {
-            let (segments, _) = match self.ogg.parse_next_page() {
+            let page = match self.ogg.next_page() {
                 Ok(result) => result,
                 Err(OggReaderError::Read(ReadError::UnexpectedEof)) => return Ok(false),
                 Err(err) => return Err(ExampleError::Ogg(err)),
             };
 
-            if segments.is_empty() {
+            let mut first_pass = page.segments();
+            let Some(first) = first_pass.next() else {
+                continue;
+            };
+            if first.starts_with(OPUS_TAGS_SIGNATURE) {
                 continue;
             }
 
-            if let Some(first) = segments.get(0) {
-                if first.starts_with(OPUS_TAGS_SIGNATURE) {
-                    continue;
-                }
-            }
-
+            let segments = page.segments().collect::<Vec<_>>();
             let count = segments.len();
             self.total_segments = count;
             self.next_segment = 0;
@@ -276,8 +275,8 @@ fn run() -> Result<(), ExampleError> {
     let input_path = Path::new(&input);
     let input_file =
         File::open(input_path).map_err(|err| ExampleError::Io("open input", err.kind()))?;
-    let (ogg, header) =
-        OggReader::new_with(FileStream::new(input_file)).map_err(ExampleError::Ogg)?;
+    let ogg = OggReader::new(FileStream::new(input_file)).map_err(ExampleError::Ogg)?;
+    let header = ogg.header();
 
     if header.channels != 1 {
         return Err(ExampleError::UnsupportedChannels(header.channels));

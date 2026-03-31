@@ -911,11 +911,7 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
     ) -> Result<(), LibopusencError> {
         self.packet_handler.on_packet(packet, 0);
         let oggp = self.oggp.as_mut().ok_or(LibopusencError::Internal)?;
-        let buffer = oggp
-            .get_packet_buffer(packet.len())
-            .ok_or(LibopusencError::Internal)?;
-        buffer.copy_from_slice(packet);
-        oggp.commit_packet(packet.len(), granulepos, eos)
+        oggp.commit_packet(packet, granulepos, eos)
             .map_err(|_| LibopusencError::Internal)?;
         Ok(())
     }
