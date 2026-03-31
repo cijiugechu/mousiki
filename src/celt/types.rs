@@ -394,6 +394,83 @@ pub struct SilkInfo {
     pub offset: i32,
 }
 
+#[derive(Debug, Default)]
+pub struct CeltEncodeScratch {
+    pub input: Vec<CeltSig>,
+    pub freq: Vec<CeltSig>,
+    pub band_e: Vec<CeltGlog>,
+    pub band_log_e: Vec<CeltGlog>,
+    pub band_log_e2: Vec<CeltGlog>,
+    pub surround_dynalloc: Vec<CeltGlog>,
+    pub x: Vec<CeltNorm>,
+    pub offsets: Vec<OpusInt32>,
+    pub importance: Vec<OpusInt32>,
+    pub spread_weight: Vec<OpusInt32>,
+    pub tf_res: Vec<OpusInt32>,
+    pub error: Vec<CeltGlog>,
+    pub cap: Vec<OpusInt32>,
+    pub fine_quant: Vec<OpusInt32>,
+    pub pulses: Vec<OpusInt32>,
+    pub fine_priority: Vec<OpusInt32>,
+    pub collapse_masks: Vec<u8>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_input: Vec<FixedCeltSig>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_freq: Vec<FixedCeltSig>,
+    #[cfg(feature = "fixed_point")]
+    pub band_e_fixed: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    pub band_log_e_fixed: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    pub band_log_e2_fixed: Vec<FixedCeltGlog>,
+    #[cfg(feature = "fixed_point")]
+    pub x_fixed: Vec<FixedCeltNorm>,
+    #[cfg(feature = "fixed_point")]
+    pub error_fixed: Vec<FixedCeltGlog>,
+}
+
+impl CeltEncodeScratch {
+    #[must_use]
+    pub fn new(mode: &OpusCustomMode<'_>, channels: usize) -> Self {
+        let max_n = mode.short_mdct_size << mode.max_lm;
+        let overlap = mode.overlap;
+        let band_count = channels * mode.num_ebands;
+        Self {
+            input: vec![0.0; channels * (max_n + overlap)],
+            freq: vec![0.0; channels * max_n],
+            band_e: vec![0.0; band_count],
+            band_log_e: vec![0.0; band_count],
+            band_log_e2: vec![0.0; band_count],
+            surround_dynalloc: vec![0.0; band_count],
+            x: vec![0.0; channels * max_n],
+            offsets: vec![0; mode.num_ebands],
+            importance: vec![0; mode.num_ebands],
+            spread_weight: vec![0; mode.num_ebands],
+            tf_res: vec![0; mode.num_ebands],
+            error: vec![0.0; band_count],
+            cap: vec![0; mode.num_ebands],
+            fine_quant: vec![0; mode.num_ebands],
+            pulses: vec![0; mode.num_ebands],
+            fine_priority: vec![0; mode.num_ebands],
+            collapse_masks: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            fixed_input: vec![0; channels * (max_n + overlap)],
+            #[cfg(feature = "fixed_point")]
+            fixed_freq: vec![0; channels * max_n],
+            #[cfg(feature = "fixed_point")]
+            band_e_fixed: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            band_log_e_fixed: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            band_log_e2_fixed: vec![0; band_count],
+            #[cfg(feature = "fixed_point")]
+            x_fixed: vec![0; channels * max_n],
+            #[cfg(feature = "fixed_point")]
+            error_fixed: vec![0; band_count],
+        }
+    }
+}
+
 /// Primary encoder state for CELT.
 #[derive(Debug)]
 pub struct OpusCustomEncoder<'a> {
@@ -464,6 +541,7 @@ pub struct OpusCustomEncoder<'a> {
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
     pub fixed_window: Vec<FixedCeltCoef>,
+    pub scratch: CeltEncodeScratch,
 }
 
 impl<'a> OpusCustomEncoder<'a> {
@@ -577,6 +655,7 @@ impl<'a> OpusCustomEncoder<'a> {
             fixed_mdct,
             #[cfg(feature = "fixed_point")]
             fixed_window,
+            scratch: CeltEncodeScratch::new(mode, channels),
         }
     }
 

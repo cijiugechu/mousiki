@@ -4760,6 +4760,7 @@ fn celt_encode_with_ec_inner<'a>(
     let overlap = mode.overlap;
     let cc = encoder.channels;
     let c = encoder.stream_channels;
+    let mut scratch = core::mem::take(&mut encoder.scratch);
     #[cfg(test)]
     let trace_frame_idx = celt_alloc_trace::begin_frame();
     #[cfg(test)]
@@ -4955,9 +4956,9 @@ fn celt_encode_with_ec_inner<'a>(
         tell = total_bits;
     }
 
-    let mut input = vec![0.0f32; cc * (n + overlap)];
+    let mut input = &mut scratch.input[..cc * (n + overlap)];
     #[cfg(feature = "fixed_point")]
-    let mut input_fixed = vec![0; cc * (n + overlap)];
+    let mut input_fixed = &mut scratch.fixed_input[..cc * (n + overlap)];
     #[cfg(test)]
     if let Some(frame_idx) = trace_pcm_frame_idx {
         celt_pcm_input_trace::dump("preemph_in", frame_idx, pcm, cc, frame_size_internal);
@@ -5196,18 +5197,18 @@ fn celt_encode_with_ec_inner<'a>(
         transient_got_disabled = true;
     }
 
-    let mut freq = vec![0.0f32; cc * n];
-    let mut band_e = vec![0.0f32; nb_ebands * c];
-    let mut band_log_e = vec![0.0f32; nb_ebands * c];
-    let mut band_log_e2 = vec![0.0f32; nb_ebands * c];
+    let mut freq = &mut scratch.freq[..cc * n];
+    let mut band_e = &mut scratch.band_e[..nb_ebands * c];
+    let mut band_log_e = &mut scratch.band_log_e[..nb_ebands * c];
+    let mut band_log_e2 = &mut scratch.band_log_e2[..nb_ebands * c];
     #[cfg(feature = "fixed_point")]
-    let mut fixed_freq = vec![0; cc * n];
+    let mut fixed_freq = &mut scratch.fixed_freq[..cc * n];
     #[cfg(feature = "fixed_point")]
-    let mut band_e_fixed = vec![0; nb_ebands * c];
+    let mut band_e_fixed = &mut scratch.band_e_fixed[..nb_ebands * c];
     #[cfg(feature = "fixed_point")]
-    let mut band_log_e_fixed = vec![0; nb_ebands * c];
+    let mut band_log_e_fixed = &mut scratch.band_log_e_fixed[..nb_ebands * c];
     #[cfg(feature = "fixed_point")]
-    let mut band_log_e2_fixed = vec![0; nb_ebands * c];
+    let mut band_log_e2_fixed = &mut scratch.band_log_e2_fixed[..nb_ebands * c];
 
     let second_mdct = short_blocks != 0 && encoder.complexity >= 8;
     if second_mdct {
@@ -5480,7 +5481,8 @@ fn celt_encode_with_ec_inner<'a>(
         }
     }
 
-    let mut surround_dynalloc = vec![0.0f32; nb_ebands * c];
+    let mut surround_dynalloc = &mut scratch.surround_dynalloc[..nb_ebands * c];
+    surround_dynalloc.fill(0.0);
     let mut surround_masking = 0.0f32;
     let mut temporal_vbr = 0.0f32;
     let mut surround_trim = 0.0f32;
@@ -5733,24 +5735,24 @@ fn celt_encode_with_ec_inner<'a>(
         enc.enc_bit_logp(is_transient as i32, 3);
     }
 
-    let mut x = vec![0.0f32; c * n];
+    let x = &mut scratch.x[..c * n];
     #[cfg(feature = "fixed_point")]
     {
-        let mut x_fixed = vec![0i16; c * n];
+        let x_fixed = &mut scratch.x_fixed[..c * n];
         normalise_bands_fixed(
             mode,
             &fixed_freq,
-            &mut x_fixed,
+            x_fixed,
             &band_e_fixed,
             eff_end,
             c,
             m,
         );
-        fill_float_norm(&mut x, &x_fixed);
+        fill_float_norm(x, x_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
     {
-        normalise_bands(mode, &freq[..c * n], &mut x, &band_e, eff_end, c, m);
+        normalise_bands(mode, &freq[..c * n], x, &band_e, eff_end, c, m);
     }
 
     let enable_tf_analysis = effective_bytes >= 15 * c as i32
@@ -5759,9 +5761,12 @@ fn celt_encode_with_ec_inner<'a>(
         && !encoder.lfe
         && toneishness < 0.98;
 
-    let mut offsets = vec![0i32; nb_ebands];
-    let mut importance = vec![0i32; nb_ebands];
-    let mut spread_weight = vec![0i32; nb_ebands];
+    let mut offsets = &mut scratch.offsets[..nb_ebands];
+    offsets.fill(0);
+    let mut importance = &mut scratch.importance[..nb_ebands];
+    importance.fill(0);
+    let mut spread_weight = &mut scratch.spread_weight[..nb_ebands];
+    spread_weight.fill(0);
     let mut tot_boost = 0i32;
 
     let max_depth = dynalloc_analysis(
@@ -5813,7 +5818,8 @@ fn celt_encode_with_ec_inner<'a>(
         }
     }
 
-    let mut tf_res = vec![0i32; nb_ebands];
+    let mut tf_res = &mut scratch.tf_res[..nb_ebands];
+    tf_res.fill(0);
     let tf_select = if enable_tf_analysis {
         let lambda = max(80, 20480 / effective_bytes + 2);
         let tf_select = tf_analysis(
@@ -5851,9 +5857,9 @@ fn celt_encode_with_ec_inner<'a>(
     };
 
     #[cfg(not(feature = "fixed_point"))]
-    let mut error = vec![0.0f32; c * nb_ebands];
+    let mut error = &mut scratch.error[..c * nb_ebands];
     #[cfg(feature = "fixed_point")]
-    let mut error_fixed = vec![0; c * nb_ebands];
+    let mut error_fixed = &mut scratch.error_fixed[..c * nb_ebands];
     #[cfg(test)]
     let trace_loge_frame_idx = celt_loge_adjust_trace::begin_frame();
     #[cfg(feature = "fixed_point")]
@@ -6031,7 +6037,7 @@ fn celt_encode_with_ec_inner<'a>(
         offsets[0] = min(8, effective_bytes / 3);
     }
 
-    let mut cap = vec![0i32; nb_ebands];
+    let mut cap = &mut scratch.cap[..nb_ebands];
     init_caps(mode, &mut cap, lm, c);
 
     let mut dynalloc_logp = 6i32;
@@ -6297,9 +6303,12 @@ fn celt_encode_with_ec_inner<'a>(
         }
     }
 
-    let mut fine_quant = vec![0i32; nb_ebands];
-    let mut pulses = vec![0i32; nb_ebands];
-    let mut fine_priority = vec![0i32; nb_ebands];
+    let mut fine_quant = &mut scratch.fine_quant[..nb_ebands];
+    fine_quant.fill(0);
+    let mut pulses = &mut scratch.pulses[..nb_ebands];
+    pulses.fill(0);
+    let mut fine_priority = &mut scratch.fine_priority[..nb_ebands];
+    fine_priority.fill(0);
 
     let tell_frac = ec_tell_frac(enc.ctx());
     let mut bits = ((nb_compressed_bytes as i32 * 8) << BITRES) - tell_frac as i32 - 1;
@@ -6450,7 +6459,8 @@ fn celt_encode_with_ec_inner<'a>(
         celt_rc_trace::dump_if_match(frame_idx, "pre_quant_all_bands", enc.ctx());
     }
 
-    let mut collapse_masks = vec![0u8; c * nb_ebands];
+    let collapse_masks = &mut scratch.collapse_masks[..c * nb_ebands];
+    collapse_masks.fill(0);
     let total_available = (nb_compressed_bytes as i32 * (8 << BITRES)) - anti_collapse_rsv;
 
     let (x0, x1) = if c == 2 {
@@ -6469,7 +6479,7 @@ fn celt_encode_with_ec_inner<'a>(
             end as usize,
             x0,
             x1,
-            &mut collapse_masks,
+            collapse_masks,
             &band_e,
             &pulses,
             short_blocks != 0,
@@ -6637,11 +6647,13 @@ fn celt_encode_with_ec_inner<'a>(
 
     encoder.rng = enc.ctx().rng;
     enc.enc_done();
-    if enc.ctx().error != 0 {
-        return Err(CeltEncodeError::MissingOutput);
-    }
-
-    Ok(nb_compressed_bytes + header_bytes)
+    let result = if enc.ctx().error != 0 {
+        Err(CeltEncodeError::MissingOutput)
+    } else {
+        Ok(nb_compressed_bytes + header_bytes)
+    };
+    encoder.scratch = scratch;
+    result
 }
 
 /// Rust translation of the reference `celt_encode_with_ec()` entry point.

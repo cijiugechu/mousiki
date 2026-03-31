@@ -2642,6 +2642,46 @@ pub(crate) fn quant_all_bands(
     } else {
         None
     };
+    let mut theta_rdo_x_save = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_y_save = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_x_save2 = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_y_save2 = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_norm_save = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_norm2_save = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_norm_save2 = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
+    let mut theta_rdo_norm2_save2 = if theta_rdo {
+        vec![0.0; resynth_alloc]
+    } else {
+        Vec::new()
+    };
 
     let mut ctx = BandCtx {
         encode,
@@ -2833,27 +2873,24 @@ pub(crate) fn quant_all_bands(
 
                 let ctx_initial = ctx.clone();
                 let coder_initial = coder.encoder_snapshot();
-                let mut x_before = vec![0.0; n];
-                x_before.copy_from_slice(&x_band[..n]);
-                let mut y_before = vec![0.0; n];
-                y_before.copy_from_slice(&y_band_slice[..n]);
-
-                let lowband_initial_left = lowband_out_offset.and_then(|offset| {
-                    if offset + n <= norm.len() {
-                        Some((offset, norm[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
+                theta_rdo_x_save[..n].copy_from_slice(&x_band[..n]);
+                theta_rdo_y_save[..n].copy_from_slice(&y_band_slice[..n]);
+                let lowband_initial_left_offset =
+                    lowband_out_offset.filter(|&offset| offset + n <= norm.len());
+                if let Some(offset) = lowband_initial_left_offset {
+                    theta_rdo_norm_save[..n].copy_from_slice(&norm[offset..offset + n]);
+                }
+                let lowband_initial_right_offset = lowband_out_offset.and_then(|offset| {
+                    norm2
+                        .as_ref()
+                        .filter(|norm2_buf| offset + n <= norm2_buf.len())
+                        .map(|_| offset)
                 });
-                let lowband_initial_right = lowband_out_offset.and_then(|offset| {
-                    norm2.as_ref().and_then(|norm2_buf| {
-                        if offset + n <= norm2_buf.len() {
-                            Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                        } else {
-                            None
-                        }
-                    })
-                });
+                if let Some(offset) = lowband_initial_right_offset
+                    && let Some(norm2_buf) = norm2.as_ref()
+                {
+                    theta_rdo_norm2_save[..n].copy_from_slice(&norm2_buf[offset..offset + n]);
+                }
 
                 ctx.theta_round = -1;
                 let cm_first = {
@@ -2874,45 +2911,41 @@ pub(crate) fn quant_all_bands(
                         coder,
                     )
                 };
-                let dist0 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
-                    + weights[1] * celt_inner_prod(&y_before[..n], &y_band_slice[..n]);
+                let dist0 = weights[0] * celt_inner_prod(&theta_rdo_x_save[..n], &x_band[..n])
+                    + weights[1] * celt_inner_prod(&theta_rdo_y_save[..n], &y_band_slice[..n]);
 
                 let coder_after_first = coder.encoder_snapshot();
                 let ctx_after_first = ctx.clone();
-                let mut x_after_first = vec![0.0; n];
-                x_after_first.copy_from_slice(&x_band[..n]);
-                let mut y_after_first = vec![0.0; n];
-                y_after_first.copy_from_slice(&y_band_slice[..n]);
-                let lowband_after_first_left = lowband_out_offset.and_then(|offset| {
-                    if offset + n <= norm.len() {
-                        Some((offset, norm[offset..offset + n].to_vec()))
-                    } else {
-                        None
-                    }
+                theta_rdo_x_save2[..n].copy_from_slice(&x_band[..n]);
+                theta_rdo_y_save2[..n].copy_from_slice(&y_band_slice[..n]);
+                let lowband_after_first_offset =
+                    lowband_out_offset.filter(|&offset| offset + n <= norm.len());
+                if let Some(offset) = lowband_after_first_offset {
+                    theta_rdo_norm_save2[..n].copy_from_slice(&norm[offset..offset + n]);
+                }
+                let lowband_after_first_right_offset = lowband_out_offset.and_then(|offset| {
+                    norm2
+                        .as_ref()
+                        .filter(|norm2_buf| offset + n <= norm2_buf.len())
+                        .map(|_| offset)
                 });
-                let lowband_after_first_right = lowband_out_offset.and_then(|offset| {
-                    norm2.as_ref().and_then(|norm2_buf| {
-                        if offset + n <= norm2_buf.len() {
-                            Some((offset, norm2_buf[offset..offset + n].to_vec()))
-                        } else {
-                            None
-                        }
-                    })
-                });
+                if let Some(offset) = lowband_after_first_right_offset
+                    && let Some(norm2_buf) = norm2.as_ref()
+                {
+                    theta_rdo_norm2_save2[..n].copy_from_slice(&norm2_buf[offset..offset + n]);
+                }
 
                 coder.restore_encoder_snapshot(&coder_initial);
                 ctx = ctx_initial.clone();
-                x_band[..n].copy_from_slice(&x_before[..n]);
-                y_band_slice[..n].copy_from_slice(&y_before[..n]);
-                if let Some((offset, data)) = lowband_initial_left.as_ref() {
-                    let len = data.len().min(norm.len().saturating_sub(*offset));
-                    norm[*offset..*offset + len].copy_from_slice(&data[..len]);
+                x_band[..n].copy_from_slice(&theta_rdo_x_save[..n]);
+                y_band_slice[..n].copy_from_slice(&theta_rdo_y_save[..n]);
+                if let Some(offset) = lowband_initial_left_offset {
+                    norm[offset..offset + n].copy_from_slice(&theta_rdo_norm_save[..n]);
                 }
-                if let Some((offset, data)) = lowband_initial_right.as_ref()
+                if let Some(offset) = lowband_initial_right_offset
                     && let Some(norm2_buf) = norm2.as_mut()
                 {
-                    let len = data.len().min(norm2_buf.len().saturating_sub(*offset));
-                    norm2_buf[*offset..*offset + len].copy_from_slice(&data[..len]);
+                    norm2_buf[offset..offset + n].copy_from_slice(&theta_rdo_norm2_save[..n]);
                 }
                 ctx.theta_round = 1;
                 let cm_second = {
@@ -2933,23 +2966,22 @@ pub(crate) fn quant_all_bands(
                         coder,
                     )
                 };
-                let dist1 = weights[0] * celt_inner_prod(&x_before[..n], &x_band[..n])
-                    + weights[1] * celt_inner_prod(&y_before[..n], &y_band_slice[..n]);
+                let dist1 = weights[0] * celt_inner_prod(&theta_rdo_x_save[..n], &x_band[..n])
+                    + weights[1] * celt_inner_prod(&theta_rdo_y_save[..n], &y_band_slice[..n]);
 
                 if dist0 >= dist1 {
                     coder.restore_encoder_snapshot(&coder_after_first);
                     ctx = ctx_after_first;
-                    x_band[..n].copy_from_slice(&x_after_first[..n]);
-                    y_band_slice[..n].copy_from_slice(&y_after_first[..n]);
-                    if let Some((offset, data)) = lowband_after_first_left {
-                        let len = data.len().min(norm.len().saturating_sub(offset));
-                        norm[offset..offset + len].copy_from_slice(&data[..len]);
+                    x_band[..n].copy_from_slice(&theta_rdo_x_save2[..n]);
+                    y_band_slice[..n].copy_from_slice(&theta_rdo_y_save2[..n]);
+                    if let Some(offset) = lowband_after_first_offset {
+                        norm[offset..offset + n].copy_from_slice(&theta_rdo_norm_save2[..n]);
                     }
-                    if let Some((offset, data)) = lowband_after_first_right
+                    if let Some(offset) = lowband_after_first_right_offset
                         && let Some(norm2_buf) = norm2.as_mut()
                     {
-                        let len = data.len().min(norm2_buf.len().saturating_sub(offset));
-                        norm2_buf[offset..offset + len].copy_from_slice(&data[..len]);
+                        norm2_buf[offset..offset + n]
+                            .copy_from_slice(&theta_rdo_norm2_save2[..n]);
                     }
                     x_cm = cm_first;
                 } else {
