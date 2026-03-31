@@ -360,7 +360,7 @@ fn lpcn_lpc(lpc: &mut [f32; LPC_ORDER], ac: &[f32; LPC_ORDER + 1]) -> f32 {
         rr += ac[i + 1];
         let r = -rr / error;
         lpc[i] = r;
-        let half = (i + 1) / 2;
+        let half = i.div_ceil(2);
         for j in 0..half {
             let tmp1 = lpc[j];
             let tmp2 = lpc[i - 1 - j];
