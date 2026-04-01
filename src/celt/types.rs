@@ -6,6 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::KissFftState;
+use super::celt_encoder::COMBFILTER_MAXPERIOD;
 #[cfg(feature = "deep_plc")]
 use super::deep_plc::PLC_UPDATE_SAMPLES;
 #[cfg(feature = "fixed_point")]
@@ -395,8 +396,45 @@ pub struct SilkInfo {
 }
 
 #[derive(Debug, Default)]
+pub struct QuantBandsScratch {
+    pub norm_storage: Vec<OpusVal16>,
+    pub lowband_scratch: Vec<OpusVal16>,
+    pub theta_rdo_x_save: Vec<OpusVal16>,
+    pub theta_rdo_y_save: Vec<OpusVal16>,
+    pub theta_rdo_x_save2: Vec<OpusVal16>,
+    pub theta_rdo_y_save2: Vec<OpusVal16>,
+    pub theta_rdo_norm_save: Vec<OpusVal16>,
+    pub theta_rdo_norm2_save: Vec<OpusVal16>,
+    pub theta_rdo_norm_save2: Vec<OpusVal16>,
+    pub theta_rdo_norm2_save2: Vec<OpusVal16>,
+}
+
+impl QuantBandsScratch {
+    #[must_use]
+    pub fn new(max_n: usize, channels: usize) -> Self {
+        Self {
+            norm_storage: vec![0.0; channels * max_n],
+            lowband_scratch: vec![0.0; max_n],
+            theta_rdo_x_save: vec![0.0; max_n],
+            theta_rdo_y_save: vec![0.0; max_n],
+            theta_rdo_x_save2: vec![0.0; max_n],
+            theta_rdo_y_save2: vec![0.0; max_n],
+            theta_rdo_norm_save: vec![0.0; max_n],
+            theta_rdo_norm2_save: vec![0.0; max_n],
+            theta_rdo_norm_save2: vec![0.0; max_n],
+            theta_rdo_norm2_save2: vec![0.0; max_n],
+        }
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct CeltEncodeScratch {
     pub input: Vec<CeltSig>,
+    pub prefilter_pre: Vec<CeltSig>,
+    pub prefilter_pitch_buf: Vec<CeltSig>,
+    pub pitch_search_x_lp4: Vec<OpusVal16>,
+    pub pitch_search_y_lp4: Vec<OpusVal16>,
+    pub pitch_search_xcorr: Vec<OpusVal32>,
     pub freq: Vec<CeltSig>,
     pub band_e: Vec<CeltGlog>,
     pub band_log_e: Vec<CeltGlog>,
@@ -407,6 +445,7 @@ pub struct CeltEncodeScratch {
     pub importance: Vec<OpusInt32>,
     pub spread_weight: Vec<OpusInt32>,
     pub tf_res: Vec<OpusInt32>,
+    pub quant_bands: QuantBandsScratch,
     pub error: Vec<CeltGlog>,
     pub cap: Vec<OpusInt32>,
     pub fine_quant: Vec<OpusInt32>,
@@ -415,6 +454,16 @@ pub struct CeltEncodeScratch {
     pub collapse_masks: Vec<u8>,
     #[cfg(feature = "fixed_point")]
     pub fixed_input: Vec<FixedCeltSig>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_prefilter_pre: Vec<FixedCeltSig>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_prefilter_pitch_buf: Vec<FixedOpusVal16>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_pitch_search_x_lp4: Vec<FixedOpusVal16>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_pitch_search_y_lp4: Vec<FixedOpusVal16>,
+    #[cfg(feature = "fixed_point")]
+    pub fixed_pitch_search_xcorr: Vec<FixedOpusVal32>,
     #[cfg(feature = "fixed_point")]
     pub fixed_freq: Vec<FixedCeltSig>,
     #[cfg(feature = "fixed_point")]
@@ -435,8 +484,18 @@ impl CeltEncodeScratch {
         let max_n = mode.short_mdct_size << mode.max_lm;
         let overlap = mode.overlap;
         let band_count = channels * mode.num_ebands;
+        let prefilter_len = channels * (max_n + COMBFILTER_MAXPERIOD);
+        let pitch_buf_len = (max_n + COMBFILTER_MAXPERIOD) >> 1;
+        let pitch_search_x_lp4_len = max_n >> 2;
+        let pitch_search_y_lp4_len = (max_n + COMBFILTER_MAXPERIOD) >> 2;
+        let pitch_search_xcorr_len = (COMBFILTER_MAXPERIOD >> 1) + 1;
         Self {
             input: vec![0.0; channels * (max_n + overlap)],
+            prefilter_pre: vec![0.0; prefilter_len],
+            prefilter_pitch_buf: vec![0.0; pitch_buf_len],
+            pitch_search_x_lp4: vec![0.0; pitch_search_x_lp4_len],
+            pitch_search_y_lp4: vec![0.0; pitch_search_y_lp4_len],
+            pitch_search_xcorr: vec![0.0; pitch_search_xcorr_len],
             freq: vec![0.0; channels * max_n],
             band_e: vec![0.0; band_count],
             band_log_e: vec![0.0; band_count],
@@ -447,6 +506,7 @@ impl CeltEncodeScratch {
             importance: vec![0; mode.num_ebands],
             spread_weight: vec![0; mode.num_ebands],
             tf_res: vec![0; mode.num_ebands],
+            quant_bands: QuantBandsScratch::new(max_n, channels),
             error: vec![0.0; band_count],
             cap: vec![0; mode.num_ebands],
             fine_quant: vec![0; mode.num_ebands],
@@ -455,6 +515,16 @@ impl CeltEncodeScratch {
             collapse_masks: vec![0; band_count],
             #[cfg(feature = "fixed_point")]
             fixed_input: vec![0; channels * (max_n + overlap)],
+            #[cfg(feature = "fixed_point")]
+            fixed_prefilter_pre: vec![0; prefilter_len],
+            #[cfg(feature = "fixed_point")]
+            fixed_prefilter_pitch_buf: vec![0; pitch_buf_len],
+            #[cfg(feature = "fixed_point")]
+            fixed_pitch_search_x_lp4: vec![0; pitch_search_x_lp4_len],
+            #[cfg(feature = "fixed_point")]
+            fixed_pitch_search_y_lp4: vec![0; pitch_search_y_lp4_len],
+            #[cfg(feature = "fixed_point")]
+            fixed_pitch_search_xcorr: vec![0; pitch_search_xcorr_len],
             #[cfg(feature = "fixed_point")]
             fixed_freq: vec![0; channels * max_n],
             #[cfg(feature = "fixed_point")]
@@ -781,6 +851,7 @@ pub struct OpusCustomDecoder<'a> {
     pub decode_alloc_bits2: Vec<OpusInt32>,
     pub decode_alloc_thresh: Vec<OpusInt32>,
     pub decode_alloc_trim_offset: Vec<OpusInt32>,
+    pub quant_bands_scratch: QuantBandsScratch,
     #[cfg(feature = "fixed_point")]
     pub fixed_mdct: FixedMdctLookup,
     #[cfg(feature = "fixed_point")]
@@ -816,6 +887,7 @@ impl<'a> OpusCustomDecoder<'a> {
         debug_assert!(decode_stride >= overlap);
         let band_count = 2 * mode.num_ebands;
         let decode_band_count = mode.num_ebands;
+        let max_n = mode.short_mdct_size << mode.max_lm;
         debug_assert_eq!(old_ebands.len(), band_count);
         debug_assert_eq!(old_log_e.len(), band_count);
         debug_assert_eq!(old_log_e2.len(), band_count);
@@ -898,6 +970,7 @@ impl<'a> OpusCustomDecoder<'a> {
             decode_alloc_bits2: vec![0; decode_band_count],
             decode_alloc_thresh: vec![0; decode_band_count],
             decode_alloc_trim_offset: vec![0; decode_band_count],
+            quant_bands_scratch: QuantBandsScratch::new(max_n, channels),
             #[cfg(feature = "fixed_point")]
             fixed_mdct,
             #[cfg(feature = "fixed_point")]

@@ -21,8 +21,16 @@ use crate::celt::types::{CeltSig, OpusVal16, OpusVal32};
 use crate::celt::{celt_autocorr, celt_lpc, celt_udiv};
 #[cfg(feature = "fixed_point")]
 use crate::celt::{celt_autocorr_fixed, celt_lpc_fixed};
+#[cfg(any(test, feature = "fixed_point"))]
 use alloc::vec;
 use core::cmp::min;
+
+const PITCH_SEARCH_MAX_LEN: usize = 2048;
+const PITCH_SEARCH_MAX_PITCH: usize = 1024;
+const PITCH_SEARCH_MAX_LEN_QUARTER: usize = PITCH_SEARCH_MAX_LEN >> 2;
+const PITCH_SEARCH_MAX_LAG_QUARTER: usize =
+    (PITCH_SEARCH_MAX_LEN + PITCH_SEARCH_MAX_PITCH) >> 2;
+const PITCH_SEARCH_MAX_HALF_PITCH: usize = PITCH_SEARCH_MAX_PITCH >> 1;
 
 #[cfg(test)]
 extern crate std;
@@ -106,6 +114,7 @@ pub(crate) fn remove_doubling_trace_set_frame(_frame_idx: Option<usize>) {}
 /// comparing cross-multiplied numerators and denominators instead of dividing
 /// the correlation energy directly, which preserves the ordering even when the
 /// intermediate values grow large.
+#[inline(always)]
 pub(crate) fn find_best_pitch(
     xcorr: &[OpusVal32],
     y: &[OpusVal16],
@@ -113,11 +122,11 @@ pub(crate) fn find_best_pitch(
     max_pitch: usize,
     best_pitch: &mut [i32; 2],
 ) {
-    assert!(
+    debug_assert!(
         xcorr.len() >= max_pitch,
         "xcorr must contain max_pitch elements"
     );
-    assert!(
+    debug_assert!(
         y.len() >= len + max_pitch,
         "y must contain len + max_pitch samples to slide the energy window",
     );
@@ -127,12 +136,16 @@ pub(crate) fn find_best_pitch(
         syy += sample * sample;
     }
 
-    let mut best_num = [-1.0, -1.0];
-    let mut best_den = [0.0, 0.0];
+    let mut best_num0 = -1.0;
+    let mut best_den0 = 0.0;
+    let mut best_num1 = -1.0;
+    let mut best_den1 = 0.0;
     best_pitch[0] = 0;
     best_pitch[1] = if max_pitch > 1 { 1 } else { 0 };
 
-    for (i, &corr) in xcorr.iter().enumerate().take(max_pitch) {
+    let mut i = 0usize;
+    while i < max_pitch {
+        let corr = xcorr[i];
         if corr > 0.0 {
             let mut corr16 = corr;
             // Matches the float implementation, which rescales the correlation
@@ -141,17 +154,17 @@ pub(crate) fn find_best_pitch(
             corr16 *= 1e-12;
             let num = corr16 * corr16;
 
-            if num * best_den[1] > best_num[1] * syy {
-                if num * best_den[0] > best_num[0] * syy {
-                    best_num[1] = best_num[0];
-                    best_den[1] = best_den[0];
+            if num * best_den1 > best_num1 * syy {
+                if num * best_den0 > best_num0 * syy {
+                    best_num1 = best_num0;
+                    best_den1 = best_den0;
                     best_pitch[1] = best_pitch[0];
-                    best_num[0] = num;
-                    best_den[0] = syy;
+                    best_num0 = num;
+                    best_den0 = syy;
                     best_pitch[0] = i as i32;
                 } else {
-                    best_num[1] = num;
-                    best_den[1] = syy;
+                    best_num1 = num;
+                    best_den1 = syy;
                     best_pitch[1] = i as i32;
                 }
             }
@@ -163,6 +176,7 @@ pub(crate) fn find_best_pitch(
         if syy < 1.0 {
             syy = 1.0;
         }
+        i += 1;
     }
 }
 
@@ -171,31 +185,36 @@ pub(crate) fn find_best_pitch(
 /// Mirrors the behaviour of `celt_inner_prod_c()` from `celt/pitch.c` when the
 /// codec is compiled in float mode.  The function asserts that the inputs share
 /// the same length and returns the accumulated dot product as a 32-bit float.
+#[inline(always)]
 pub(crate) fn celt_inner_prod(x: &[OpusVal16], y: &[OpusVal16]) -> OpusVal32 {
-    assert_eq!(
+    debug_assert_eq!(
         x.len(),
         y.len(),
         "vectors provided to celt_inner_prod must have the same length",
     );
 
     let mut sum = 0.0;
-    for (&a, &b) in x.iter().zip(y.iter()) {
-        sum += a * b;
+    let mut idx = 0usize;
+    while idx < x.len() {
+        sum += x[idx] * y[idx];
+        idx += 1;
     }
     sum
 }
 
 #[cfg(feature = "fixed_point")]
 pub(crate) fn celt_inner_prod_fixed(x: &[FixedOpusVal16], y: &[FixedOpusVal16]) -> FixedOpusVal32 {
-    assert_eq!(
+    debug_assert_eq!(
         x.len(),
         y.len(),
         "vectors provided to celt_inner_prod_fixed must have the same length",
     );
 
     let mut sum = 0i32;
-    for (&a, &b) in x.iter().zip(y.iter()) {
-        sum = mac16_16(sum, a, b);
+    let mut idx = 0usize;
+    while idx < x.len() {
+        sum = mac16_16(sum, x[idx], y[idx]);
+        idx += 1;
     }
     sum
 }
@@ -208,12 +227,13 @@ pub(crate) fn celt_inner_prod_fixed(x: &[FixedOpusVal16], y: &[FixedOpusVal16]) 
 ///
 /// Callers must supply slices of identical length; this mirrors the original C
 /// signature where the routine expects `N` samples for each input.
+#[inline(always)]
 pub(crate) fn dual_inner_prod(
     x: &[OpusVal16],
     y0: &[OpusVal16],
     y1: &[OpusVal16],
 ) -> (OpusVal32, OpusVal32) {
-    assert!(
+    debug_assert!(
         x.len() == y0.len() && x.len() == y1.len(),
         "dual_inner_prod inputs must have the same length"
     );
@@ -221,9 +241,12 @@ pub(crate) fn dual_inner_prod(
     let mut xy0 = 0.0;
     let mut xy1 = 0.0;
 
-    for ((&a, &b0), &b1) in x.iter().zip(y0.iter()).zip(y1.iter()) {
-        xy0 += a * b0;
-        xy1 += a * b1;
+    let mut idx = 0usize;
+    while idx < x.len() {
+        let a = x[idx];
+        xy0 += a * y0[idx];
+        xy1 += a * y1[idx];
+        idx += 1;
     }
 
     (xy0, xy1)
@@ -235,7 +258,7 @@ pub(crate) fn dual_inner_prod_fixed(
     y0: &[FixedOpusVal16],
     y1: &[FixedOpusVal16],
 ) -> (FixedOpusVal32, FixedOpusVal32) {
-    assert!(
+    debug_assert!(
         x.len() == y0.len() && x.len() == y1.len(),
         "dual_inner_prod_fixed inputs must have the same length"
     );
@@ -243,9 +266,12 @@ pub(crate) fn dual_inner_prod_fixed(
     let mut xy0 = 0i32;
     let mut xy1 = 0i32;
 
-    for ((&a, &b0), &b1) in x.iter().zip(y0.iter()).zip(y1.iter()) {
-        xy0 = mac16_16(xy0, a, b0);
-        xy1 = mac16_16(xy1, a, b1);
+    let mut idx = 0usize;
+    while idx < x.len() {
+        let a = x[idx];
+        xy0 = mac16_16(xy0, a, y0[idx]);
+        xy1 = mac16_16(xy1, a, y1[idx]);
+        idx += 1;
     }
 
     (xy0, xy1)
@@ -257,10 +283,11 @@ pub(crate) fn dual_inner_prod_fixed(
 /// computes the dot products between `x` and four successive `y` windows
 /// starting at offsets `0..=3`. The `sum` buffer is updated in place so the
 /// caller can accumulate results across multiple invocations.
+#[inline(always)]
 pub(crate) fn xcorr_kernel(x: &[OpusVal16], y: &[OpusVal16], sum: &mut [OpusVal32; 4], len: usize) {
-    assert!(len >= 3, "xcorr_kernel requires at least three samples");
-    assert!(x.len() >= len, "xcorr_kernel needs len samples from x");
-    assert!(
+    debug_assert!(len >= 3, "xcorr_kernel requires at least three samples");
+    debug_assert!(x.len() >= len, "xcorr_kernel needs len samples from x");
+    debug_assert!(
         y.len() >= len + 3,
         "xcorr_kernel needs len + 3 samples from y"
     );
@@ -349,7 +376,7 @@ pub(crate) fn xcorr_kernel(x: &[OpusVal16], y: &[OpusVal16], sum: &mut [OpusVal3
 /// scales the correlation `xy` by the geometric mean of `xx` and `yy`.  The C
 /// routine adds a bias of `1` under the square root to avoid division by zero;
 /// the Rust port retains this behaviour to match the reference implementation.
-#[inline]
+#[inline(always)]
 pub(crate) fn compute_pitch_gain(xy: OpusVal32, xx: OpusVal32, yy: OpusVal32) -> OpusVal16 {
     // The float build uses `xy / celt_sqrt(1 + xx * yy)`.
     (xy / celt_sqrt(1.0 + xx * yy)) as OpusVal16
@@ -361,6 +388,7 @@ pub(crate) fn compute_pitch_gain(xy: OpusVal32, xx: OpusVal32, yy: OpusVal32) ->
 /// codec is built for floating-point targets. The routine fills `xcorr` with the
 /// inner products between `x` and each `len`-sample window of `y`, starting at
 /// delays `0..max_pitch-1`.
+#[inline(always)]
 pub(crate) fn celt_pitch_xcorr(
     x: &[OpusVal16],
     y: &[OpusVal16],
@@ -368,12 +396,12 @@ pub(crate) fn celt_pitch_xcorr(
     max_pitch: usize,
     xcorr: &mut [OpusVal32],
 ) {
-    assert!(x.len() >= len, "input x must provide at least len samples");
-    assert!(
+    debug_assert!(x.len() >= len, "input x must provide at least len samples");
+    debug_assert!(
         y.len() >= len + max_pitch.saturating_sub(1),
         "input y must provide len + max_pitch - 1 samples"
     );
-    assert!(
+    debug_assert!(
         xcorr.len() >= max_pitch,
         "output buffer must store max_pitch correlation values"
     );
@@ -525,28 +553,40 @@ pub(crate) fn compute_pitch_gain_fixed(
 /// performing a decimated sweep followed by a refined search around the best
 /// candidates. The final pitch lag is pseudo-interpolated using the
 /// neighbouring correlations to match the C reference behaviour.
-pub(crate) fn pitch_search(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pitch_search_with_scratch(
     x_lp: &[OpusVal16],
     y: &[OpusVal16],
     len: usize,
     max_pitch: usize,
     _arch: i32,
+    x_lp4: &mut [OpusVal16],
+    y_lp4: &mut [OpusVal16],
+    xcorr: &mut [OpusVal32],
 ) -> i32 {
-    assert!(len > 0, "pitch_search requires a non-empty target length");
-    assert!(
+    debug_assert!(len > 0, "pitch_search requires a non-empty target length");
+    debug_assert!(
         max_pitch > 0,
         "pitch_search requires a positive search span"
     );
 
     let len_half = len >> 1;
-    assert!(
+    debug_assert!(
         x_lp.len() >= len_half,
         "x_lp must provide at least len / 2 samples",
+    );
+    debug_assert!(
+        len <= PITCH_SEARCH_MAX_LEN,
+        "pitch_search len exceeds the CELT scratch bound",
+    );
+    debug_assert!(
+        max_pitch <= PITCH_SEARCH_MAX_PITCH,
+        "pitch_search max_pitch exceeds the CELT scratch bound",
     );
 
     let lag = len + max_pitch;
     let max_pitch_half = max_pitch >> 1;
-    assert!(
+    debug_assert!(
         y.len() >= len_half + max_pitch_half,
         "y must contain at least len / 2 + max_pitch / 2 samples",
     );
@@ -558,22 +598,46 @@ pub(crate) fn pitch_search(
     let mut best_pitch = [0i32, 0i32];
 
     if len_quarter > 0 && max_pitch_quarter > 0 {
-        let mut x_lp4 = vec![0.0; len_quarter];
-        for (j, slot) in x_lp4.iter_mut().enumerate() {
-            *slot = x_lp[2 * j];
+        debug_assert!(
+            len_quarter <= PITCH_SEARCH_MAX_LEN_QUARTER,
+            "quarter-rate pitch_search len exceeds the CELT scratch bound",
+        );
+        debug_assert!(
+            lag_quarter <= PITCH_SEARCH_MAX_LAG_QUARTER,
+            "quarter-rate pitch_search lag exceeds the CELT scratch bound",
+        );
+        debug_assert!(
+            x_lp4.len() >= len_quarter,
+            "x_lp4 scratch must contain len / 4 samples",
+        );
+        debug_assert!(
+            y_lp4.len() >= lag_quarter,
+            "y_lp4 scratch must contain (len + max_pitch) / 4 samples",
+        );
+        debug_assert!(
+            xcorr.len() >= max_pitch_quarter,
+            "xcorr scratch must contain max_pitch / 4 samples",
+        );
+
+        for j in 0..len_quarter {
+            x_lp4[j] = x_lp[2 * j];
         }
 
-        let mut y_lp4 = vec![0.0; lag_quarter];
-        for (j, slot) in y_lp4.iter_mut().enumerate() {
-            *slot = y[2 * j];
+        for j in 0..lag_quarter {
+            y_lp4[j] = y[2 * j];
         }
 
-        let mut xcorr = vec![0.0; max_pitch_quarter];
-        celt_pitch_xcorr(&x_lp4, &y_lp4, len_quarter, max_pitch_quarter, &mut xcorr);
+        celt_pitch_xcorr(
+            &x_lp4[..len_quarter],
+            &y_lp4[..lag_quarter],
+            len_quarter,
+            max_pitch_quarter,
+            &mut xcorr[..max_pitch_quarter],
+        );
 
-        let y_needed = min(y_lp4.len(), len_quarter + max_pitch_quarter);
+        let y_needed = min(lag_quarter, len_quarter + max_pitch_quarter);
         find_best_pitch(
-            &xcorr,
+            &xcorr[..max_pitch_quarter],
             &y_lp4[..y_needed],
             len_quarter,
             max_pitch_quarter,
@@ -581,27 +645,26 @@ pub(crate) fn pitch_search(
         );
     }
 
-    let mut xcorr = vec![0.0; max_pitch_half.max(1)];
-
     if max_pitch_half > 0 {
+        debug_assert!(
+            xcorr.len() >= max_pitch_half,
+            "xcorr scratch must contain max_pitch / 2 samples",
+        );
         let len_half = len >> 1;
         if len_half > 0 {
-            for (i, slot) in xcorr.iter_mut().enumerate().take(max_pitch_half) {
+            for (i, slot) in xcorr[..max_pitch_half].iter_mut().enumerate() {
                 if (i as i32 - 2 * best_pitch[0]).abs() > 2
                     && (i as i32 - 2 * best_pitch[1]).abs() > 2
                 {
+                    *slot = 0.0;
                     continue;
                 }
-                let start = i;
-                let end = start + len_half;
-                if end > y.len() {
-                    break;
+                let mut sum = 0.0f32;
+                let mut j = 0usize;
+                while j < len_half {
+                    sum += x_lp[j] * y[i + j];
+                    j += 1;
                 }
-                let sum: OpusVal32 = x_lp[..len_half]
-                    .iter()
-                    .zip(&y[start..end])
-                    .map(|(&a, &b)| a * b)
-                    .sum();
                 *slot = sum.max(-1.0);
             }
 
@@ -632,14 +695,40 @@ pub(crate) fn pitch_search(
     2 * best_pitch[0]
 }
 
+pub(crate) fn pitch_search(
+    x_lp: &[OpusVal16],
+    y: &[OpusVal16],
+    len: usize,
+    max_pitch: usize,
+    arch: i32,
+) -> i32 {
+    let mut x_lp4 = [0.0f32; PITCH_SEARCH_MAX_LEN_QUARTER];
+    let mut y_lp4 = [0.0f32; PITCH_SEARCH_MAX_LAG_QUARTER];
+    let mut xcorr = [0.0f32; PITCH_SEARCH_MAX_HALF_PITCH];
+    pitch_search_with_scratch(
+        x_lp,
+        y,
+        len,
+        max_pitch,
+        arch,
+        &mut x_lp4,
+        &mut y_lp4,
+        &mut xcorr,
+    )
+}
+
 /// Fixed-point variant of `pitch_search()` used when CELT is built without floats.
 #[cfg(feature = "fixed_point")]
-pub(crate) fn pitch_search_fixed(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pitch_search_fixed_with_scratch(
     x_lp: &[FixedOpusVal16],
     y: &[FixedOpusVal16],
     len: usize,
     max_pitch: usize,
     _arch: i32,
+    x_lp4: &mut [FixedOpusVal16],
+    y_lp4: &mut [FixedOpusVal16],
+    xcorr: &mut [FixedOpusVal32],
 ) -> i32 {
     assert!(
         len > 0,
@@ -654,30 +743,57 @@ pub(crate) fn pitch_search_fixed(
     let len_quarter = len >> 2;
     let lag_quarter = lag >> 2;
     let max_pitch_quarter = max_pitch >> 2;
+    assert!(
+        len <= PITCH_SEARCH_MAX_LEN,
+        "pitch_search_fixed len exceeds the CELT scratch bound",
+    );
+    assert!(
+        max_pitch <= PITCH_SEARCH_MAX_PITCH,
+        "pitch_search_fixed max_pitch exceeds the CELT scratch bound",
+    );
 
     let mut best_pitch = [0i32, 0i32];
 
     let mut shift = 0i32;
     if len_quarter > 0 && max_pitch_quarter > 0 {
-        let mut x_lp4 = vec![0i16; len_quarter];
-        for (j, slot) in x_lp4.iter_mut().enumerate() {
-            *slot = x_lp[2 * j];
+        assert!(
+            len_quarter <= PITCH_SEARCH_MAX_LEN_QUARTER,
+            "quarter-rate pitch_search_fixed len exceeds the CELT scratch bound",
+        );
+        assert!(
+            lag_quarter <= PITCH_SEARCH_MAX_LAG_QUARTER,
+            "quarter-rate pitch_search_fixed lag exceeds the CELT scratch bound",
+        );
+        assert!(
+            x_lp4.len() >= len_quarter,
+            "x_lp4 scratch must contain len / 4 samples",
+        );
+        assert!(
+            y_lp4.len() >= lag_quarter,
+            "y_lp4 scratch must contain (len + max_pitch) / 4 samples",
+        );
+        assert!(
+            xcorr.len() >= max_pitch_quarter,
+            "xcorr scratch must contain max_pitch / 4 samples",
+        );
+
+        for j in 0..len_quarter {
+            x_lp4[j] = x_lp[2 * j];
         }
 
-        let mut y_lp4 = vec![0i16; lag_quarter];
-        for (j, slot) in y_lp4.iter_mut().enumerate() {
-            *slot = y[2 * j];
+        for j in 0..lag_quarter {
+            y_lp4[j] = y[2 * j];
         }
 
-        let xmax = celt_maxabs16(&x_lp4);
-        let ymax = celt_maxabs16(&y_lp4);
+        let xmax = celt_maxabs16(&x_lp4[..len_quarter]);
+        let ymax = celt_maxabs16(&y_lp4[..lag_quarter]);
         shift = celt_ilog2(max(1, max(xmax, ymax))) - 11;
         if shift > 0 {
             let shift_u = shift as u32;
-            for sample in x_lp4.iter_mut() {
+            for sample in x_lp4[..len_quarter].iter_mut() {
                 *sample = (*sample >> shift_u) as i16;
             }
-            for sample in y_lp4.iter_mut() {
+            for sample in y_lp4[..lag_quarter].iter_mut() {
                 *sample = (*sample >> shift_u) as i16;
             }
             shift *= 2;
@@ -685,12 +801,17 @@ pub(crate) fn pitch_search_fixed(
             shift = 0;
         }
 
-        let mut xcorr = vec![0i32; max_pitch_quarter];
         let maxcorr =
-            celt_pitch_xcorr_fixed(&x_lp4, &y_lp4, len_quarter, max_pitch_quarter, &mut xcorr);
+            celt_pitch_xcorr_fixed(
+                &x_lp4[..len_quarter],
+                &y_lp4[..lag_quarter],
+                len_quarter,
+                max_pitch_quarter,
+                &mut xcorr[..max_pitch_quarter],
+            );
         find_best_pitch_fixed(
-            &xcorr,
-            &y_lp4,
+            &xcorr[..max_pitch_quarter],
+            &y_lp4[..lag_quarter],
             len_quarter,
             max_pitch_quarter,
             &mut best_pitch,
@@ -703,14 +824,18 @@ pub(crate) fn pitch_search_fixed(
     if max_pitch_half == 0 {
         return 2 * best_pitch[0];
     }
+    assert!(
+        xcorr.len() >= max_pitch_half,
+        "xcorr scratch must contain max_pitch / 2 samples",
+    );
 
     let len_half = len >> 1;
-    let mut xcorr = vec![0i32; max_pitch_half];
     if len_half > 0 {
         let mut maxcorr = 1i32;
-        for (i, slot) in xcorr.iter_mut().enumerate() {
+        for (i, slot) in xcorr[..max_pitch_half].iter_mut().enumerate() {
             if (i as i32 - 2 * best_pitch[0]).abs() > 2 && (i as i32 - 2 * best_pitch[1]).abs() > 2
             {
+                *slot = 0;
                 continue;
             }
             let mut sum = 0i32;
@@ -725,7 +850,7 @@ pub(crate) fn pitch_search_fixed(
         }
 
         find_best_pitch_fixed(
-            &xcorr,
+            xcorr,
             y,
             len_half,
             max_pitch_half,
@@ -750,14 +875,38 @@ pub(crate) fn pitch_search_fixed(
     2 * best_pitch[0] - offset
 }
 
+#[cfg(feature = "fixed_point")]
+pub(crate) fn pitch_search_fixed(
+    x_lp: &[FixedOpusVal16],
+    y: &[FixedOpusVal16],
+    len: usize,
+    max_pitch: usize,
+    arch: i32,
+) -> i32 {
+    let mut x_lp4 = [0i16; PITCH_SEARCH_MAX_LEN_QUARTER];
+    let mut y_lp4 = [0i16; PITCH_SEARCH_MAX_LAG_QUARTER];
+    let mut xcorr = [0i32; PITCH_SEARCH_MAX_HALF_PITCH];
+    pitch_search_fixed_with_scratch(
+        x_lp,
+        y,
+        len,
+        max_pitch,
+        arch,
+        &mut x_lp4,
+        &mut y_lp4,
+        &mut xcorr,
+    )
+}
+
 const SECOND_CHECK: [i32; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
 
+#[inline(always)]
 fn window(data: &[OpusVal16], center: usize, offset: isize, len: usize) -> &[OpusVal16] {
     let start = center as isize + offset;
-    assert!(start >= 0, "window would start before the buffer");
+    debug_assert!(start >= 0, "window would start before the buffer");
     let start = start as usize;
     let end = start + len;
-    assert!(end <= data.len(), "window extends beyond the buffer");
+    debug_assert!(end <= data.len(), "window extends beyond the buffer");
     &data[start..end]
 }
 
@@ -782,7 +931,7 @@ fn window_fixed(
 /// routine evaluates nearby subharmonics of the detected pitch and returns an
 /// adjusted lag alongside the updated harmonic gain.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn remove_doubling(
+pub(crate) fn remove_doubling_with_scratch(
     x: &[OpusVal16],
     maxperiod: usize,
     minperiod: usize,
@@ -791,16 +940,17 @@ pub(crate) fn remove_doubling(
     prev_period: i32,
     prev_gain: OpusVal16,
     _arch: i32,
+    yy_lookup: &mut [OpusVal32],
 ) -> OpusVal16 {
-    assert!(maxperiod > 0, "maxperiod must be positive");
-    assert!(minperiod > 0, "minperiod must be positive");
-    assert!(n > 0, "window size must be positive");
+    debug_assert!(maxperiod > 0, "maxperiod must be positive");
+    debug_assert!(minperiod > 0, "minperiod must be positive");
+    debug_assert!(n > 0, "window size must be positive");
 
     #[cfg(test)]
     let trace = remove_doubling_trace::should_trace();
     let maxperiod_half = maxperiod >> 1;
     let n_half = n >> 1;
-    assert!(
+    debug_assert!(
         x.len() >= maxperiod_half + n_half,
         "x must contain at least maxperiod / 2 + n / 2 samples",
     );
@@ -823,7 +973,7 @@ pub(crate) fn remove_doubling(
     }
 
     let center = maxperiod_half;
-    assert!(
+    debug_assert!(
         center + n_half <= x.len(),
         "insufficient samples for windowed view"
     );
@@ -832,7 +982,11 @@ pub(crate) fn remove_doubling(
     let x_t0 = window(x, center, -(t0_half as isize), n_half);
     let (xx, xy) = dual_inner_prod(x_center, x_center, x_t0);
 
-    let mut yy_lookup = vec![0.0; maxperiod_half + 1];
+    debug_assert!(
+        yy_lookup.len() > maxperiod_half,
+        "yy_lookup scratch must contain maxperiod / 2 + 1 samples",
+    );
+    let yy_lookup = &mut yy_lookup[..maxperiod_half + 1];
     yy_lookup[0] = xx;
     let mut yy = xx;
 
@@ -1010,6 +1164,31 @@ pub(crate) fn remove_doubling(
     }
 
     pg
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn remove_doubling(
+    x: &[OpusVal16],
+    maxperiod: usize,
+    minperiod: usize,
+    n: usize,
+    t0: &mut i32,
+    prev_period: i32,
+    prev_gain: OpusVal16,
+    arch: i32,
+) -> OpusVal16 {
+    let mut yy_lookup = [0.0; PITCH_SEARCH_MAX_HALF_PITCH + 1];
+    remove_doubling_with_scratch(
+        x,
+        maxperiod,
+        minperiod,
+        n,
+        t0,
+        prev_period,
+        prev_gain,
+        arch,
+        &mut yy_lookup,
+    )
 }
 
 /// Fixed-point variant of `remove_doubling()` used by the prefilter and PLC paths.
@@ -1265,19 +1444,19 @@ pub(crate) fn pitch_downsample(x: &[&[CeltSig]], x_lp: &mut [OpusVal16], len: us
     }
 
     let x_lp = &mut x_lp[..half_len];
-    x_lp.fill(0.0);
+    let first = x[0];
+    for i in 1..half_len {
+        let base = 2 * i;
+        x_lp[i] = 0.25 * first[base - 1] + 0.25 * first[base + 1] + 0.5 * first[base];
+    }
+    x_lp[0] = 0.25 * first[1] + 0.5 * first[0];
 
-    for channel in x {
-        let mut acc0 = 0.25 * channel[1];
-        acc0 += 0.5 * channel[0];
-        x_lp[0] += acc0;
-        for (i, slot) in x_lp.iter_mut().enumerate().take(half_len).skip(1) {
+    if let Some(second) = x.get(1).copied() {
+        for i in 1..half_len {
             let base = 2 * i;
-            let mut acc = 0.25 * channel[base - 1];
-            acc += 0.25 * channel[base + 1];
-            acc += 0.5 * channel[base];
-            *slot += acc;
+            x_lp[i] += 0.25 * second[base - 1] + 0.25 * second[base + 1] + 0.5 * second[base];
         }
+        x_lp[0] += 0.25 * second[1] + 0.5 * second[0];
     }
 
     let mut ac = [0.0; 5];

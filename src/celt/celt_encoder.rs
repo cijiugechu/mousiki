@@ -50,9 +50,13 @@ use crate::celt::mdct::mdct_trace as mdct_input_trace;
 #[cfg(feature = "fixed_point")]
 use crate::celt::mdct_fixed::{FixedMdctLookup, clt_mdct_forward_fixed};
 use crate::celt::modes::{opus_custom_mode_find_static, opus_custom_mode_find_static_ref};
-use crate::celt::pitch::{celt_inner_prod, pitch_downsample, pitch_search, remove_doubling};
+use crate::celt::pitch::{
+    celt_inner_prod, pitch_downsample, pitch_search_with_scratch, remove_doubling_with_scratch,
+};
 #[cfg(feature = "fixed_point")]
-use crate::celt::pitch::{pitch_downsample_fixed, pitch_search_fixed, remove_doubling_fixed};
+use crate::celt::pitch::{
+    pitch_downsample_fixed, pitch_search_fixed_with_scratch, remove_doubling_fixed,
+};
 use crate::celt::quant_bands::E_MEANS;
 #[cfg(not(feature = "fixed_point"))]
 use crate::celt::quant_bands::{
@@ -71,6 +75,7 @@ use crate::celt::types::{
 #[cfg(feature = "fixed_point")]
 use crate::celt::types::{
     FixedCeltCoef, FixedCeltEner, FixedCeltGlog, FixedCeltNorm, FixedCeltSig, FixedOpusVal16,
+    FixedOpusVal32,
 };
 use crate::celt::vq::{SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL};
 use core::cmp::{max, min};
@@ -1293,7 +1298,7 @@ mod celt_transient_trace {
 const MAX_CHANNELS: usize = 2;
 
 /// Size of the comb-filter history kept per channel by the encoder prefilter.
-const COMBFILTER_MAXPERIOD: usize = 1024;
+pub(crate) const COMBFILTER_MAXPERIOD: usize = 1024;
 
 /// Maximum number of energy bands handled during the time/frequency analysis.
 const MAX_TF_BANDS: usize = 50;
@@ -3194,6 +3199,11 @@ fn dynalloc_analysis(
 #[allow(clippy::too_many_arguments)]
 fn run_prefilter(
     encoder: &mut OpusCustomEncoder<'_>,
+    prefilter_pre: &mut [CeltSig],
+    prefilter_pitch_buf: &mut [CeltSig],
+    pitch_search_x_lp4: &mut [OpusVal16],
+    pitch_search_y_lp4: &mut [OpusVal16],
+    pitch_search_xcorr: &mut [OpusVal32],
     input: &mut [CeltSig],
     channels: usize,
     n: usize,
@@ -3208,8 +3218,8 @@ fn run_prefilter(
     mut tone_freq: OpusVal16,
     toneishness: OpusVal32,
 ) -> bool {
-    assert!(channels > 0, "run_prefilter requires at least one channel");
-    assert!(n > 0, "run_prefilter expects a positive frame size");
+    debug_assert!(channels > 0, "run_prefilter requires at least one channel");
+    debug_assert!(n > 0, "run_prefilter expects a positive frame size");
 
     #[cfg(test)]
     let trace_frame_idx = celt_prefilter_trace::current_frame_idx()
@@ -3222,16 +3232,16 @@ fn run_prefilter(
     let stride = overlap + n;
     let history_len = COMBFILTER_MAXPERIOD;
 
-    assert!(
+    debug_assert!(
         input.len() >= channels * stride,
         "time buffer must expose channels * (n + overlap) samples",
     );
-    assert!(
+    debug_assert!(
         encoder.prefilter_mem.len() >= channels * history_len,
         "prefilter history must expose channels * COMBFILTER_MAXPERIOD samples",
     );
 
-    let mut pre = vec![0.0; channels * (n + history_len)];
+    let pre = &mut prefilter_pre[..channels * (n + history_len)];
     for ch in 0..channels {
         let pre_offset = ch * (n + history_len);
         let pre_slice = &mut pre[pre_offset..pre_offset + history_len + n];
@@ -3255,10 +3265,10 @@ fn run_prefilter(
 
     if enabled {
         let downsample_len = history_len + n;
-        let mut pitch_buf = vec![0.0; downsample_len >> 1];
+        let pitch_buf = &mut prefilter_pitch_buf[..downsample_len >> 1];
         pitch_downsample(
             &channel_views[..channels],
-            &mut pitch_buf,
+            pitch_buf,
             downsample_len,
             encoder.arch,
         );
@@ -3300,18 +3310,21 @@ fn run_prefilter(
         if search_span > 0 {
             let offset = history_len >> 1;
             if offset < pitch_buf.len() {
-                let result = pitch_search(
+                let result = pitch_search_with_scratch(
                     &pitch_buf[offset..],
                     &pitch_buf,
                     n,
                     search_span,
                     encoder.arch,
+                    pitch_search_x_lp4,
+                    pitch_search_y_lp4,
+                    pitch_search_xcorr,
                 );
                 pitch_index = history_len as i32 - result;
             }
         }
 
-        gain1 = remove_doubling(
+        gain1 = remove_doubling_with_scratch(
             &pitch_buf,
             history_len,
             COMBFILTER_MINPERIOD,
@@ -3320,6 +3333,7 @@ fn run_prefilter(
             encoder.prefilter_period,
             encoder.prefilter_gain,
             encoder.arch,
+            pitch_search_xcorr,
         );
         let max_period = (history_len - 2) as i32;
         if pitch_index > max_period {
@@ -3675,6 +3689,11 @@ fn q15_to_float(value: FixedOpusVal16) -> f32 {
 #[allow(clippy::too_many_arguments)]
 fn run_prefilter_fixed(
     encoder: &mut OpusCustomEncoder<'_>,
+    prefilter_pre: &mut [FixedCeltSig],
+    prefilter_pitch_buf: &mut [FixedOpusVal16],
+    pitch_search_x_lp4: &mut [FixedOpusVal16],
+    pitch_search_y_lp4: &mut [FixedOpusVal16],
+    pitch_search_xcorr: &mut [FixedOpusVal32],
     input: &mut [CeltSig],
     input_fixed: &mut [FixedCeltSig],
     channels: usize,
@@ -3691,8 +3710,8 @@ fn run_prefilter_fixed(
     tone_freq: OpusVal16,
     toneishness: OpusVal32,
 ) -> bool {
-    assert!(channels > 0, "run_prefilter requires at least one channel");
-    assert!(n > 0, "run_prefilter expects a positive frame size");
+    debug_assert!(channels > 0, "run_prefilter requires at least one channel");
+    debug_assert!(n > 0, "run_prefilter expects a positive frame size");
 
     #[cfg(test)]
     let trace_frame_idx = celt_prefilter_trace::current_frame_idx()
@@ -3705,20 +3724,20 @@ fn run_prefilter_fixed(
     let stride = overlap + n;
     let history_len = COMBFILTER_MAXPERIOD;
 
-    assert!(
+    debug_assert!(
         input_fixed.len() >= channels * stride,
         "time buffer must expose channels * (n + overlap) samples",
     );
-    assert!(
+    debug_assert!(
         encoder.fixed_prefilter_mem.len() >= channels * history_len,
         "prefilter history must expose channels * COMBFILTER_MAXPERIOD samples",
     );
-    assert!(
+    debug_assert!(
         encoder.fixed_in_mem.len() >= channels * overlap,
         "overlap history must expose channels * overlap samples",
     );
 
-    let mut pre = vec![0; channels * (n + history_len)];
+    let pre = &mut prefilter_pre[..channels * (n + history_len)];
     for ch in 0..channels {
         let pre_offset = ch * (n + history_len);
         let pre_slice = &mut pre[pre_offset..pre_offset + history_len + n];
@@ -3742,10 +3761,10 @@ fn run_prefilter_fixed(
 
     if enabled {
         let downsample_len = history_len + n;
-        let mut pitch_buf = vec![0i16; downsample_len >> 1];
+        let pitch_buf = &mut prefilter_pitch_buf[..downsample_len >> 1];
         pitch_downsample_fixed(
             &channel_views[..channels],
-            &mut pitch_buf,
+            pitch_buf,
             downsample_len,
             encoder.arch,
         );
@@ -3788,12 +3807,15 @@ fn run_prefilter_fixed(
         if search_span > 0 {
             let offset = history_len >> 1;
             if offset < pitch_buf.len() {
-                let result = pitch_search_fixed(
+                let result = pitch_search_fixed_with_scratch(
                     &pitch_buf[offset..],
                     &pitch_buf,
                     n,
                     search_span,
                     encoder.arch,
+                    pitch_search_x_lp4,
+                    pitch_search_y_lp4,
+                    pitch_search_xcorr,
                 );
                 pitch_index = history_len as i32 - result;
             }
@@ -5067,8 +5089,23 @@ fn celt_encode_with_ec_inner<'a>(
 
     let analysis = encoder.analysis.clone();
     #[cfg(not(feature = "fixed_point"))]
+    let prefilter_pre = &mut scratch.prefilter_pre;
+    #[cfg(not(feature = "fixed_point"))]
+    let prefilter_pitch_buf = &mut scratch.prefilter_pitch_buf;
+    #[cfg(not(feature = "fixed_point"))]
+    let pitch_search_x_lp4 = &mut scratch.pitch_search_x_lp4;
+    #[cfg(not(feature = "fixed_point"))]
+    let pitch_search_y_lp4 = &mut scratch.pitch_search_y_lp4;
+    #[cfg(not(feature = "fixed_point"))]
+    let pitch_search_xcorr = &mut scratch.pitch_search_xcorr;
+    #[cfg(not(feature = "fixed_point"))]
     let pf_on = run_prefilter(
         encoder,
+        prefilter_pre,
+        prefilter_pitch_buf,
+        pitch_search_x_lp4,
+        pitch_search_y_lp4,
+        pitch_search_xcorr,
         &mut input,
         cc,
         n,
@@ -5084,8 +5121,23 @@ fn celt_encode_with_ec_inner<'a>(
         toneishness,
     );
     #[cfg(feature = "fixed_point")]
+    let fixed_prefilter_pre = &mut scratch.fixed_prefilter_pre;
+    #[cfg(feature = "fixed_point")]
+    let fixed_prefilter_pitch_buf = &mut scratch.fixed_prefilter_pitch_buf;
+    #[cfg(feature = "fixed_point")]
+    let fixed_pitch_search_x_lp4 = &mut scratch.fixed_pitch_search_x_lp4;
+    #[cfg(feature = "fixed_point")]
+    let fixed_pitch_search_y_lp4 = &mut scratch.fixed_pitch_search_y_lp4;
+    #[cfg(feature = "fixed_point")]
+    let fixed_pitch_search_xcorr = &mut scratch.fixed_pitch_search_xcorr;
+    #[cfg(feature = "fixed_point")]
     let pf_on = run_prefilter_fixed(
         encoder,
+        fixed_prefilter_pre,
+        fixed_prefilter_pitch_buf,
+        fixed_pitch_search_x_lp4,
+        fixed_pitch_search_y_lp4,
+        fixed_pitch_search_xcorr,
         &mut input,
         &mut input_fixed,
         cc,
@@ -5739,15 +5791,7 @@ fn celt_encode_with_ec_inner<'a>(
     #[cfg(feature = "fixed_point")]
     {
         let x_fixed = &mut scratch.x_fixed[..c * n];
-        normalise_bands_fixed(
-            mode,
-            &fixed_freq,
-            x_fixed,
-            &band_e_fixed,
-            eff_end,
-            c,
-            m,
-        );
+        normalise_bands_fixed(mode, &fixed_freq, x_fixed, &band_e_fixed, eff_end, c, m);
         fill_float_norm(x, x_fixed);
     }
     #[cfg(not(feature = "fixed_point"))]
@@ -6496,6 +6540,7 @@ fn celt_encode_with_ec_inner<'a>(
             encoder.complexity,
             encoder.arch,
             encoder.disable_inv,
+            &mut scratch.quant_bands,
         );
     }
     #[cfg(test)]
@@ -6939,7 +6984,7 @@ fn median_of_5(values: &[CeltGlog]) -> CeltGlog {
 /// matching the non-zero failure return of the C implementation.
 pub(crate) fn tone_lpc(x: &[OpusVal16], delay: usize, lpc: &mut [OpusVal32; 2]) -> bool {
     let len = x.len();
-    assert!(len > 2 * delay, "tone_lpc requires len > 2 * delay");
+    debug_assert!(len > 2 * delay, "tone_lpc requires len > 2 * delay");
 
     let mut r00 = 0.0f32;
     let mut r01 = 0.0f32;

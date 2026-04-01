@@ -3405,6 +3405,7 @@ where
                     decoder.complexity,
                     decoder.arch,
                     decoder.disable_inv,
+                    &mut decoder.quant_bands_scratch,
                 );
                 float_norm_slice_to_fixed(&mut spectrum_fixed, &spectrum_float);
             } else {
@@ -3470,6 +3471,7 @@ where
                 decoder.complexity,
                 decoder.arch,
                 decoder.disable_inv,
+                &mut decoder.quant_bands_scratch,
             );
         }
     }
@@ -6300,6 +6302,7 @@ mod tests {
                 decoder.complexity,
                 decoder.arch,
                 decoder.disable_inv,
+                &mut decoder.quant_bands_scratch,
             );
             super::float_norm_slice_to_fixed(&mut spectrum_fixed, &spectrum_float);
         }

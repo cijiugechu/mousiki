@@ -8,12 +8,15 @@
 //! more complex pieces of the encoder so that future ports can focus on the
 //! higher-level control flow.
 
+#[cfg(feature = "fixed_point")]
 use alloc::vec;
+#[cfg(any(test, feature = "fixed_point"))]
 use alloc::vec::Vec;
 #[cfg(test)]
 extern crate std;
 
 use core::f32::consts::SQRT_2;
+use core::mem::MaybeUninit;
 
 use crate::celt::entcode::ec_tell_frac;
 #[cfg(feature = "fixed_point")]
@@ -53,7 +56,7 @@ use crate::celt::{
     math::{isqrt32, mul_add_f32},
     quant_bands::E_MEANS,
     rate::{QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, bits2pulses, get_pulses, pulses2bits},
-    types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32},
+    types::{CeltGlog, CeltSig, OpusCustomMode, OpusVal16, OpusVal32, QuantBandsScratch},
     vq::stereo_itheta,
 };
 use core::convert::TryFrom;
@@ -61,6 +64,11 @@ use core::convert::TryFrom;
 const EPSILON: f32 = 1e-15;
 // CELT mode construction bounds each band width to 208 coefficients.
 const MAX_CELT_BAND_SIZE: usize = 208;
+
+#[inline]
+unsafe fn assume_init_slice_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
+    unsafe { &*(slice as *const [MaybeUninit<T>] as *const [T]) }
+}
 
 /// Scaling factor applied to unit-norm vectors in the float build.
 const NORM_SCALING: OpusVal16 = 1.0;
@@ -852,12 +860,10 @@ fn special_hybrid_folding_fixed(
 
     let copy_len = n2 - n1;
     let src_start = 2 * n1 - n2;
-    let temp: Vec<FixedCeltNorm> = norm[src_start..src_start + copy_len].to_vec();
-    norm[n1..n1 + copy_len].copy_from_slice(&temp);
+    norm.copy_within(src_start..src_start + copy_len, n1);
 
     if let (true, Some(norm2)) = (dual_stereo, norm2) {
-        let temp2: Vec<FixedCeltNorm> = norm2[src_start..src_start + copy_len].to_vec();
-        norm2[n1..n1 + copy_len].copy_from_slice(&temp2);
+        norm2.copy_within(src_start..src_start + copy_len, n1);
     }
 }
 
@@ -867,28 +873,33 @@ fn deinterleave_hadamard_fixed(x: &mut [FixedCeltNorm], n0: usize, stride: usize
         return;
     }
     let n = n0.checked_mul(stride).expect("stride * n0 overflowed");
-    assert!(x.len() >= n, "input buffer too small for deinterleave");
+    debug_assert!(x.len() >= n, "input buffer too small for deinterleave");
     if n == 0 {
         return;
     }
 
-    let mut tmp = vec![0i16; n];
+    debug_assert!(
+        n <= MAX_CELT_BAND_SIZE,
+        "deinterleave band width exceeds CELT maximum"
+    );
+    let mut tmp_storage = [MaybeUninit::<i16>::uninit(); MAX_CELT_BAND_SIZE];
     if hadamard {
         let ordery = hadamard_ordery(stride)
             .expect("hadamard interleave only defined for strides of 2, 4, 8, or 16");
         for (i, &ord) in ordery.iter().enumerate() {
             for j in 0..n0 {
-                tmp[ord * n0 + j] = x[j * stride + i];
+                tmp_storage[ord * n0 + j].write(x[j * stride + i]);
             }
         }
     } else {
         for i in 0..stride {
             for j in 0..n0 {
-                tmp[i * n0 + j] = x[j * stride + i];
+                tmp_storage[i * n0 + j].write(x[j * stride + i]);
             }
         }
     }
-    x[..n].copy_from_slice(&tmp);
+    let tmp = unsafe { assume_init_slice_ref(&tmp_storage[..n]) };
+    x[..n].copy_from_slice(tmp);
 }
 
 #[cfg(feature = "fixed_point")]
@@ -897,28 +908,33 @@ fn interleave_hadamard_fixed(x: &mut [FixedCeltNorm], n0: usize, stride: usize, 
         return;
     }
     let n = n0.checked_mul(stride).expect("stride * n0 overflowed");
-    assert!(x.len() >= n, "input buffer too small for interleave");
+    debug_assert!(x.len() >= n, "input buffer too small for interleave");
     if n == 0 {
         return;
     }
 
-    let mut tmp = vec![0i16; n];
+    debug_assert!(
+        n <= MAX_CELT_BAND_SIZE,
+        "interleave band width exceeds CELT maximum"
+    );
+    let mut tmp_storage = [MaybeUninit::<i16>::uninit(); MAX_CELT_BAND_SIZE];
     if hadamard {
         let ordery = hadamard_ordery(stride)
             .expect("hadamard interleave only defined for strides of 2, 4, 8, or 16");
         for (i, &ord) in ordery.iter().enumerate() {
             for j in 0..n0 {
-                tmp[j * stride + i] = x[ord * n0 + j];
+                tmp_storage[j * stride + i].write(x[ord * n0 + j]);
             }
         }
     } else {
         for i in 0..stride {
             for j in 0..n0 {
-                tmp[j * stride + i] = x[i * n0 + j];
+                tmp_storage[j * stride + i].write(x[i * n0 + j]);
             }
         }
     }
-    x[..n].copy_from_slice(&tmp);
+    let tmp = unsafe { assume_init_slice_ref(&tmp_storage[..n]) };
+    x[..n].copy_from_slice(tmp);
 }
 
 #[cfg(feature = "fixed_point")]
@@ -1351,7 +1367,6 @@ fn quant_band_fixed_decode(
     let recombine = ctx.tf_change.max(0);
     let long_blocks = b0 == 1;
 
-    let mut lowband_stack_storage = [0i16; MAX_CELT_BAND_SIZE];
     let copy_lowband = lowband_input.is_some()
         && (recombine > 0 || ((n_b & 1) == 0 && ctx.tf_change < 0) || b0 > 1);
     let mut lowband_view: Option<&mut [FixedCeltNorm]> = None;
@@ -1367,12 +1382,7 @@ fn quant_band_fixed_decode(
                 let (head, _) = scratch.split_at_mut(len);
                 lowband_view = Some(head);
             } else {
-                assert!(
-                    len <= lowband_stack_storage.len(),
-                    "band width exceeds fixed lowband stack workspace"
-                );
-                lowband_stack_storage[..len].copy_from_slice(&slice[..len]);
-                let (head, _) = lowband_stack_storage.split_at_mut(len);
+                let (head, _) = slice.split_at_mut(len);
                 lowband_view = Some(head);
             }
         } else {
@@ -1684,7 +1694,7 @@ pub(crate) fn quant_all_bands_decode_fixed(
     let norm_len = last_band_start.saturating_sub(norm_offset);
     let mut norm_storage = vec![0i16; channels * norm_len];
     let (norm, norm2_slice) = norm_storage.split_at_mut(norm_len);
-    let mut norm2 = if channels == 2 {
+    let mut norm2: Option<&mut [FixedCeltNorm]> = if channels == 2 {
         Some(norm2_slice)
     } else {
         None
@@ -2164,7 +2174,6 @@ fn quant_band(
         recombine = tf_change;
     }
 
-    let mut lowband_stack_storage = [0.0; MAX_CELT_BAND_SIZE];
     let copy_lowband =
         lowband_input.is_some() && (recombine > 0 || ((n_b & 1) == 0 && tf_change < 0) || b0 > 1);
     let mut lowband_view: Option<&mut [OpusVal16]> = None;
@@ -2181,12 +2190,7 @@ fn quant_band(
                 let (head, _) = scratch.split_at_mut(len);
                 lowband_view = Some(head);
             } else {
-                assert!(
-                    len <= lowband_stack_storage.len(),
-                    "band width exceeds fixed lowband stack workspace"
-                );
-                lowband_stack_storage[..len].copy_from_slice(&slice[..len]);
-                let (head, _) = lowband_stack_storage.split_at_mut(len);
+                let (head, _) = slice.split_at_mut(len);
                 lowband_view = Some(head);
             }
         } else {
@@ -2592,6 +2596,7 @@ pub(crate) fn quant_all_bands(
     complexity: i32,
     arch: i32,
     disable_inv: bool,
+    scratch: &mut QuantBandsScratch,
 ) {
     if start >= end || end > mode.num_ebands {
         return;
@@ -2612,8 +2617,11 @@ pub(crate) fn quant_all_bands(
         0
     };
     let norm_len = last_band_start.saturating_sub(norm_offset);
+    if scratch.norm_storage.len() < channels * norm_len {
+        scratch.norm_storage.resize(channels * norm_len, 0.0);
+    }
 
-    let mut norm_storage = vec![0.0; channels * norm_len];
+    let norm_storage = &mut scratch.norm_storage[..channels * norm_len];
     let (norm_slice, norm2_slice) = norm_storage.split_at_mut(norm_len);
     let norm = norm_slice;
     let mut norm2 = if channels == 2 {
@@ -2637,50 +2645,79 @@ pub(crate) fn quant_all_bands(
     } else {
         0
     };
+    if scratch.lowband_scratch.len() < resynth_alloc {
+        scratch.lowband_scratch.resize(resynth_alloc, 0.0);
+    }
+    if theta_rdo {
+        if scratch.theta_rdo_x_save.len() < resynth_alloc {
+            scratch.theta_rdo_x_save.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_y_save.len() < resynth_alloc {
+            scratch.theta_rdo_y_save.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_x_save2.len() < resynth_alloc {
+            scratch.theta_rdo_x_save2.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_y_save2.len() < resynth_alloc {
+            scratch.theta_rdo_y_save2.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_norm_save.len() < resynth_alloc {
+            scratch.theta_rdo_norm_save.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_norm2_save.len() < resynth_alloc {
+            scratch.theta_rdo_norm2_save.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_norm_save2.len() < resynth_alloc {
+            scratch.theta_rdo_norm_save2.resize(resynth_alloc, 0.0);
+        }
+        if scratch.theta_rdo_norm2_save2.len() < resynth_alloc {
+            scratch.theta_rdo_norm2_save2.resize(resynth_alloc, 0.0);
+        }
+    }
     let mut lowband_scratch_storage = if resynth_alloc > 0 {
-        Some(vec![0.0; resynth_alloc])
+        Some(&mut scratch.lowband_scratch[..resynth_alloc])
     } else {
         None
     };
-    let mut theta_rdo_x_save = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_x_save = if theta_rdo {
+        &mut scratch.theta_rdo_x_save[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_x_save[..0]
     };
-    let mut theta_rdo_y_save = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_y_save = if theta_rdo {
+        &mut scratch.theta_rdo_y_save[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_y_save[..0]
     };
-    let mut theta_rdo_x_save2 = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_x_save2 = if theta_rdo {
+        &mut scratch.theta_rdo_x_save2[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_x_save2[..0]
     };
-    let mut theta_rdo_y_save2 = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_y_save2 = if theta_rdo {
+        &mut scratch.theta_rdo_y_save2[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_y_save2[..0]
     };
-    let mut theta_rdo_norm_save = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_norm_save = if theta_rdo {
+        &mut scratch.theta_rdo_norm_save[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_norm_save[..0]
     };
-    let mut theta_rdo_norm2_save = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_norm2_save = if theta_rdo {
+        &mut scratch.theta_rdo_norm2_save[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_norm2_save[..0]
     };
-    let mut theta_rdo_norm_save2 = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_norm_save2 = if theta_rdo {
+        &mut scratch.theta_rdo_norm_save2[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_norm_save2[..0]
     };
-    let mut theta_rdo_norm2_save2 = if theta_rdo {
-        vec![0.0; resynth_alloc]
+    let theta_rdo_norm2_save2 = if theta_rdo {
+        &mut scratch.theta_rdo_norm2_save2[..resynth_alloc]
     } else {
-        Vec::new()
+        &mut scratch.theta_rdo_norm2_save2[..0]
     };
 
     let mut ctx = BandCtx {
@@ -2980,8 +3017,7 @@ pub(crate) fn quant_all_bands(
                     if let Some(offset) = lowband_after_first_right_offset
                         && let Some(norm2_buf) = norm2.as_mut()
                     {
-                        norm2_buf[offset..offset + n]
-                            .copy_from_slice(&theta_rdo_norm2_save2[..n]);
+                        norm2_buf[offset..offset + n].copy_from_slice(&theta_rdo_norm2_save2[..n]);
                     }
                     x_cm = cm_first;
                 } else {
@@ -3511,8 +3547,7 @@ pub(crate) fn special_hybrid_folding(
         "source slice exceeds bounds"
     );
 
-    let temp: Vec<OpusVal16> = norm[src_start..src_start + copy_len].to_vec();
-    norm[n1..n1 + copy_len].copy_from_slice(&temp);
+    norm.copy_within(src_start..src_start + copy_len, n1);
 
     if let (true, Some(norm2)) = (dual_stereo, norm2) {
         debug_assert!(
@@ -3524,8 +3559,7 @@ pub(crate) fn special_hybrid_folding(
             "source slice exceeds bounds"
         );
 
-        let temp2: Vec<OpusVal16> = norm2[src_start..src_start + copy_len].to_vec();
-        norm2[n1..n1 + copy_len].copy_from_slice(&temp2);
+        norm2.copy_within(src_start..src_start + copy_len, n1);
     }
 }
 
@@ -3677,32 +3711,36 @@ pub(crate) fn deinterleave_hadamard(x: &mut [OpusVal16], n0: usize, stride: usiz
     }
 
     let n = n0.checked_mul(stride).expect("stride * n0 overflowed");
-    assert!(x.len() >= n, "input buffer too small for deinterleave");
+    debug_assert!(x.len() >= n, "input buffer too small for deinterleave");
 
     if n == 0 {
         return;
     }
 
-    let mut tmp = vec![0.0f32; n];
+    debug_assert!(
+        n <= MAX_CELT_BAND_SIZE,
+        "deinterleave band width exceeds CELT maximum"
+    );
+    let mut tmp_storage = [MaybeUninit::<OpusVal16>::uninit(); MAX_CELT_BAND_SIZE];
 
     if hadamard {
         let ordery = hadamard_ordery(stride)
             .expect("hadamard interleave only defined for strides of 2, 4, 8, or 16");
-        assert_eq!(ordery.len(), stride);
+        debug_assert_eq!(ordery.len(), stride);
         for (i, &ord) in ordery.iter().enumerate() {
             for j in 0..n0 {
-                tmp[ord * n0 + j] = x[j * stride + i];
+                tmp_storage[ord * n0 + j].write(x[j * stride + i]);
             }
         }
     } else {
         for i in 0..stride {
             for j in 0..n0 {
-                tmp[i * n0 + j] = x[j * stride + i];
+                tmp_storage[i * n0 + j].write(x[j * stride + i]);
             }
         }
     }
-
-    x[..n].copy_from_slice(&tmp);
+    let tmp = unsafe { assume_init_slice_ref(&tmp_storage[..n]) };
+    x[..n].copy_from_slice(tmp);
 }
 
 /// Applies the Hadamard interleaving used by CELT's spreading decisions.
@@ -3718,32 +3756,36 @@ pub(crate) fn interleave_hadamard(x: &mut [OpusVal16], n0: usize, stride: usize,
     }
 
     let n = n0.checked_mul(stride).expect("stride * n0 overflowed");
-    assert!(x.len() >= n, "input buffer too small for interleave");
+    debug_assert!(x.len() >= n, "input buffer too small for interleave");
 
     if n == 0 {
         return;
     }
 
-    let mut tmp = vec![0.0f32; n];
+    debug_assert!(
+        n <= MAX_CELT_BAND_SIZE,
+        "interleave band width exceeds CELT maximum"
+    );
+    let mut tmp_storage = [MaybeUninit::<OpusVal16>::uninit(); MAX_CELT_BAND_SIZE];
 
     if hadamard {
         let ordery = hadamard_ordery(stride)
             .expect("hadamard interleave only defined for strides of 2, 4, 8, or 16");
-        assert_eq!(ordery.len(), stride);
+        debug_assert_eq!(ordery.len(), stride);
         for (i, &ord) in ordery.iter().enumerate() {
             for j in 0..n0 {
-                tmp[j * stride + i] = x[ord * n0 + j];
+                tmp_storage[j * stride + i].write(x[ord * n0 + j]);
             }
         }
     } else {
         for i in 0..stride {
             for j in 0..n0 {
-                tmp[j * stride + i] = x[i * n0 + j];
+                tmp_storage[j * stride + i].write(x[i * n0 + j]);
             }
         }
     }
-
-    x[..n].copy_from_slice(&tmp);
+    let tmp = unsafe { assume_init_slice_ref(&tmp_storage[..n]) };
+    x[..n].copy_from_slice(tmp);
 }
 
 /// Applies a single-level Haar transform across interleaved coefficients.

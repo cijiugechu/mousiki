@@ -195,6 +195,27 @@ fn icwrs(
     (index, nc)
 }
 
+#[inline]
+fn icwrs_pvq(y: &[OpusInt32], n: usize) -> Option<(OpusUint32, OpusUint32)> {
+    debug_assert!(n >= 2);
+    debug_assert!(y.len() >= n);
+
+    let mut j = n - 1;
+    let mut index = OpusUint32::from(y[j] < 0);
+    let mut total_pulses = y[j].unsigned_abs() as usize;
+
+    while j > 0 {
+        j -= 1;
+        index = index.checked_add(pvq_u(n - j, total_pulses)?)?;
+        total_pulses += y[j].unsigned_abs() as usize;
+        if y[j] < 0 {
+            index = index.checked_add(pvq_u(n - j, total_pulses + 1)?)?;
+        }
+    }
+
+    Some((index, pvq_v(n, total_pulses)?))
+}
+
 fn cwrsi(
     n: usize,
     mut k: usize,
@@ -392,6 +413,11 @@ pub(crate) fn encode_pulses(y: &[OpusInt32], n: usize, k: usize, enc: &mut EcEnc
         k <= MAX_PVQ_PULSES,
         "pulse workspace exceeds reference bound"
     );
+
+    if let Some((index, total)) = icwrs_pvq(y, n) {
+        enc.enc_uint(index, total);
+        return;
+    }
 
     let mut workspace = [0u32; MAX_PVQ_PULSES + 2];
     let (index, total) = icwrs(y, n, k, &mut workspace[..k + 2]);

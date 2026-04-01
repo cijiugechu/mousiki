@@ -9,6 +9,7 @@
 
 use core::convert::TryFrom;
 use core::f32::consts::FRAC_2_PI;
+use core::mem::MaybeUninit;
 
 use crate::celt::cwrs::{decode_pulses, encode_pulses};
 use crate::celt::entcode::celt_udiv;
@@ -53,6 +54,11 @@ const EPSILON: OpusVal32 = 1e-15;
 // CELT mode construction rejects any band wider than 208 coefficients, which
 // lets the decoder mirror the C stack allocation here without heap traffic.
 const MAX_PVQ_BAND_SIZE: usize = 208;
+
+#[inline]
+unsafe fn assume_init_slice_mut<T>(slice: &mut [MaybeUninit<T>]) -> &mut [T] {
+    unsafe { &mut *(slice as *mut [MaybeUninit<T>] as *mut [T]) }
+}
 
 #[inline]
 fn select_pvq_candidate_float(
@@ -114,21 +120,31 @@ fn exp_rotation1(x: &mut [OpusVal16], stride: usize, c: OpusVal16, s: OpusVal16)
     }
 
     let ms = -s;
-
-    for i in 0..(len - stride) {
-        let x1 = x[i];
-        let x2 = x[i + stride];
-        x[i + stride] = c * x2 + s * x1;
-        x[i] = c * x1 + ms * x2;
+    let ptr = x.as_mut_ptr();
+    let mut i = 0usize;
+    while i < len - stride {
+        unsafe {
+            let x1 = *ptr.add(i);
+            let x2 = *ptr.add(i + stride);
+            *ptr.add(i + stride) = c * x2 + s * x1;
+            *ptr.add(i) = c * x1 + ms * x2;
+        }
+        i += 1;
     }
 
     if len > 2 * stride {
-        let limit = len - 2 * stride - 1;
-        for i in (0..=limit).rev() {
-            let x1 = x[i];
-            let x2 = x[i + stride];
-            x[i + stride] = c * x2 + s * x1;
-            x[i] = c * x1 + ms * x2;
+        let mut i = len - 2 * stride - 1;
+        loop {
+            unsafe {
+                let x1 = *ptr.add(i);
+                let x2 = *ptr.add(i + stride);
+                *ptr.add(i + stride) = c * x2 + s * x1;
+                *ptr.add(i) = c * x1 + ms * x2;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
     }
 }
@@ -381,22 +397,24 @@ pub(crate) fn op_pvq_search(
     k: i32,
     _arch: i32,
 ) -> OpusVal32 {
-    assert!(n > 0, "vector dimension must be positive");
-    assert!(k >= 0, "pulse count must be non-negative");
-    assert!(x.len() >= n, "coefficient buffer shorter than band size");
-    assert!(pulses.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(n > 0, "vector dimension must be positive");
+    debug_assert!(k >= 0, "pulse count must be non-negative");
+    debug_assert!(x.len() >= n, "coefficient buffer shorter than band size");
+    debug_assert!(pulses.len() >= n, "pulse buffer shorter than band size");
     debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut y = [0.0f32; MAX_PVQ_BAND_SIZE];
-    let mut sign = [false; MAX_PVQ_BAND_SIZE];
+    let mut y_storage = [MaybeUninit::<OpusVal16>::uninit(); MAX_PVQ_BAND_SIZE];
+    let mut sign_storage = [MaybeUninit::<OpusInt32>::uninit(); MAX_PVQ_BAND_SIZE];
 
-    for (idx, sample) in x.iter_mut().enumerate().take(n) {
-        let value = *sample;
-        sign[idx] = value < 0.0;
-        *sample = value.abs();
+    for idx in 0..n {
+        let value = x[idx];
+        sign_storage[idx].write(i32::from(value < 0.0));
+        x[idx] = value.abs();
         pulses[idx] = 0;
-        y[idx] = 0.0;
+        y_storage[idx].write(0.0);
     }
+    let y = unsafe { assume_init_slice_mut(&mut y_storage[..n]) };
+    let sign = unsafe { assume_init_slice_mut(&mut sign_storage[..n]) };
 
     let mut xy = 0.0f32;
     let mut yy = 0.0f32;
@@ -404,22 +422,25 @@ pub(crate) fn op_pvq_search(
 
     if k > ((n as i32) >> 1) {
         let mut sum = 0.0f32;
-        for &sample in x.iter().take(n) {
+        for &sample in &x[..n] {
             sum += sample;
         }
 
         if !(sum > EPSILON && sum < 64.0) {
             if n > 0 {
                 x[0] = 1.0;
-                for coeff in x.iter_mut().take(n).skip(1) {
-                    *coeff = 0.0;
+                let mut j = 1usize;
+                while j < n {
+                    x[j] = 0.0;
+                    j += 1;
                 }
             }
             sum = 1.0;
         }
 
         let rcp = (k as OpusVal32 + 0.8) * celt_rcp(sum);
-        for idx in 0..n {
+        let mut idx = 0usize;
+        while idx < n {
             let projected = floorf(rcp * x[idx]);
             let pulse = projected as OpusInt32;
             pulses[idx] = pulse;
@@ -429,6 +450,7 @@ pub(crate) fn op_pvq_search(
             xy += x[idx] * val;
             y[idx] *= 2.0;
             pulses_left -= pulse;
+            idx += 1;
         }
     }
 
@@ -451,68 +473,17 @@ pub(crate) fn op_pvq_search(
         let mut best_id = 0usize;
         let mut best_den = yy + y[0];
         let mut best_num = (xy + x[0]) * (xy + x[0]);
-
-        let x_tail = &x[1..n];
-        let y_tail = &y[1..n];
-        let mut x_chunks = x_tail.chunks_exact(4);
-        let mut y_chunks = y_tail.chunks_exact(4);
-        for (chunk_idx, (x_chunk, y_chunk)) in (&mut x_chunks).zip(&mut y_chunks).enumerate() {
-            let base = 1 + chunk_idx * 4;
-            let rxy0 = xy + x_chunk[0];
-            let ryy0 = yy + y_chunk[0];
-            let num0 = rxy0 * rxy0;
-            select_pvq_candidate_float(
-                &mut best_id,
-                &mut best_den,
-                &mut best_num,
-                base,
-                ryy0,
-                num0,
-            );
-
-            let rxy1 = xy + x_chunk[1];
-            let ryy1 = yy + y_chunk[1];
-            let num1 = rxy1 * rxy1;
-            select_pvq_candidate_float(
-                &mut best_id,
-                &mut best_den,
-                &mut best_num,
-                base + 1,
-                ryy1,
-                num1,
-            );
-
-            let rxy2 = xy + x_chunk[2];
-            let ryy2 = yy + y_chunk[2];
-            let num2 = rxy2 * rxy2;
-            select_pvq_candidate_float(
-                &mut best_id,
-                &mut best_den,
-                &mut best_num,
-                base + 2,
-                ryy2,
-                num2,
-            );
-
-            let rxy3 = xy + x_chunk[3];
-            let ryy3 = yy + y_chunk[3];
-            let num3 = rxy3 * rxy3;
-            select_pvq_candidate_float(
-                &mut best_id,
-                &mut best_den,
-                &mut best_num,
-                base + 3,
-                ryy3,
-                num3,
-            );
-        }
-
-        let rem_start = n - x_chunks.remainder().len();
-        for idx in rem_start..n {
+        let mut idx = 1usize;
+        while idx < n {
             let rxy = xy + x[idx];
             let ryy = yy + y[idx];
             let num = rxy * rxy;
-            select_pvq_candidate_float(&mut best_id, &mut best_den, &mut best_num, idx, ryy, num);
+            if best_den * num > ryy * best_num {
+                best_den = ryy;
+                best_num = num;
+                best_id = idx;
+            }
+            idx += 1;
         }
 
         xy += x[best_id];
@@ -521,10 +492,120 @@ pub(crate) fn op_pvq_search(
         pulses[best_id] += 1;
     }
 
-    for (idx, pulse) in pulses.iter_mut().take(n).enumerate() {
-        if sign[idx] {
-            *pulse = -*pulse;
+    for idx in 0..n {
+        let sign_mask = -sign[idx];
+        pulses[idx] = (pulses[idx] ^ sign_mask) + sign[idx];
+    }
+
+    yy
+}
+
+fn op_pvq_search_uninit(
+    x: &mut [OpusVal16],
+    pulses_storage: &mut [MaybeUninit<OpusInt32>],
+    n: usize,
+    k: i32,
+    _arch: i32,
+) -> OpusVal32 {
+    debug_assert!(n > 0, "vector dimension must be positive");
+    debug_assert!(k >= 0, "pulse count must be non-negative");
+    debug_assert!(x.len() >= n, "coefficient buffer shorter than band size");
+    debug_assert!(pulses_storage.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
+
+    let mut y_storage = [MaybeUninit::<OpusVal16>::uninit(); MAX_PVQ_BAND_SIZE];
+    let mut sign_storage = [MaybeUninit::<OpusInt32>::uninit(); MAX_PVQ_BAND_SIZE];
+
+    for idx in 0..n {
+        let value = x[idx];
+        sign_storage[idx].write(i32::from(value < 0.0));
+        x[idx] = value.abs();
+        pulses_storage[idx].write(0);
+        y_storage[idx].write(0.0);
+    }
+    let pulses = unsafe { assume_init_slice_mut(&mut pulses_storage[..n]) };
+    let y = unsafe { assume_init_slice_mut(&mut y_storage[..n]) };
+    let sign = unsafe { assume_init_slice_mut(&mut sign_storage[..n]) };
+
+    let mut xy = 0.0f32;
+    let mut yy = 0.0f32;
+    let mut pulses_left = k;
+
+    if k > ((n as i32) >> 1) {
+        let mut sum = 0.0f32;
+        for &sample in &x[..n] {
+            sum += sample;
         }
+
+        if !(sum > EPSILON && sum < 64.0) {
+            if n > 0 {
+                x[0] = 1.0;
+                let mut j = 1usize;
+                while j < n {
+                    x[j] = 0.0;
+                    j += 1;
+                }
+            }
+            sum = 1.0;
+        }
+
+        let rcp = (k as OpusVal32 + 0.8) * celt_rcp(sum);
+        let mut idx = 0usize;
+        while idx < n {
+            let projected = floorf(rcp * x[idx]);
+            let pulse = projected as OpusInt32;
+            pulses[idx] = pulse;
+            let val = pulse as OpusVal16;
+            y[idx] = val;
+            yy += val * val;
+            xy += x[idx] * val;
+            y[idx] *= 2.0;
+            pulses_left -= pulse;
+            idx += 1;
+        }
+    }
+
+    debug_assert!(pulses_left >= 0, "pulse allocation exceeded target count");
+    if pulses_left < 0 {
+        pulses_left = 0;
+    }
+
+    if pulses_left > n as i32 + 3 {
+        let tmp = pulses_left as OpusVal16;
+        yy += tmp * tmp;
+        yy += tmp * y[0];
+        pulses[0] += pulses_left;
+        pulses_left = 0;
+    }
+
+    for _ in 0..pulses_left {
+        yy += 1.0;
+
+        let mut best_id = 0usize;
+        let mut best_den = yy + y[0];
+        let mut best_num = (xy + x[0]) * (xy + x[0]);
+        let mut idx = 1usize;
+        while idx < n {
+            let rxy = xy + x[idx];
+            let ryy = yy + y[idx];
+            let num = rxy * rxy;
+            if best_den * num > ryy * best_num {
+                best_den = ryy;
+                best_num = num;
+                best_id = idx;
+            }
+            idx += 1;
+        }
+
+        xy += x[best_id];
+        yy += y[best_id];
+        y[best_id] += 2.0;
+        pulses[best_id] += 1;
+    }
+
+    for idx in 0..n {
+        let sign_mask = -sign[idx];
+        pulses[idx] = (pulses[idx] ^ sign_mask) + sign[idx];
     }
 
     yy
@@ -538,26 +619,28 @@ pub(crate) fn op_pvq_search_fixed(
     k: i32,
     _arch: i32,
 ) -> FixedOpusVal16 {
-    assert!(n > 0, "vector dimension must be positive");
-    assert!(k >= 0, "pulse count must be non-negative");
-    assert!(x.len() >= n, "coefficient buffer shorter than band size");
-    assert!(pulses.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(n > 0, "vector dimension must be positive");
+    debug_assert!(k >= 0, "pulse count must be non-negative");
+    debug_assert!(x.len() >= n, "coefficient buffer shorter than band size");
+    debug_assert!(pulses.len() >= n, "pulse buffer shorter than band size");
     debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut y = [0i16; MAX_PVQ_BAND_SIZE];
-    let mut signx = [0i32; MAX_PVQ_BAND_SIZE];
+    let mut y_storage = [MaybeUninit::<FixedOpusVal16>::uninit(); MAX_PVQ_BAND_SIZE];
+    let mut sign_storage = [MaybeUninit::<OpusInt32>::uninit(); MAX_PVQ_BAND_SIZE];
 
     for j in 0..n {
         let value = x[j];
-        signx[j] = i32::from(value < 0);
+        sign_storage[j].write(i32::from(value < 0));
         x[j] = if value < 0 {
             value.wrapping_neg()
         } else {
             value
         };
         pulses[j] = 0;
-        y[j] = 0;
+        y_storage[j].write(0);
     }
+    let y = unsafe { assume_init_slice_mut(&mut y_storage[..n]) };
+    let signx = unsafe { assume_init_slice_mut(&mut sign_storage[..n]) };
 
     let mut xy: i32 = 0;
     let mut yy: i16 = 0;
@@ -694,6 +777,166 @@ pub(crate) fn op_pvq_search_fixed(
     yy
 }
 
+#[cfg(feature = "fixed_point")]
+fn op_pvq_search_fixed_uninit(
+    x: &mut [FixedOpusVal16],
+    pulses_storage: &mut [MaybeUninit<OpusInt32>],
+    n: usize,
+    k: i32,
+    _arch: i32,
+) -> FixedOpusVal16 {
+    debug_assert!(n > 0, "vector dimension must be positive");
+    debug_assert!(k >= 0, "pulse count must be non-negative");
+    debug_assert!(x.len() >= n, "coefficient buffer shorter than band size");
+    debug_assert!(pulses_storage.len() >= n, "pulse buffer shorter than band size");
+    debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
+
+    let mut y_storage = [MaybeUninit::<FixedOpusVal16>::uninit(); MAX_PVQ_BAND_SIZE];
+    let mut sign_storage = [MaybeUninit::<OpusInt32>::uninit(); MAX_PVQ_BAND_SIZE];
+
+    for j in 0..n {
+        let value = x[j];
+        sign_storage[j].write(i32::from(value < 0));
+        x[j] = if value < 0 {
+            value.wrapping_neg()
+        } else {
+            value
+        };
+        pulses_storage[j].write(0);
+        y_storage[j].write(0);
+    }
+    let pulses = unsafe { assume_init_slice_mut(&mut pulses_storage[..n]) };
+    let y = unsafe { assume_init_slice_mut(&mut y_storage[..n]) };
+    let signx = unsafe { assume_init_slice_mut(&mut sign_storage[..n]) };
+
+    let mut xy: i32 = 0;
+    let mut yy: i16 = 0;
+    let mut pulses_left = k;
+
+    if k > ((n as i32) >> 1) {
+        let mut sum: i32 = 0;
+        for &sample in x.iter().take(n) {
+            sum = sum.wrapping_add(sample as i32);
+        }
+
+        if sum <= k {
+            if n > 0 {
+                x[0] = 16_384;
+                for coeff in x.iter_mut().take(n).skip(1) {
+                    *coeff = 0;
+                }
+            }
+            sum = 16_384;
+        }
+
+        let rcp = extract16(mult16_32_q16(k as i16, celt_rcp_fixed(sum)));
+        for j in 0..n {
+            let iy = mult16_16_q15(x[j], rcp) as i32;
+            pulses[j] = iy;
+            let yj = iy as i16;
+            y[j] = yj;
+            yy = extract16(mac16_16(i32::from(yy), yj, yj));
+            xy = mac16_16(xy, x[j], yj);
+            y[j] = y[j].wrapping_shl(1);
+            pulses_left -= iy;
+        }
+    }
+
+    debug_assert!(pulses_left >= 0, "pulse allocation exceeded target count");
+    if pulses_left < 0 {
+        pulses_left = 0;
+    }
+
+    if pulses_left > n as i32 + 3 {
+        let tmp = pulses_left as i16;
+        yy = extract16(mac16_16(i32::from(yy), tmp, tmp));
+        yy = extract16(mac16_16(i32::from(yy), tmp, y[0]));
+        pulses[0] += pulses_left;
+        pulses_left = 0;
+    }
+
+    for i in 0..pulses_left {
+        let rshift = 1 + celt_ilog2(k - pulses_left + i + 1);
+        yy = add16(yy, 1);
+
+        let mut best_id = 0usize;
+        let rxy = extract16(shr32(add32(xy, i32::from(x[0])), rshift as u32));
+        let ryy = add16(yy, y[0]);
+        let rxy_sq = mult16_16_q15(rxy, rxy);
+        let mut best_den = ryy;
+        let mut best_num: i32 = i32::from(rxy_sq);
+
+        let x_tail = &x[1..n];
+        let y_tail = &y[1..n];
+        let mut x_chunks = x_tail.chunks_exact(4);
+        let mut y_chunks = y_tail.chunks_exact(4);
+        for (chunk_idx, (x_chunk, y_chunk)) in (&mut x_chunks).zip(&mut y_chunks).enumerate() {
+            let base = 1 + chunk_idx * 4;
+
+            let rxy0 = extract16(shr32(add32(xy, i32::from(x_chunk[0])), rshift as u32));
+            let ryy0 = add16(yy, y_chunk[0]);
+            let num0 = mult16_16_q15(rxy0, rxy0);
+            select_pvq_candidate_fixed(&mut best_id, &mut best_den, &mut best_num, base, ryy0, num0);
+
+            let rxy1 = extract16(shr32(add32(xy, i32::from(x_chunk[1])), rshift as u32));
+            let ryy1 = add16(yy, y_chunk[1]);
+            let num1 = mult16_16_q15(rxy1, rxy1);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 1,
+                ryy1,
+                num1,
+            );
+
+            let rxy2 = extract16(shr32(add32(xy, i32::from(x_chunk[2])), rshift as u32));
+            let ryy2 = add16(yy, y_chunk[2]);
+            let num2 = mult16_16_q15(rxy2, rxy2);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 2,
+                ryy2,
+                num2,
+            );
+
+            let rxy3 = extract16(shr32(add32(xy, i32::from(x_chunk[3])), rshift as u32));
+            let ryy3 = add16(yy, y_chunk[3]);
+            let num3 = mult16_16_q15(rxy3, rxy3);
+            select_pvq_candidate_fixed(
+                &mut best_id,
+                &mut best_den,
+                &mut best_num,
+                base + 3,
+                ryy3,
+                num3,
+            );
+        }
+
+        let rem_start = n - x_chunks.remainder().len();
+        for j in rem_start..n {
+            let rxy = extract16(shr32(add32(xy, i32::from(x[j])), rshift as u32));
+            let ryy = add16(yy, y[j]);
+            let rxy_sq = mult16_16_q15(rxy, rxy);
+            select_pvq_candidate_fixed(&mut best_id, &mut best_den, &mut best_num, j, ryy, rxy_sq);
+        }
+
+        xy = add32(xy, i32::from(x[best_id]));
+        yy = add16(yy, y[best_id]);
+        y[best_id] = y[best_id].wrapping_add(2);
+        pulses[best_id] += 1;
+    }
+
+    for j in 0..n {
+        let sign = -signx[j];
+        pulses[j] = (pulses[j] ^ sign) + signx[j];
+    }
+
+    yy
+}
+
 /// Algebraic pulse quantiser from `celt/vq.c`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn alg_quant(
@@ -707,26 +950,27 @@ pub(crate) fn alg_quant(
     resynth: bool,
     arch: i32,
 ) -> u32 {
-    assert!(k > 0, "alg_quant requires at least one pulse");
-    assert!(n > 1, "alg_quant requires at least two dimensions");
-    assert!(x.len() >= n, "input vector shorter than band size");
+    debug_assert!(k > 0, "alg_quant requires at least one pulse");
+    debug_assert!(n > 1, "alg_quant requires at least two dimensions");
+    debug_assert!(x.len() >= n, "input vector shorter than band size");
     debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut pulses = [0i32; MAX_PVQ_BAND_SIZE + 3];
+    let mut pulses_storage = [MaybeUninit::<OpusInt32>::uninit(); MAX_PVQ_BAND_SIZE];
 
     exp_rotation(x, n, 1, b, k, spread);
 
-    let yy = op_pvq_search(x, &mut pulses[..n + 3], n, k, arch);
+    let yy = op_pvq_search_uninit(x, &mut pulses_storage[..n], n, k, arch);
+    let pulses = unsafe { assume_init_slice_mut(&mut pulses_storage[..n]) };
 
     let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
-    encode_pulses(&pulses[..n], n, total_pulses, enc);
+    encode_pulses(pulses, n, total_pulses, enc);
 
     if resynth {
-        normalise_residual(&pulses[..n], x, n, yy, gain);
+        normalise_residual(pulses, x, n, yy, gain);
         exp_rotation(x, n, -1, b, k, spread);
     }
 
-    extract_collapse_mask(&pulses[..n], n, b)
+    extract_collapse_mask(pulses, n, b)
 }
 
 #[cfg(feature = "fixed_point")]
@@ -742,26 +986,27 @@ pub(crate) fn alg_quant_fixed(
     resynth: bool,
     arch: i32,
 ) -> u32 {
-    assert!(k > 0, "alg_quant requires at least one pulse");
-    assert!(n > 1, "alg_quant requires at least two dimensions");
-    assert!(x.len() >= n, "input vector shorter than band size");
+    debug_assert!(k > 0, "alg_quant requires at least one pulse");
+    debug_assert!(n > 1, "alg_quant requires at least two dimensions");
+    debug_assert!(x.len() >= n, "input vector shorter than band size");
     debug_assert!(n <= MAX_PVQ_BAND_SIZE, "band exceeds PVQ stack bound");
 
-    let mut pulses = [0i32; MAX_PVQ_BAND_SIZE + 3];
+    let mut pulses_storage = [MaybeUninit::<OpusInt32>::uninit(); MAX_PVQ_BAND_SIZE];
 
     exp_rotation_fixed(x, n, 1, b, k, spread);
 
-    let yy = op_pvq_search_fixed(x, &mut pulses[..n + 3], n, k, arch);
+    let yy = op_pvq_search_fixed_uninit(x, &mut pulses_storage[..n], n, k, arch);
+    let pulses = unsafe { assume_init_slice_mut(&mut pulses_storage[..n]) };
 
     let total_pulses = usize::try_from(k).expect("pulse count must fit in usize");
-    encode_pulses(&pulses[..n], n, total_pulses, enc);
+    encode_pulses(pulses, n, total_pulses, enc);
 
     if resynth {
-        normalise_residual_fixed(&pulses[..n], x, n, i32::from(yy), gain);
+        normalise_residual_fixed(pulses, x, n, i32::from(yy), gain);
         exp_rotation_fixed(x, n, -1, b, k, spread);
     }
 
-    extract_collapse_mask(&pulses[..n], n, b)
+    extract_collapse_mask(pulses, n, b)
 }
 
 /// Algebraic pulse decoder mirroring `alg_unquant()`.
