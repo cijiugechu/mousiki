@@ -40,7 +40,13 @@ impl OggPacker {
         {
             self.flush_page();
         }
-        if self.stream.lacing_vals.len().saturating_add(segments_needed) > 255 {
+        if self
+            .stream
+            .lacing_vals
+            .len()
+            .saturating_add(segments_needed)
+            > 255
+        {
             self.flush_page();
         }
 
