@@ -52,6 +52,7 @@ silk_debug = ["dep:spin"]
 silk_tic_toc = ["dep:spin"]
 dhat_alloc = ["dep:dhat"]
 libopusenc = ["std"]
+opusfile = ["std"]
 
 [dependencies]
 libm = "0.2"
@@ -89,3 +90,8 @@ lto = "thin"
 name = "libopusenc_example"
 path = "examples/libopusenc_example.rs"
 required-features = ["libopusenc"]
+
+[[example]]
+name = "opusfile_example"
+path = "examples/opusfile_example.rs"
+required-features = ["opusfile"]

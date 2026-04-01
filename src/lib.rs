@@ -36,6 +36,8 @@ mod extensions;
 pub mod fargan;
 #[cfg(feature = "libopusenc")]
 pub mod libopusenc;
+#[cfg(feature = "opusfile")]
+pub mod opusfile;
 #[cfg(feature = "dred")]
 mod lpcnet_enc;
 mod mapping_matrix;
