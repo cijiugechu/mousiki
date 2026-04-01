@@ -33,6 +33,9 @@ use crate::projection::{
 const FRAME_SIZE_20_MS: usize = 960;
 const MAX_PACKET_SIZE: usize = 1277 * 6 * 255 + 2;
 const MAX_LOOKAHEAD: u32 = 96_000;
+const BUFFER_EXTRA: usize = 24_000;
+const BUFFER_SAMPLES: usize = MAX_LOOKAHEAD as usize + BUFFER_EXTRA;
+const CONVERT_BUFFER: usize = 4096;
 const LPC_PADDING: usize = 120;
 
 pub trait PacketHandler {
@@ -613,10 +616,8 @@ struct EncoderCore<O: OutputTarget, C: PacketHandler> {
     max_ogg_delay: u32,
     pcm_buffer: Vec<f32>,
     pcm_buffer_start: usize,
-    input_buffer: Vec<f32>,
-    frame_buffer: Vec<f32>,
+    pcm_buffer_end: usize,
     packet_buffer: Vec<u8>,
-    resampler_output_buffer: Vec<f32>,
     resampler_zero_buffer: Vec<f32>,
     resampler: Option<SpeexResampler>,
     write_granule: usize,
@@ -678,12 +679,10 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             decision_delay: builder.decision_delay,
             comment_padding: builder.comment_padding,
             max_ogg_delay: builder.muxing_delay.0,
-            pcm_buffer: Vec::new(),
+            pcm_buffer: vec![0.0; BUFFER_SAMPLES * usize::from(builder.channels)],
             pcm_buffer_start: 0,
-            input_buffer: Vec::new(),
-            frame_buffer: vec![0.0; FRAME_SIZE_20_MS * usize::from(builder.channels)],
+            pcm_buffer_end: 0,
             packet_buffer: vec![0; MAX_PACKET_SIZE],
-            resampler_output_buffer: Vec::new(),
             resampler_zero_buffer: Vec::new(),
             resampler,
             write_granule: 0,
@@ -725,19 +724,67 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             self.init_stream()?;
         }
 
-        let sample_count = samples_per_channel * self.channels;
-        let mut input_buffer = core::mem::take(&mut self.input_buffer);
-        if input_buffer.len() != sample_count {
-            input_buffer.resize(sample_count, 0.0);
-        }
-        for (dst, &sample) in input_buffer.iter_mut().zip(&pcm[..sample_count]) {
-            *dst = sample as f32 / 32768.0;
-        }
         self.write_granule += samples_per_channel;
-        let append_result = self.append_pcm(&input_buffer, samples_per_channel);
-        self.input_buffer = input_buffer;
-        append_result?;
-        self.process_ready_packets(false)
+        let mut start = 0usize;
+        let mut remaining = samples_per_channel;
+        while remaining > 0 {
+            if self.pcm_buffer_end == BUFFER_SAMPLES {
+                self.shift_pcm_buffer();
+            }
+            if self.pcm_buffer_end == BUFFER_SAMPLES {
+                return Err(LibopusencError::Internal);
+            }
+
+            let tail_capacity = BUFFER_SAMPLES - self.pcm_buffer_end;
+            if let Some(resampler) = &mut self.resampler {
+                let in_frames = (CONVERT_BUFFER / self.channels).max(1).min(remaining);
+                let in_samples = in_frames * self.channels;
+                let mut input_buffer = [0.0f32; CONVERT_BUFFER];
+                for (dst, &sample) in input_buffer[..in_samples]
+                    .iter_mut()
+                    .zip(&pcm[start * self.channels..start * self.channels + in_samples])
+                {
+                    *dst = sample as f32 / 32768.0;
+                }
+
+                let mut in_len = in_frames as u32;
+                let mut out_len = tail_capacity as u32;
+                let dst_start = self.pcm_buffer_end * self.channels;
+                let resample_result = resampler
+                    .process_interleaved_float(
+                        Some(&input_buffer[..in_samples]),
+                        &mut in_len,
+                        &mut self.pcm_buffer[dst_start..],
+                        &mut out_len,
+                    )
+                    .map_err(|_| LibopusencError::Internal);
+                resample_result?;
+                if in_len == 0 && out_len == 0 {
+                    return Err(LibopusencError::Internal);
+                }
+                self.pcm_buffer_end += out_len as usize;
+                self.resampled_granule += out_len as usize;
+                start += in_len as usize;
+                remaining -= in_len as usize;
+            } else {
+                let curr = remaining.min(tail_capacity);
+                let sample_count = curr * self.channels;
+                let dst_start = self.pcm_buffer_end * self.channels;
+                let dst_end = dst_start + sample_count;
+                for (dst, &sample) in self.pcm_buffer[dst_start..dst_end]
+                    .iter_mut()
+                    .zip(&pcm[start * self.channels..start * self.channels + sample_count])
+                {
+                    *dst = sample as f32 / 32768.0;
+                }
+                self.pcm_buffer_end += curr;
+                self.resampled_granule += curr;
+                start += curr;
+                remaining -= curr;
+            }
+            self.process_ready_packets(false)?;
+        }
+        Ok(())
     }
 
     fn write_float(
@@ -763,11 +810,53 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             self.init_stream()?;
         }
         self.write_granule += samples_per_channel;
-        self.append_pcm(
-            &pcm[..samples_per_channel * self.channels],
-            samples_per_channel,
-        )?;
-        self.process_ready_packets(false)
+        let mut start = 0usize;
+        let mut remaining = samples_per_channel;
+        while remaining > 0 {
+            if self.pcm_buffer_end == BUFFER_SAMPLES {
+                self.shift_pcm_buffer();
+            }
+            if self.pcm_buffer_end == BUFFER_SAMPLES {
+                return Err(LibopusencError::Internal);
+            }
+
+            let tail_capacity = BUFFER_SAMPLES - self.pcm_buffer_end;
+            if let Some(resampler) = &mut self.resampler {
+                let mut in_len = remaining as u32;
+                let mut out_len = tail_capacity as u32;
+                let dst_start = self.pcm_buffer_end * self.channels;
+                let resample_result = resampler
+                    .process_interleaved_float(
+                        Some(&pcm[start * self.channels..]),
+                        &mut in_len,
+                        &mut self.pcm_buffer[dst_start..],
+                        &mut out_len,
+                    )
+                    .map_err(|_| LibopusencError::Internal);
+                resample_result?;
+                if in_len == 0 && out_len == 0 {
+                    return Err(LibopusencError::Internal);
+                }
+                self.pcm_buffer_end += out_len as usize;
+                self.resampled_granule += out_len as usize;
+                start += in_len as usize;
+                remaining -= in_len as usize;
+            } else {
+                let curr = remaining.min(tail_capacity);
+                let sample_count = curr * self.channels;
+                let dst_start = self.pcm_buffer_end * self.channels;
+                let dst_end = dst_start + sample_count;
+                self.pcm_buffer[dst_start..dst_end].copy_from_slice(
+                    &pcm[start * self.channels..start * self.channels + sample_count],
+                );
+                self.pcm_buffer_end += curr;
+                self.resampled_granule += curr;
+                start += curr;
+                remaining -= curr;
+            }
+            self.process_ready_packets(false)?;
+        }
+        Ok(())
     }
 
     fn start_next_stream(&mut self, comments: OggOpusComments) -> Result<(), LibopusencError> {
@@ -808,6 +897,7 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
         }
         self.pcm_buffer.clear();
         self.pcm_buffer_start = 0;
+        self.pcm_buffer_end = 0;
         self.emit_pages(false)?;
         self.output.finish()?;
         self.drained = true;
@@ -935,79 +1025,24 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
         Ok(())
     }
 
-    fn append_pcm(
-        &mut self,
-        pcm: &[f32],
-        samples_per_channel: usize,
-    ) -> Result<(), LibopusencError> {
-        let mut resampler_output_buffer = core::mem::take(&mut self.resampler_output_buffer);
-        if let Some(resampler) = &mut self.resampler {
-            let mut start = 0usize;
-            let mut remaining = samples_per_channel;
-            while remaining > 0 {
-                let out_capacity_frames = ((remaining as u64) * 48_000).div_ceil(self.rate as u64)
-                    as usize
-                    + resampler.output_latency() as usize
-                    + 16;
-                let out_capacity_samples = out_capacity_frames * self.channels;
-                if resampler_output_buffer.len() < out_capacity_samples {
-                    resampler_output_buffer.resize(out_capacity_samples, 0.0);
-                }
-                let mut in_len = remaining as u32;
-                let mut out_len = out_capacity_frames as u32;
-                let resample_result = resampler
-                    .process_interleaved_float(
-                        Some(&pcm[start * self.channels..]),
-                        &mut in_len,
-                        &mut resampler_output_buffer,
-                        &mut out_len,
-                    )
-                    .map_err(|_| LibopusencError::Internal);
-                if let Err(err) = resample_result {
-                    self.resampler_output_buffer = resampler_output_buffer;
-                    return Err(err);
-                }
-                if in_len == 0 && out_len == 0 {
-                    self.resampler_output_buffer = resampler_output_buffer;
-                    return Err(LibopusencError::Internal);
-                }
-                self.pcm_buffer.extend_from_slice(
-                    &resampler_output_buffer[..out_len as usize * self.channels],
-                );
-                self.resampled_granule += out_len as usize;
-                start += in_len as usize;
-                remaining -= in_len as usize;
-            }
-        } else {
-            self.pcm_buffer
-                .extend_from_slice(&pcm[..samples_per_channel * self.channels]);
-            self.resampled_granule += samples_per_channel;
-        }
-        self.resampler_output_buffer = resampler_output_buffer;
-        Ok(())
-    }
-
     fn buffered_frames(&self) -> usize {
-        self.pcm_buffer
-            .len()
-            .checked_div(self.channels)
-            .unwrap_or(0)
-            .saturating_sub(self.pcm_buffer_start)
+        self.pcm_buffer_end.saturating_sub(self.pcm_buffer_start)
     }
 
-    fn compact_pcm_buffer(&mut self) {
+    fn shift_pcm_buffer(&mut self) {
         if self.pcm_buffer_start == 0 {
             return;
         }
         let consumed_samples = self.pcm_buffer_start * self.channels;
-        if consumed_samples >= self.pcm_buffer.len() {
-            self.pcm_buffer.clear();
+        let used_samples = self.pcm_buffer_end * self.channels;
+        if consumed_samples >= used_samples {
             self.pcm_buffer_start = 0;
+            self.pcm_buffer_end = 0;
             return;
         }
-        self.pcm_buffer.copy_within(consumed_samples.., 0);
         self.pcm_buffer
-            .truncate(self.pcm_buffer.len() - consumed_samples);
+            .copy_within(consumed_samples..used_samples, 0);
+        self.pcm_buffer_end -= self.pcm_buffer_start;
         self.pcm_buffer_start = 0;
     }
 
@@ -1047,19 +1082,16 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             let frame_samples = self.frame_size * self.channels;
             let src_start = self.pcm_buffer_start * self.channels;
             let src_end = src_start + frame_samples;
-            let mut frame_buffer = core::mem::take(&mut self.frame_buffer);
-            if frame_buffer.len() != frame_samples {
-                frame_buffer.resize(frame_samples, 0.0);
-            }
-            frame_buffer.copy_from_slice(&self.pcm_buffer[src_start..src_end]);
 
             let mut packet_buffer = core::mem::take(&mut self.packet_buffer);
             if packet_buffer.len() != MAX_PACKET_SIZE {
                 packet_buffer.resize(MAX_PACKET_SIZE, 0);
             }
-            let packet_len =
-                self.backend
-                    .encode_float(&frame_buffer, self.frame_size, &mut packet_buffer)?;
+            let packet_len = self.backend.encode_float(
+                &self.pcm_buffer[src_start..src_end],
+                self.frame_size,
+                &mut packet_buffer,
+            )?;
 
             if let Some(prev) = previous_prediction {
                 self.backend.set_prediction_disabled(prev)?;
@@ -1089,7 +1121,6 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
 
             let commit_result =
                 self.commit_packet(&packet_buffer[..packet_len], granulepos, packet_is_last);
-            self.frame_buffer = frame_buffer;
             self.packet_buffer = packet_buffer;
             commit_result?;
             if packet_is_last {
@@ -1098,27 +1129,31 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             } else {
                 self.emit_pages(false)?;
             }
-
-            if self.pcm_buffer_start >= self.frame_size * 8 {
-                self.compact_pcm_buffer();
-            }
         }
 
         if self.streams.is_empty() {
-            self.compact_pcm_buffer();
+            self.pcm_buffer_start = 0;
+            self.pcm_buffer_end = 0;
+        } else if self.pcm_buffer_end == BUFFER_SAMPLES {
+            self.shift_pcm_buffer();
         }
         Ok(())
     }
 
     fn flush_resampler(&mut self, target_frames: usize) -> Result<(), LibopusencError> {
-        let mut resampler_output_buffer = core::mem::take(&mut self.resampler_output_buffer);
         let mut resampler_zero_buffer = core::mem::take(&mut self.resampler_zero_buffer);
-        let Some(resampler) = &mut self.resampler else {
-            self.resampler_output_buffer = resampler_output_buffer;
+        let Some(mut resampler) = self.resampler.take() else {
             self.resampler_zero_buffer = resampler_zero_buffer;
             return Ok(());
         };
         while self.resampled_granule < target_frames {
+            if self.pcm_buffer_end == BUFFER_SAMPLES {
+                self.shift_pcm_buffer();
+            }
+            if self.pcm_buffer_end == BUFFER_SAMPLES {
+                self.resampler_zero_buffer = resampler_zero_buffer;
+                return Err(LibopusencError::Internal);
+            }
             let remaining = target_frames - self.resampled_granule;
             let zero_in_frames = ((remaining as u64) * self.rate as u64).div_ceil(48_000) as usize
                 + resampler.input_latency() as usize
@@ -1127,40 +1162,31 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
             if resampler_zero_buffer.len() < zero_in_samples {
                 resampler_zero_buffer.resize(zero_in_samples, 0.0);
             }
-            let out_capacity_frames = ((zero_in_frames as u64) * 48_000).div_ceil(self.rate as u64)
-                as usize
-                + resampler.output_latency() as usize
-                + 16;
-            let out_capacity_samples = out_capacity_frames * self.channels;
-            if resampler_output_buffer.len() < out_capacity_samples {
-                resampler_output_buffer.resize(out_capacity_samples, 0.0);
-            }
             let mut in_len = zero_in_frames as u32;
-            let mut out_len = out_capacity_frames as u32;
+            let mut out_len = (BUFFER_SAMPLES - self.pcm_buffer_end) as u32;
             let resample_result = resampler
                 .process_interleaved_float(
                     Some(&resampler_zero_buffer[..zero_in_samples]),
                     &mut in_len,
-                    &mut resampler_output_buffer,
+                    &mut self.pcm_buffer[self.pcm_buffer_end * self.channels..],
                     &mut out_len,
                 )
                 .map_err(|_| LibopusencError::Internal);
             if let Err(err) = resample_result {
-                self.resampler_output_buffer = resampler_output_buffer;
+                self.resampler = Some(resampler);
                 self.resampler_zero_buffer = resampler_zero_buffer;
                 return Err(err);
             }
             if in_len == 0 && out_len == 0 {
-                self.resampler_output_buffer = resampler_output_buffer;
+                self.resampler = Some(resampler);
                 self.resampler_zero_buffer = resampler_zero_buffer;
                 return Err(LibopusencError::Internal);
             }
             let take_frames = remaining.min(out_len as usize);
-            self.pcm_buffer
-                .extend_from_slice(&resampler_output_buffer[..take_frames * self.channels]);
+            self.pcm_buffer_end += take_frames;
             self.resampled_granule += take_frames;
         }
-        self.resampler_output_buffer = resampler_output_buffer;
+        self.resampler = Some(resampler);
         self.resampler_zero_buffer = resampler_zero_buffer;
         Ok(())
     }
@@ -1178,8 +1204,14 @@ impl<O: OutputTarget, C: PacketHandler> EncoderCore<O, C> {
                 .and_then(|value| value.checked_add(1))
                 .ok_or(LibopusencError::Internal)?,
         );
-        self.pcm_buffer
-            .resize(self.pcm_buffer.len() + pad_frames * self.channels, 0.0);
+        self.shift_pcm_buffer();
+        if self.pcm_buffer_end + pad_frames > BUFFER_SAMPLES {
+            return Err(LibopusencError::Internal);
+        }
+        let pad_start = self.pcm_buffer_end * self.channels;
+        let pad_end = pad_start + pad_frames * self.channels;
+        self.pcm_buffer[pad_start..pad_end].fill(0.0);
+        self.pcm_buffer_end += pad_frames;
         self.resampled_granule = self
             .resampled_granule
             .checked_add(pad_frames)

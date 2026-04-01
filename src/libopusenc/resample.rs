@@ -2,6 +2,8 @@ extern crate std;
 
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::{vaddq_f32, vaddvq_f32, vdupq_n_f32, vld1q_f32, vmulq_f32};
 
 const QUALITY_MAP: [QualityMapping; 11] = [
     QualityMapping::new(8, 4, 0.830, 0.860, WindowFunction::Kaiser6),
@@ -20,6 +22,35 @@ const QUALITY_MAP: [QualityMapping; 11] = [
 // Upstream libopusenc enables RESAMPLE_FULL_SINC_TABLE in configure.ac/config.h.
 // Match that build configuration so the port selects the same direct sinc kernels.
 const RESAMPLE_FULL_SINC_TABLE: bool = true;
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_product_f32_neon(lhs: *const f32, rhs: *const f32, len: usize) -> f32 {
+    unsafe {
+        let mut acc0 = vdupq_n_f32(0.0);
+        let mut acc1 = vdupq_n_f32(0.0);
+        let mut index = 0usize;
+
+        while index + 8 <= len {
+            acc0 = vaddq_f32(
+                acc0,
+                vmulq_f32(vld1q_f32(lhs.add(index)), vld1q_f32(rhs.add(index))),
+            );
+            acc1 = vaddq_f32(
+                acc1,
+                vmulq_f32(vld1q_f32(lhs.add(index + 4)), vld1q_f32(rhs.add(index + 4))),
+            );
+            index += 8;
+        }
+
+        let mut sum = vaddvq_f32(vaddq_f32(acc0, acc1));
+        while index < len {
+            sum += *lhs.add(index) * *rhs.add(index);
+            index += 1;
+        }
+        sum
+    }
+}
 
 const KAISER12_TABLE: [f64; 68] = [
     0.99859849,
@@ -436,7 +467,69 @@ impl SpeexResampler {
         output: &mut [f32],
         out_len: &mut u32,
     ) -> Result<(), ResamplerError> {
-        self.process(channel_index, input, in_len, output, out_len)
+        let channel = channel_index as usize;
+        if channel >= self.nb_channels as usize {
+            return Err(ResamplerError::InvalidArg);
+        }
+
+        let mut ilen = *in_len as usize;
+        let mut olen = *out_len as usize;
+        let filt_offs = self.filt_len.saturating_sub(1) as usize;
+        let xlen = self.mem_alloc_size as usize - filt_offs;
+        let istride = self.in_stride as usize;
+
+        let mut out_cursor = 0usize;
+        let mut in_cursor = 0usize;
+
+        if self.magic_samples[channel] > 0 {
+            let produced = self.process_magic::<f32>(channel, output, out_cursor, olen)?;
+            out_cursor += produced * self.out_stride as usize;
+            olen -= produced;
+        }
+
+        if self.magic_samples[channel] == 0 {
+            while ilen > 0 && olen > 0 {
+                let mut ichunk = ilen.min(xlen);
+                let mut ochunk = olen;
+                let mem_offset = channel * self.mem_alloc_size as usize;
+                let dst_start = mem_offset + filt_offs;
+
+                if let Some(src) = input {
+                    let required = if ichunk > 0 {
+                        in_cursor + (ichunk - 1) * istride + 1
+                    } else {
+                        0
+                    };
+                    if required > src.len() {
+                        return Err(ResamplerError::InvalidArg);
+                    }
+                    unsafe {
+                        let src_ptr = src.as_ptr().add(in_cursor);
+                        let dst_ptr = self.mem.as_mut_ptr().add(dst_start);
+                        let mut j = 0usize;
+                        while j < ichunk {
+                            *dst_ptr.add(j) = *src_ptr.add(j * istride);
+                            j += 1;
+                        }
+                    }
+                } else {
+                    self.mem[dst_start..dst_start + ichunk].fill(0.0)
+                }
+
+                self.process_native(channel, &mut ichunk, output, out_cursor, &mut ochunk)?;
+                ilen -= ichunk;
+                olen -= ochunk;
+                out_cursor += ochunk * self.out_stride as usize;
+                in_cursor += ichunk * istride;
+            }
+        }
+
+        *in_len -= ilen as u32;
+        *out_len -= olen as u32;
+        if self.mode == ResamplerImpl::Zero {
+            return Err(ResamplerError::AllocFailed);
+        }
+        Ok(())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -458,7 +551,37 @@ impl SpeexResampler {
         output: &mut [f32],
         out_len: &mut u32,
     ) -> Result<(), ResamplerError> {
-        self.process_interleaved(input, in_len, output, out_len, Self::process_float)
+        let bak_out_len = *out_len;
+        let bak_in_len = *in_len;
+        let istride = self.in_stride;
+        let ostride = self.out_stride;
+        self.in_stride = self.nb_channels;
+        self.out_stride = self.nb_channels;
+
+        let result = (|| {
+            for i in 0..self.nb_channels as usize {
+                *out_len = bak_out_len;
+                *in_len = bak_in_len;
+                if i >= output.len() {
+                    return Err(ResamplerError::InvalidArg);
+                }
+                let in_slice = match input {
+                    Some(src) => {
+                        if i >= src.len() {
+                            return Err(ResamplerError::InvalidArg);
+                        }
+                        Some(&src[i..])
+                    }
+                    None => None,
+                };
+                self.process_float(i as u32, in_slice, in_len, &mut output[i..], out_len)?;
+            }
+            Ok(())
+        })();
+
+        self.in_stride = istride;
+        self.out_stride = ostride;
+        result
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -586,9 +709,10 @@ impl SpeexResampler {
         if self.magic_samples[channel] > 0 {
             let mem_offset = channel * self.mem_alloc_size as usize;
             let n = self.filt_len as usize;
-            for i in 0..self.magic_samples[channel] as usize {
-                self.mem[mem_offset + n - 1 + i] = self.mem[mem_offset + n - 1 + i + tmp_in_len];
-            }
+            let magic = self.magic_samples[channel] as usize;
+            let src_start = mem_offset + n - 1 + tmp_in_len;
+            let src_end = src_start + magic;
+            self.mem.copy_within(src_start..src_end, mem_offset + n - 1);
         }
         Ok(produced)
     }
@@ -654,6 +778,9 @@ impl SpeexResampler {
         let frac_advance = self.frac_advance;
         let den_rate = self.den_rate;
         let mem_offset = channel * self.mem_alloc_size as usize;
+        if out_len > 0 {
+            debug_assert!(out_offset + (out_len - 1) * out_stride < output.len());
+        }
 
         let mut out_sample = 0usize;
         let mut last_sample = self.last_sample[channel];
@@ -661,17 +788,30 @@ impl SpeexResampler {
         while last_sample < in_len as i32 && out_sample < out_len {
             let sinc_offset = samp_frac_num as usize * n;
             let input_offset = mem_offset + last_sample as usize;
-            let mut sum = 0.0f32;
+            let sum;
             unsafe {
                 // The resampler keeps `filt_len - 1 + in_len` samples in `mem`,
                 // so this contiguous FIR window is guaranteed in-bounds here.
                 let sinc_ptr = self.sinc_table.as_ptr().add(sinc_offset);
                 let mem_ptr = self.mem.as_ptr().add(input_offset);
-                for j in 0..n {
-                    sum += *sinc_ptr.add(j) * *mem_ptr.add(j);
+                #[cfg(target_arch = "aarch64")]
+                {
+                    sum = dot_product_f32_neon(sinc_ptr, mem_ptr, n);
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    let mut scalar_sum = 0.0f32;
+                    for j in 0..n {
+                        scalar_sum += *sinc_ptr.add(j) * *mem_ptr.add(j);
+                    }
+                    sum = scalar_sum;
                 }
             }
-            output[out_offset + out_sample * out_stride].write_resampler_f32(sum);
+            unsafe {
+                output
+                    .get_unchecked_mut(out_offset + out_sample * out_stride)
+                    .write_resampler_f32(sum);
+            }
             out_sample += 1;
             last_sample += int_advance as i32;
             samp_frac_num += frac_advance;
@@ -702,6 +842,9 @@ impl SpeexResampler {
         let frac_advance = self.frac_advance;
         let den_rate = self.den_rate;
         let mem_offset = channel * self.mem_alloc_size as usize;
+        if out_len > 0 {
+            debug_assert!(out_offset + (out_len - 1) * out_stride < output.len());
+        }
 
         let mut out_sample = 0usize;
         let mut last_sample = self.last_sample[channel];
@@ -722,8 +865,11 @@ impl SpeexResampler {
                     j += 4;
                 }
             }
-            output[out_offset + out_sample * out_stride]
-                .write_resampler_f32((accum[0] + accum[1] + accum[2] + accum[3]) as f32);
+            unsafe {
+                output
+                    .get_unchecked_mut(out_offset + out_sample * out_stride)
+                    .write_resampler_f32((accum[0] + accum[1] + accum[2] + accum[3]) as f32);
+            }
             out_sample += 1;
             last_sample += int_advance as i32;
             samp_frac_num += frac_advance;
@@ -755,6 +901,9 @@ impl SpeexResampler {
         let den_rate = self.den_rate;
         let oversample = self.oversample as usize;
         let mem_offset = channel * self.mem_alloc_size as usize;
+        if out_len > 0 {
+            debug_assert!(out_offset + (out_len - 1) * out_stride < output.len());
+        }
 
         let mut out_sample = 0usize;
         let mut last_sample = self.last_sample[channel];
@@ -783,7 +932,11 @@ impl SpeexResampler {
                 + interp[1] * accum[1]
                 + interp[2] * accum[2]
                 + interp[3] * accum[3];
-            output[out_offset + out_sample * out_stride].write_resampler_f32(sum);
+            unsafe {
+                output
+                    .get_unchecked_mut(out_offset + out_sample * out_stride)
+                    .write_resampler_f32(sum);
+            }
             out_sample += 1;
             last_sample += int_advance as i32;
             samp_frac_num += frac_advance;
@@ -815,6 +968,9 @@ impl SpeexResampler {
         let den_rate = self.den_rate;
         let oversample = self.oversample as usize;
         let mem_offset = channel * self.mem_alloc_size as usize;
+        if out_len > 0 {
+            debug_assert!(out_offset + (out_len - 1) * out_stride < output.len());
+        }
 
         let mut out_sample = 0usize;
         let mut last_sample = self.last_sample[channel];
@@ -843,7 +999,11 @@ impl SpeexResampler {
                 + interp[1] as f64 * accum[1]
                 + interp[2] as f64 * accum[2]
                 + interp[3] as f64 * accum[3];
-            output[out_offset + out_sample * out_stride].write_resampler_f32(sum as f32);
+            unsafe {
+                output
+                    .get_unchecked_mut(out_offset + out_sample * out_stride)
+                    .write_resampler_f32(sum as f32);
+            }
             out_sample += 1;
             last_sample += int_advance as i32;
             samp_frac_num += frac_advance;
@@ -872,12 +1032,19 @@ impl SpeexResampler {
         let int_advance = self.int_advance;
         let frac_advance = self.frac_advance;
         let den_rate = self.den_rate;
+        if out_len > 0 {
+            debug_assert!(out_offset + (out_len - 1) * out_stride < output.len());
+        }
 
         let mut out_sample = 0usize;
         let mut last_sample = self.last_sample[channel];
         let mut samp_frac_num = self.samp_frac_num[channel];
         while last_sample < in_len as i32 && out_sample < out_len {
-            output[out_offset + out_sample * out_stride].write_resampler_f32(0.0);
+            unsafe {
+                output
+                    .get_unchecked_mut(out_offset + out_sample * out_stride)
+                    .write_resampler_f32(0.0);
+            }
             out_sample += 1;
             last_sample += int_advance as i32;
             samp_frac_num += frac_advance;
