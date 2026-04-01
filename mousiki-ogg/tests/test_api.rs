@@ -1,108 +1,80 @@
-use mousiki_ogg::{BitOrder, BitPacker, BitUnpacker, Packet, StreamState, SyncState};
+use mousiki_ogg::{
+    BitOrder, BitPacker, BitUnpacker, Packet, PacketMetadata, PageReader, StreamDecoder,
+    StreamEncoder,
+};
 
 #[test]
-fn bitpack_api_matches_upstream_baseline() {
-    let mut pack_lsb = BitPacker::new(BitOrder::Lsb);
-    assert_eq!(0, pack_lsb.writecheck());
-    pack_lsb.write(5, 3).expect("write");
-    assert_eq!(3, pack_lsb.bits());
-    assert_eq!(1, pack_lsb.bytes());
-    pack_lsb.writealign().expect("align");
-    assert_eq!(8, pack_lsb.bits());
-    pack_lsb.writetrunc(3);
-    assert_eq!(3, pack_lsb.bits());
-    assert_eq!(1, pack_lsb.bytes());
+fn bitpack_rust_api_tracks_bit_lengths() {
+    let mut packer = BitPacker::new(BitOrder::Lsb);
+    assert!(packer.is_valid());
+    packer.write_bits(5, 3).expect("write");
+    assert_eq!(3, packer.bit_len());
+    assert_eq!(1, packer.byte_len());
+    packer.align_to_byte().expect("align");
+    assert_eq!(8, packer.bit_len());
+    packer.truncate_bits(3);
+    assert_eq!(3, packer.bit_len());
 
-    let mut read_lsb = BitUnpacker::new(BitOrder::Lsb, pack_lsb.buffer());
-    assert_eq!(5, read_lsb.read(3).expect("read"));
+    let mut unpacker = BitUnpacker::new(BitOrder::Lsb, packer.as_bytes());
+    assert_eq!(5, unpacker.read_bits(3).expect("read"));
 
-    pack_lsb.writeclear();
-    assert_eq!(-1, pack_lsb.writecheck());
-
-    let mut pack_msb = BitPacker::new(BitOrder::Msb);
-    assert_eq!(0, pack_msb.writecheck());
-    pack_msb.write(5, 3).expect("write");
-    assert_eq!(3, pack_msb.bits());
-    pack_msb.writealign().expect("align");
-    assert_eq!(8, pack_msb.bits());
-    pack_msb.writetrunc(3);
-    assert_eq!(3, pack_msb.bits());
-
-    let mut read_msb = BitUnpacker::new(BitOrder::Msb, pack_msb.buffer());
-    assert_eq!(5, read_msb.read(3).expect("read"));
-
-    pack_msb.writeclear();
-    assert_eq!(-1, pack_msb.writecheck());
+    packer.clear();
+    assert!(!packer.is_valid());
 }
 
 #[test]
-fn page_stream_sync_api_matches_upstream_baseline() {
-    let mut stream = StreamState::new(0x1234_5678);
-    assert_eq!(0, stream.check());
-    assert_eq!(0, stream.eos());
+fn stream_encoder_decoder_roundtrip_packets() {
+    let mut encoder = StreamEncoder::new(0x1234_5678);
+    let metadata = PacketMetadata {
+        beginning_of_stream: true,
+        end_of_stream: true,
+        granule_position: 321,
+        sequence_number: 0,
+    };
+    encoder
+        .push_packet_data(&[0x11, 0x22, 0x33], metadata)
+        .expect("packet");
+    assert!(encoder.is_end_of_stream());
+    assert_eq!(1, encoder.pending_segment_count());
 
-    let packet = Packet::new(vec![0x11, 0x22, 0x33], true, true, 321, 0);
-    assert_eq!(0, stream.packet_in(&packet));
-    assert_ne!(0, stream.eos());
-
-    let page = stream.flush().expect("page");
+    let page = encoder.flush_page().expect("page");
     assert_eq!(0, page.version());
-    assert_eq!(0, page.continued());
-    assert_ne!(0, page.bos());
-    assert_ne!(0, page.eos());
-    assert_eq!(0, page.granulepos());
-    assert_eq!(0x1234_5678_u32 as i32, page.serialno());
-    assert_eq!(0, page.pageno());
-    assert_eq!(1, page.packets());
+    assert!(!page.is_continued());
+    assert!(page.is_beginning_of_stream());
+    assert!(page.is_end_of_stream());
+    assert_eq!(0, page.granule_position());
+    assert_eq!(0x1234_5678_u32 as i32, page.stream_serial());
+    assert_eq!(0, page.sequence_number());
+    assert_eq!(1, page.packet_count());
 
-    let mut checksum_page = page.clone();
-    checksum_page.header[22..26].fill(0);
-    checksum_page.checksum_set();
-    assert_eq!(&checksum_page.header[22..26], &page.header[22..26]);
-
-    stream.reset_serialno(0x0bad_beef_u32 as i32);
-    assert_eq!(0x0bad_beef_u32 as i32, stream.serialno);
-    assert_eq!(-1, stream.pageno);
-    assert_eq!(0, stream.eos());
-
-    let page_bytes = page.to_bytes();
-    let mut sync = SyncState::new();
-    assert_eq!(0, sync.check());
-    {
-        let buf = sync.buffer(page_bytes.len() + 2);
-        buf[0] = b'x';
-        buf[1] = b'y';
-        buf[2..].copy_from_slice(&page_bytes);
-    }
-    assert_eq!(0, sync.wrote(page_bytes.len() + 2));
-    assert_eq!(-2, sync.pageseek().expect_err("skip garbage"));
-    let synced_page = sync.pageseek().expect("pageseek").expect("page");
-    assert_eq!(page.serialno(), synced_page.serialno());
-
-    sync.reset();
-    {
-        let buf = sync.buffer(page_bytes.len());
-        buf.copy_from_slice(&page_bytes);
-    }
-    assert_eq!(0, sync.wrote(page_bytes.len()));
-    let synced_page = sync.pageout().expect("pageout").expect("page");
-    assert_eq!(1, synced_page.packets());
-
-    sync.clear();
-    assert_eq!(0, sync.check());
-    assert_eq!(16, sync.buffer(16).len());
-
-    stream.clear();
-    assert_ne!(0, stream.check());
+    let mut decoder = StreamDecoder::new(page.stream_serial());
+    decoder.push_page(&page).expect("page in");
+    let packet = decoder.next_packet().expect("packet out").expect("packet");
+    assert_eq!(&[0x11, 0x22, 0x33], packet.data());
+    assert!(packet.is_beginning_of_stream());
+    assert!(packet.is_end_of_stream());
+    assert_eq!(0, packet.sequence_number());
 }
 
 #[test]
-fn packet_clear_matches_upstream_baseline() {
-    let mut packet = Packet::new(vec![0; 8], true, true, 99, 7);
-    packet.clear();
-    assert!(packet.packet.is_empty());
-    assert_eq!(0, packet.b_o_s);
-    assert_eq!(0, packet.e_o_s);
-    assert_eq!(0, packet.granulepos);
-    assert_eq!(0, packet.packetno);
+fn page_reader_extracts_pages_from_buffered_input() {
+    let mut encoder = StreamEncoder::new(0x0bad_beef_u32 as i32);
+    let packet = Packet::with_metadata(
+        vec![1, 2, 3, 4],
+        PacketMetadata {
+            beginning_of_stream: true,
+            granule_position: 77,
+            ..PacketMetadata::default()
+        },
+    );
+    encoder.push_packet(&packet).expect("packet");
+    let page_bytes = encoder.flush_page().expect("page").into_bytes();
+
+    let mut reader = PageReader::new();
+    reader.push_bytes(&page_bytes[..5]).expect("first chunk");
+    assert!(reader.next_page().expect("page state").is_none());
+    reader.push_bytes(&page_bytes[5..]).expect("second chunk");
+    let page = reader.next_page().expect("page state").expect("page");
+    assert_eq!(0x0bad_beef_u32 as i32, page.stream_serial());
+    assert_eq!(&[1, 2, 3, 4], page.body_bytes());
 }

@@ -1,4 +1,5 @@
-use mousiki_ogg::{BitOrder, BitPacker, Packet, StreamState};
+use mousiki_ogg::c_style_api::*;
+use mousiki_ogg::{Packet, PacketMetadata};
 
 #[test]
 fn upstream_bitwise_lsb_and_msb_vectors_match() {
@@ -15,19 +16,21 @@ fn upstream_bitwise_lsb_and_msb_vectors_match() {
         126, 34, 55, 244, 171, 85, 100, 39, 195, 173, 18, 245, 251, 128,
     ];
 
-    let mut lsb = BitPacker::new(BitOrder::Lsb);
+    let mut lsb = OggPackBuffer::default();
+    oggpack_writeinit(&mut lsb);
     for &value in &testbuffer1 {
         let bits = 32 - value.leading_zeros();
-        lsb.write(value, bits as i32).expect("lsb write");
+        assert_eq!(0, oggpack_write(&mut lsb, value, bits as i32));
     }
-    assert_eq!(&expected_lsb, lsb.buffer());
+    assert_eq!(&expected_lsb, oggpack_get_buffer(&lsb));
 
-    let mut msb = BitPacker::new(BitOrder::Msb);
+    let mut msb = OggPackBuffer::default();
+    oggpack_b_writeinit(&mut msb);
     for &value in &testbuffer1 {
         let bits = 32 - value.leading_zeros();
-        msb.write(value, bits as i32).expect("msb write");
+        assert_eq!(0, oggpack_b_write(&mut msb, value, bits as i32));
     }
-    assert_eq!(&expected_msb, msb.buffer());
+    assert_eq!(&expected_msb, oggpack_b_get_buffer(&msb));
 }
 
 #[test]
@@ -36,19 +39,20 @@ fn upstream_single_page_header_matches() {
         0x4f, 0x67, 0x67, 0x53, 0, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
         0x02, 0x03, 0x04, 0, 0, 0, 0, 0x15, 0xed, 0xec, 0x91, 1, 17,
     ];
-    let mut stream = StreamState::new(0x0403_0201);
-    let packet = Packet::new(
+    let mut stream = OggStreamState::new(0x0403_0201);
+    let packet = Packet::with_metadata(
         (0..17).map(|value| value as u8).collect(),
-        false,
-        true,
-        7,
-        0,
+        PacketMetadata {
+            end_of_stream: true,
+            granule_position: 7,
+            ..PacketMetadata::default()
+        },
     );
-    assert_eq!(0, stream.packet_in(&packet));
-    let page = stream.page_out().expect("page");
-    assert_eq!(&expected_header, page.header.as_slice());
+    assert_eq!(0, ogg_stream_packetin(&mut stream, &packet));
+    let page = ogg_stream_pageout(&mut stream).expect("page");
+    assert_eq!(&expected_header, page.header_bytes());
     assert_eq!(
         (0..17).map(|value| value as u8).collect::<Vec<_>>(),
-        page.body
+        page.body_bytes()
     );
 }

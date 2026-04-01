@@ -4,13 +4,20 @@ use alloc::vec::Vec;
 
 use crate::crc::update_crc;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Page {
-    pub header: Vec<u8>,
-    pub body: Vec<u8>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PageFlags {
+    pub continued: bool,
+    pub beginning_of_stream: bool,
+    pub end_of_stream: bool,
 }
 
-pub struct Segments<'a> {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Page {
+    header: Vec<u8>,
+    body: Vec<u8>,
+}
+
+pub struct SegmentSlices<'a> {
     page: &'a Page,
     index: usize,
     offset: usize,
@@ -18,7 +25,7 @@ pub struct Segments<'a> {
 
 impl Page {
     #[must_use]
-    pub fn new(header: Vec<u8>, body: Vec<u8>) -> Self {
+    pub fn from_parts(header: Vec<u8>, body: Vec<u8>) -> Self {
         Self { header, body }
     }
 
@@ -33,27 +40,63 @@ impl Page {
     }
 
     #[must_use]
+    pub fn header_bytes(&self) -> &[u8] {
+        &self.header
+    }
+
+    #[must_use]
+    pub fn body_bytes(&self) -> &[u8] {
+        &self.body
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.header.len() + self.body.len());
+        out.extend_from_slice(&self.header);
+        out.extend_from_slice(&self.body);
+        out
+    }
+
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.header.len() + self.body.len());
+        out.extend_from_slice(&self.header);
+        out.extend_from_slice(&self.body);
+        out
+    }
+
+    #[must_use]
     pub fn version(&self) -> i32 {
         self.header.get(4).copied().unwrap_or(0) as i32
     }
 
     #[must_use]
-    pub fn continued(&self) -> i32 {
-        (self.header.get(5).copied().unwrap_or(0) & 0x01) as i32
+    pub fn flags(&self) -> PageFlags {
+        let header_type = self.header.get(5).copied().unwrap_or(0);
+        PageFlags {
+            continued: (header_type & 0x01) != 0,
+            beginning_of_stream: (header_type & 0x02) != 0,
+            end_of_stream: (header_type & 0x04) != 0,
+        }
     }
 
     #[must_use]
-    pub fn bos(&self) -> i32 {
-        ((self.header.get(5).copied().unwrap_or(0) & 0x02) != 0) as i32
+    pub fn is_continued(&self) -> bool {
+        self.flags().continued
     }
 
     #[must_use]
-    pub fn eos(&self) -> i32 {
-        ((self.header.get(5).copied().unwrap_or(0) & 0x04) != 0) as i32
+    pub fn is_beginning_of_stream(&self) -> bool {
+        self.flags().beginning_of_stream
     }
 
     #[must_use]
-    pub fn granulepos(&self) -> i64 {
+    pub fn is_end_of_stream(&self) -> bool {
+        self.flags().end_of_stream
+    }
+
+    #[must_use]
+    pub fn granule_position(&self) -> i64 {
         if self.header.len() < 14 {
             return 0;
         }
@@ -61,7 +104,7 @@ impl Page {
     }
 
     #[must_use]
-    pub fn serialno(&self) -> i32 {
+    pub fn stream_serial(&self) -> i32 {
         if self.header.len() < 18 {
             return 0;
         }
@@ -73,7 +116,7 @@ impl Page {
     }
 
     #[must_use]
-    pub fn pageno(&self) -> i64 {
+    pub fn sequence_number(&self) -> i64 {
         if self.header.len() < 22 {
             return 0;
         }
@@ -85,7 +128,7 @@ impl Page {
     }
 
     #[must_use]
-    pub fn packets(&self) -> i32 {
+    pub fn packet_count(&self) -> i32 {
         let Some(&segments) = self.header.get(26) else {
             return 0;
         };
@@ -98,35 +141,24 @@ impl Page {
         count
     }
 
-    pub fn checksum_set(&mut self) {
+    pub fn update_checksum(&mut self) {
         if self.header.len() < 26 {
             return;
         }
-        self.header[22] = 0;
-        self.header[23] = 0;
-        self.header[24] = 0;
-        self.header[25] = 0;
+        self.header[22..26].fill(0);
         let crc = update_crc(update_crc(0, &self.header), &self.body);
         self.header[22..26].copy_from_slice(&crc.to_le_bytes());
     }
 
     #[must_use]
-    pub fn checksum_valid(&self) -> bool {
+    pub fn is_checksum_valid(&self) -> bool {
         if self.header.len() < 26 {
             return false;
         }
         let mut recomputed = self.clone();
         let expected = recomputed.header[22..26].to_vec();
-        recomputed.checksum_set();
+        recomputed.update_checksum();
         recomputed.header[22..26] == expected
-    }
-
-    #[must_use]
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.header.len() + self.body.len());
-        out.extend_from_slice(&self.header);
-        out.extend_from_slice(&self.body);
-        out
     }
 
     #[must_use]
@@ -141,8 +173,8 @@ impl Page {
     }
 
     #[must_use]
-    pub fn segments(&self) -> Segments<'_> {
-        Segments {
+    pub fn segment_slices(&self) -> SegmentSlices<'_> {
+        SegmentSlices {
             page: self,
             index: 0,
             offset: 0,
@@ -150,7 +182,7 @@ impl Page {
     }
 }
 
-impl<'a> Iterator for Segments<'a> {
+impl<'a> Iterator for SegmentSlices<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {

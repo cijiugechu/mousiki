@@ -28,7 +28,7 @@ pub enum BitPackerError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BitPacker {
+pub(crate) struct RawBitPacker {
     order: BitOrder,
     buffer: Vec<u8>,
     endbyte: usize,
@@ -36,9 +36,9 @@ pub struct BitPacker {
     valid: bool,
 }
 
-impl BitPacker {
+impl RawBitPacker {
     #[must_use]
-    pub fn new(order: BitOrder) -> Self {
+    pub(crate) fn new(order: BitOrder) -> Self {
         Self {
             order,
             buffer: vec![0; BUFFER_INCREMENT],
@@ -49,7 +49,7 @@ impl BitPacker {
     }
 
     #[must_use]
-    pub fn writecheck(&self) -> i32 {
+    pub(crate) fn writecheck(&self) -> i32 {
         if self.valid { 0 } else { -1 }
     }
 
@@ -60,7 +60,7 @@ impl BitPacker {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         if !self.buffer.is_empty() {
             self.buffer.fill(0);
         }
@@ -69,14 +69,14 @@ impl BitPacker {
         self.valid = true;
     }
 
-    pub fn writeclear(&mut self) {
+    pub(crate) fn writeclear(&mut self) {
         self.buffer.clear();
         self.endbyte = 0;
         self.endbit = 0;
         self.valid = false;
     }
 
-    pub fn writetrunc(&mut self, bits: usize) {
+    pub(crate) fn writetrunc(&mut self, bits: usize) {
         if !self.valid {
             return;
         }
@@ -93,7 +93,7 @@ impl BitPacker {
         }
     }
 
-    pub fn writealign(&mut self) -> Result<(), BitPackerError> {
+    pub(crate) fn writealign(&mut self) -> Result<(), BitPackerError> {
         let bits = 8 - self.endbit;
         if bits < 8 {
             self.write(0, bits as i32)?;
@@ -101,7 +101,7 @@ impl BitPacker {
         Ok(())
     }
 
-    pub fn writecopy(&mut self, source: &[u8], bits: usize) -> Result<(), BitPackerError> {
+    pub(crate) fn writecopy(&mut self, source: &[u8], bits: usize) -> Result<(), BitPackerError> {
         let bytes = bits / 8;
         let trailing_bits = bits - bytes * 8;
 
@@ -129,7 +129,7 @@ impl BitPacker {
         Ok(())
     }
 
-    pub fn write(&mut self, mut value: u32, bits: i32) -> Result<(), BitPackerError> {
+    pub(crate) fn write(&mut self, mut value: u32, bits: i32) -> Result<(), BitPackerError> {
         if !(0..=32).contains(&bits) {
             self.writeclear();
             return Err(BitPackerError::InvalidBitCount);
@@ -191,23 +191,23 @@ impl BitPacker {
     }
 
     #[must_use]
-    pub fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.endbyte + usize::from(self.endbit > 0)
     }
 
     #[must_use]
-    pub fn bits(&self) -> usize {
+    pub(crate) fn bits(&self) -> usize {
         self.endbyte * 8 + self.endbit
     }
 
     #[must_use]
-    pub fn buffer(&self) -> &[u8] {
+    pub(crate) fn buffer(&self) -> &[u8] {
         &self.buffer[..self.bytes()]
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BitUnpacker {
+pub(crate) struct RawBitUnpacker {
     order: BitOrder,
     buffer: Vec<u8>,
     storage: usize,
@@ -215,9 +215,9 @@ pub struct BitUnpacker {
     endbit: usize,
 }
 
-impl BitUnpacker {
+impl RawBitUnpacker {
     #[must_use]
-    pub fn new(order: BitOrder, bytes: &[u8]) -> Self {
+    pub(crate) fn new(order: BitOrder, bytes: &[u8]) -> Self {
         Self {
             order,
             buffer: bytes.to_vec(),
@@ -227,7 +227,7 @@ impl BitUnpacker {
         }
     }
 
-    pub fn look(&self, bits: i32) -> Result<u32, BitPackerError> {
+    pub(crate) fn look(&self, bits: i32) -> Result<u32, BitPackerError> {
         if !(0..=32).contains(&bits) {
             return Err(BitPackerError::InvalidBitCount);
         }
@@ -281,11 +281,11 @@ impl BitUnpacker {
         Ok(result)
     }
 
-    pub fn look1(&self) -> Result<u32, BitPackerError> {
+    pub(crate) fn look1(&self) -> Result<u32, BitPackerError> {
         self.look(1)
     }
 
-    pub fn adv(&mut self, bits: i32) -> Result<(), BitPackerError> {
+    pub(crate) fn adv(&mut self, bits: i32) -> Result<(), BitPackerError> {
         if bits < 0 {
             return Err(BitPackerError::InvalidBitCount);
         }
@@ -302,27 +302,133 @@ impl BitUnpacker {
         Ok(())
     }
 
-    pub fn adv1(&mut self) -> Result<(), BitPackerError> {
+    pub(crate) fn adv1(&mut self) -> Result<(), BitPackerError> {
         self.adv(1)
     }
 
-    pub fn read(&mut self, bits: i32) -> Result<u32, BitPackerError> {
+    pub(crate) fn read(&mut self, bits: i32) -> Result<u32, BitPackerError> {
         let value = self.look(bits)?;
         self.adv(bits)?;
         Ok(value)
     }
 
-    pub fn read1(&mut self) -> Result<u32, BitPackerError> {
+    pub(crate) fn read1(&mut self) -> Result<u32, BitPackerError> {
         self.read(1)
     }
 
     #[must_use]
-    pub fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.endbyte + usize::from(self.endbit > 0)
     }
 
     #[must_use]
-    pub fn bits(&self) -> usize {
+    pub(crate) fn bits(&self) -> usize {
         self.endbyte * 8 + self.endbit
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitPacker {
+    raw: RawBitPacker,
+}
+
+impl BitPacker {
+    #[must_use]
+    pub fn new(order: BitOrder) -> Self {
+        Self {
+            raw: RawBitPacker::new(order),
+        }
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.raw.writecheck() == 0
+    }
+
+    pub fn reset(&mut self) {
+        self.raw.reset();
+    }
+
+    pub fn clear(&mut self) {
+        self.raw.writeclear();
+    }
+
+    pub fn truncate_bits(&mut self, bits: usize) {
+        self.raw.writetrunc(bits);
+    }
+
+    pub fn align_to_byte(&mut self) -> Result<(), BitPackerError> {
+        self.raw.writealign()
+    }
+
+    pub fn copy_bits(&mut self, source: &[u8], bits: usize) -> Result<(), BitPackerError> {
+        self.raw.writecopy(source, bits)
+    }
+
+    pub fn write_bits(&mut self, value: u32, bits: i32) -> Result<(), BitPackerError> {
+        self.raw.write(value, bits)
+    }
+
+    #[must_use]
+    pub fn byte_len(&self) -> usize {
+        self.raw.bytes()
+    }
+
+    #[must_use]
+    pub fn bit_len(&self) -> usize {
+        self.raw.bits()
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.raw.buffer()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitUnpacker {
+    raw: RawBitUnpacker,
+}
+
+impl BitUnpacker {
+    #[must_use]
+    pub fn new(order: BitOrder, bytes: &[u8]) -> Self {
+        Self {
+            raw: RawBitUnpacker::new(order, bytes),
+        }
+    }
+
+    pub fn peek_bits(&self, bits: i32) -> Result<u32, BitPackerError> {
+        self.raw.look(bits)
+    }
+
+    pub fn peek_one(&self) -> Result<u32, BitPackerError> {
+        self.raw.look1()
+    }
+
+    pub fn skip_bits(&mut self, bits: i32) -> Result<(), BitPackerError> {
+        self.raw.adv(bits)
+    }
+
+    pub fn skip_one(&mut self) -> Result<(), BitPackerError> {
+        self.raw.adv1()
+    }
+
+    pub fn read_bits(&mut self, bits: i32) -> Result<u32, BitPackerError> {
+        self.raw.read(bits)
+    }
+
+    pub fn read_one(&mut self) -> Result<u32, BitPackerError> {
+        self.raw.read1()
+    }
+
+    #[must_use]
+    pub fn byte_len(&self) -> usize {
+        self.raw.bytes()
+    }
+
+    #[must_use]
+    pub fn bit_len(&self) -> usize {
+        self.raw.bits()
     }
 }

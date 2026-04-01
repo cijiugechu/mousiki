@@ -1,11 +1,11 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use mousiki_ogg::StreamState;
+use mousiki_ogg::{PacketMetadata, StreamEncoder};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OggPacker {
-    stream: StreamState,
+    stream: StreamEncoder,
     pending_pages: VecDeque<Vec<u8>>,
     muxing_delay: u64,
     current_granule: u64,
@@ -16,7 +16,7 @@ impl OggPacker {
     #[must_use]
     pub(crate) fn new(serialno: i32) -> Self {
         Self {
-            stream: StreamState::new(serialno),
+            stream: StreamEncoder::new(serialno),
             pending_pages: VecDeque::new(),
             muxing_delay: 0,
             current_granule: 0,
@@ -42,15 +42,25 @@ impl OggPacker {
         }
         if self
             .stream
-            .lacing_vals
-            .len()
+            .pending_segment_count()
             .saturating_add(segments_needed)
             > 255
         {
             self.flush_page();
         }
 
-        if self.stream.packet_in_slice(packet, eos, granulepos as i64) != 0 {
+        if self
+            .stream
+            .push_packet_data(
+                packet,
+                PacketMetadata {
+                    end_of_stream: eos,
+                    granule_position: granulepos as i64,
+                    ..PacketMetadata::default()
+                },
+            )
+            .is_err()
+        {
             return Err(());
         }
         self.current_granule = granulepos;
@@ -66,7 +76,7 @@ impl OggPacker {
 
     pub(crate) fn flush_page(&mut self) -> bool {
         let mut flushed = false;
-        while let Some(page) = self.stream.flush_fill_bytes(i32::MAX) {
+        while let Some(page) = self.stream.flush_page_bytes_with_fill(i32::MAX) {
             self.pending_pages.push_back(page);
             flushed = true;
         }
@@ -82,7 +92,7 @@ impl OggPacker {
 
     pub(crate) fn chain(&mut self, serialno: i32) {
         self.flush_page();
-        self.stream.reset_serialno(serialno);
+        self.stream.reset_stream(serialno);
         self.pending_pages.clear();
         self.current_granule = 0;
         self.last_granule = 0;

@@ -226,7 +226,7 @@ impl Player {
                 Err(err) => return Err(ExampleError::Ogg(err)),
             };
 
-            let mut first_pass = page.segments();
+            let mut first_pass = page.segment_slices();
             let Some(first) = first_pass.next() else {
                 continue;
             };
@@ -234,7 +234,7 @@ impl Player {
                 continue;
             }
 
-            let segments = page.segments().collect::<Vec<_>>();
+            let segments = page.segment_slices().collect::<Vec<_>>();
             let count = segments.len();
             self.total_segments = count;
             self.next_segment = 0;

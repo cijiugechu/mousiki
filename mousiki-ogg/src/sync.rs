@@ -4,8 +4,14 @@ use alloc::vec::Vec;
 
 use crate::page::Page;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageReaderError {
+    InvalidWrite,
+    Unsynced,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SyncState {
+pub struct RawSyncState {
     data: Vec<u8>,
     fill: usize,
     returned: usize,
@@ -14,7 +20,7 @@ pub struct SyncState {
     bodybytes: usize,
 }
 
-impl SyncState {
+impl RawSyncState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -97,10 +103,10 @@ impl SyncState {
         let header = self.data[start..start + self.headerbytes].to_vec();
         let body =
             self.data[start + self.headerbytes..start + self.headerbytes + self.bodybytes].to_vec();
-        let mut recomputed = Page::new(header.clone(), body.clone());
+        let mut recomputed = Page::from_parts(header.clone(), body.clone());
         let checksum = header[22..26].to_vec();
-        recomputed.checksum_set();
-        if recomputed.header[22..26] != checksum {
+        recomputed.update_checksum();
+        if recomputed.header_bytes()[22..26] != checksum {
             return self.sync_fail(start, end);
         }
 
@@ -109,7 +115,7 @@ impl SyncState {
         self.returned += total;
         self.headerbytes = 0;
         self.bodybytes = 0;
-        Ok(Some(Page::new(header, body)))
+        Ok(Some(Page::from_parts(header, body)))
     }
 
     fn sync_fail(&mut self, start: usize, end: usize) -> Result<Option<Page>, i64> {
@@ -136,5 +142,40 @@ impl SyncState {
                 Err(_) => {}
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PageReader {
+    raw: RawSyncState,
+}
+
+impl PageReader {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            raw: RawSyncState::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.raw.reset();
+    }
+
+    pub fn clear(&mut self) {
+        self.raw.clear();
+    }
+
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Result<(), PageReaderError> {
+        let buf = self.raw.buffer(bytes.len());
+        buf.copy_from_slice(bytes);
+        if self.raw.wrote(bytes.len()) != 0 {
+            return Err(PageReaderError::InvalidWrite);
+        }
+        Ok(())
+    }
+
+    pub fn next_page(&mut self) -> Result<Option<Page>, PageReaderError> {
+        self.raw.pageout().map_err(|_| PageReaderError::Unsynced)
     }
 }

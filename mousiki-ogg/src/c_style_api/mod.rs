@@ -1,23 +1,25 @@
-use crate::pack::{BitOrder, BitPacker, BitPackerError, BitUnpacker};
-use crate::{Packet, Page, StreamState, SyncState};
+use crate::pack::{BitOrder, BitPackerError, RawBitPacker, RawBitUnpacker};
+use crate::stream::RawStreamState;
+use crate::sync::RawSyncState;
+use crate::{Packet, Page};
 
 pub type OggPage = Page;
 pub type OggPacket = Packet;
-pub type OggStreamState = StreamState;
-pub type OggSyncState = SyncState;
+pub type OggStreamState = RawStreamState;
+pub type OggSyncState = RawSyncState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OggPackBuffer {
     order: BitOrder,
-    writer: BitPacker,
-    reader: Option<BitUnpacker>,
+    writer: RawBitPacker,
+    reader: Option<RawBitUnpacker>,
 }
 
 impl Default for OggPackBuffer {
     fn default() -> Self {
         Self {
             order: BitOrder::Lsb,
-            writer: BitPacker::new(BitOrder::Lsb),
+            writer: RawBitPacker::new(BitOrder::Lsb),
             reader: None,
         }
     }
@@ -26,14 +28,14 @@ impl Default for OggPackBuffer {
 impl OggPackBuffer {
     fn reset_for_write(&mut self, order: BitOrder) {
         self.order = order;
-        self.writer = BitPacker::new(order);
+        self.writer = RawBitPacker::new(order);
         self.reader = None;
     }
 
     fn reset_for_read(&mut self, order: BitOrder, buf: &[u8]) {
         self.order = order;
-        self.writer = BitPacker::new(order);
-        self.reader = Some(BitUnpacker::new(order, buf));
+        self.writer = RawBitPacker::new(order);
+        self.reader = Some(RawBitUnpacker::new(order, buf));
     }
 }
 
@@ -238,26 +240,6 @@ pub fn ogg_stream_flush_fill(state: &mut OggStreamState, nfill: i32) -> Option<O
     state.flush_fill(nfill)
 }
 
-pub fn ogg_sync_check(state: &OggSyncState) -> i32 {
-    state.check()
-}
-
-pub fn ogg_sync_buffer(state: &mut OggSyncState, size: usize) -> &mut [u8] {
-    state.buffer(size)
-}
-
-pub fn ogg_sync_wrote(state: &mut OggSyncState, bytes: usize) -> i32 {
-    state.wrote(bytes)
-}
-
-pub fn ogg_sync_pageseek(state: &mut OggSyncState) -> Result<Option<OggPage>, i64> {
-    state.pageseek()
-}
-
-pub fn ogg_sync_pageout(state: &mut OggSyncState) -> Result<Option<OggPage>, i32> {
-    state.pageout()
-}
-
 pub fn ogg_stream_pagein(state: &mut OggStreamState, page: &OggPage) -> i32 {
     state.page_in(page)
 }
@@ -278,8 +260,48 @@ pub fn ogg_stream_eos(state: &OggStreamState) -> i32 {
     state.eos()
 }
 
+pub fn ogg_stream_reset(state: &mut OggStreamState) {
+    state.reset();
+}
+
+pub fn ogg_stream_reset_serialno(state: &mut OggStreamState, serialno: i32) {
+    state.reset_serialno(serialno);
+}
+
+pub fn ogg_stream_clear(state: &mut OggStreamState) {
+    state.clear();
+}
+
+pub fn ogg_sync_check(state: &OggSyncState) -> i32 {
+    state.check()
+}
+
+pub fn ogg_sync_buffer(state: &mut OggSyncState, size: usize) -> &mut [u8] {
+    state.buffer(size)
+}
+
+pub fn ogg_sync_wrote(state: &mut OggSyncState, bytes: usize) -> i32 {
+    state.wrote(bytes)
+}
+
+pub fn ogg_sync_pageseek(state: &mut OggSyncState) -> Result<Option<OggPage>, i64> {
+    state.pageseek()
+}
+
+pub fn ogg_sync_pageout(state: &mut OggSyncState) -> Result<Option<OggPage>, i32> {
+    state.pageout()
+}
+
+pub fn ogg_sync_reset(state: &mut OggSyncState) {
+    state.reset();
+}
+
+pub fn ogg_sync_clear(state: &mut OggSyncState) {
+    state.clear();
+}
+
 pub fn ogg_page_checksum_set(page: &mut OggPage) {
-    page.checksum_set();
+    page.update_checksum();
 }
 
 pub fn ogg_page_version(page: &OggPage) -> i32 {
@@ -287,31 +309,31 @@ pub fn ogg_page_version(page: &OggPage) -> i32 {
 }
 
 pub fn ogg_page_continued(page: &OggPage) -> i32 {
-    page.continued()
+    i32::from(page.is_continued())
 }
 
 pub fn ogg_page_bos(page: &OggPage) -> i32 {
-    page.bos()
+    i32::from(page.is_beginning_of_stream())
 }
 
 pub fn ogg_page_eos(page: &OggPage) -> i32 {
-    page.eos()
+    i32::from(page.is_end_of_stream())
 }
 
 pub fn ogg_page_granulepos(page: &OggPage) -> i64 {
-    page.granulepos()
+    page.granule_position()
 }
 
 pub fn ogg_page_serialno(page: &OggPage) -> i32 {
-    page.serialno()
+    page.stream_serial()
 }
 
 pub fn ogg_page_pageno(page: &OggPage) -> i64 {
-    page.pageno()
+    page.sequence_number()
 }
 
 pub fn ogg_page_packets(page: &OggPage) -> i32 {
-    page.packets()
+    page.packet_count()
 }
 
 pub fn ogg_packet_clear(packet: &mut OggPacket) {

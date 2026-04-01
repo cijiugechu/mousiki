@@ -70,14 +70,14 @@ fn run() -> Result<(), ExampleError> {
             Err(err) => return Err(ExampleError::Ogg(err)),
         };
 
-        let mut segments = page.segments();
+        let mut segments = page.segment_slices();
         if let Some(first) = segments.next()
             && first.starts_with(OPUS_TAGS_SIGNATURE)
         {
             continue;
         }
 
-        for segment in page.segments() {
+        for segment in page.segment_slices() {
             if segment.is_empty() {
                 continue;
             }

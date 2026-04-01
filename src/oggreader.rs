@@ -1,11 +1,10 @@
 use core::fmt;
 use log::{debug, trace};
-use mousiki_ogg::Page;
+use mousiki_ogg::{Page, PageReader, PageReaderError};
 
 const PAGE_HEADER_TYPE_BEGINNING_OF_STREAM: u8 = 0x02;
 const PAGE_HEADER_SIGNATURE: [u8; 4] = *b"OggS";
 const ID_PAGE_SIGNATURE: [u8; 8] = *b"OpusHead";
-const PAGE_HEADER_LEN: usize = 27;
 const ID_PAGE_PAYLOAD_LENGTH: usize = 19;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +29,7 @@ pub enum OggReaderError {
     BadIdPageLength,
     BadIdPagePayloadSignature,
     ChecksumMismatch,
+    InvalidPage,
     Read(ReadError),
 }
 
@@ -41,6 +41,7 @@ impl fmt::Display for OggReaderError {
             Self::BadIdPageLength => f.write_str("payload for id page must be 19 bytes"),
             Self::BadIdPagePayloadSignature => f.write_str("bad payload signature"),
             Self::ChecksumMismatch => f.write_str("expected and actual checksum do not match"),
+            Self::InvalidPage => f.write_str("invalid ogg page"),
             Self::Read(err) => write!(f, "reader error: {err}"),
         }
     }
@@ -69,6 +70,7 @@ pub struct OggHeader {
 pub struct OggReader<R: OggRead> {
     stream: R,
     header: OggHeader,
+    page_reader: PageReader,
 }
 
 impl<R: OggRead> OggReader<R> {
@@ -83,6 +85,7 @@ impl<R: OggRead> OggReader<R> {
                 sample_rate: 0,
                 version: 0,
             },
+            page_reader: PageReader::new(),
         };
         reader.header = reader.read_headers()?;
         debug!(
@@ -108,13 +111,13 @@ impl<R: OggRead> OggReader<R> {
 
     fn read_headers(&mut self) -> Result<OggHeader, OggReaderError> {
         let page = self.read_page()?;
-        if page.header.get(..4) != Some(&PAGE_HEADER_SIGNATURE) {
+        if page.header_bytes().get(..4) != Some(&PAGE_HEADER_SIGNATURE) {
             return Err(OggReaderError::BadIdPageSignature);
         }
-        if page.header.get(5).copied() != Some(PAGE_HEADER_TYPE_BEGINNING_OF_STREAM) {
+        if page.header_bytes().get(5).copied() != Some(PAGE_HEADER_TYPE_BEGINNING_OF_STREAM) {
             return Err(OggReaderError::BadIdPageType);
         }
-        let mut segments = page.segments();
+        let mut segments = page.segment_slices();
         let id_segment = segments.next().ok_or(OggReaderError::BadIdPageLength)?;
         if id_segment.len() != ID_PAGE_PAYLOAD_LENGTH {
             return Err(OggReaderError::BadIdPageLength);
@@ -138,52 +141,34 @@ impl<R: OggRead> OggReader<R> {
     }
 
     fn read_page(&mut self) -> Result<Page, OggReaderError> {
-        let mut header = [0u8; PAGE_HEADER_LEN];
-        self.read_exact(&mut header)?;
-        let segments_count = header[26] as usize;
-        let mut lacing = alloc::vec![0u8; segments_count];
-        self.read_exact(&mut lacing)?;
-        let total_payload_len: usize = lacing.iter().map(|&value| usize::from(value)).sum();
-        let mut body = alloc::vec![0u8; total_payload_len];
-        self.read_exact(&mut body)?;
-
-        let mut full_header = header.to_vec();
-        full_header.extend_from_slice(&lacing);
-        let page = Page::new(full_header, body);
-        if !page.checksum_valid() {
-            return Err(OggReaderError::ChecksumMismatch);
-        }
-
-        trace!(
-            "oggreader: page serial={} index={} granule={} segments={} payload_len={}",
-            page.serialno(),
-            page.pageno(),
-            page.granulepos(),
-            segments_count,
-            page.body_len()
-        );
-
-        Ok(page)
-    }
-
-    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), OggReaderError> {
-        read_exact_from(&mut self.stream, buf)?;
-        Ok(())
-    }
-}
-
-fn read_exact_from<R: OggRead>(reader: &mut R, mut buf: &mut [u8]) -> Result<(), ReadError> {
-    while !buf.is_empty() {
-        match reader.read(buf) {
-            Ok(0) => return Err(ReadError::UnexpectedEof),
-            Ok(n) => {
-                let (_, rest) = buf.split_at_mut(n);
-                buf = rest;
+        let mut buf = [0u8; 4096];
+        loop {
+            match self.page_reader.next_page() {
+                Ok(Some(page)) => {
+                    trace!(
+                        "oggreader: page serial={} index={} granule={} segments={} payload_len={}",
+                        page.stream_serial(),
+                        page.sequence_number(),
+                        page.granule_position(),
+                        page.segment_count(),
+                        page.body_len()
+                    );
+                    return Ok(page);
+                }
+                Ok(None) => {}
+                Err(PageReaderError::Unsynced) => return Err(OggReaderError::ChecksumMismatch),
+                Err(PageReaderError::InvalidWrite) => return Err(OggReaderError::InvalidPage),
             }
-            Err(err) => return Err(err),
+
+            let read = self.stream.read(&mut buf)?;
+            if read == 0 {
+                return Err(OggReaderError::Read(ReadError::UnexpectedEof));
+            }
+            self.page_reader
+                .push_bytes(&buf[..read])
+                .map_err(|_| OggReaderError::InvalidPage)?;
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -243,7 +228,7 @@ mod tests {
             }
         );
         let page = reader.next_page().expect("second page should parse");
-        let segments = page.segments().collect::<alloc::vec::Vec<_>>();
+        let segments = page.segment_slices().collect::<alloc::vec::Vec<_>>();
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0], &[0x98, 0x36, 0xbe, 0x88, 0x9e]);
     }
@@ -254,7 +239,7 @@ mod tests {
         let mut reader =
             OggReader::new(SliceReader::new(&container)).expect("reader should initialize");
         let page = reader.next_page().expect("should parse comment page");
-        let segments = page.segments().collect::<alloc::vec::Vec<_>>();
+        let segments = page.segment_slices().collect::<alloc::vec::Vec<_>>();
         assert_eq!(segments.len(), 1);
         assert!(matches!(
             reader.next_page(),

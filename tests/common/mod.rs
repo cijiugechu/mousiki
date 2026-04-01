@@ -51,14 +51,14 @@ pub fn decode_stream(data: &[u8]) -> Result<usize, ()> {
             Err(_) => return Err(()),
         };
 
-        let mut segments = page.segments();
+        let mut segments = page.segment_slices();
         if let Some(first_segment) = segments.next()
             && first_segment.starts_with(OPUS_TAGS_SIGNATURE)
         {
             continue;
         }
 
-        for segment in page.segments() {
+        for segment in page.segment_slices() {
             if segment.is_empty() {
                 continue;
             }

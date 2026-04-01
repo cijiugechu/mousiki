@@ -13,7 +13,7 @@ mod stream;
 mod sync;
 
 pub use pack::{BitOrder, BitPacker, BitPackerError, BitUnpacker};
-pub use packet::Packet;
-pub use page::Page;
-pub use stream::StreamState;
-pub use sync::SyncState;
+pub use packet::{Packet, PacketMetadata};
+pub use page::{Page, PageFlags, SegmentSlices};
+pub use stream::{StreamDecodeError, StreamDecoder, StreamEncodeError, StreamEncoder};
+pub use sync::{PageReader, PageReaderError};

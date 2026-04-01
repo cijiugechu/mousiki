@@ -3,33 +3,44 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::crc::update_crc;
-use crate::packet::Packet;
+use crate::packet::{Packet, PacketMetadata};
 use crate::page::Page;
 
 const LACING_START: i32 = 0x100;
 const LACING_END_OF_STREAM: i32 = 0x200;
 const LACING_HOLE: i32 = 0x400;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEncodeError {
+    InvalidPacket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDecodeError {
+    InvalidPage,
+    Gap,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamState {
-    pub body_data: Vec<u8>,
-    pub body_returned: usize,
-    pub lacing_vals: Vec<i32>,
-    pub granule_vals: Vec<i64>,
-    pub lacing_packet: usize,
-    pub lacing_returned: usize,
-    pub header: [u8; 282],
-    pub header_fill: usize,
-    pub e_o_s: i32,
-    pub b_o_s: i32,
-    pub serialno: i32,
-    pub pageno: i64,
-    pub packetno: i64,
-    pub granulepos: i64,
+pub struct RawStreamState {
+    body_data: Vec<u8>,
+    body_returned: usize,
+    lacing_vals: Vec<i32>,
+    granule_vals: Vec<i64>,
+    lacing_packet: usize,
+    lacing_returned: usize,
+    header: [u8; 282],
+    header_fill: usize,
+    e_o_s: i32,
+    b_o_s: i32,
+    serialno: i32,
+    pageno: i64,
+    packetno: i64,
+    granulepos: i64,
     ready: bool,
 }
 
-impl StreamState {
+impl RawStreamState {
     #[must_use]
     pub fn new(serialno: i32) -> Self {
         let mut this = Self {
@@ -103,6 +114,11 @@ impl StreamState {
         if self.check() != 0 { 1 } else { self.e_o_s }
     }
 
+    #[must_use]
+    pub fn pending_segment_count(&self) -> usize {
+        self.lacing_vals.len()
+    }
+
     fn compact_body(&mut self) {
         if self.body_returned > 0 {
             let retained = self.body_data.len().saturating_sub(self.body_returned);
@@ -126,17 +142,17 @@ impl StreamState {
 
     pub fn packet_in(&mut self, packet: &Packet) -> i32 {
         self.iovec_in(
-            &[packet.packet.as_slice()],
-            packet.e_o_s != 0,
-            packet.granulepos,
+            &[packet.data()],
+            packet.is_end_of_stream(),
+            packet.granule_position(),
         )
     }
 
-    pub fn packet_in_slice(&mut self, packet: &[u8], e_o_s: bool, granulepos: i64) -> i32 {
-        self.iovec_in(&[packet], e_o_s, granulepos)
+    pub fn packet_in_slice(&mut self, packet: &[u8], end_of_stream: bool, granulepos: i64) -> i32 {
+        self.iovec_in(&[packet], end_of_stream, granulepos)
     }
 
-    pub fn iovec_in(&mut self, chunks: &[&[u8]], e_o_s: bool, granulepos: i64) -> i32 {
+    pub fn iovec_in(&mut self, chunks: &[&[u8]], end_of_stream: bool, granulepos: i64) -> i32 {
         if self.check() != 0 {
             return -1;
         }
@@ -172,7 +188,7 @@ impl StreamState {
         }
 
         self.packetno += 1;
-        if e_o_s {
+        if end_of_stream {
             self.e_o_s = 1;
         }
         0
@@ -276,8 +292,8 @@ impl StreamState {
         let header = self.header[..self.header_fill].to_vec();
         let body = self.body_data[self.body_returned..self.body_returned + bytes].to_vec();
         self.finish_page(vals, bytes);
-        let mut page = Page::new(header, body);
-        page.checksum_set();
+        let mut page = Page::from_parts(header, body);
+        page.update_checksum();
         Some(page)
     }
 
@@ -340,7 +356,7 @@ impl StreamState {
     }
 
     pub fn page_in(&mut self, page: &Page) -> i32 {
-        let header = &page.header;
+        let header = page.header_bytes();
         if self.check() != 0 || header.len() < 27 {
             return -1;
         }
@@ -349,12 +365,12 @@ impl StreamState {
         self.compact_lacing();
 
         let version = page.version();
-        let mut bos = page.bos();
-        let eos = page.eos();
-        let continued = page.continued();
-        let granulepos = page.granulepos();
-        let serialno = page.serialno();
-        let pageno = page.pageno();
+        let mut bos = i32::from(page.is_beginning_of_stream());
+        let eos = i32::from(page.is_end_of_stream());
+        let continued = i32::from(page.is_continued());
+        let granulepos = page.granule_position();
+        let serialno = page.stream_serial();
+        let pageno = page.sequence_number();
         let segments = header[26] as usize;
 
         if serialno != self.serialno || version > 0 {
@@ -378,7 +394,7 @@ impl StreamState {
 
         let mut segptr = 0usize;
         let mut body_offset = 0usize;
-        let mut bodysize = page.body.len();
+        let mut bodysize = page.body_len();
 
         if continued != 0
             && (self.lacing_vals.is_empty()
@@ -399,7 +415,7 @@ impl StreamState {
 
         if bodysize > 0 {
             self.body_data
-                .extend_from_slice(&page.body[body_offset..body_offset + bodysize]);
+                .extend_from_slice(&page.body_bytes()[body_offset..body_offset + bodysize]);
         }
 
         let mut saved = None;
@@ -462,13 +478,13 @@ impl StreamState {
             bytes += size;
         }
 
-        let packet = Packet {
-            packet: self.body_data[self.body_returned..self.body_returned + bytes].to_vec(),
-            b_o_s: i32::from(bos != 0),
-            e_o_s: i32::from(eos != 0),
-            granulepos: self.granule_vals[current],
-            packetno: self.packetno,
-        };
+        let packet = Packet::from_raw_parts(
+            self.body_data[self.body_returned..self.body_returned + bytes].to_vec(),
+            bos != 0,
+            eos != 0,
+            self.granule_vals[current],
+            self.packetno,
+        );
 
         if advance {
             self.body_returned += bytes;
@@ -490,5 +506,123 @@ impl StreamState {
             return Ok(None);
         }
         self.packet_out_internal(false)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamEncoder {
+    raw: RawStreamState,
+}
+
+impl StreamEncoder {
+    #[must_use]
+    pub fn new(serialno: i32) -> Self {
+        Self {
+            raw: RawStreamState::new(serialno),
+        }
+    }
+
+    #[must_use]
+    pub fn stream_serial(&self) -> i32 {
+        self.raw.serialno
+    }
+
+    #[must_use]
+    pub fn pending_segment_count(&self) -> usize {
+        self.raw.pending_segment_count()
+    }
+
+    #[must_use]
+    pub fn is_end_of_stream(&self) -> bool {
+        self.raw.eos() != 0
+    }
+
+    pub fn push_packet(&mut self, packet: &Packet) -> Result<(), StreamEncodeError> {
+        self.push_packet_data(packet.data(), packet.metadata())
+    }
+
+    pub fn push_packet_data(
+        &mut self,
+        packet: &[u8],
+        metadata: PacketMetadata,
+    ) -> Result<(), StreamEncodeError> {
+        if self
+            .raw
+            .packet_in_slice(packet, metadata.end_of_stream, metadata.granule_position)
+            != 0
+        {
+            return Err(StreamEncodeError::InvalidPacket);
+        }
+        Ok(())
+    }
+
+    pub fn flush_page(&mut self) -> Option<Page> {
+        self.raw.flush()
+    }
+
+    pub fn flush_page_with_fill(&mut self, nfill: i32) -> Option<Page> {
+        self.raw.flush_fill(nfill)
+    }
+
+    pub fn flush_page_bytes(&mut self) -> Option<Vec<u8>> {
+        self.raw.flush_bytes()
+    }
+
+    pub fn flush_page_bytes_with_fill(&mut self, nfill: i32) -> Option<Vec<u8>> {
+        self.raw.flush_fill_bytes(nfill)
+    }
+
+    pub fn next_page(&mut self) -> Option<Page> {
+        self.raw.page_out()
+    }
+
+    pub fn next_page_with_fill(&mut self, nfill: i32) -> Option<Page> {
+        self.raw.page_out_fill(nfill)
+    }
+
+    pub fn next_page_bytes(&mut self) -> Option<Vec<u8>> {
+        self.raw.page_out_bytes()
+    }
+
+    pub fn next_page_bytes_with_fill(&mut self, nfill: i32) -> Option<Vec<u8>> {
+        self.raw.page_out_fill_bytes(nfill)
+    }
+
+    pub fn reset_stream(&mut self, serialno: i32) {
+        self.raw.reset_serialno(serialno);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamDecoder {
+    raw: RawStreamState,
+}
+
+impl StreamDecoder {
+    #[must_use]
+    pub fn new(serialno: i32) -> Self {
+        Self {
+            raw: RawStreamState::new(serialno),
+        }
+    }
+
+    #[must_use]
+    pub fn stream_serial(&self) -> i32 {
+        self.raw.serialno
+    }
+
+    pub fn push_page(&mut self, page: &Page) -> Result<(), StreamDecodeError> {
+        if self.raw.page_in(page) != 0 {
+            return Err(StreamDecodeError::InvalidPage);
+        }
+        Ok(())
+    }
+
+    pub fn next_packet(&mut self) -> Result<Option<Packet>, StreamDecodeError> {
+        self.raw.packet_out().map_err(|_| StreamDecodeError::Gap)
+    }
+
+    pub fn peek_packet(&mut self) -> Result<Option<Packet>, StreamDecodeError> {
+        self.raw.packet_peek().map_err(|_| StreamDecodeError::Gap)
     }
 }
