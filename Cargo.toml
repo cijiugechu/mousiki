@@ -95,3 +95,8 @@ required-features = ["libopusenc"]
 name = "opusfile_example"
 path = "examples/opusfile_example.rs"
 required-features = ["opusfile"]
+
+[[example]]
+name = "opusfile_seeking_example"
+path = "examples/opusfile_seeking_example.rs"
+required-features = ["opusfile"]
