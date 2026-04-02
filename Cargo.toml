@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "examples/playback", "mousiki-dred-weights", "mousiki-deep-plc-weights", "mousiki-ogg"]
+members = [".", "mousiki-dred-weights", "mousiki-deep-plc-weights", "mousiki-ogg"]
 exclude = ["fuzz"]
 resolver = "3"
 
@@ -81,6 +81,7 @@ excessive_precision = "allow"
 
 [dev-dependencies]
 sha2 = "0.10"
+cpal = "0.15"
 
 [profile.release]
 codegen-units = 1
@@ -100,3 +101,7 @@ required-features = ["opusfile"]
 name = "opusfile_seeking_example"
 path = "examples/opusfile_seeking_example.rs"
 required-features = ["opusfile"]
+
+[[example]]
+name = "playback"
+path = "examples/playback.rs"
